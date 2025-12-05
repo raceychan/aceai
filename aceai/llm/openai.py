@@ -1,200 +1,239 @@
-"""
-OpenAI adapter and LLM provider abstraction.
-
-This module centralizes interactions with the OpenAI SDK and exposes a small
-provider interface so upstream application code doesn't depend on the SDK
-directly.
-
-Notes
-- We re-export OpenAI exception types so callers can catch them via this module
-  without importing the SDK directly.
-"""
-
-from typing import Any, Sequence, Unpack, cast
+from typing import Any, AsyncIterator, BinaryIO, cast
 from warnings import warn
 
-from openai import AsyncOpenAI
-from openai.types.responses.response import Response as ResponsesResponse
+import openai
+from openai.types.responses import FunctionToolParam
+from openai.types.responses.response import Response
 from openai.types.responses.response_create_params import (
     ResponseCreateParamsNonStreaming,
 )
+from openai.types.responses.response_error_event import ResponseErrorEvent
+from openai.types.responses.response_function_call_arguments_delta_event import (
+    ResponseFunctionCallArgumentsDeltaEvent,
+)
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
-from openai.types.responses.response_input_param import ResponseInputParam
-from openai.types.responses.response_output_message import ResponseOutputMessage
-from openai.types.responses.response_output_text import ResponseOutputText
+from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
-from openai.types.shared_params.response_format_json_object import (
-    ResponseFormatJSONObject,
-)
-from openai.types.shared_params.response_format_json_schema import (
-    ResponseFormatJSONSchema,
-)
-from openai.types.shared_params.response_format_text import ResponseFormatText
+from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+
+from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
 
 from .interface import (
-    ChatMessage,
-    ChatResponse,
-    LLMProvider,
+    LLMProviderBase,
     LLMRequest,
-    ToolCall,
-    ToolCallFunction,
+    LLMResponse,
+    LLMStreamChunk,
+    LLMToolCall,
+    LLMToolCallDelta,
+    LLMUsage,
+    ResponseFormat,
+    ToolSpec,
 )
 
-ResponseFormat = (
-    ResponseFormatJSONObject | ResponseFormatJSONSchema | ResponseFormatText
-)
 
-TEMPERATURELESS_MODELS: set[str] = {"gpt-5"}
+class OpenAI(LLMProviderBase):
+    """OpenAI provider for LLM completions."""
 
+    def __init__(self, api_key: str, default_model: str, default_stream_model: str):
+        if not api_key:
+            raise ValueError("OpenAI API key is required")
+        self._api_key = api_key
+        self._default_model = default_model
+        self._default_stream_model = default_stream_model
+        self._client = openai.AsyncOpenAI(api_key=self._api_key)
 
-def _build_message_content(message: ChatMessage) -> dict[str, str]:
-    kind = "output_text" if message.role == "assistant" else "input_text"
-    return {
-        "type": kind,
-        "text": message.content,
-    }
+    @property
+    def default_model(self) -> str:
+        return self._default_model
 
-
-def _collect_response_text(response: ResponsesResponse) -> str:
-    if not response.output:
-        return ""
-    parts: list[str] = []
-    for item in response.output:
-        if isinstance(item, ResponseOutputMessage):
-            for content in item.content:
-                if isinstance(content, ResponseOutputText):
-                    parts.append(content.text)
-                else:
-                    parts.append(content.refusal)
-    return "".join(parts)
-
-
-def _collect_tool_calls(response: ResponsesResponse) -> list[ToolCall]:
-    calls: list[ToolCall] = []
-    if not response.output:
-        return calls
-    for item in response.output:
-        if isinstance(item, ResponseFunctionToolCall):
-            calls.append(
-                ToolCall(
-                    id=item.call_id,
-                    function=ToolCallFunction(
-                        name=item.name,
-                        arguments=item.arguments,
-                    ),
-                    type="function",
-                )
-            )
-    return calls
-
-
-class OpenAIProvider(LLMProvider):
-    """Concrete LLM provider backed by the OpenAI SDK."""
-
-    def __init__(self, *, api_key: str):
-        self._client = AsyncOpenAI(api_key=api_key)
-
-    async def get_response(
-        self,
-        **request: Unpack[LLMRequest],
-    ) -> ChatResponse:
-        kwargs = self._build_response_kwargs(
-            **request,
+    async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
+        """Transcribe audio using OpenAI Whisper (async)."""
+        result = await self._client.audio.transcriptions.create(
+            model=model,
+            file=(filename, file),
         )
-        resp = await self._client.responses.create(**kwargs)
-        return self.convert_resp(resp)
+        text = result.text
+        return text
 
-    def convert_resp(self, resp: ResponsesResponse) -> ChatResponse:
-        content = _collect_response_text(resp)
-        tool_calls = _collect_tool_calls(resp)
-        return ChatResponse(content=content, tool_calls=tool_calls)
-
-    def _build_response_kwargs(
+    def _build_base_response_kwargs(
         self,
-        **request: Unpack[LLMRequest],
-    ) -> ResponseCreateParamsNonStreaming:
-        input_items = self._build_input_items(request["messages"])
+        request: LLMRequest,
+        *,
+        default_model: str,
+    ) -> dict[str, Any]:
+        """Translate LLMRequest into OpenAI Responses kwargs."""
+        input_messages = [m.asdict() for m in request["messages"]]
+        kwargs: dict[str, Any] = {"input": input_messages}
+        metadata = request.get("metadata", {})
+        model_name = metadata.get("model", default_model)
 
-        if (
-            request["model"] in TEMPERATURELESS_MODELS
-            and (temperature := request.get("temperature")) is not None
-        ):
-            warn(
-                f"Model {request['model']} does not support temperature; ignoring temperature={temperature}"
-            )
-            request.pop("temperature")
+        kwargs["model"] = model_name
 
-        kwargs: dict[str, Any] = {
-            "model": request["model"],
-            "input": list(input_items),
-        }
+        if is_present(max_tokens := request.get("max_tokens", MISSING)):
+            kwargs["max_output_tokens"] = max_tokens
 
-        text_config: dict[str, Any] = {}
-        if request.get("json_schema") is not None:
-            text_config["format"] = {
-                "type": "json_schema",
-                "json_schema": request.get("json_schema"),
-            }
-        kwargs["text"] = cast(ResponseTextConfigParam, text_config)
+        if is_present(temperature := request.get("temperature", MISSING)):
+            if model_name.startswith("gpt-5"):
+                pass
+            else:
+                kwargs["temperature"] = temperature
 
-        if max_output_token := kwargs.get("max_output_tokens"):
-            kwargs["max_output_tokens"] = max_output_token
-
-        if temperature := kwargs.get("temperature") is not None:
-            kwargs["temperature"] = temperature
-        if top_p := kwargs.get("top_p") is not None:
+        if is_present(top_p := request.get("top_p", MISSING)):
             kwargs["top_p"] = top_p
 
-        if tools := request.get("tools"):
-            kwargs["tools"] = tools
-        if tool_choice := request.get("tool_choice"):
-            kwargs["tool_choice"] = tool_choice
-
-        return cast(ResponseCreateParamsNonStreaming, kwargs)
-
-    def _build_input_items(
-        self, messages: Sequence[ChatMessage]
-    ) -> list[ResponseInputParam]:
-        items: list[ResponseInputParam] = []
-        for msg in messages:
-            if msg.role == "tool":
-                if not msg.tool_call_id:
-                    raise ValueError("Tool response missing tool_call_id")
-                items.append(
-                    cast(
-                        ResponseInputParam,
-                        {
-                            "type": "function_call_output",
-                            "call_id": msg.tool_call_id,
-                            "output": msg.content,
-                        },
-                    )
-                )
-                continue
-
-            content_item = _build_message_content(msg)
-
-            message_item: ResponseInputParam = cast(
-                ResponseInputParam,
-                {
-                    "type": "message",
-                    "role": msg.role,
-                    "content": [content_item],
-                },
+        if is_present(request.get("stop", MISSING)):
+            warn(
+                "OpenAI Responses API does not support stop sequences; ignoring request.stop"
             )
 
-            items.append(message_item)
-            if msg.role == "assistant" and msg.tool_calls:
-                for call in msg.tool_calls:
-                    items.append(
-                        cast(
-                            ResponseInputParam,
-                            {
-                                "type": "function_call",
-                                "call_id": call.id,
-                                "name": call.function.name,
-                                "arguments": call.function.arguments,
-                            },
-                        )
+        if is_present(response_format := request.get("response_format", MISSING)):
+            text_config = self._build_text_config(response_format)
+            if text_config:
+                kwargs["text"] = text_config
+
+        if is_present(tools := request.get("tools", MISSING)):
+            kwargs["tools"] = [self._format_tool(tool) for tool in tools]
+
+        if is_present(tool_choice := request.get("tool_choice", MISSING)):
+            kwargs["tool_choice"] = tool_choice
+
+        return kwargs
+
+    def _build_completion_kwargs(
+        self,
+        request: LLMRequest,
+    ) -> ResponseCreateParamsNonStreaming:
+        kwargs = self._build_base_response_kwargs(
+            request,
+            default_model=self._default_model,
+        )
+        return cast(ResponseCreateParamsNonStreaming, kwargs)
+
+    def _build_stream_completion_kwargs(
+        self,
+        request: LLMRequest,
+    ) -> dict[str, Any]:
+        kwargs = self._build_base_response_kwargs(
+            request,
+            default_model=self._default_stream_model,
+        )
+        return kwargs
+
+    def _build_text_config(
+        self,
+        response_format: ResponseFormat,
+    ) -> ResponseTextConfigParam | None:
+        match response_format.type:
+            case "json_object":
+                return {"format": {"type": "json_object"}}
+            case "json_schema":
+                assert is_set(response_format.schema)
+                return {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": response_format.schema,
+                        "name": "response_schema",
+                    }
+                }
+            case "text":
+                return None
+            case _:
+                raise RuntimeError(
+                    f"Unsupported OpenAI response format type: {response_format.type}"
+                )
+
+    def _format_tool(self, tool: ToolSpec) -> FunctionToolParam:
+        description = tool["description"]
+        parameters = tool["parameters"]
+        return {
+            "type": "function",
+            "name": tool["name"],
+            "description": description,
+            "parameters": parameters,
+            "strict": False,
+        }
+
+    def _extract_tool_calls(self, response: Response) -> list[LLMToolCall]:
+        calls: list[LLMToolCall] = []
+        for item in response.output:
+            if isinstance(item, ResponseFunctionToolCall):
+                calls.append(
+                    LLMToolCall(
+                        type="function",
+                        name=item.name,
+                        arguments=item.arguments,
+                        call_id=item.call_id,
+                        id=item.id,
                     )
-        return items
+                )
+        return calls
+
+    def _to_llm_response(self, response: Response) -> LLMResponse:
+        usage = response.usage
+        usage_block: Unset[LLMUsage] = UNSET
+        if usage:
+            usage_block = LLMUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+            )
+        return LLMResponse(
+            id=response.id,
+            model=str(response.model),
+            text=response.output_text or "",
+            tool_calls=self._extract_tool_calls(response),
+            usage=usage_block,
+        )
+
+    def _map_stream_event(
+        self,
+        event: ResponseStreamEvent,
+    ) -> LLMStreamChunk | None:
+        match event:
+            case ResponseTextDeltaEvent(delta=delta) if delta:
+                return LLMStreamChunk(text_delta=delta)
+            case ResponseFunctionCallArgumentsDeltaEvent(
+                delta=delta, item_id=item_id
+            ) if (delta and item_id):
+                return LLMStreamChunk(
+                    tool_call_delta=LLMToolCallDelta(
+                        id=item_id,
+                        arguments_delta=delta,
+                    )
+                )
+            case ResponseErrorEvent(message=message):
+                return LLMStreamChunk(error=message or "LLM stream error")
+            case _:
+                match event.type:
+                    case "response.output_text.delta":
+                        return LLMStreamChunk(text_delta=event.delta)
+                    case "response.function_call_arguments.delta":
+                        return LLMStreamChunk(
+                            tool_call_delta=LLMToolCallDelta(
+                                id=event.item_id,
+                                arguments_delta=event.delta,
+                            )
+                        )
+                    case _:
+                        return None
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        """Complete using OpenAI Responses API."""
+        params = self._build_completion_kwargs(request)
+        response: Response = await self._client.responses.create(**params)
+        return self._to_llm_response(response)
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
+        """Stream tokens and tool calls using OpenAI Responses streaming API."""
+        kwargs = self._build_stream_completion_kwargs(request)
+        stream_manager = self._client.responses.stream(**kwargs)
+        final_response: Response | None = None
+        async with stream_manager as stream:
+            async for event in stream:
+                chunk = self._map_stream_event(event)
+                if chunk is None:
+                    continue
+                yield chunk
+            parsed = await stream.get_final_response()
+            final_response = cast(Response, parsed)
+        yield LLMStreamChunk(response=self._to_llm_response(final_response))

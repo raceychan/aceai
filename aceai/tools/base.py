@@ -9,6 +9,7 @@ from msgspec.structs import asdict as msg_asdict
 
 
 from .param import ToolSignature
+from .interface import ToolSpec
 
 
 class Tool[**P, R]:
@@ -24,7 +25,7 @@ class Tool[**P, R]:
         self.description = description
         self.signature = signature
         self.func = func
-        self._tool_schema: dict[str, Any] | None = None
+        self._tool_schema: ToolSpec | None = None
         self._decoder = decoder
 
     def encode_return(self, value: R) -> str:
@@ -41,14 +42,14 @@ class Tool[**P, R]:
         self._tool_schema = None
 
     @property
-    def tool_schema(self) -> dict[str, Any]:
+    def tool_schema(self) -> ToolSpec:
         if self._tool_schema is None:
-            self._tool_schema = {
-                "type": "function",
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.signature.generate_params_schema(),
-            }
+            self._tool_schema = ToolSpec(
+                type="function",
+                name=self.name,
+                description=self.description,
+                parameters=self.signature.generate_params_schema(),
+            )
         return self._tool_schema
 
     @classmethod

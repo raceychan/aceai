@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, Literal, TypedDict, TypeGuard
 
-from msgspec import Struct
+from msgspec import UNSET, Struct, UnsetType
 from typing_extensions import dataclass_transform
 
 
@@ -111,3 +111,10 @@ class JsonSchema(TypedDict, total=False):
     deprecationMessage: str  # OpenAI extension
     # Anything else from param_spec.constraint["extra_json_schema"]
     # is allowed because consumer might supply custom fields.
+
+
+type Unset[T] = UnsetType | T
+
+
+def is_set[T](value: Unset[T]) -> TypeGuard[T]:
+    return value is not UNSET
