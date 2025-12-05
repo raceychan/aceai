@@ -8,6 +8,23 @@ from aceai.interface import Record, Struct, Unset
 from aceai.tools.interface import ToolSpec
 
 
+class LLMToolCall(Record):
+    """Normalized representation of an LLM-triggered tool/function call."""
+
+    name: str
+    arguments: str
+    type: Literal["function", "mcp", "custom"] = "function"
+    call_id: str | None = None
+    id: str | None = None
+
+
+class LLMToolCallDelta(Record):
+    """Incremental tool call update emitted during streaming."""
+
+    id: str
+    arguments_delta: str
+
+
 class LLMMessage(Struct):
     """Typed chat message used across LLM providers."""
 
@@ -75,16 +92,6 @@ class LLMUsage(Record):
     total_tokens: int | None = None
 
 
-class LLMToolCall(Record):
-    """Normalized representation of an LLM-triggered tool/function call."""
-
-    name: str
-    arguments: str
-    type: Literal["function", "mcp", "custom"] = "function"
-    call_id: str | None = None
-    id: str | None = None
-
-
 class LLMResponse(Record):
     """Provider-agnostic completion payload."""
 
@@ -93,13 +100,6 @@ class LLMResponse(Record):
     text: str = ""
     tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
     usage: Unset[LLMUsage] = UNSET
-
-
-class LLMToolCallDelta(Record):
-    """Incremental tool call update emitted during streaming."""
-
-    id: str
-    arguments_delta: str
 
 
 class LLMStreamChunk(Record):

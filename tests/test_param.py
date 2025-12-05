@@ -4,7 +4,7 @@ import pytest
 
 from aceai.interface import Record
 from aceai.tools import tool
-from aceai.tools.param import Annotated, get_param_meta, get_param_spec, spec
+from aceai.tools._param import Annotated, get_param_meta, get_param_spec, spec
 from aceai.tools.schema_generator import MSGSPEC_REF_PREFIX, inline_schema
 
 
@@ -68,7 +68,7 @@ def test_tool_param_from_param() -> None:
     assert param_spec_x is not None
     assert param_spec_y is not None
 
-    from aceai.tools.param import ToolParam
+    from aceai.tools._param import ToolParam
 
     tool_param_x = ToolParam.from_param(params[0], param_spec_x)
     tool_param_y = ToolParam.from_param(params[1], param_spec_y)

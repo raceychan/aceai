@@ -46,6 +46,10 @@ class OpenAI(LLMProviderBase):
     def default_model(self) -> str:
         return self._default_model
 
+    @property
+    def default_stream_model(self) -> str:
+        return self._default_stream_model
+
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
         result = await self._client.audio.transcriptions.create(

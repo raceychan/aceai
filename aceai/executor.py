@@ -1,6 +1,6 @@
 from ididi import Graph
-from tools import Tool
-from llm.interface import LLMToolCall
+from aceai.tools import Tool
+from aceai.llm.interface import LLMToolCall
 
 
 class ToolExecutor:

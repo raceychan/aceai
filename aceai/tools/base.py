@@ -8,7 +8,7 @@ from msgspec.json import encode as msg_encode
 from msgspec.structs import asdict as msg_asdict
 
 
-from .param import ToolSignature
+from ._param import ToolSignature
 from .interface import ToolSpec
 
 

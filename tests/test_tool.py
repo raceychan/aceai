@@ -3,7 +3,7 @@ from ididi import use
 from msgspec import DecodeError, ValidationError
 
 from aceai.tools import tool
-from aceai.tools.param import Annotated, spec
+from aceai.tools._param import Annotated, spec
 
 
 def multiply(
