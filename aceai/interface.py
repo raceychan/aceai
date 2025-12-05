@@ -15,7 +15,7 @@ class _Missed:
         return False
 
     def __repr__(self) -> str:
-        return "MISSING"
+        return "aceai.MISSING"
 
 
 type Maybe[T] = T | _Missed

@@ -3,6 +3,8 @@ from inspect import Parameter, Signature
 from typing import Annotated as Annotated
 from typing import Any, TypedDict, Unpack, get_args, get_origin
 
+from ididi import USE_FACTORY_MARK, DependentNode
+from ididi.utils.typing_utils import flatten_annotated
 from msgspec import Meta, Struct, defstruct
 
 from aceai.interface import MISSING, JsonSchema, Maybe, is_present
@@ -68,17 +70,36 @@ def spec[T](
     )
 
 
-def get_param_spec(param: Parameter) -> ParamSpec | None:
+def get_param_meta(param: Parameter) -> list[Any] | None:
     if not param.annotation:
         return None
 
     if not (t_origin := get_origin(param.annotation)) or t_origin is not Annotated:
         return None
 
-    param_meta = param.annotation.__metadata__
-    for meta in param_meta:
+    param_meta = flatten_annotated(param.annotation)
+    return param_meta
+
+
+def get_param_spec(param_metas: list[Any] | None) -> ParamSpec | None:
+    if not param_metas:
+        return None
+
+    for meta in param_metas:
         if isinstance(meta, ParamSpec):
             return meta
+
+
+def get_dep_node(param_metas: list[Any], param_type: Any) -> DependentNode | None:
+    try:
+        mark_idx = param_metas.index(USE_FACTORY_MARK)
+    except ValueError as ve:
+        return None
+
+    dep = param_metas[mark_idx + 1]
+    dep = dep or param_type
+    dep_node = DependentNode.from_node(dep)
+    return dep_node
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -136,6 +157,7 @@ class ToolParam[T]:
 @dataclass(kw_only=True, slots=True)
 class ToolSignature:
     params: dict[str, ToolParam]
+    dep_nodes: dict[str, DependentNode]
     return_type: Maybe[type]
 
     def generate_params_schema(self) -> dict[str, Any]:
@@ -172,14 +194,28 @@ class ToolSignature:
     @classmethod
     def from_signature(cls, func_sig: Signature) -> "ToolSignature":
         params: dict[str, ToolParam] = {}
+        dep_nodes: dict[str, DependentNode] = {}
         for param in func_sig.parameters.values():
             if not param.annotation:
                 raise ValueError(f"Parameter {param.name!r} is missing type annotation")
-            param_spec = get_param_spec(param)
-            if param_spec is None:
+
+            param_metas = get_param_meta(param)
+            if not param_metas:
                 continue
-            tool_param = ToolParam.from_param(param, param_spec)
-            params[param.name] = tool_param
+
+            param_spec = get_param_spec(param_metas)
+            if param_spec:
+                tool_param = ToolParam.from_param(param, param_spec)
+                params[param.name] = tool_param
+
+            param_type = get_args(param.annotation)[0]
+            dep_node = get_dep_node(param_metas, param_type)
+            if dep_node:
+                if param.name in params:
+                    raise ValueError(
+                        f"Parameter {param.name!r} is defined as both ToolParam and DependentNode"
+                    )
+                dep_nodes[param.name] = dep_node
 
         return_type = (
             func_sig.return_annotation
@@ -187,4 +223,4 @@ class ToolSignature:
             else MISSING
         )
 
-        return cls(params=params, return_type=return_type)
+        return cls(params=params, dep_nodes=dep_nodes, return_type=return_type)

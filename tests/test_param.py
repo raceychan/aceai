@@ -1,8 +1,10 @@
 from inspect import signature
 
-from aceai.tools import tool
+import pytest
+
 from aceai.interface import Record
-from aceai.tools.param import Annotated, get_param_spec, spec
+from aceai.tools import tool
+from aceai.tools.param import Annotated, get_param_meta, get_param_spec, spec
 from aceai.tools.schema_generator import MSGSPEC_REF_PREFIX, inline_schema
 
 
@@ -16,8 +18,8 @@ def add(
 def test_build_tool_param() -> None:
     add_sig = signature(add)
     params = list(add_sig.parameters.values())
-    assert get_param_spec(params[0])
-    assert get_param_spec(params[1])
+    assert get_param_spec(get_param_meta(params[0]))
+    assert get_param_spec(get_param_meta(params[1]))
 
 
 def test_inline_schema_expand_refs() -> None:
@@ -61,8 +63,8 @@ def test_inline_schema_expand_refs() -> None:
 def test_tool_param_from_param() -> None:
     add_sig = signature(add)
     params = list(add_sig.parameters.values())
-    param_spec_x = get_param_spec(params[0])
-    param_spec_y = get_param_spec(params[1])
+    param_spec_x = get_param_spec(get_param_meta(params[0]))
+    param_spec_y = get_param_spec(get_param_meta(params[1]))
     assert param_spec_x is not None
     assert param_spec_y is not None
 
@@ -75,21 +77,29 @@ def test_tool_param_from_param() -> None:
     assert tool_param_x.alias == "x"
     assert tool_param_x.required is True
     assert tool_param_x.type_ == int
-    assert tool_param_x.annotation == Annotated[
-        int, spec(description="The first number to add")
-    ]
-    assert tool_param_x.schema == {'description': 'The first number to add', 'type': 'integer'}
+    assert (
+        tool_param_x.annotation
+        == Annotated[int, spec(description="The first number to add")]
+    )
+    assert tool_param_x.schema == {
+        "description": "The first number to add",
+        "type": "integer",
+    }
 
     assert tool_param_y.name == "y"
     assert tool_param_y.alias == "y"
     assert tool_param_y.required is True
     assert tool_param_y.type_ == int
-    assert tool_param_y.annotation == Annotated[
-        int, spec(description="The second number to add")
-    ]
-    assert tool_param_y.schema == {'description': 'The second number to add', 'type': 'integer'}
+    assert (
+        tool_param_y.annotation
+        == Annotated[int, spec(description="The second number to add")]
+    )
+    assert tool_param_y.schema == {
+        "description": "The second number to add",
+        "type": "integer",
+    }
 
-    
+
 def test_tool_from_func() -> None:
 
     add_tool = tool(add)
@@ -100,5 +110,3 @@ def test_tool_from_func() -> None:
     assert "x" in add_tool.signature.params
     assert "y" in add_tool.signature.params
     assert add_tool.signature.return_type == int
-
-    
