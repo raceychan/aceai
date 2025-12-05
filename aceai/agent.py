@@ -1,9 +1,6 @@
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
 
-FINAL_ANSWER_TOOL = "final_answer"
-HANDOVER_TOOL = "handover_to_agent"
-
 
 class AgentBase:
     """Base class for agents using an LLM provider.
@@ -55,15 +52,9 @@ class AgentBase:
                 )
                 messages.append(assistant_msg)
                 for call in response.tool_calls:
-                    # delegated = await self._handle_special_tool_call(
-                    #     call,
-                    #     model=model,
-                    #     fallback_question=normalized_question,
-                    # )
-                    # if delegated is not None:
-                    #     return delegated
-
                     tool_result = await self.executor.execute_tool(call)
+                    if call.name == "final_answer":
+                        return tool_result
 
                     messages.append(
                         LLMMessage(

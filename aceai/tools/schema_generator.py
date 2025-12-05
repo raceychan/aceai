@@ -1,10 +1,10 @@
 from copy import deepcopy
 from types import GenericAlias, UnionType
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from msgspec.json import schema_components
 
-from aceai.interface import is_json_compatible, is_present, Maybe, MISSING, JsonSchema
+from aceai.interface import MISSING, JsonSchema, Maybe, is_json_compatible, is_present
 
 SchemaHook = Callable[[type], dict[str, Any] | None] | None
 RegularTypes = type | UnionType | GenericAlias
@@ -24,7 +24,7 @@ def _default_schema_hook(t: type) -> dict[str, Any] | None:
 def json_schema(
     type_: RegularTypes,
     schema_hook: SchemaHook = None,
-) -> tuple[JsonSchema, dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     def _combined_hook(t: type) -> dict[str, Any] | None:
         if schema_hook is not None:
             custom_schema = schema_hook(t)
@@ -34,10 +34,10 @@ def json_schema(
 
     (schema,), defs = schema_components(
         (type_,),
-        schema_hook=_combined_hook, # type: ignore
+        schema_hook=_combined_hook,  # type: ignore
         ref_template=MSGSPEC_REF_TEMPLATE,
     )
-    return JsonSchema(**schema), defs
+    return schema, defs
 
 
 def expand(
@@ -121,11 +121,11 @@ def inline_schema(type_: RegularTypes, default: Maybe[Any] = MISSING) -> JsonSch
     """
     schema, defs = json_schema(type_)
     if not defs:
-        return schema
+        return cast(JsonSchema, schema)
 
     expand(schema, defs, MSGSPEC_REF_PREFIX)
 
     if is_present(default) and is_json_compatible(default):
         schema = deepcopy(schema)
         schema.setdefault("default", default)
-    return schema
+    return cast(JsonSchema, schema)

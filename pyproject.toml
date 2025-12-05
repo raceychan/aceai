@@ -24,6 +24,7 @@ packages = ["src/aceai"]
 [dependency-groups]
 dev = [
     "jupyterlab>=4.5.0",
+    "loguru>=0.7.3",
     "pytest>=9.0.1",
     "pytest-cov>=7.0.0",
 ]
