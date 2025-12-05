@@ -69,7 +69,7 @@ class AgentBase:
                         LLMMessage(
                             role="tool",
                             name=call.name,
-                            tool_call_id=call.id,
+                            tool_call_id=call.call_id,
                             content=tool_result,
                         )
                     )

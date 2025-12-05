@@ -4,9 +4,6 @@ from warnings import warn
 import openai
 from openai.types.responses import FunctionToolParam
 from openai.types.responses.response import Response
-from openai.types.responses.response_create_params import (
-    ResponseCreateParamsNonStreaming,
-)
 from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
@@ -19,6 +16,7 @@ from openai.types.responses.response_text_delta_event import ResponseTextDeltaEv
 from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
 
 from .interface import (
+    LLMMessage,
     LLMProviderBase,
     LLMRequest,
     LLMResponse,
@@ -66,7 +64,7 @@ class OpenAI(LLMProviderBase):
         default_model: str,
     ) -> dict[str, Any]:
         """Translate LLMRequest into OpenAI Responses kwargs."""
-        input_messages = [m.asdict() for m in request["messages"]]
+        input_messages = self._format_messages_for_responses(request["messages"])
         kwargs: dict[str, Any] = {"input": input_messages}
         metadata = request.get("metadata", {})
         model_name = metadata.get("model", default_model)
@@ -103,25 +101,39 @@ class OpenAI(LLMProviderBase):
 
         return kwargs
 
-    def _build_completion_kwargs(
-        self,
-        request: LLMRequest,
-    ) -> ResponseCreateParamsNonStreaming:
-        kwargs = self._build_base_response_kwargs(
-            request,
-            default_model=self._default_model,
-        )
-        return cast(ResponseCreateParamsNonStreaming, kwargs)
+    def _format_messages_for_responses(
+        self, messages: list[LLMMessage]
+    ) -> list[dict[str, Any]]:
+        """Project internal chat messages into Responses API input items."""
 
-    def _build_stream_completion_kwargs(
-        self,
-        request: LLMRequest,
-    ) -> dict[str, Any]:
-        kwargs = self._build_base_response_kwargs(
-            request,
-            default_model=self._default_stream_model,
-        )
-        return kwargs
+        formatted: list[dict[str, Any]] = []
+
+        for message in messages:
+            if message.role == "tool":
+                formatted.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.tool_call_id,
+                        "output": message.content,
+                    }
+                )
+                continue
+
+            if message.content:
+                formatted.append({"role": message.role, "content": message.content})
+
+            if message.tool_calls:
+                for tool_call in message.tool_calls:
+                    call_id = tool_call.call_id
+                    payload: dict[str, Any] = {
+                        "type": "function_call",
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                        "call_id": call_id,
+                    }
+                    formatted.append(payload)
+
+        return formatted
 
     def _build_text_config(
         self,
@@ -167,7 +179,6 @@ class OpenAI(LLMProviderBase):
                         name=item.name,
                         arguments=item.arguments,
                         call_id=item.call_id,
-                        id=item.id,
                     )
                 )
         return calls
@@ -223,13 +234,17 @@ class OpenAI(LLMProviderBase):
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Complete using OpenAI Responses API."""
-        params = self._build_completion_kwargs(request)
+        params = self._build_base_response_kwargs(
+            request, default_model=self._default_model
+        )
         response: Response = await self._client.responses.create(**params)
         return self._to_llm_response(response)
 
     async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamChunk]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
-        kwargs = self._build_stream_completion_kwargs(request)
+        kwargs = self._build_base_response_kwargs(
+            request, default_model=self._default_stream_model
+        )
         stream_manager = self._client.responses.stream(**kwargs)
         final_response: Response | None = None
         async with stream_manager as stream:

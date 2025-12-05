@@ -15,7 +15,6 @@ class LLMToolCall(Record):
     arguments: str
     type: Literal["function", "mcp", "custom"] = "function"
     call_id: str | None = None
-    id: str | None = None
 
 
 class LLMToolCallDelta(Record):
