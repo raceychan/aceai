@@ -1,3 +1,6 @@
+from time import perf_counter
+from typing import Any, Callable
+
 from ididi import Graph
 
 from aceai.llm.interface import LLMToolCall
@@ -35,3 +38,47 @@ class ToolExecutor:
         }
         result = tool(**params, **dep_params)
         return tool.encode_return(result)
+
+
+class ILogger:
+    def info(self, msg: str, /, **kwargs: Any) -> None: ...
+
+    def success(self, msg: str, /, **kwargs: Any) -> None: ...
+
+    def exception(self, msg: str, /, **kwargs: Any) -> None: ...
+
+
+type ITimer = Callable[[], float]
+
+
+class LoggingToolExecutor(ToolExecutor):
+    def __init__(
+        self,
+        graph: Graph,
+        tools: list[Tool],
+        logger: ILogger,
+        timer: ITimer = perf_counter,
+    ) -> None:
+        super().__init__(graph, tools)
+        self.logger = logger
+        self.timer = timer
+
+    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+        call_id = tool_call.call_id
+        self.logger.info(
+            f"Tool {tool_call.name} starting (call_id={call_id}) with {tool_call.arguments}"
+        )
+        start = self.timer()
+        try:
+            result = await super().execute_tool(tool_call)
+        except Exception:
+            duration = self.timer() - start
+            self.logger.exception(
+                f"Tool {tool_call.name} failed after {duration:.2f}s",
+            )
+            raise
+        duration = self.timer() - start
+        self.logger.success(
+            f"Tool {tool_call.name} finished in {duration:.2f}s, result: {result}",
+        )
+        return result
