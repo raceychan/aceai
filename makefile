@@ -13,7 +13,9 @@ cov:
 
 VERSION ?= x.x.x
 BRANCH = version/$(VERSION)
-BASE_BRANCH ?= master
+DEFAULT_BASE_BRANCH := $(strip $(shell git remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p'))
+BASE_BRANCH ?= $(if $(DEFAULT_BASE_BRANCH),$(DEFAULT_BASE_BRANCH),main)
+SKIP_VERSION_UPDATE ?= 0
 
 # Command definitions
 UV_CMD = uv run
@@ -41,18 +43,28 @@ check-version:
 	$(call check_version_order,$(CURRENT_VERSION),$(VERSION))
 
 update-version:
-	@echo "Updating Pixi version to $(VERSION)..."
-	@$(HATCH_VERSION_CMD) $(VERSION)
+	@if [ "$(SKIP_VERSION_UPDATE)" = "1" ]; then \
+		echo "Skipping version update because SKIP_VERSION_UPDATE=1."; \
+	elif [ "$(CURRENT_VERSION)" = "$(VERSION)" ]; then \
+		echo "Version already set to $(VERSION); skipping hatch version bump."; \
+	else \
+		echo "Updating hatch version to $(VERSION)..."; \
+		$(HATCH_VERSION_CMD) $(VERSION); \
+	fi
 
 # Git operations
 git-commit:
 	@echo "Committing changes..."
 	@git add -A
-	@git commit -m "Release version $(VERSION)"
+	@if git diff --cached --quiet; then \
+		echo "No staged changes detected; skipping git commit."; \
+	else \
+		git commit -m "Release version $(VERSION)"; \
+	fi
 
 git-merge:
-	@echo "Merging $(BRANCH) into master..."
-	@git checkout master
+	@echo "Merging $(BRANCH) into $(BASE_BRANCH)..."
+	@git checkout $(BASE_BRANCH)
 	@git merge "$(BRANCH)"
 
 git-tag:
@@ -61,7 +73,7 @@ git-tag:
 
 git-push:
 	@echo "Pushing to remote repository..."
-	@git push origin master
+	@git push origin $(BASE_BRANCH)
 	@git push origin "v$(VERSION)"
 
 # Build and publish operations
