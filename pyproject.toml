@@ -1,6 +1,6 @@
 [project]
 name = "aceai"
-version = "0.1.2"
+dynamic = ["version"]
 description = "AI agent framework that delivers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,11 +18,15 @@ authors = [{ name = "raceychan", email = "raceychan@gmail.com" }]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "aceai/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/aceai"]
 
 [dependency-groups]
 dev = [
+    "hatch>=1.16.1",
     "httpx>=0.28.1",
     "jupyterlab>=4.5.0",
     "loguru>=0.7.3",
