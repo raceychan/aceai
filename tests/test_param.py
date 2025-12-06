@@ -2,9 +2,18 @@ from inspect import signature
 
 import pytest
 
+from ididi import use
+
 from aceai.interface import Record
 from aceai.tools import tool
-from aceai.tools._param import Annotated, get_param_meta, get_param_spec, spec
+from aceai.tools._param import (
+    Annotated,
+    ToolParam,
+    ToolSignature,
+    get_param_meta,
+    get_param_spec,
+    spec,
+)
 from aceai.tools.schema_generator import MSGSPEC_REF_PREFIX, inline_schema
 
 
@@ -68,8 +77,6 @@ def test_tool_param_from_param() -> None:
     assert param_spec_x is not None
     assert param_spec_y is not None
 
-    from aceai.tools._param import ToolParam
-
     tool_param_x = ToolParam.from_param(params[0], param_spec_x)
     tool_param_y = ToolParam.from_param(params[1], param_spec_y)
 
@@ -110,3 +117,68 @@ def test_tool_from_func() -> None:
     assert "x" in add_tool.signature.params
     assert "y" in add_tool.signature.params
     assert add_tool.signature.return_type == int
+
+
+def test_get_param_meta_returns_none_for_missing_annotation() -> None:
+    def bare(x):
+        return x
+
+    param = signature(bare).parameters["x"]
+
+    assert get_param_meta(param) is None
+
+
+def test_get_param_spec_returns_none_without_spec_marker() -> None:
+    assert get_param_spec(["other metadata"]) is None
+
+
+def test_tool_param_applies_examples_extra_schema_and_constraints() -> None:
+
+    def constrained(
+        limit: Annotated[
+            int,
+            spec(
+                description="Limit value",
+                examples=[1, 2],
+                extra_json_schema={"format": "int64"},
+                multiple_of=2,
+                gt=0,
+            ),
+        ],
+    ) -> int:
+        return limit
+
+    param = signature(constrained).parameters["limit"]
+    param_spec = get_param_spec(get_param_meta(param))
+    assert param_spec is not None
+
+    tool_param = ToolParam.from_param(param, param_spec)
+
+    assert tool_param.schema["examples"] == [1, 2]
+    assert tool_param.schema["format"] == "int64"
+    meta = tool_param.annotation.__metadata__[0]
+    assert meta.multiple_of == 2
+    assert meta.gt == 0
+
+
+def test_tool_signature_raises_when_param_is_both_dependency_and_tool_param() -> None:
+
+    class Repo(Record):
+        name: str
+
+    def provide_repo() -> Repo:
+        return Repo(name="main")
+
+    def both(
+        repo: Annotated[
+            Repo,
+            spec(description="repo"),
+            use(provide_repo),
+        ],
+    ) -> Repo:
+        return repo
+
+    with pytest.raises(
+        ValueError, match="Parameter 'repo' is defined as both ToolParam and DependentNode"
+    ):
+        ToolSignature.from_signature(signature(both))

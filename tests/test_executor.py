@@ -1,30 +1,13 @@
+from typing import AsyncGenerator
+
+import httpx
 import pytest
-from ididi import use
+from ididi import Graph, use
 
 from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.interface import LLMToolCall
 from aceai.tools import tool
 from aceai.tools._param import Annotated, spec
-
-
-class FakeGraph:
-    def __init__(self):
-        self.added_nodes: list[object] = []
-        self.dep_results: dict[object, object] = {}
-        self.resolve_calls: list[tuple[object, dict[str, object]]] = []
-
-    def add_nodes(self, *nodes: object) -> None:
-        self.added_nodes.extend(nodes)
-
-    async def aresolve(self, node: object, **params: object) -> object:
-        self.resolve_calls.append((node, params))
-        return self.dep_results[node]
-
-    def dependency_for(self, dependent_type: type) -> object:
-        for node in self.added_nodes:
-            if getattr(node, "dependent", None) is dependent_type:
-                return node
-        raise AssertionError(f"No dependency registered for {dependent_type}")
 
 
 class FakeLogger:
@@ -57,7 +40,7 @@ class UserRepo:
 
 
 def provide_user_repo() -> UserRepo:
-    return UserRepo("unused")
+    return UserRepo("primary")
 
 
 def describe_user(
@@ -79,18 +62,36 @@ def unreliable_tool(
     raise RuntimeError("expected failure")
 
 
+def build_async_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient()
+
+
+async def identify_httpx_client(
+    client: Annotated[httpx.AsyncClient, use(build_async_client)],
+) -> str:
+    try:
+        return client.__class__.__name__
+    finally:
+        await client.aclose()
+
+
 def build_tool(func):
     return tool(func)
 
 
+@pytest.fixture
+async def graph() -> AsyncGenerator[Graph, None]:
+    graph = Graph()
+    try:
+        yield graph
+    finally:
+        graph._workers.shutdown(wait=True)
+
+
 @pytest.mark.anyio
-async def test_tool_executor_executes_tool_with_dep_graph() -> None:
-    graph = FakeGraph()
+async def test_tool_executor_executes_tool_with_dep_graph(graph: Graph) -> None:
     describe_tool = build_tool(describe_user)
     executor = ToolExecutor(graph, [describe_tool])
-
-    user_repo_node = graph.dependency_for(UserRepo)
-    graph.dep_results[user_repo_node] = UserRepo("primary")
 
     call = LLMToolCall(
         name=describe_tool.name,
@@ -101,14 +102,10 @@ async def test_tool_executor_executes_tool_with_dep_graph() -> None:
     encoded_result = await executor.execute_tool(call)
 
     assert encoded_result == '"primary:7"'
-    assert graph.resolve_calls == [
-        (user_repo_node, {"user_id": 7}),
-    ]
 
 
 @pytest.mark.anyio
-async def test_tool_executor_awaits_async_tool_results() -> None:
-    graph = FakeGraph()
+async def test_tool_executor_awaits_async_tool_results(graph: Graph) -> None:
     increment_tool = build_tool(async_increment)
     executor = ToolExecutor(graph, [increment_tool])
 
@@ -121,12 +118,10 @@ async def test_tool_executor_awaits_async_tool_results() -> None:
     result = await executor.execute_tool(call)
 
     assert result == "3"
-    assert graph.resolve_calls == []
 
 
 @pytest.mark.anyio
-async def test_logging_tool_executor_logs_successful_calls() -> None:
-    graph = FakeGraph()
+async def test_logging_tool_executor_logs_successful_calls(graph: Graph) -> None:
     increment_tool = build_tool(async_increment)
     logger = FakeLogger()
     timer = StepTimer(10.0, 10.5)
@@ -156,8 +151,7 @@ async def test_logging_tool_executor_logs_successful_calls() -> None:
 
 
 @pytest.mark.anyio
-async def test_logging_tool_executor_logs_and_reraises_failures() -> None:
-    graph = FakeGraph()
+async def test_logging_tool_executor_logs_and_reraises_failures(graph: Graph) -> None:
     failing_tool = build_tool(unreliable_tool)
     logger = FakeLogger()
     timer = StepTimer(5.0, 6.25)
@@ -180,7 +174,17 @@ async def test_logging_tool_executor_logs_and_reraises_failures() -> None:
     assert logger.info_messages == [
         'Tool unreliable_tool starting (call_id=req-fail) with {"value":1}'
     ]
-    assert logger.exception_messages == [
-        "Tool unreliable_tool failed after 1.25s"
-    ]
+    assert logger.exception_messages == ["Tool unreliable_tool failed after 1.25s"]
     assert logger.success_messages == []
+
+
+@pytest.mark.anyio
+async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
+    client_tool = build_tool(identify_httpx_client)
+    executor = ToolExecutor(graph, [client_tool])
+
+    call = LLMToolCall(name=client_tool.name, arguments="{}", call_id="req-httpx")
+
+    result = await executor.execute_tool(call)
+
+    assert result == '"AsyncClient"'
