@@ -1,3 +1,4 @@
+import inspect
 from time import perf_counter
 from typing import Any, Callable
 
@@ -23,7 +24,7 @@ class ToolExecutor:
         self._analyze_tool_deps()
         self.tool_schemas = [tool.tool_schema for tool in tools]
 
-    def _analyze_tool_deps(self):
+    def _analyze_tool_deps(self) -> None:
         for tool in self.tools.values():
             self.graph.add_nodes(*tool.signature.dep_nodes.values())
 
@@ -37,6 +38,8 @@ class ToolExecutor:
             for dname, dep in tool.signature.dep_nodes.items()
         }
         result = tool(**params, **dep_params)
+        if inspect.isawaitable(result):
+            result = await result
         return tool.encode_return(result)
 
 

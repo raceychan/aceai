@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from inspect import Parameter, Signature
-from typing import Annotated as Annotated
+from typing import Annotated as Annotated, Callable
 from typing import Any, TypedDict, Unpack, get_args, get_origin
 
 from ididi import USE_FACTORY_MARK, DependentNode
@@ -157,7 +157,7 @@ class ToolParam[T]:
 @dataclass(kw_only=True, slots=True)
 class ToolSignature:
     params: dict[str, ToolParam]
-    dep_nodes: dict[str, DependentNode]
+    dep_nodes: dict[str, Callable[..., Any]]
     return_type: Maybe[type]
 
     def generate_params_schema(self) -> dict[str, Any]:
@@ -194,7 +194,7 @@ class ToolSignature:
     @classmethod
     def from_signature(cls, func_sig: Signature) -> "ToolSignature":
         params: dict[str, ToolParam] = {}
-        dep_nodes: dict[str, DependentNode] = {}
+        dep_nodes: dict[str, Callable[..., Any]] = {}
         for param in func_sig.parameters.values():
             if not param.annotation:
                 raise ValueError(f"Parameter {param.name!r} is missing type annotation")
@@ -215,7 +215,7 @@ class ToolSignature:
                     raise ValueError(
                         f"Parameter {param.name!r} is defined as both ToolParam and DependentNode"
                     )
-                dep_nodes[param.name] = dep_node
+                dep_nodes[param.name] = dep_node.factory
 
         return_type = (
             func_sig.return_annotation
