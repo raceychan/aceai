@@ -1,6 +1,6 @@
 import pytest
 
-from aceai.llm.interface import LLMMessage, LLMToolCall
+from aceai.llm.interface import LLMMessage, LLMToolCall, LLMToolCallMessage
 
 
 def test_llm_message_inplace_merge_with_string() -> None:
@@ -30,12 +30,11 @@ def test_llm_message_inplace_merge_requires_matching_roles() -> None:
 
 def test_llm_message_asdict_includes_optional_fields() -> None:
     tool_call = LLMToolCall(name="calc", arguments="{}", call_id="call-1")
-    message = LLMMessage(
+    message = LLMToolCallMessage(
         role="assistant",
         content="call tool",
         name="tool-call",
         tool_calls=[tool_call],
-        tool_call_id="call-1",
     )
 
     as_dict = message.asdict()
@@ -43,4 +42,3 @@ def test_llm_message_asdict_includes_optional_fields() -> None:
     assert as_dict["role"] == "assistant"
     assert as_dict["name"] == "tool-call"
     assert as_dict["tool_calls"][0]["name"] == "calc"
-    assert as_dict["tool_call_id"] == "call-1"

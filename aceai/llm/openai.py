@@ -23,6 +23,8 @@ from .interface import (
     LLMStreamChunk,
     LLMToolCall,
     LLMToolCallDelta,
+    LLMToolCallMessage,
+    LLMToolUseMessage,
     LLMUsage,
     ResponseFormat,
     ToolSpec,
@@ -104,33 +106,24 @@ class OpenAI(LLMProviderBase):
         self, messages: list[LLMMessage]
     ) -> list[dict[str, Any]]:
         """Project internal chat messages into Responses API input items."""
-
         formatted: list[dict[str, Any]] = []
 
         for message in messages:
-            if message.role == "tool":
+            if isinstance(message, LLMToolUseMessage):
                 formatted.append(
                     {
                         "type": "function_call_output",
-                        "call_id": message.tool_call_id,
+                        "call_id": message.call_id,
                         "output": message.content,
                     }
                 )
-                continue
-
-            if message.content:
+            elif isinstance(message, LLMToolCallMessage):
+                if message.content:
+                    formatted.append({"role": message.role, "content": message.content})
+                for tc in message.tool_calls or []:
+                    formatted.append(tc.asdict())
+            else:
                 formatted.append({"role": message.role, "content": message.content})
-
-            if message.tool_calls:
-                for tool_call in message.tool_calls:
-                    call_id = tool_call.call_id
-                    payload: dict[str, Any] = {
-                        "type": "function_call",
-                        "name": tool_call.name,
-                        "arguments": tool_call.arguments,
-                        "call_id": call_id,
-                    }
-                    formatted.append(payload)
 
         return formatted
 
@@ -172,12 +165,16 @@ class OpenAI(LLMProviderBase):
         calls: list[LLMToolCall] = []
         for item in response.output:
             if isinstance(item, ResponseFunctionToolCall):
+                call_id = item.call_id or item.id
+                if call_id is None:
+                    raise RuntimeError(
+                        "OpenAI function call response did not include a call identifier"
+                    )
                 calls.append(
                     LLMToolCall(
-                        type="function",
                         name=item.name,
                         arguments=item.arguments,
-                        call_id=item.call_id,
+                        call_id=call_id,
                     )
                 )
         return calls

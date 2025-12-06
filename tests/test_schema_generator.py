@@ -1,7 +1,7 @@
 from aceai.interface import Record
 from aceai.tools.schema_generator import (
     MSGSPEC_REF_PREFIX,
-    expand,
+    _expand,
     inline_schema,
     json_schema,
 )
@@ -44,7 +44,7 @@ def test_expand_inlines_refs_and_preserves_overrides() -> None:
         }
     }
 
-    expand(schema, defs, MSGSPEC_REF_PREFIX)
+    _expand(schema, defs, MSGSPEC_REF_PREFIX)
 
     assert schema["properties"]["item"]["type"] == "object"
     assert schema["properties"]["item"]["description"] == "Custom"

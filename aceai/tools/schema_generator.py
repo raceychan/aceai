@@ -40,7 +40,7 @@ def json_schema(
     return schema, defs
 
 
-def expand(
+def _expand(
     node: dict[str, Any] | list[Any] | str, defs: dict[str, Any], ref_prefix: str
 ) -> None:
     if isinstance(node, dict):
@@ -51,13 +51,13 @@ def expand(
             node.clear()
             node.update(deepcopy(defs.get(schema_name, {})))
             node.update(extras)
-            expand(node, defs, ref_prefix)
+            _expand(node, defs, ref_prefix)
             return
         for value in node.values():
-            expand(value, defs, ref_prefix)
+            _expand(value, defs, ref_prefix)
     elif isinstance(node, list):
         for item in node:
-            expand(item, defs, ref_prefix)
+            _expand(item, defs, ref_prefix)
 
 
 def inline_schema(type_: RegularTypes, default: Maybe[Any] = MISSING) -> JsonSchema:
@@ -123,7 +123,7 @@ def inline_schema(type_: RegularTypes, default: Maybe[Any] = MISSING) -> JsonSch
     if not defs:
         return cast(JsonSchema, schema)
 
-    expand(schema, defs, MSGSPEC_REF_PREFIX)
+    _expand(schema, defs, MSGSPEC_REF_PREFIX)
 
     if is_present(default) and is_json_compatible(default):
         schema = deepcopy(schema)

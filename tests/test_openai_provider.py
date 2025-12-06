@@ -9,7 +9,12 @@ from openai.types.responses.response_function_tool_call import ResponseFunctionT
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from aceai.llm import LLMMessage
-from aceai.llm.interface import LLMToolCall, ResponseFormat
+from aceai.llm.interface import (
+    LLMToolCall,
+    LLMToolCallMessage,
+    LLMToolUseMessage,
+    ResponseFormat,
+)
 from aceai.llm.openai import OpenAI
 from aceai.tools.interface import ToolSpec
 
@@ -131,8 +136,8 @@ def test_format_messages_for_responses_includes_tool_outputs(
     call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
     messages = [
         LLMMessage(role="system", content="Start"),
-        LLMMessage(role="assistant", content="", tool_calls=[call]),
-        LLMMessage(role="tool", content="result", tool_call_id="call-1"),
+        LLMToolCallMessage(content="", tool_calls=[call]),
+        LLMToolUseMessage(content="result", call_id="call-1"),
     ]
 
     formatted = openai_provider._format_messages_for_responses(messages)
@@ -142,6 +147,15 @@ def test_format_messages_for_responses_includes_tool_outputs(
     assert formatted[1]["name"] == "lookup"
     assert formatted[2]["type"] == "function_call_output"
     assert formatted[2]["output"] == "result"
+
+
+def test_format_messages_require_tool_output_call_id(
+    openai_provider: OpenAI,
+) -> None:
+    messages = [LLMToolUseMessage(content="oops", call_id=None)]
+
+    with pytest.raises(ValueError):
+        openai_provider._format_messages_for_responses(messages)
 
 
 def test_build_text_config_variants(openai_provider: OpenAI) -> None:
@@ -186,6 +200,29 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
     assert llm_response.tool_calls[0].name == "lookup"
     assert llm_response.usage is not None
     assert llm_response.usage.input_tokens == 1
+
+
+def test_extract_tool_calls_falls_back_to_item_id(
+    openai_provider: OpenAI,
+) -> None:
+    tool_call = ResponseFunctionToolCall(
+        type="function_call",
+        name="lookup",
+        arguments="{}",
+        call_id="temp",
+    ).model_copy(update={"call_id": None, "id": "tool-1"})
+
+    response = SimpleNamespace(
+        id="resp-2",
+        model="gpt-4o",
+        output_text="",
+        output=[tool_call],
+        usage=None,
+    )
+
+    llm_response = openai_provider._to_llm_response(response)
+
+    assert llm_response.tool_calls[0].call_id == "tool-1"
 
 
 def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:

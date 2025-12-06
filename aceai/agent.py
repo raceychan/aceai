@@ -1,5 +1,6 @@
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
+from .llm.interface import LLMToolCallMessage, LLMToolUseMessage
 
 
 class AgentBase:
@@ -27,13 +28,11 @@ class AgentBase:
         self.agent_registry[self.__class__.__name__] = self
 
     async def handle(self, question: str, *, model: str | None = None) -> str:
-        normalized_question = question.strip()
-        if not normalized_question:
-            raise ValueError("Question must be a non-empty string")
+        "TODO: this should be async generator"
 
         messages: list[LLMMessage] = [
             LLMMessage(role="system", content=self.prompt),
-            LLMMessage(role="user", content=normalized_question),
+            LLMMessage(role="user", content=question),
         ]
         selected_model = model or self.default_model
 
@@ -45,8 +44,7 @@ class AgentBase:
             )
 
             if response.tool_calls:
-                assistant_msg = LLMMessage(
-                    role="assistant",
+                assistant_msg = LLMToolCallMessage(
                     content=response.text,
                     tool_calls=response.tool_calls,
                 )
@@ -57,10 +55,9 @@ class AgentBase:
                         return tool_result
 
                     messages.append(
-                        LLMMessage(
-                            role="tool",
+                        LLMToolUseMessage(
                             name=call.name,
-                            tool_call_id=call.call_id,
+                            call_id=call.call_id,
                             content=tool_result,
                         )
                     )

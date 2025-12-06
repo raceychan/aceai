@@ -8,13 +8,13 @@ from aceai.interface import Record, Struct, Unset
 from aceai.tools.interface import ToolSpec
 
 
-class LLMToolCall(Record):
+class LLMToolCall(Record, kw_only=True):
     """Normalized representation of an LLM-triggered tool/function call."""
 
+    type: Literal["function_call", "mcp", "custom"] = "function_call"
     name: str
     arguments: str
-    type: Literal["function", "mcp", "custom"] = "function"
-    call_id: str | None = None
+    call_id: str
 
 
 class LLMToolCallDelta(Record):
@@ -24,35 +24,46 @@ class LLMToolCallDelta(Record):
     arguments_delta: str
 
 
-class LLMMessage(Struct):
+class LLMMessage(Struct, kw_only=True):
     """Typed chat message used across LLM providers."""
 
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     name: str | None = None
-    tool_calls: list[LLMToolCall] | None = None
-    tool_call_id: str | None = None
 
     def __ior__(self, other: "LLMMessage | str") -> Self:
         if isinstance(other, str):
-            other = LLMMessage(self.role, content=other)
+            other = LLMMessage(role=self.role, content=other)
         elif self.role != other.role:
             raise ValueError(f"Can't merge {other}, {self.role=}, {other.role=}")
         self.content += other.content
         return self
 
     def asdict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "role": self.role,
-            "content": self.content,
-        }
-        if self.name is not None:
-            result["name"] = self.name
+        return asdict(self)
+
+
+class LLMToolCallMessage(LLMMessage, kw_only=True):
+    type: Literal["function_call"] = "function_call"
+    role: Literal["assistant"] = "assistant"
+    tool_calls: list[LLMToolCall] | None = None
+
+    def asdict(self) -> dict[str, Any]:
+        res = super().asdict()
         if self.tool_calls is not None:
-            result["tool_calls"] = [asdict(tc) for tc in self.tool_calls]
-        if self.tool_call_id is not None:
-            result["tool_call_id"] = self.tool_call_id
-        return result
+            res["tool_calls"] = [tc.asdict() for tc in self.tool_calls]
+        return res
+
+
+class LLMToolUseMessage(LLMMessage, kw_only=True):
+    role: Literal["tool"] = "tool"
+    call_id: str
+
+    def asdict(self) -> dict[str, Any]:
+        res = super().asdict()
+        if self.call_id is not None:
+            res["tool_call_id"] = self.call_id
+        return res
 
 
 class ResponseFormat(Record):
