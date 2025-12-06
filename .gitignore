@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Jupyter artifacts
+.ipynb_checkpoints/
