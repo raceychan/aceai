@@ -1,17 +1,17 @@
 from types import SimpleNamespace
 
 import pytest
-
-from aceai.llm import LLMMessage
-from aceai.llm.interface import LLMToolCall, ResponseFormat
-from aceai.llm.openai import OpenAI
-from aceai.tools.interface import ToolSpec
 from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+
+from aceai.llm import LLMMessage
+from aceai.llm.interface import LLMToolCall, ResponseFormat
+from aceai.llm.openai import OpenAI
+from aceai.tools.interface import ToolSpec
 
 
 @pytest.fixture
@@ -73,7 +73,9 @@ def openai_provider(fake_openai_client) -> OpenAI:
     )
 
 
-def test_build_base_response_kwargs_maps_request_fields(openai_provider: OpenAI) -> None:
+def test_build_base_response_kwargs_maps_request_fields(
+    openai_provider: OpenAI,
+) -> None:
     tool_spec: ToolSpec = {
         "type": "function",
         "name": "echo",
@@ -93,7 +95,9 @@ def test_build_base_response_kwargs_maps_request_fields(openai_provider: OpenAI)
     }
 
     with pytest.warns(UserWarning):
-        params = openai_provider._build_base_response_kwargs(request, default_model="gpt-4o")
+        params = openai_provider._build_base_response_kwargs(
+            request, default_model="gpt-4o"
+        )
 
     assert params["model"] == "gpt-4o"
     assert params["max_output_tokens"] == 256
@@ -104,20 +108,26 @@ def test_build_base_response_kwargs_maps_request_fields(openai_provider: OpenAI)
     assert params["tool_choice"] == "auto"
 
 
-def test_build_base_response_kwargs_skips_temperature_for_gpt5(openai_provider: OpenAI) -> None:
+def test_build_base_response_kwargs_skips_temperature_for_gpt5(
+    openai_provider: OpenAI,
+) -> None:
     request = {
         "messages": [LLMMessage(role="system", content="start")],
         "temperature": 0.2,
         "metadata": {"model": "gpt-5o-mini"},
     }
 
-    params = openai_provider._build_base_response_kwargs(request, default_model="fallback")
+    params = openai_provider._build_base_response_kwargs(
+        request, default_model="fallback"
+    )
 
     assert "temperature" not in params
     assert params["model"] == "gpt-5o-mini"
 
 
-def test_format_messages_for_responses_includes_tool_outputs(openai_provider: OpenAI) -> None:
+def test_format_messages_for_responses_includes_tool_outputs(
+    openai_provider: OpenAI,
+) -> None:
     call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
     messages = [
         LLMMessage(role="system", content="Start"),
@@ -139,7 +149,9 @@ def test_build_text_config_variants(openai_provider: OpenAI) -> None:
     json_schema = ResponseFormat(type="json_schema", schema={"name": "Payload"})
     plain = ResponseFormat()
 
-    assert openai_provider._build_text_config(json_object) == {"format": {"type": "json_object"}}
+    assert openai_provider._build_text_config(json_object) == {
+        "format": {"type": "json_object"}
+    }
     assert openai_provider._build_text_config(json_schema) == {
         "format": {
             "type": "json_schema",
