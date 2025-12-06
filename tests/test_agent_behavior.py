@@ -2,7 +2,7 @@ import pytest
 
 from aceai.agent import AgentBase
 from aceai.llm import LLMMessage, LLMResponse
-from aceai.llm.interface import LLMToolCall
+from aceai.llm.models import LLMToolCall
 
 
 class StubExecutor:

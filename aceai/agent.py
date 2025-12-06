@@ -1,6 +1,6 @@
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
-from .llm.interface import LLMToolCallMessage, LLMToolUseMessage
+from .llm.models import LLMToolCallMessage, LLMToolUseMessage
 
 
 class AgentBase:

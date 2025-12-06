@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from ididi import Graph
 
-from aceai.llm.interface import LLMToolCall
+from aceai.llm.models import LLMToolCall
 from aceai.tools import Tool, tool
 
 

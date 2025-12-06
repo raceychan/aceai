@@ -5,7 +5,7 @@ import pytest
 from ididi import Graph, use
 
 from aceai.executor import LoggingToolExecutor, ToolExecutor
-from aceai.llm.interface import LLMToolCall
+from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
 from aceai.tools._param import Annotated, spec
 

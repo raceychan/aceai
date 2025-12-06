@@ -9,11 +9,11 @@ from openai.types.responses.response_function_tool_call import ResponseFunctionT
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from aceai.llm import LLMMessage
-from aceai.llm.interface import (
+from aceai.llm.models import (
     LLMToolCall,
     LLMToolCallMessage,
     LLMToolUseMessage,
-    ResponseFormat,
+    LLMResponseFormat,
 )
 from aceai.llm.openai import OpenAI
 from aceai.tools.interface import ToolSpec
@@ -93,7 +93,7 @@ def test_build_base_response_kwargs_maps_request_fields(
         "temperature": 0.3,
         "top_p": 0.9,
         "stop": ["END"],
-        "response_format": ResponseFormat(type="json_object"),
+        "response_format": LLMResponseFormat(type="json_object"),
         "tools": [tool_spec],
         "tool_choice": "auto",
         "metadata": {},
@@ -159,9 +159,9 @@ def test_format_messages_require_tool_output_call_id(
 
 
 def test_build_text_config_variants(openai_provider: OpenAI) -> None:
-    json_object = ResponseFormat(type="json_object")
-    json_schema = ResponseFormat(type="json_schema", schema={"name": "Payload"})
-    plain = ResponseFormat()
+    json_object = LLMResponseFormat(type="json_object")
+    json_schema = LLMResponseFormat(type="json_schema", schema={"name": "Payload"})
+    plain = LLMResponseFormat()
 
     assert openai_provider._build_text_config(json_object) == {
         "format": {"type": "json_object"}

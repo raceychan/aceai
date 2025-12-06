@@ -1,6 +1,6 @@
 import pytest
 
-from aceai.llm.interface import LLMMessage, LLMToolCall, LLMToolCallMessage
+from aceai.llm.models import LLMMessage, LLMToolCall, LLMToolCallMessage
 
 
 def test_llm_message_inplace_merge_with_string() -> None:

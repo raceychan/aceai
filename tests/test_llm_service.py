@@ -1,11 +1,12 @@
 import pytest
 from msgspec import Struct
 
-from aceai.llm.interface import (
+from aceai.llm.models import (
     LLMMessage,
     LLMProviderBase,
     LLMResponse,
     LLMStreamChunk,
+    LLMStreamEvent,
 )
 from aceai.llm.service import LLMService
 
@@ -19,12 +20,12 @@ class RecordingProvider(LLMProviderBase):
         self,
         *,
         responses: list[LLMResponse] | None = None,
-        stream_chunks: list[LLMStreamChunk] | None = None,
+        stream_events: list[LLMStreamEvent] | None = None,
         default_model: str = "gpt-4o",
         default_stream_model: str = "gpt-4o-mini",
     ) -> None:
         self._responses = list(responses or [LLMResponse(text="ok")])
-        self._stream_chunks = list(stream_chunks or [])
+        self._stream_events = list(stream_events or [])
         self._default_model = default_model
         self._default_stream_model = default_stream_model
         self.complete_requests: list[dict] = []
@@ -38,8 +39,8 @@ class RecordingProvider(LLMProviderBase):
         self.stream_requests.append(request)
 
         async def iterator():
-            for chunk in self._stream_chunks:
-                yield chunk
+            for event in self._stream_events:
+                yield event
 
         return iterator()
 
@@ -69,12 +70,16 @@ async def test_llm_service_complete_applies_default_model() -> None:
 @pytest.mark.anyio
 async def test_llm_service_stream_uses_default_stream_model() -> None:
     chunk = LLMStreamChunk(text_delta="hello")
-    provider = RecordingProvider(stream_chunks=[chunk])
+    event = LLMStreamEvent(
+        event_type="response.output_text.delta",
+        chunk=chunk,
+    )
+    provider = RecordingProvider(stream_events=[event])
     service = LLMService([provider], timeout_seconds=1.0)
 
     received = []
     async for part in service.stream(messages=[LLMMessage(role="system", content="s")]):
-        received.append(part.text_delta)
+        received.append(part.chunk.text_delta)
 
     assert received == ["hello"]
     assert provider.stream_requests[0]["metadata"]["model"] == provider.default_stream_model

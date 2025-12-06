@@ -11,12 +11,12 @@ from openai import OpenAIError
 
 from aceai.interface import is_set
 
-from .interface import (
+from .models import (
     LLMMessage,
     LLMProviderBase,
     LLMRequest,
     LLMResponse,
-    LLMStreamChunk,
+    LLMStreamEvent,
 )
 
 JSONDecodeErrors = (ValidationError, DecodeError)
@@ -30,6 +30,12 @@ ERROR_PROMPT_TEMPLATE = (
     "Please respond again with ONLY valid JSON that conforms to the schema. "
     "Do not include explanations or surrounding text."
 )
+
+
+class LLMProviderError(Exception):
+    """Custom exception for LLM provider errors."""
+
+    pass
 
 
 class LLMService:
@@ -59,6 +65,7 @@ class LLMService:
         self._current_provider_index = 0
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        self._last_response: LLMResponse | None = None
 
     async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse:
         """Complete using a unified LLMRequest or raw messages."""
@@ -71,9 +78,12 @@ class LLMService:
 
         try:
             resp = await asyncio.wait_for(coro, timeout=timeout)
+            self._last_response = resp
             return resp
         except OpenAIError as llm_error:
-            raise llm_error
+            raise LLMProviderError(
+                f"LLM provider error: {str(llm_error)}"
+            ) from llm_error
 
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""
@@ -94,9 +104,14 @@ class LLMService:
         """Get the current provider for direct access."""
         return self.get_provider_count() > 0
 
+    @property
+    def last_response(self) -> LLMResponse | None:
+        """Return the most recent LLMResponse emitted by complete/complete_json."""
+        return self._last_response
+
     async def stream(
         self, **request: Unpack[LLMRequest]
-    ) -> AsyncIterator[LLMStreamChunk]:
+    ) -> AsyncIterator[LLMStreamEvent]:
         """Provider passthrough streaming.
 
         Business logic (e.g., output sanitization/formatting) must be handled at
@@ -105,11 +120,11 @@ class LLMService:
         req = self._apply_stream_defaults(request)
         stream_resp = self._get_current_provider().stream(req)
 
-        text_chunk_count = 0
-        async for chunk in stream_resp:
-            if is_set(chunk.text_delta):
-                text_chunk_count += 1
-            yield chunk
+        async for event in stream_resp:
+            if is_set(event.chunk.text_delta):
+                # Placeholder hook for future instrumentation
+                pass
+            yield event
 
     def _apply_defaults(self, request: LLMRequest) -> LLMRequest:
         """Apply default max_tokens if not explicitly provided.
