@@ -32,13 +32,12 @@ from .interface import (
 class OpenAI(LLMProviderBase):
     """OpenAI provider for LLM completions."""
 
-    def __init__(self, api_key: str, default_model: str, default_stream_model: str):
-        if not api_key:
-            raise ValueError("OpenAI API key is required")
-        self._api_key = api_key
+    def __init__(
+        self, client: openai.AsyncOpenAI, default_model: str, default_stream_model: str
+    ):
         self._default_model = default_model
         self._default_stream_model = default_stream_model
-        self._client = openai.AsyncOpenAI(api_key=self._api_key)
+        self._client = client
 
     @property
     def default_model(self) -> str:

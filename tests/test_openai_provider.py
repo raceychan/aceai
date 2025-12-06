@@ -15,17 +15,62 @@ from openai.types.responses.response_text_delta_event import ResponseTextDeltaEv
 
 
 @pytest.fixture
-def openai_provider(monkeypatch):
-    class DummyAsyncOpenAI:
-        def __init__(self, *args, **kwargs):
-            self.api_key = kwargs.get("api_key")
-            self.audio = SimpleNamespace(
-                transcriptions=SimpleNamespace(create=lambda **_: None)
-            )
-            self.responses = SimpleNamespace()
+def fake_openai_client():
+    async def transcribe(**_kwargs):
+        return SimpleNamespace(text="")
 
-    monkeypatch.setattr("aceai.llm.openai.openai.AsyncOpenAI", DummyAsyncOpenAI)
-    return OpenAI(api_key="key", default_model="gpt-4o", default_stream_model="gpt-4o-mini")
+    class FakeStreamManager:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def get_final_response(self):
+            return SimpleNamespace(
+                id="fake-response",
+                model="fake-model",
+                output_text="",
+                output=[],
+                usage=None,
+            )
+
+    class FakeResponses:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                id="fake-response",
+                model=kwargs.get("model", "fake-model"),
+                output_text="",
+                output=[],
+                usage=None,
+            )
+
+        def stream(self, **kwargs):
+            return FakeStreamManager()
+
+    class FakeClient:
+        def __init__(self):
+            self.audio = SimpleNamespace(
+                transcriptions=SimpleNamespace(create=transcribe)
+            )
+            self.responses = FakeResponses()
+
+    return FakeClient()
+
+
+@pytest.fixture
+def openai_provider(fake_openai_client) -> OpenAI:
+    return OpenAI(
+        client=fake_openai_client,
+        default_model="gpt-4o",
+        default_stream_model="gpt-4o-mini",
+    )
 
 
 def test_build_base_response_kwargs_maps_request_fields(openai_provider: OpenAI) -> None:
