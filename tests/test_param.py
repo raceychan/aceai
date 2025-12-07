@@ -4,7 +4,7 @@ import pytest
 
 from ididi import use
 
-from aceai.errors import AceAIConfigurationError
+from aceai.errors import AceAIConfigurationError, UnannotatedToolParamError
 from aceai.interface import Record
 from aceai.tools import tool
 from aceai.tools._param import (
@@ -120,22 +120,24 @@ def test_tool_from_func() -> None:
     assert add_tool.signature.return_type == int
 
 
-def test_get_param_meta_returns_none_for_missing_annotation() -> None:
+def test_get_param_meta_raises_for_missing_annotation() -> None:
     def bare(x):
         return x
 
     param = signature(bare).parameters["x"]
 
-    assert get_param_meta(param) is None
+    with pytest.raises(UnannotatedToolParamError):
+        get_param_meta(param)
 
 
-def test_get_param_meta_handles_none_annotation() -> None:
+def test_get_param_meta_raises_for_none_annotation() -> None:
     def with_none(x: None):
         return x
 
     param = signature(with_none).parameters["x"]
 
-    assert get_param_meta(param) is None
+    with pytest.raises(UnannotatedToolParamError):
+        get_param_meta(param)
 
 
 def test_get_param_spec_returns_none_without_spec_marker() -> None:

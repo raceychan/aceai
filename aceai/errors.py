@@ -6,6 +6,10 @@ class AceAIConfigurationError(AceAIError):
     """Raised when AceAI is misconfigured or missing required settings."""
 
 
+class UnannotatedToolParamError(AceAIConfigurationError):
+    """Raised when a tool parameter does not use typing.Annotated."""
+
+
 class AceAIValidationError(AceAIError):
     """Raised when inputs fail validation."""
 
@@ -25,6 +29,7 @@ class LLMProviderError(AceAIError):
 __all__ = [
     "AceAIError",
     "AceAIConfigurationError",
+    "UnannotatedToolParamError",
     "AceAIValidationError",
     "AceAIRuntimeError",
     "AceAIImplementationError",
