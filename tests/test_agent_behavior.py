@@ -1,8 +1,8 @@
 import pytest
 
 from aceai.agent import AgentBase
+from aceai.events import AgentStepEvent
 from aceai.errors import AceAIRuntimeError
-from aceai.models import AgentStepEvent
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMToolCall
 
@@ -83,7 +83,7 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=executor,
-        max_turns=3,
+        max_steps=3,
     )
 
     events = await collect_events(agent, "Need data")
@@ -121,7 +121,7 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
         default_model="gpt-4o",
         llm_service=StubLLMService(responses),
         executor=StubExecutor(),
-        max_turns=1,
+        max_steps=1,
     )
 
     events: list[AgentStepEvent] = []
@@ -130,7 +130,9 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
             events.append(evt)
 
     assert events[-1].event_type == "agent.run.completed"
-    assert events[-1].error == "Agent exceeded maximum reasoning turns without answering"
+    assert (
+        events[-1].error == "Agent exceeded maximum reasoning turns without answering"
+    )
 
 
 @pytest.mark.anyio

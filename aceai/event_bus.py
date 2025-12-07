@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Protocol
 
-from .models import AgentStepEvent
+from .events import AgentStepEvent
 
 
 class IEventBus(Protocol):
