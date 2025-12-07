@@ -1,91 +1,12 @@
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 from uuid import uuid4
 
 from .errors import AceAIConfigurationError, AceAIRuntimeError
-from .events import AgentStepEvent, AgentStepEventType
+from .events import AgentEvent, AgentEventBuilder, RunCompletedEvent
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
 from .llm.models import LLMToolCall, LLMToolCallMessage, LLMToolUseMessage
 from .models import AgentStep, ToolExecutionResult
-
-
-class AgentStepEventBuilder:
-    """Utility helper that stamps shared step metadata onto events."""
-
-    __slots__ = ("step_index", "step_id")
-
-    def __init__(self, *, step_index: int, step_id: str):
-        self.step_index = step_index
-        self.step_id = step_id
-
-    def _event(
-        self, *, event_type: AgentStepEventType, **payload: Any
-    ) -> AgentStepEvent:
-        return AgentStepEvent(
-            event_type=event_type,
-            step_index=self.step_index,
-            step_id=self.step_id,
-            **payload,
-        )
-
-    def llm_started(self) -> AgentStepEvent:
-        return self._event(event_type="agent.llm.started")
-
-    def llm_completed(self, *, step: AgentStep) -> AgentStepEvent:
-        return self._event(event_type="agent.llm.completed", step=step)
-
-    def tool_started(self, *, tool_call: LLMToolCall) -> AgentStepEvent:
-        return self._event(event_type="agent.tool.started", tool_call=tool_call)
-
-    def tool_completed(
-        self,
-        *,
-        tool_call: LLMToolCall,
-        tool_result: ToolExecutionResult,
-    ) -> AgentStepEvent:
-        return self._event(
-            event_type="agent.tool.completed",
-            tool_call=tool_call,
-            tool_result=tool_result,
-        )
-
-    def tool_failed(
-        self,
-        *,
-        tool_call: LLMToolCall,
-        tool_result: ToolExecutionResult,
-        error: str,
-    ) -> AgentStepEvent:
-        return self._event(
-            event_type="agent.tool.failed",
-            tool_call=tool_call,
-            tool_result=tool_result,
-            error=error,
-        )
-
-    def step_completed(self, *, step: AgentStep) -> AgentStepEvent:
-        return self._event(event_type="agent.step.completed", step=step)
-
-    def step_failed(self, *, step: AgentStep, error: str) -> AgentStepEvent:
-        return self._event(
-            event_type="agent.step.failed",
-            step=step,
-            error=error,
-        )
-
-    def run_completed(
-        self,
-        *,
-        step: AgentStep,
-        annotations: dict[str, Any] | None = None,
-        error: str | None = None,
-    ) -> AgentStepEvent:
-        payload: dict[str, Any] = {"step": step}
-        if annotations is not None:
-            payload["annotations"] = annotations
-        if error is not None:
-            payload["error"] = error
-        return self._event(event_type="agent.run.completed", **payload)
 
 
 class ToolExecutionFailure(AceAIRuntimeError):
@@ -124,10 +45,10 @@ class AgentBase:
         messages: list[LLMMessage],
         steps: list[AgentStep],
         selected_model: str,
-    ) -> AsyncIterator[AgentStepEvent]:
+    ) -> AsyncIterator[AgentEvent]:
         step_index = len(steps)
         step_id = str(uuid4())
-        event_builder = AgentStepEventBuilder(
+        event_builder = AgentEventBuilder(
             step_index=step_index,
             step_id=step_id,
         )
@@ -149,7 +70,7 @@ class AgentBase:
             if final_answer := response.text:
                 yield event_builder.run_completed(
                     step=step,
-                    annotations={"final_output": final_answer},
+                    final_answer=final_answer,
                 )
         else:
             assistant_msg = LLMToolCallMessage(
@@ -175,7 +96,7 @@ class AgentBase:
                 if call.name == "final_answer":
                     yield event_builder.run_completed(
                         step=step,
-                        annotations={"final_output": tool_result.output},
+                        final_answer=tool_result.output,
                     )
                     return
 
@@ -194,8 +115,8 @@ class AgentBase:
         question: str,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[AgentStepEvent]:
-        """Yield AgentStepEvent entries as the agent reasons."""
+    ) -> AsyncIterator[AgentEvent]:
+        """Yield AgentEvent entries as the agent reasons."""
         messages: list[LLMMessage] = [
             LLMMessage(role="system", content=self.prompt),
             LLMMessage(role="user", content=question),
@@ -211,7 +132,7 @@ class AgentBase:
                     selected_model=selected_model,
                 ):
                     yield event
-                    if event.event_type == "agent.run.completed":
+                    if isinstance(event, RunCompletedEvent):
                         return
             except Exception as exc:
                 if not steps:
@@ -219,7 +140,7 @@ class AgentBase:
                 error_msg = str(exc)
                 last_step = steps[-1]
                 last_index = len(steps) - 1
-                event_builder = AgentStepEventBuilder(
+                event_builder = AgentEventBuilder(
                     step_index=last_index,
                     step_id=last_step.step_id,
                 )
@@ -237,16 +158,16 @@ class AgentBase:
                         error=error_msg,
                     )
                 yield event_builder.step_failed(step=last_step, error=error_msg)
-                yield event_builder.run_completed(step=last_step, error=error_msg)
+                yield event_builder.run_failed(step=last_step, error=error_msg)
                 raise
         else:
             error_msg = "Agent exceeded maximum reasoning turns without answering"
             last_step = steps[-1]
             last_index = len(steps) - 1
-            event_builder = AgentStepEventBuilder(
+            event_builder = AgentEventBuilder(
                 step_index=last_index,
                 step_id=last_step.step_id,
             )
             yield event_builder.step_failed(step=last_step, error=error_msg)
-            yield event_builder.run_completed(step=last_step, error=error_msg)
+            yield event_builder.run_failed(step=last_step, error=error_msg)
             raise AceAIRuntimeError(error_msg)

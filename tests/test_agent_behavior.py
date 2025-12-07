@@ -1,7 +1,12 @@
 import pytest
 
 from aceai.agent import AgentBase
-from aceai.events import AgentStepEvent
+from aceai.events import (
+    AgentEvent,
+    LLMStartedEvent,
+    RunCompletedEvent,
+    RunFailedEvent,
+)
 from aceai.errors import AceAIRuntimeError
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMToolCall
@@ -28,7 +33,7 @@ class StubLLMService:
         return self._responses.pop(0)
 
 
-async def collect_events(agent: AgentBase, question: str) -> list[AgentStepEvent]:
+async def collect_events(agent: AgentBase, question: str) -> list[AgentEvent]:
     return [event async for event in agent.run(question)]
 
 
@@ -46,7 +51,8 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
     events = await collect_events(agent, "   ")
     final_event = events[-1]
 
-    assert final_event.annotations["final_output"] == "  answer  "
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.final_answer == "  answer  "
     assert len(llm_service.calls) == 1
     assert llm_service.calls[0]["messages"][-1].content == "   "
 
@@ -65,7 +71,8 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
 
     events = await collect_events(agent, "What time is it?")
 
-    assert events[-1].annotations["final_output"] == "  hello world  "
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "  hello world  "
     assert len(llm_service.calls) == 1
 
 
@@ -88,7 +95,8 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
 
     events = await collect_events(agent, "Need data")
 
-    assert events[-1].annotations["final_output"] == "answer after tool"
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "answer after tool"
     assert len(llm_service.calls) == 2
     assert executor.calls[0].name == "lookup"
 
@@ -107,8 +115,8 @@ async def test_agent_returns_final_answer_from_tool() -> None:
     events = await collect_events(agent, "Finish up")
     final_event = events[-1]
 
-    assert final_event.annotations["final_output"] == '"Done"'
-    assert final_event.step is not None
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.final_answer == '"Done"'
     assert final_event.step.tool_results
     assert final_event.step.tool_results[0].output == '"Done"'
 
@@ -124,12 +132,12 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
         max_steps=1,
     )
 
-    events: list[AgentStepEvent] = []
+    events: list[AgentEvent] = []
     with pytest.raises(AceAIRuntimeError, match="exceeded maximum reasoning turns"):
         async for evt in agent.run("try again"):
             events.append(evt)
 
-    assert events[-1].event_type == "agent.run.completed"
+    assert isinstance(events[-1], RunFailedEvent)
     assert (
         events[-1].error == "Agent exceeded maximum reasoning turns without answering"
     )
@@ -150,8 +158,8 @@ async def test_agent_can_return_structured_response() -> None:
     events = await collect_events(agent, "Finish up")
     final_event = events[-1]
 
-    assert final_event.annotations["final_output"] == '"Done"'
-    assert final_event.step is not None
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.final_answer == '"Done"'
     assert final_event.step.llm_response.text == "calling tool"
     assert final_event.step.tool_results[0].output == '"Done"'
 
@@ -167,6 +175,6 @@ async def test_agent_stream_emits_run_completed_event() -> None:
 
     events = await collect_events(agent, "Question?")
 
-    assert events[0].event_type == "agent.llm.started"
-    assert events[-1].event_type == "agent.run.completed"
-    assert events[-1].annotations["final_output"] == "  hello  "
+    assert isinstance(events[0], LLMStartedEvent)
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "  hello  "
