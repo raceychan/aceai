@@ -120,7 +120,7 @@ class LLMService:
         stream_resp = self._get_current_provider().stream(req)
 
         async for event in stream_resp:
-            if is_set(event.chunk.text_delta):
+            if is_set(event.text_delta):
                 # Placeholder hook for future instrumentation
                 pass
             yield event

@@ -5,7 +5,6 @@ import pytest
 from ididi import use
 
 from aceai.errors import AceAIConfigurationError
-
 from aceai.interface import Record
 from aceai.tools import tool
 from aceai.tools._param import (
@@ -130,8 +129,21 @@ def test_get_param_meta_returns_none_for_missing_annotation() -> None:
     assert get_param_meta(param) is None
 
 
+def test_get_param_meta_handles_none_annotation() -> None:
+    def with_none(x: None):
+        return x
+
+    param = signature(with_none).parameters["x"]
+
+    assert get_param_meta(param) is None
+
+
 def test_get_param_spec_returns_none_without_spec_marker() -> None:
     assert get_param_spec(["other metadata"]) is None
+
+
+def test_get_param_spec_returns_none_for_missing_meta_list() -> None:
+    assert get_param_spec(None) is None
 
 
 def test_tool_param_applies_examples_extra_schema_and_constraints() -> None:
@@ -180,7 +192,8 @@ def test_tool_signature_raises_when_param_is_both_dependency_and_tool_param() ->
     ) -> Repo:
         return repo
 
-    with pytest.raises(
-        ValueError, match="Parameter 'repo' is defined as both ToolParam and DependentNode"
-    ):
-        ToolSignature.from_signature(signature(both))
+        with pytest.raises(
+            AceAIConfigurationError,
+            match="Parameter 'repo' is defined as both ToolParam and DependentNode",
+        ):
+            ToolSignature.from_signature(signature(both))

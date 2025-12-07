@@ -126,6 +126,18 @@ def run_build() -> None:
     print("uv build completed")
 
 
+def run_tests() -> None:
+    subprocess.run([
+        "uv",
+        "run",
+        "--group",
+        "dev",
+        "pytest",
+        "-v",
+    ], cwd=PROJECT_ROOT, check=True)
+    print("pytest suite passed")
+
+
 def create_new_branch(repo: Repo, *, base_branch: str | None, increment: str) -> None:
     base = base_branch or detect_default_base_branch(repo)
     ensure_local_branch(repo, base)
@@ -189,6 +201,7 @@ def handle_release(repo: Repo, args: argparse.Namespace) -> None:
     if not args.skip_version_update and current_version != args.version:
         write_version(args.version)
 
+    run_tests()
     stage_and_commit(repo, args.version)
     merge_into_base(repo, base_branch, release_branch)
     tag_name = tag_release(repo, args.version)

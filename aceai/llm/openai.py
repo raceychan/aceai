@@ -25,7 +25,6 @@ from .models import (
     LLMResponse,
     LLMResponseFormat,
     LLMSegment,
-    LLMStreamChunk,
     LLMStreamEvent,
     LLMToolCall,
     LLMToolCallDelta,
@@ -70,6 +69,9 @@ class OpenAI(LLMProviderBase):
         default_model: str,
     ) -> dict[str, Any]:
         """Translate LLMRequest into OpenAI Responses kwargs."""
+        if "messages" not in request:
+            raise AceAIValidationError("LLMRequest.messages is required")
+
         input_messages = self._format_messages_for_responses(request["messages"])
         kwargs: dict[str, Any] = {"input": input_messages}
         metadata = request.get("metadata", {})
@@ -276,23 +278,23 @@ class OpenAI(LLMProviderBase):
         *,
         model_name: str,
     ) -> LLMStreamEvent | None:
-        chunk: LLMStreamChunk | None = None
+        text_delta: Unset[str] = UNSET
+        tool_call_delta: Unset[LLMToolCallDelta] = UNSET
+        error_value: Unset[str] = UNSET
         segments: list[LLMSegment] = []
         event_type: str | None = None
 
         match event:
             case ResponseTextDeltaEvent(delta=delta) if delta:
-                chunk = LLMStreamChunk(text_delta=delta)
+                text_delta = delta
                 segments = [LLMSegment(type="text", content=delta)]
                 event_type = "response.output_text.delta"
             case ResponseFunctionCallArgumentsDeltaEvent(
                 delta=delta, item_id=item_id
             ) if (delta and item_id):
-                chunk = LLMStreamChunk(
-                    tool_call_delta=LLMToolCallDelta(
-                        id=item_id,
-                        arguments_delta=delta,
-                    )
+                tool_call_delta = LLMToolCallDelta(
+                    id=item_id,
+                    arguments_delta=delta,
                 )
                 segments = [
                     LLMSegment(
@@ -304,30 +306,30 @@ class OpenAI(LLMProviderBase):
                 event_type = "response.function_call_arguments.delta"
             case ResponseErrorEvent(message=message):
                 error_msg = message or "LLM stream error"
-                chunk = LLMStreamChunk(error=error_msg)
+                error_value = error_msg
                 segments = [LLMSegment(type="error", content=error_msg)]
                 event_type = "response.error"
             case _:
                 match event.type:
                     case "response.output_text.delta" if event.delta:
-                        chunk = LLMStreamChunk(text_delta=event.delta)
+                        text_delta = event.delta
                         segments = [LLMSegment(type="text", content=event.delta)]
                         event_type = "response.output_text.delta"
                     case "response.function_call_arguments.delta" if (
                         event.delta and event.item_id
                     ):
-                        chunk = LLMStreamChunk(
-                            tool_call_delta=LLMToolCallDelta(
-                                id=event.item_id,
-                                arguments_delta=event.delta,
-                            )
+                        call_id = event.item_id
+                        delta_value = event.delta
+                        tool_call_delta = LLMToolCallDelta(
+                            id=call_id,
+                            arguments_delta=delta_value,
                         )
                         segments = [
                             LLMSegment(
                                 type="tool_call",
-                                content=event.delta,
+                                content=delta_value,
                                 metadata={
-                                    "call_id": event.item_id,
+                                    "call_id": call_id,
                                     "is_delta": True,
                                 },
                             )
@@ -337,7 +339,7 @@ class OpenAI(LLMProviderBase):
                         error_msg = (
                             getattr(event, "message", None) or "LLM stream error"
                         )
-                        chunk = LLMStreamChunk(error=error_msg)
+                        error_value = error_msg
                         segments = [LLMSegment(type="error", content=error_msg)]
                         event_type = "response.error"
                     case _:
@@ -347,7 +349,9 @@ class OpenAI(LLMProviderBase):
         provider_meta = [self._provider_meta_entry(model=model_name)]
         return LLMStreamEvent(
             event_type=event_type,
-            chunk=chunk,
+            text_delta=text_delta,
+            tool_call_delta=tool_call_delta,
+            error=error_value,
             segments=segments,
             provider_meta=provider_meta,
             raw_event=raw_event or None,
@@ -387,7 +391,7 @@ class OpenAI(LLMProviderBase):
         )
         yield LLMStreamEvent(
             event_type="response.completed",
-            chunk=LLMStreamChunk(response=final_llm_response),
+            response=final_llm_response,
             segments=final_llm_response.segments,
             provider_meta=final_llm_response.provider_meta,
             raw_event=self._safe_model_dump(final_response) or None,

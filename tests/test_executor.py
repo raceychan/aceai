@@ -5,7 +5,6 @@ import pytest
 from ididi import Graph, use
 
 from aceai.errors import AceAIRuntimeError
-
 from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
@@ -62,6 +61,12 @@ def unreliable_tool(
     value: Annotated[int, spec(description="Value that triggers failure")],
 ) -> int:
     raise AceAIRuntimeError("expected failure")
+
+
+def echo_message(
+    message: Annotated[str, spec(description="Message to echo")],
+) -> str:
+    return message
 
 
 def build_async_client() -> httpx.AsyncClient:
@@ -190,3 +195,17 @@ async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
     result = await executor.execute_tool(call)
 
     assert result == '"AsyncClient"'
+
+
+@pytest.mark.anyio
+async def test_tool_executor_exposes_tool_schemas(graph: Graph) -> None:
+    echo_tool = build_tool(echo_message)
+    executor = ToolExecutor(graph, [echo_tool])
+
+    first = executor.tool_schemas
+    second = executor.tool_schemas
+
+    assert first is second
+    schema_names = {schema["name"] for schema in first}
+    assert echo_tool.name in schema_names
+    assert "final_answer" in schema_names

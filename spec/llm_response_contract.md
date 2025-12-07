@@ -18,8 +18,8 @@
 ### 1. Provider 层
 
 - **不再引入 `ProviderCompletion` / `ProviderStreamEvent`**。所有适配器直接填充“拓展版 `LLMResponse`”与新 `LLMStreamEvent`。我们吸收 google-adk 在事件化接口上的优点（统一 event 入口、显式类型），但不强制复制其所有 payload 形式。
-- `LLMResponse` 本身具备承载富语义的字段（segments/raw events/provider meta/extras），即使调用方只关心 `text`/`tool_calls` 也能向后兼容；同时我们借鉴 liteLLM 会保留 `raw_response` 便于调试的做法，但通过自有类型屏蔽其 legacy 字段设计。
-- `LLMStreamEvent` 统一描述 streaming 事件：包含 `chunk`（原 `LLMStreamChunk` 语义）以及新增的 provider 事件元信息和增量 segments，并附带 `event_type` 字段，吸收 ADK 对事件枚举严格管理的优点（如 `response.output_text.delta`、`response.completed`），但字段命名与含义由我们主导；事件类型是封闭集合，显式即支持，禁止落到兜底分支，以保证我们的最佳实践。该结构已在 OpenAI 适配器里落地（见 `aceai/llm/openai.py`）。
+- `LLMResponse` 本身具备承载富语义的字段（segments/raw events/provider meta/extras），即使调用方只关心 `text`/`tool_calls` 也能向后兼容；同时我们借鉴 liteLLM 会保留 `raw_response` 便于调试的做法，但通过自有类型屏蔽其字段细节，保持语义一致。
+- `LLMStreamEvent` 统一描述 streaming 事件：直接暴露 `text_delta`/`tool_call_delta`/`response`/`error` 字段，并附带 provider 事件元信息和增量 segments，以及显式的 `event_type`；我们吸收 ADK 对事件枚举严格管理的优点（如 `response.output_text.delta`、`response.completed`），但字段命名与含义由我们主导，且事件类型是封闭集合，显式即支持，禁止落到兜底分支。该结构已在 OpenAI 适配器里落地（见 `aceai/llm/openai.py`）。
 - 每个 provider adapter 需要：
   - 根据底层响应构造 `segments`（`text`, `reasoning`, `tool_call`, `citation`, `error`, `other`）；`LLMSegment.metadata` 允许挂载 `annotations`（参照 ADK 对 reasoning/safety/citation 的处理）以及 provider 自定义字段。
 - 记录 `provider_meta`（目前仅 `provider_name`、`model`, `latency_ms`，其余调试属性统一放在 `extra` 字段；类型名为 `LLMProviderMeta`），吸收 liteLLM 的透明度优点，同时保持字段命名在我们控制之下。
@@ -44,39 +44,42 @@
 
 ```python
     class LLMProviderMeta(Record):
-    provider_name: str
-    model: str
-    latency_ms: float | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+        provider_name: str
+        model: str
+        latency_ms: float | None = None
+        extra: dict[str, Any] = field(default_factory=dict)
 
     class LLMSegment(Record):
-    type: Literal["text", "reasoning", "tool_call", "citation", "error", "other"]
-    content: str
-    metadata: dict[str, Any] = field(default_factory=dict)  # e.g. ADK-style annotations/citations
+        type: Literal["text", "reasoning", "tool_call", "citation", "error", "other"]
+        content: str
+        metadata: dict[str, Any] = field(default_factory=dict)  # e.g. ADK-style annotations/citations
 
     class LLMResponse(Record):
-    id: str | None = None
-    model: str | None = None
-    text: str = ""
-    tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
-    usage: Unset[LLMUsage] = UNSET
-    segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
+        id: str | None = None
+        model: str | None = None
+        text: str = ""
+        tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
+        usage: Unset[LLMUsage] = UNSET
+        segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
         provider_meta: list[LLMProviderMeta] = field(default_factory=list[LLMProviderMeta])
-    raw_events: list[dict[str, Any]] = field(default_factory=list)
-    extras: dict[str, Any] = field(default_factory=dict)
+        raw_events: list[dict[str, Any]] = field(default_factory=list)
+        extras: dict[str, Any] = field(default_factory=dict)
 
     class LLMStreamEvent(Record):
-    event_type: Literal[
-        "response.output_text.delta",
-        "response.function_call_arguments.delta",
-        "response.completed",
-        "response.error",
-    ]  # mirror google-adk response event types; explicit-only, no fallback
-    chunk: LLMStreamChunk
-    segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
+        event_type: Literal[
+            "response.output_text.delta",
+            "response.function_call_arguments.delta",
+            "response.completed",
+            "response.error",
+        ]  # mirror google-adk response event types; explicit-only, no fallback
+        text_delta: Unset[str] = UNSET
+        tool_call_delta: Unset[LLMToolCallDelta] = UNSET
+        response: Unset[LLMResponse] = UNSET
+        error: Unset[str] = UNSET
+        segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
         provider_meta: list[LLMProviderMeta] = field(default_factory=list[LLMProviderMeta])
-    raw_event: dict[str, Any] | None = None
-    extras: dict[str, Any] = field(default_factory=dict)
+        raw_event: dict[str, Any] | None = None
+        extras: dict[str, Any] = field(default_factory=dict)
 ```
 
 > 这些类型放在 `aceai/llm/models.py`，供 provider 与 service 层（以及未来的 agent 层）共享。

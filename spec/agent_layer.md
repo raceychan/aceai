@@ -6,7 +6,7 @@
 
 ## 已知现状
 
-- `AgentBase.handle` 目前仍返回 `str`，只消费 `response.text / tool_calls`。我们需要在不破坏现有同步接口的前提下，引入结构化响应。
+- `AgentBase.handle` 现已直接返回 `AgentResponse`，以结构化方式暴露 llm/tool 信息（`final_output` 仍可作为便捷字段读取）。
 
 ## 初步草案
 
@@ -38,18 +38,18 @@ class AgentResponse(Record):
 
 - `AgentBase.handle` 在每次 LLM 调用后创建 `AgentStep`，将 `LLMResponse` 原封不动塞入 `llm_response`。
 - 执行工具后，向 `turn.tool_results` 写入结果；返回给模型的 tool outputs 继续通过 `LLMToolUseMessage` 发送，逻辑保持不变。
-- 默认对外仍可返回 `final_output` 字符串；进阶调用者可请求完整 `AgentResponse`。
+- 默认同步 API 就返回 `AgentResponse`，消费方需要从 `final_output` 或更细粒度的 turn 数据中取值。
 
 ## 落地策略
 
 1. **Streaming 优先**：Agent 默认提供 `async Generator[AgentStep]`（或 `AsyncIterator[AgentStep]`）接口，实时暴露每个 turn；若需要一次性结果，可在外部 `collect`。
-2. **直接演进**：当前尚无外部用户，`AgentBase` 可以直接改造为返回结构化/streaming 形式，无需保留旧 `str` 返回值。
+2. **直接演进**：当前尚无外部用户，`AgentBase` 已改造为返回结构化/streaming 形式，不再保留旧的 `str` 返回值。
 3. **final tool 处理**：`final_answer` 作为普通 `ToolExecutionResult` 记录在最后一个 turn 的 `tool_results` 内，同时把其输出引用到 `AgentResponse.final_output`，避免重复执行但仍保留溯源。
 
 ## 下一步
 
 1. 在 `aceai/llm/models.py` 或 `aceai/agent.py` 定义上述 record。
-2. 改造 `AgentBase.handle` 支持“记录 turn”但仍返回 str。
+2. 改造 `AgentBase.handle` 使其始终返回结构化响应。
 3. 选一个 agent/client 更新调用方式，验证实战体验，再回写文档。
 
 ## 业界对标与最佳实践

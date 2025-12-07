@@ -1,10 +1,11 @@
 """Shared LLM data models and provider contracts."""
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, BinaryIO, Literal, Required, Self, TypedDict
+from typing import Any, AsyncIterator, BinaryIO, Literal, TypedDict
 
 from msgspec import UNSET, field
 from msgspec.structs import asdict
+from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError, AceAIValidationError
 from aceai.interface import Record, Struct, Unset
@@ -47,7 +48,7 @@ class LLMMessage(Struct, kw_only=True):
     """Message body provided to or produced by the model."""
 
     name: str | None = None
-    """Optional tool/function label associated with the message."""
+    """Optional because only tool/function messages populate this label."""
 
     def __ior__(self, other: "LLMMessage | str") -> Self:
         if isinstance(other, str):
@@ -60,6 +61,7 @@ class LLMMessage(Struct, kw_only=True):
         return self
 
     def asdict(self) -> dict[str, Any]:
+        # TODO: exclude UNSET values
         return asdict(self)
 
 
@@ -69,11 +71,11 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
     type: Literal["function_call"] = "function_call"
     """Assistant subtype emitted when tool calls are present."""
 
-    role: Literal["assistant"] = "assistant"
+    role: Literal["system", "user", "assistant", "tool"] = "assistant"
     """Fixed assistant role for compatibility with chat providers."""
 
-    tool_calls: list[LLMToolCall] | None = None
-    """Structured tool invocations emitted within this turn."""
+    tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
+    """Always a list; empty list indicates a bug in the caller."""
 
     def asdict(self) -> dict[str, Any]:
         res = super().asdict()
@@ -85,7 +87,7 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
 class LLMToolUseMessage(LLMMessage, kw_only=True):
     """Synthetic tool response message sent back to the model."""
 
-    role: Literal["tool"] = "tool"
+    role: Literal["system", "user", "assistant", "tool"] = "tool"
     """Marks the message as tool output when relayed to the model."""
 
     call_id: str
@@ -115,7 +117,7 @@ class LLMRequestMeta(TypedDict, total=False):
     """Adapter-specific metadata attached to a request."""
 
     model: str
-    """Explicit provider model identifier overriding adapter defaults."""
+    """Optional, only set when the caller must override adapter defaults."""
 
 
 class LLMRequest(TypedDict, total=False):
@@ -125,66 +127,66 @@ class LLMRequest(TypedDict, total=False):
     """Ordered chat history supplied to the provider."""
 
     temperature: float
-    """Randomness control applied by providers that support it."""
+    """Optional override for randomness; provider defaults apply when omitted."""
 
     top_p: float
-    """Nucleus sampling parameter when available."""
+    """Optional nucleus sampling override for providers that expose it."""
 
     top_k: int
-    """Highest-ranked token shortlist size for providers that expose it."""
+    """Optional top-k setting; only a subset of providers honour it."""
 
     max_tokens: int
-    """Upper bound on tokens the provider may generate for this call."""
+    """Optional completion cap; provider fallback limits apply when absent."""
 
     stop: list[str]
-    """List of stop sequences requested by the caller."""
+    """Optional stop-sequence list when the caller needs early termination."""
 
     tools: list[ToolSpec]
-    """All tools/functions the model is allowed to call."""
+    """Optional tool registry; omit when the task is pure text completion."""
 
     tool_choice: Literal["auto", "none"] | str
-    """Tool selection policy or explicit tool name."""
+    """Optional override when the caller must pin or disable tool usage."""
 
     response_format: LLMResponseFormat
-    """Structured response preferences (text vs. JSON schema)."""
+    """Optional hint for providers that support JSON/structured output."""
 
     stream: bool
-    """Flag toggling streaming vs. one-shot completion."""
+    """Optional streaming flag; defaults to provider-specific behaviour."""
 
     metadata: LLMRequestMeta
-    """Adapter-specific overrides such as the concrete model name."""
+    """Optional adapter overrides (e.g., forcing a model name)."""
 
 
 class LLMUsage(Record):
     """Token accounting for a single completion."""
 
     input_tokens: int | None = None
-    """Prompt-side token count reported by the provider."""
+    """Optional because some providers never report prompt token usage."""
 
     output_tokens: int | None = None
-    """Completion-side token count reported by the provider."""
+    """Optional when providers omit completion-side accounting."""
 
     total_tokens: int | None = None
-    """Convenience sum when the provider supplies a precomputed total."""
+    """Optional; only present if the provider supplies the aggregate."""
 
 
 class LLMCitationRef(Record):
     """Minimal citation/ref grounding metadata attached to a segment."""
 
     id: str | None = None
-    """Provider-supplied identifier (e.g., citation footnote)."""
+    """Optional because many providers don't emit stable citation IDs."""
 
     source: str | None = None
-    """Source label or document identifier when available."""
+    """Optional label; absent when the provider only returns free text."""
 
     start: int | None = None
-    """Inclusive character start offset within the source, if provided."""
+    """Optional offset because not all providers expose span data."""
 
     end: int | None = None
-    """Exclusive character end offset within the source, if provided."""
+    """Optional offset because not all providers expose span data."""
 
     url: str | None = None
-    """Optional public URL pointing at the referenced material."""
+    """Optional public URL; only present when the provider shares resolved links."""
 
     metadata: dict[str, Any] = field(default_factory=dict)
     """Loose bag for provider-specific citation metadata."""
@@ -216,7 +218,7 @@ class LLMProviderMeta(Record):
     """Model identifier used for this attempt."""
 
     latency_ms: float | None = None
-    """Elapsed wall time for this attempt in milliseconds."""
+    """Optional because some adapters cannot observe provider latency."""
 
     extra: dict[str, Any] = field(default_factory=dict)
     """Provider-specific metadata kept for debugging/telemetry."""
@@ -245,10 +247,10 @@ class LLMResponse(Record):
     """Provider-agnostic completion payload."""
 
     id: str | None = None
-    """Opaque provider-generated response identifier."""
+    """Optional because several providers do not return stable response IDs."""
 
     model: str | None = None
-    """Model name actually used to produce the completion."""
+    """Optional; adapters fall back to request defaults when providers omit."""
 
     text: str = ""
     """Aggregated assistant text returned by the provider."""
@@ -257,7 +259,7 @@ class LLMResponse(Record):
     """Tool/function invocations extracted from the provider output."""
 
     usage: Unset[LLMUsage] = UNSET
-    """Token accounting info when supplied by the provider."""
+    """Unset when the provider omits token accounting details."""
 
     segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
     """Structured segments capturing provider output with annotations."""
@@ -272,22 +274,6 @@ class LLMResponse(Record):
     """Adapter-defined extension fields for advanced consumers."""
 
 
-class LLMStreamChunk(Record):
-    """Streaming delta emitted by adapters."""
-
-    text_delta: Unset[str] = UNSET
-    """Partial text token(s) produced during streaming."""
-
-    tool_call_delta: Unset[LLMToolCallDelta] = UNSET
-    """Incremental tool call arguments emitted during streaming."""
-
-    response: Unset[LLMResponse] = UNSET
-    """Optional final response snapshot delivered when the stream completes."""
-
-    error: Unset[str] = UNSET
-    """Error message surfaced by the provider mid-stream."""
-
-
 class LLMStreamEvent(Record):
     """Provider-agnostic streaming event with structured metadata."""
 
@@ -299,8 +285,17 @@ class LLMStreamEvent(Record):
     ]
     """Explicit event type mirroring the provider's semantic intent."""
 
-    chunk: LLMStreamChunk
-    """Legacy chunk payload for callers that only need text/tool deltas."""
+    text_delta: Unset[str] = UNSET
+    """Partial text token(s) produced during streaming."""
+
+    tool_call_delta: Unset[LLMToolCallDelta] = UNSET
+    """Incremental tool call arguments emitted during streaming."""
+
+    response: Unset[LLMResponse] = UNSET
+    """Optional final response snapshot delivered when the stream completes."""
+
+    error: Unset[str] = UNSET
+    """Provider-reported error message surfaced mid-stream."""
 
     segments: list[LLMSegment] = field(default_factory=list[LLMSegment])
     """Structured segments associated with this event."""
@@ -309,7 +304,7 @@ class LLMStreamEvent(Record):
     """Provider attempt metadata as of this event emission."""
 
     raw_event: dict[str, Any] | None = None
-    """Provider-native event payload preserved for debugging."""
+    """Optional raw payload; only present when adapters expose vendor JSON."""
 
     extras: dict[str, Any] = field(default_factory=dict)
     """Adapter-defined extension fields for advanced consumers."""

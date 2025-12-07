@@ -3,9 +3,9 @@ from ididi import use
 from msgspec import DecodeError, ValidationError
 
 from aceai.errors import AceAIConfigurationError
-
 from aceai.tools import tool
 from aceai.tools._param import Annotated, spec
+from aceai.tools.builtin_tools import BUILTIN_TOOLS, final_answer
 
 
 def multiply(
@@ -121,3 +121,8 @@ def test_tool_with_both_dep_and_tool_params():
 
     assert "user_service" in my_tool.signature.dep_nodes
     assert "user_id" in my_tool.signature.params
+
+
+def test_builtin_final_answer_tool_in_registry() -> None:
+    assert final_answer("done") == "done"
+    assert final_answer in BUILTIN_TOOLS
