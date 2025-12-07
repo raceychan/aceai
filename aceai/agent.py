@@ -1,21 +1,92 @@
-import asyncio
-from contextlib import suppress
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from .errors import AceAIRuntimeError
-from .event_bus import IEventBus, InMemoryEventBus
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
-from .llm.models import LLMToolCallMessage, LLMToolUseMessage
-from .models import AgentResponse, AgentStep, AgentStepEvent, ToolExecutionResult
+from .llm.models import LLMToolCall, LLMToolCallMessage, LLMToolUseMessage
+from .models import AgentStep, AgentStepEvent, ToolExecutionResult
+
+
+class AgentStepEventBuilder:
+    """Utility helper that stamps shared step metadata onto events."""
+
+    __slots__ = ("step_index", "step_id")
+
+    def __init__(self, *, step_index: int, step_id: str):
+        self.step_index = step_index
+        self.step_id = step_id
+
+    def _event(self, *, event_type: str, **payload: Any) -> AgentStepEvent:
+        return AgentStepEvent(
+            event_type=event_type,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            **payload,
+        )
+
+    def llm_started(self) -> AgentStepEvent:
+        return self._event(event_type="agent.llm.started")
+
+    def llm_completed(self, *, step: AgentStep) -> AgentStepEvent:
+        return self._event(event_type="agent.llm.completed", step=step)
+
+    def tool_started(self, *, tool_call: LLMToolCall) -> AgentStepEvent:
+        return self._event(event_type="agent.tool.started", tool_call=tool_call)
+
+    def tool_completed(
+        self,
+        *,
+        tool_call: LLMToolCall,
+        tool_result: ToolExecutionResult,
+    ) -> AgentStepEvent:
+        return self._event(
+            event_type="agent.tool.completed",
+            tool_call=tool_call,
+            tool_result=tool_result,
+        )
+
+    def tool_failed(
+        self,
+        *,
+        tool_call: LLMToolCall,
+        tool_result: ToolExecutionResult,
+        error: str,
+    ) -> AgentStepEvent:
+        return self._event(
+            event_type="agent.tool.failed",
+            tool_call=tool_call,
+            tool_result=tool_result,
+            error=error,
+        )
+
+    def step_completed(self, *, step: AgentStep) -> AgentStepEvent:
+        return self._event(event_type="agent.step.completed", step=step)
+
+    def step_failed(self, *, step: AgentStep, error: str) -> AgentStepEvent:
+        return self._event(
+            event_type="agent.step.failed",
+            step=step,
+            error=error,
+        )
+
+    def run_completed(
+        self,
+        *,
+        step: AgentStep,
+        annotations: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> AgentStepEvent:
+        payload: dict[str, Any] = {"step": step}
+        if annotations is not None:
+            payload["annotations"] = annotations
+        if error is not None:
+            payload["error"] = error
+        return self._event(event_type="agent.run.completed", **payload)
 
 
 class AgentBase:
-    """Base class for agents using an LLM provider.
-
-    Required dependencies are injected explicitly (no optional defaults).
-    """
+    """Base class for agents using an LLM provider."""
 
     def __init__(
         self,
@@ -25,109 +96,46 @@ class AgentBase:
         llm_service: LLMService,
         executor: ToolExecutor,
         max_turns: int = 5,
-        event_bus: IEventBus | None = None,
     ):
         self.prompt = prompt
         self.default_model = default_model
         self.llm_service = llm_service
         self.executor = executor
         self.max_turns = max_turns
-        self._event_bus: IEventBus = event_bus or InMemoryEventBus()
 
-    async def handle(
+    async def run(
         self,
         question: str,
         *,
         model: str | None = None,
-    ) -> AgentResponse:
-        """Run the agent to completion and return the structured trace."""
-
-        try:
-            return await self._run_agent(
-                question,
-                model=model,
-                event_bus=self._event_bus,
-            )
-        finally:
-            await self._event_bus.close()
-
-    async def stream(
-        self, question: str, *, model: str | None = None
     ) -> AsyncIterator[AgentStepEvent]:
-        """Stream AgentStepEvent entries as the agent reasons."""
+        """Yield AgentStepEvent entries as the agent reasons."""
 
-        subscription = await self._event_bus.subscribe()
-
-        async def runner() -> None:
-            try:
-                await self._run_agent(
-                    question,
-                    model=model,
-                    event_bus=self._event_bus,
-                )
-            finally:
-                await self._event_bus.close()
-
-        task = asyncio.create_task(runner())
-
-        try:
-            async for event in subscription:
-                yield event
-                if event.event_type == "agent.run.completed":
-                    break
-            await task
-        finally:
-            if not task.done():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-            close = getattr(subscription, "aclose", None)
-            if close is not None:
-                with suppress(Exception):
-                    await close()
-
-    async def _run_agent(
-        self,
-        question: str,
-        *,
-        model: str | None,
-        event_bus: IEventBus,
-    ) -> AgentResponse:
         messages: list[LLMMessage] = [
             LLMMessage(role="system", content=self.prompt),
             LLMMessage(role="user", content=question),
         ]
         selected_model = model or self.default_model
-        turns: list[AgentStep] = []
-
-        async def publish(event: AgentStepEvent) -> None:
-            await event_bus.publish(event)
+        steps: list[AgentStep] = []
 
         for _ in range(self.max_turns):
-            step_index = len(turns)
+            step_index = len(steps)
             step_id = str(uuid4())
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.llm.started",
-                    step_index=step_index,
-                    step_id=step_id,
-                )
+            event_builder = AgentStepEventBuilder(
+                step_index=step_index,
+                step_id=step_id,
             )
+            yield event_builder.llm_started()
+
             response: LLMResponse = await self.llm_service.complete(
                 messages=messages,
                 tools=self.executor.tool_schemas,
                 metadata={"model": selected_model},
             )
             step = AgentStep(step_id=step_id, llm_response=response)
-            turns.append(step)
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.llm.completed",
-                    step_index=step_index,
-                    step_id=step_id,
-                    step=step,
-                )
-            )
+            steps.append(step)
+
+            yield event_builder.llm_completed(step=step)
 
             if response.tool_calls:
                 assistant_msg = LLMToolCallMessage(
@@ -138,60 +146,27 @@ class AgentBase:
                 final_answer_output: str | None = None
 
                 for call in response.tool_calls:
-                    await publish(
-                        AgentStepEvent(
-                            event_type="agent.tool.started",
-                            step_index=step_index,
-                            step_id=step_id,
-                            tool_call=call,
-                        )
-                    )
+                    yield event_builder.tool_started(tool_call=call)
                     try:
                         tool_output = await self.executor.execute_tool(call)
                     except Exception as exc:
                         error_msg = str(exc)
                         failed_result = ToolExecutionResult(call=call, error=error_msg)
                         step.tool_results.append(failed_result)
-                        await publish(
-                            AgentStepEvent(
-                                event_type="agent.tool.failed",
-                                step_index=step_index,
-                                step_id=step_id,
-                                tool_call=call,
-                                tool_result=failed_result,
-                                error=error_msg,
-                            )
+                        yield event_builder.tool_failed(
+                            tool_call=call,
+                            tool_result=failed_result,
+                            error=error_msg,
                         )
-                        await publish(
-                            AgentStepEvent(
-                                event_type="agent.step.failed",
-                                step_index=step_index,
-                                step_id=step_id,
-                                step=step,
-                                error=error_msg,
-                            )
-                        )
-                        await publish(
-                            AgentStepEvent(
-                                event_type="agent.run.completed",
-                                step_index=step_index,
-                                step_id=step_id,
-                                step=step,
-                                error=error_msg,
-                            )
-                        )
+                        yield event_builder.step_failed(step=step, error=error_msg)
+                        yield event_builder.run_completed(step=step, error=error_msg)
                         raise
 
                     tool_result = ToolExecutionResult(call=call, output=tool_output)
                     step.tool_results.append(tool_result)
-                    await publish(
-                        AgentStepEvent(
-                            event_type="agent.tool.completed",
-                            step_index=step_index,
-                            step_id=step_id,
-                            tool_call=call,
-                            tool_result=tool_result,
-                        )
+                    yield event_builder.tool_completed(
+                        tool_call=call,
+                        tool_result=tool_result,
                     )
 
                     if call.name == "final_answer":
@@ -206,83 +181,45 @@ class AgentBase:
                         )
                     )
 
-                await publish(
-                    AgentStepEvent(
-                        event_type="agent.step.completed",
-                        step_index=step_index,
-                        step_id=step_id,
-                        step=step,
-                    )
-                )
+                yield event_builder.step_completed(step=step)
 
                 if final_answer_output is not None:
-                    await publish(
-                        AgentStepEvent(
-                            event_type="agent.run.completed",
-                            step_index=step_index,
-                            step_id=step_id,
-                            step=step,
-                            annotations={"final_output": final_answer_output},
-                        )
+                    yield event_builder.run_completed(
+                        step=step,
+                        annotations={"final_output": final_answer_output},
                     )
-                    return AgentResponse(turns=turns, final_output=final_answer_output)
+                    return
 
                 continue
 
-            final_answer = response.text.strip()
+            final_answer = response.text
 
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.step.completed",
-                    step_index=step_index,
-                    step_id=step_id,
-                    step=step,
-                )
-            )
+            yield event_builder.step_completed(step=step)
 
             if final_answer:
-                await publish(
-                    AgentStepEvent(
-                        event_type="agent.run.completed",
-                        step_index=step_index,
-                        step_id=step_id,
-                        step=step,
-                        annotations={"final_output": final_answer},
-                    )
+                yield event_builder.run_completed(
+                    step=step,
+                    annotations={"final_output": final_answer},
                 )
-                return AgentResponse(turns=turns, final_output=final_answer)
+                return
 
             messages.append(LLMMessage(role="assistant", content=""))
 
         error_msg = "Agent exceeded maximum reasoning turns without answering"
-        if turns:
-            last_step = turns[-1]
-            last_index = len(turns) - 1
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.step.failed",
-                    step_index=last_index,
-                    step_id=last_step.step_id,
-                    step=last_step,
-                    error=error_msg,
-                )
+        if steps:
+            last_step = steps[-1]
+            last_index = len(steps) - 1
+            event_builder = AgentStepEventBuilder(
+                step_index=last_index,
+                step_id=last_step.step_id,
             )
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.run.completed",
-                    step_index=last_index,
-                    step_id=last_step.step_id,
-                    step=last_step,
-                    error=error_msg,
-                )
-            )
+            yield event_builder.step_failed(step=last_step, error=error_msg)
+            yield event_builder.run_completed(step=last_step, error=error_msg)
         else:
-            await publish(
-                AgentStepEvent(
-                    event_type="agent.run.completed",
-                    step_index=0,
-                    step_id=str(uuid4()),
-                    error=error_msg,
-                )
+            yield AgentStepEvent(
+                event_type="agent.run.completed",
+                step_index=0,
+                step_id=str(uuid4()),
+                error=error_msg,
             )
         raise AceAIRuntimeError(error_msg)

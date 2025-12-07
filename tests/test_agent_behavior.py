@@ -2,7 +2,7 @@ import pytest
 
 from aceai.agent import AgentBase
 from aceai.errors import AceAIRuntimeError
-from aceai.models import AgentResponse, AgentStepEvent
+from aceai.models import AgentStepEvent
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMToolCall
 
@@ -28,6 +28,10 @@ class StubLLMService:
         return self._responses.pop(0)
 
 
+async def collect_events(agent: AgentBase, question: str) -> list[AgentStepEvent]:
+    return [event async for event in agent.run(question)]
+
+
 @pytest.mark.anyio
 async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
     responses = [LLMResponse(text="  answer  ")]
@@ -39,9 +43,10 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
         executor=StubExecutor(),
     )
 
-    response = await agent.handle("   ")
+    events = await collect_events(agent, "   ")
+    final_event = events[-1]
 
-    assert response.final_output == "answer"
+    assert final_event.annotations["final_output"] == "  answer  "
     assert len(llm_service.calls) == 1
     assert llm_service.calls[0]["messages"][-1].content == "   "
 
@@ -58,9 +63,9 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
         executor=executor,
     )
 
-    response = await agent.handle("What time is it?")
+    events = await collect_events(agent, "What time is it?")
 
-    assert response.final_output == "hello world"
+    assert events[-1].annotations["final_output"] == "  hello world  "
     assert len(llm_service.calls) == 1
 
 
@@ -81,9 +86,9 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
         max_turns=3,
     )
 
-    response = await agent.handle("Need data")
+    events = await collect_events(agent, "Need data")
 
-    assert response.final_output == "answer after tool"
+    assert events[-1].annotations["final_output"] == "answer after tool"
     assert len(llm_service.calls) == 2
     assert executor.calls[0].name == "lookup"
 
@@ -99,14 +104,18 @@ async def test_agent_returns_final_answer_from_tool() -> None:
         executor=StubExecutor({"final_answer": '"Done"'}),
     )
 
-    response = await agent.handle("Finish up")
+    events = await collect_events(agent, "Finish up")
+    final_event = events[-1]
 
-    assert response.final_output == '"Done"'
+    assert final_event.annotations["final_output"] == '"Done"'
+    assert final_event.step is not None
+    assert final_event.step.tool_results
+    assert final_event.step.tool_results[0].output == '"Done"'
 
 
 @pytest.mark.anyio
 async def test_agent_raises_after_exceeding_turn_limit() -> None:
-    responses = [LLMResponse(text="   ")]
+    responses = [LLMResponse(text="")]
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -115,8 +124,13 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
         max_turns=1,
     )
 
+    events: list[AgentStepEvent] = []
     with pytest.raises(AceAIRuntimeError, match="exceeded maximum reasoning turns"):
-        await agent.handle("try again")
+        async for evt in agent.run("try again"):
+            events.append(evt)
+
+    assert events[-1].event_type == "agent.run.completed"
+    assert events[-1].error == "Agent exceeded maximum reasoning turns without answering"
 
 
 @pytest.mark.anyio
@@ -131,14 +145,13 @@ async def test_agent_can_return_structured_response() -> None:
         executor=StubExecutor({"final_answer": '"Done"'}),
     )
 
-    response = await agent.handle("Finish up")
-    assert isinstance(response, AgentResponse)
-    assert response.final_output == '"Done"'
-    assert len(response.turns) == 1
-    turn = response.turns[0]
-    assert turn.tool_results
-    assert turn.tool_results[0].output == '"Done"'
-    assert turn.llm_response.text == "calling tool"
+    events = await collect_events(agent, "Finish up")
+    final_event = events[-1]
+
+    assert final_event.annotations["final_output"] == '"Done"'
+    assert final_event.step is not None
+    assert final_event.step.llm_response.text == "calling tool"
+    assert final_event.step.tool_results[0].output == '"Done"'
 
 
 @pytest.mark.anyio
@@ -150,10 +163,8 @@ async def test_agent_stream_emits_run_completed_event() -> None:
         executor=StubExecutor(),
     )
 
-    events: list[AgentStepEvent] = []
-    async for evt in agent.stream("Question?"):
-        events.append(evt)
+    events = await collect_events(agent, "Question?")
 
     assert events[0].event_type == "agent.llm.started"
     assert events[-1].event_type == "agent.run.completed"
-    assert events[-1].annotations["final_output"] == "hello"
+    assert events[-1].annotations["final_output"] == "  hello  "
