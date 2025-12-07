@@ -11,8 +11,9 @@ class IEventBus(Protocol):
     async def publish(self, event: AgentStepEvent) -> None:
         """Broadcast a new event to all active subscribers."""
 
-    def subscribe(self) -> AsyncIterator[AgentStepEvent]:
+    async def subscribe(self) -> AsyncIterator[AgentStepEvent]:
         """Obtain an async iterator over future events."""
+        raise NotImplementedError
 
     async def close(self) -> None:
         """Release resources and signal subscribers to stop."""
@@ -31,7 +32,7 @@ class InMemoryEventBus(IEventBus):
         queues = tuple(self._subscribers)
         await asyncio.gather(*(queue.put(event) for queue in queues))
 
-    def subscribe(self) -> AsyncIterator[AgentStepEvent]:
+    async def subscribe(self) -> AsyncIterator[AgentStepEvent]:
         if self._closed:
             raise RuntimeError("InMemoryEventBus is already closed")
 

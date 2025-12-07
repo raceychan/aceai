@@ -17,8 +17,6 @@ class AgentBase:
     Required dependencies are injected explicitly (no optional defaults).
     """
 
-    agent_registry: dict[str, "AgentBase"] = {}
-
     def __init__(
         self,
         *,
@@ -35,7 +33,6 @@ class AgentBase:
         self.executor = executor
         self.max_turns = max_turns
         self._event_bus: IEventBus = event_bus or InMemoryEventBus()
-        self.agent_registry[self.__class__.__name__] = self
 
     async def handle(
         self,
@@ -59,7 +56,7 @@ class AgentBase:
     ) -> AsyncIterator[AgentStepEvent]:
         """Stream AgentStepEvent entries as the agent reasons."""
 
-        subscription = self._event_bus.subscribe()
+        subscription = await self._event_bus.subscribe()
 
         async def runner() -> None:
             try:
