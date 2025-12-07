@@ -55,6 +55,7 @@ class LLMCompletedEvent(AgentLifecycleEvent):
 
 class ToolLifecycleEvent(AgentLifecycleEvent):
     tool_call: LLMToolCall
+    tool_name: str
 
 
 class ToolStartedEvent(ToolLifecycleEvent):
@@ -150,6 +151,7 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
+            tool_name=tool_call.name,
         )
 
     def tool_output(self, *, tool_call: LLMToolCall, text_delta: str) -> ToolOutputEvent:
@@ -157,6 +159,7 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
+            tool_name=tool_call.name,
             text_delta=text_delta,
         )
 
@@ -170,6 +173,7 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
+            tool_name=tool_call.name,
             tool_result=tool_result,
         )
 
@@ -184,6 +188,7 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
+            tool_name=tool_call.name,
             tool_result=tool_result,
             error=error,
         )

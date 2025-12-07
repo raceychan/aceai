@@ -6,6 +6,7 @@ from aceai.events import (
     LLMStartedEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    ToolStartedEvent,
 )
 from aceai.errors import AceAIRuntimeError
 from aceai.llm import LLMResponse
@@ -99,6 +100,9 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     assert events[-1].final_answer == "answer after tool"
     assert len(llm_service.calls) == 2
     assert executor.calls[0].name == "lookup"
+    tool_events = [event for event in events if isinstance(event, ToolStartedEvent)]
+    assert tool_events
+    assert tool_events[0].tool_name == "lookup"
 
 
 @pytest.mark.anyio

@@ -39,7 +39,11 @@ class OpenAI(LLMProviderBase):
     """OpenAI provider for LLM completions."""
 
     def __init__(
-        self, client: AsyncOpenAI, *, default_model: str, default_stream_model: str
+        self,
+        client: AsyncOpenAI,
+        *,
+        default_model: str,
+        default_stream_model: str | None = None,
     ):
         self._client = client
         self._default_model = default_model
@@ -51,7 +55,7 @@ class OpenAI(LLMProviderBase):
 
     @property
     def default_stream_model(self) -> str:
-        return self._default_stream_model
+        return self._default_stream_model or self._default_model
 
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
@@ -370,9 +374,9 @@ class OpenAI(LLMProviderBase):
     async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
         kwargs = self._build_base_response_kwargs(
-            request, default_model=self._default_stream_model
+            request, default_model=self.default_stream_model
         )
-        model_name = kwargs.get("model", self._default_stream_model)
+        model_name = kwargs.get("model", self.default_stream_model)
         start = time.perf_counter()
         stream_manager = self._client.responses.stream(**kwargs)
         final_response: Response | None = None

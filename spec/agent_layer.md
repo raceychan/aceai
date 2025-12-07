@@ -110,6 +110,7 @@ class LLMOutputDeltaEvent(AgentLifecycleEvent):
 class ToolStartedEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.tool.started"
     tool_call: LLMToolCall
+    tool_name: str
 
 class ToolOutputEvent(ToolStartedEvent):
     EVENT_TYPE = "agent.tool.output"
@@ -169,7 +170,7 @@ type AgentEvent = (
 | `agent.llm.started` | agent 启动某 step 的 LLM 请求 | `llm_delta=None`，`annotations` 可含请求元信息 |
 | `agent.llm.output_text.delta` | 将 provider 的 `response.output_text.delta` 透传给调用方 | `llm_delta` 填文本片段，`annotations["raw_event"]` 可带底层 JSON |
 | `agent.llm.completed` | provider streaming 结束且拿到完整 `LLMResponse` | `LLMCompletedEvent.step` 包含 turn 快照 |
-| `agent.tool.started` | agent 决定执行工具 | `ToolStartedEvent.tool_call` 填充 executor 输入 |
+| `agent.tool.started` | agent 决定执行工具 | `ToolStartedEvent.tool_name`（方便 UI）+ `tool_call` 用于 executor |
 | `agent.tool.output` | 工具 streaming/日志输出 | `ToolOutputEvent.text_delta` 携增量字符串 |
 | `agent.tool.completed` | 工具执行成功 | `ToolCompletedEvent.tool_result` 记录 output |
 | `agent.tool.failed` | 工具执行报错 | `ToolFailedEvent.error` + `tool_result` 供重试/UI |

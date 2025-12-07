@@ -1,37 +1,18 @@
 import json
+import os
 from typing import Annotated
 
+from dotenv import load_dotenv
 from httpx import AsyncClient
 from ididi import use
 from loguru import logger
+from openai import AsyncOpenAI
 
 from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
 from aceai.errors import AceAIValidationError
+from aceai.events import RunCompletedEvent, RunFailedEvent
 from aceai.executor import LoggingToolExecutor
 from aceai.llm.openai import OpenAI
-
-
-def init_langfuse():
-
-    from dotenv import dotenv_values, load_dotenv
-
-    load_dotenv(".env")
-    values = dotenv_values(".env")
-
-    import os
-
-    assert os.environ["LANGFUSE_SECRET_KEY"] == values["LANGFUSE_SECRET_KEY"]
-    assert os.environ["LANGFUSE_PUBLIC_KEY"] == values["LANGFUSE_PUBLIC_KEY"]
-    from langfuse import Langfuse
-
-    client = Langfuse(
-        secret_key=values["LANGFUSE_SECRET_KEY"],
-        public_key=values["LANGFUSE_PUBLIC_KEY"],
-        host=values["LANGFUSE_HOST"],
-    )
-    client.auth_check()
-    return client
-
 
 WAREHOUSE_ORDERS = {
     "ORD-200": {
@@ -204,14 +185,18 @@ async def fetch_weather_window(
         await client.aclose()
 
 
-def build_agent(prompt: str, max_turns: int, tools: list[Tool]) -> AgentBase:
-    from langfuse import openai
-
-    client = openai.AsyncOpenAI(api_key=values["OPENAI_API_KEY"])
+def build_agent(
+    prompt: str,
+    max_turns: int,
+    tools: list[Tool],
+    *,
+    model: str,
+    openai_api_key: str,
+) -> AgentBase:
+    client = AsyncOpenAI(api_key=openai_api_key)
     openai_llm = OpenAI(
         client=client,
-        default_model="gpt-4",
-        default_stream_model="gpt-4-turbo",
+        default_model=model,
     )
     graph = Graph()
 
@@ -230,12 +215,13 @@ def build_agent(prompt: str, max_turns: int, tools: list[Tool]) -> AgentBase:
         default_model="gpt-4",
         llm_service=llm_service,
         executor=executor,
-        max_turns=max_turns,
+        max_steps=max_turns,
     )
 
 
 async def main():
-    init_langfuse()
+    load_dotenv(".env")
+    api_key = os.environ["OPENAI_API_KEY"]
     multi_step_question = """
     You are preparing a logistics brief for Helios Labs covering order ORD-200.
     
@@ -262,10 +248,22 @@ async def main():
             estimate_shipping_cost,
             fetch_weather_window,
         ],
+        openai_api_key=api_key,
+        model="gpt-5.1",
     )
 
-    response = await agent.handle(multi_step_question)
-    print(response.final_output)
+    try:
+        async for event in agent.run(multi_step_question):
+            if isinstance(event, RunCompletedEvent):
+                print(event.final_answer)
+                return
+            if isinstance(event, RunFailedEvent):
+                logger.error("Agent run failed: %s", event.error)
+    except Exception:
+        logger.exception("Agent execution aborted")
+        raise
+
+    raise RuntimeError("Agent exited without emitting a completion event")
 
 
 if __name__ == "__main__":

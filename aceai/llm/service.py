@@ -9,20 +9,9 @@ from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
 from openai import OpenAIError
 
-from aceai.errors import (
-    AceAIConfigurationError,
-    AceAIValidationError,
-    LLMProviderError,
-)
-from aceai.interface import is_set
+from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
-from .models import (
-    LLMMessage,
-    LLMProviderBase,
-    LLMRequest,
-    LLMResponse,
-    LLMStreamEvent,
-)
+from .models import LLMMessage, LLMProviderBase, LLMRequest, LLMResponse, LLMStreamEvent
 
 JSONDecodeErrors = (ValidationError, DecodeError)
 
@@ -71,7 +60,6 @@ class LLMService:
         # Apply default max_tokens based on settings and model if not provided
 
         req = self._apply_defaults(request)
-
         coro = self._get_current_provider().complete(req)
         timeout = self._timeout_seconds
 
@@ -120,9 +108,6 @@ class LLMService:
         stream_resp = self._get_current_provider().stream(req)
 
         async for event in stream_resp:
-            if is_set(event.text_delta):
-                # Placeholder hook for future instrumentation
-                pass
             yield event
 
     def _apply_defaults(self, request: LLMRequest) -> LLMRequest:
