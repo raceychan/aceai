@@ -1,5 +1,6 @@
 import pytest
 
+from aceai.errors import AceAIRuntimeError
 from aceai.agent import AgentBase
 from aceai.llm import LLMMessage, LLMResponse
 from aceai.llm.models import LLMToolCall
@@ -113,5 +114,5 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
         max_turns=1,
     )
 
-    with pytest.raises(RuntimeError, match="exceeded maximum reasoning turns"):
+    with pytest.raises(AceAIRuntimeError, match="exceeded maximum reasoning turns"):
         await agent.handle("try again")

@@ -1,5 +1,7 @@
 import pytest
 
+from aceai.errors import AceAIValidationError
+
 from aceai.llm.models import LLMMessage, LLMToolCall, LLMToolCallMessage
 
 
@@ -24,7 +26,7 @@ def test_llm_message_inplace_merge_requires_matching_roles() -> None:
     base = LLMMessage(role="user", content="Hi")
     other = LLMMessage(role="assistant", content="Nope")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(AceAIValidationError):
         base |= other
 
 

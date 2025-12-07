@@ -4,6 +4,8 @@ import pytest
 
 from ididi import use
 
+from aceai.errors import AceAIConfigurationError
+
 from aceai.interface import Record
 from aceai.tools import tool
 from aceai.tools._param import (

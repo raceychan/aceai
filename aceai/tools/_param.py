@@ -7,6 +7,7 @@ from ididi import USE_FACTORY_MARK, DependentNode
 from ididi.utils.typing_utils import flatten_annotated
 from msgspec import Meta, Struct, defstruct
 
+from aceai.errors import AceAIConfigurationError
 from aceai.interface import MISSING, JsonSchema, Maybe, is_present
 from aceai.tools.schema_generator import inline_schema
 
@@ -197,7 +198,9 @@ class ToolSignature:
         dep_nodes: dict[str, Callable[..., Any]] = {}
         for param in func_sig.parameters.values():
             if not param.annotation:
-                raise ValueError(f"Parameter {param.name!r} is missing type annotation")
+                raise AceAIConfigurationError(
+                    f"Parameter {param.name!r} is missing type annotation"
+                )
 
             param_metas = get_param_meta(param)
             if not param_metas:
@@ -212,7 +215,7 @@ class ToolSignature:
             dep_node = get_dep_node(param_metas, param_type)
             if dep_node:
                 if param.name in params:
-                    raise ValueError(
+                    raise AceAIConfigurationError(
                         f"Parameter {param.name!r} is defined as both ToolParam and DependentNode"
                     )
                 dep_nodes[param.name] = dep_node.factory

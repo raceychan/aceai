@@ -1,4 +1,5 @@
 import pytest
+from aceai.errors import AceAIValidationError
 from msgspec import Struct
 
 from aceai.llm.models import (
@@ -89,10 +90,10 @@ async def test_llm_service_stream_uses_default_stream_model() -> None:
 async def test_complete_json_validates_message_structure() -> None:
     service = LLMService([RecordingProvider()], timeout_seconds=1.0)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(AceAIValidationError):
         await service.complete_json(schema=Payload, messages=[])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(AceAIValidationError):
         await service.complete_json(
             schema=Payload,
             messages=[LLMMessage(role="user", content="hi")],

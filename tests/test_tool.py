@@ -2,6 +2,8 @@ import pytest
 from ididi import use
 from msgspec import DecodeError, ValidationError
 
+from aceai.errors import AceAIConfigurationError
+
 from aceai.tools import tool
 from aceai.tools._param import Annotated, spec
 
@@ -94,7 +96,9 @@ def test_tool_from_func_raises_when_param_annotation_is_none() -> None:
     def bad_function(x: None, y: Annotated[int, spec(description="Not used")]) -> int:
         return y
 
-    with pytest.raises(ValueError, match="Parameter 'x' is missing type annotation"):
+    with pytest.raises(
+        AceAIConfigurationError, match="Parameter 'x' is missing type annotation"
+    ):
         tool(bad_function)
 
 

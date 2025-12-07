@@ -6,6 +6,7 @@ from typing import Any, AsyncIterator, BinaryIO, Literal, Required, Self, TypedD
 from msgspec import UNSET, field
 from msgspec.structs import asdict
 
+from aceai.errors import AceAIImplementationError, AceAIValidationError
 from aceai.interface import Record, Struct, Unset
 from aceai.tools.interface import ToolSpec
 
@@ -52,7 +53,9 @@ class LLMMessage(Struct, kw_only=True):
         if isinstance(other, str):
             other = LLMMessage(role=self.role, content=other)
         elif self.role != other.role:
-            raise ValueError(f"Can't merge {other}, {self.role=}, {other.role=}")
+            raise AceAIValidationError(
+                f"Can't merge {other}, {self.role=}, {other.role=}"
+            )
         self.content += other.content
         return self
 
@@ -318,26 +321,36 @@ class LLMProviderBase(ABC):
     @abstractmethod
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Complete a chat conversation with a unified request."""
-        raise NotImplementedError
+        raise AceAIImplementationError(
+            f"{self.__class__.__name__} must implement complete()"
+        )
 
     @abstractmethod
     def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
         """Preferred streaming API returning structured events."""
-        raise NotImplementedError
+        raise AceAIImplementationError(
+            f"{self.__class__.__name__} must implement stream()"
+        )
 
     @property
     @abstractmethod
     def default_model(self) -> str:
         """Return the provider's default model identifier."""
-        raise NotImplementedError
+        raise AceAIImplementationError(
+            f"{self.__class__.__name__}.default_model must be implemented"
+        )
 
     @property
     @abstractmethod
     def default_stream_model(self) -> str:
         """Return the provider's default streaming model identifier."""
-        raise NotImplementedError
+        raise AceAIImplementationError(
+            f"{self.__class__.__name__}.default_stream_model must be implemented"
+        )
 
     @abstractmethod
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
-        raise NotImplementedError
+        raise AceAIImplementationError(
+            f"{self.__class__.__name__} must implement stt()"
+        )

@@ -4,6 +4,8 @@ import httpx
 import pytest
 from ididi import Graph, use
 
+from aceai.errors import AceAIRuntimeError
+
 from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
@@ -59,7 +61,7 @@ async def async_increment(
 def unreliable_tool(
     value: Annotated[int, spec(description="Value that triggers failure")],
 ) -> int:
-    raise RuntimeError("expected failure")
+    raise AceAIRuntimeError("expected failure")
 
 
 def build_async_client() -> httpx.AsyncClient:
@@ -168,7 +170,7 @@ async def test_logging_tool_executor_logs_and_reraises_failures(graph: Graph) ->
         call_id="req-fail",
     )
 
-    with pytest.raises(RuntimeError, match="expected failure"):
+    with pytest.raises(AceAIRuntimeError, match="expected failure"):
         await executor.execute_tool(call)
 
     assert logger.info_messages == [

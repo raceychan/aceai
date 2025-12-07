@@ -9,6 +9,11 @@ from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
 from openai import OpenAIError
 
+from aceai.errors import (
+    AceAIConfigurationError,
+    AceAIValidationError,
+    LLMProviderError,
+)
 from aceai.interface import is_set
 
 from .models import (
@@ -30,12 +35,6 @@ ERROR_PROMPT_TEMPLATE = (
     "Please respond again with ONLY valid JSON that conforms to the schema. "
     "Do not include explanations or surrounding text."
 )
-
-
-class LLMProviderError(Exception):
-    """Custom exception for LLM provider errors."""
-
-    pass
 
 
 class LLMService:
@@ -60,7 +59,7 @@ class LLMService:
         max_retries: int = 2,
     ):
         if not providers:
-            raise ValueError("At least one provider is required")
+            raise AceAIConfigurationError("At least one provider is required")
         self._providers = providers
         self._current_provider_index = 0
         self._timeout_seconds = timeout_seconds
@@ -190,15 +189,15 @@ class LLMService:
         error to help the LLM self-correct, retrying up to `max_retries` times.
         """
         if "messages" not in request:
-            raise ValueError("complete_json requires a messages list")
+            raise AceAIValidationError("complete_json requires a messages list")
 
         messages = request["messages"]
         if not messages:
-            raise ValueError("complete_json requires at least one message")
+            raise AceAIValidationError("complete_json requires at least one message")
 
         first_message = messages[0]
         if first_message.role != "system":
-            raise ValueError(
+            raise AceAIValidationError(
                 "complete_json expects the first message to be a system message"
             )
 

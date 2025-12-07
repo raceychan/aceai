@@ -1,3 +1,4 @@
+from .errors import AceAIRuntimeError
 from .executor import ToolExecutor
 from .llm import LLMMessage, LLMResponse, LLMService
 from .llm.models import LLMToolCallMessage, LLMToolUseMessage
@@ -68,4 +69,6 @@ class AgentBase:
                 return final_answer
             messages.append(LLMMessage(role="assistant", content=""))
 
-        raise RuntimeError("Agent exceeded maximum reasoning turns without answering")
+        raise AceAIRuntimeError(
+            "Agent exceeded maximum reasoning turns without answering"
+        )

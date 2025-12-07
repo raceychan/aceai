@@ -9,6 +9,8 @@ from pathlib import Path
 from git import GitCommandError, Repo
 from packaging.version import Version
 
+from aceai.errors import AceAIValidationError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = PROJECT_ROOT / "aceai" / "__init__.py"
 
@@ -83,7 +85,7 @@ def bump_version(version: Version, increment: str) -> Version:
         return Version(f"{version.major}.{version.minor + 1}.0")
     if increment == "major":
         return Version(f"{version.major + 1}.0.0")
-    raise ValueError(f"Unsupported increment: {increment}")
+    raise AceAIValidationError(f"Unsupported increment: {increment}")
 
 
 def stage_and_commit(repo: Repo, version: str) -> None:

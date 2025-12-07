@@ -14,13 +14,16 @@ from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
+from aceai.errors import AceAIRuntimeError, AceAIValidationError
 from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
 
 from .models import (
     LLMMessage,
     LLMProviderBase,
+    LLMProviderMeta,
     LLMRequest,
     LLMResponse,
+    LLMResponseFormat,
     LLMSegment,
     LLMStreamChunk,
     LLMStreamEvent,
@@ -29,8 +32,6 @@ from .models import (
     LLMToolCallMessage,
     LLMToolUseMessage,
     LLMUsage,
-    LLMProviderMeta,
-    LLMResponseFormat,
     ToolSpec,
 )
 
@@ -80,9 +81,7 @@ class OpenAI(LLMProviderBase):
             kwargs["max_output_tokens"] = max_tokens
 
         if is_present(temperature := request.get("temperature", MISSING)):
-            if model_name.startswith("gpt-5"):
-                pass
-            else:
+            if not model_name.startswith("gpt-5"):
                 kwargs["temperature"] = temperature
 
         if is_present(top_p := request.get("top_p", MISSING)):
@@ -150,7 +149,7 @@ class OpenAI(LLMProviderBase):
             case "text":
                 return None
             case _:
-                raise RuntimeError(
+                raise AceAIValidationError(
                     f"Unsupported OpenAI response format type: {response_format.type}"
                 )
 
@@ -220,7 +219,7 @@ class OpenAI(LLMProviderBase):
             if isinstance(item, ResponseFunctionToolCall):
                 call_id = item.call_id or item.id
                 if call_id is None:
-                    raise RuntimeError(
+                    raise AceAIRuntimeError(
                         "OpenAI function call response did not include a call identifier"
                     )
                 calls.append(
