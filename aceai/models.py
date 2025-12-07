@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
@@ -90,6 +88,12 @@ class AgentStep(Record, kw_only=True):
     )
     """Ordered tool invocation outputs associated with this step."""
 
+    reasoning_log: str = ""
+    """Streaming log of incremental LLM output deltas for this step."""
+
+    reasoning_log_truncated: bool = False
+    """Marks whether the reasoning log was truncated to enforce buffer limits."""
+
     annotations: AgentStepAnnotations = field(default_factory=AgentStepAnnotations)
     """Optional metadata bundle for safety/citation data."""
 
@@ -102,5 +106,3 @@ class AgentResponse(Record, kw_only=True):
 
     final_output: str
     """User-facing answer synthesized by the agent."""
-
-

@@ -4,6 +4,8 @@ from uuid import uuid4
 from .errors import AceAIConfigurationError, AceAIRuntimeError
 from .events import AgentEvent, AgentEventBuilder, RunCompletedEvent
 from .executor import ToolExecutor
+from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
+from .interface import is_set
 from .llm import LLMMessage, LLMResponse, LLMService
 from .llm.models import LLMToolCall, LLMToolCallMessage, LLMToolUseMessage
 from .models import AgentStep, ToolExecutionResult
@@ -30,14 +32,24 @@ class AgentBase:
         llm_service: LLMService,
         executor: ToolExecutor,
         max_steps: int = 5,
+        delta_chunk_size: int = 256,
+        reasoning_log_max_chars: int | None = None,
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
+        if delta_chunk_size < 0:
+            raise AceAIConfigurationError("delta_chunk_size must be non-negative")
+        if reasoning_log_max_chars is not None and reasoning_log_max_chars < 0:
+            raise AceAIConfigurationError(
+                "reasoning_log_max_chars must be non-negative or None"
+            )
         self.prompt = prompt
         self.default_model = default_model
         self.llm_service = llm_service
         self.executor = executor
         self.max_steps = max_steps
+        self.delta_chunk_size = delta_chunk_size
+        self.reasoning_log_max_chars = reasoning_log_max_chars
 
     async def _run_step(
         self,
@@ -54,32 +66,95 @@ class AgentBase:
         )
         yield event_builder.llm_started()
 
-        response: LLMResponse = await self.llm_service.complete(
+        steps.append(
+            AgentStep(
+                step_id=step_id,
+                llm_response=LLMResponse(),
+                reasoning_log="",
+                reasoning_log_truncated=False,
+            )
+        )
+
+        log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
+        chunker = LLMDeltaChunker(self.delta_chunk_size)
+
+        response: LLMResponse | None = None
+        stream = self.llm_service.stream(
             messages=messages,
             tools=self.executor.tool_schemas,
             metadata={"model": selected_model},
         )
-        step = AgentStep(step_id=step_id, llm_response=response)
-        steps.append(step)
+        try:
+            async for stream_event in stream:
+                if stream_event.event_type == "response.output_text.delta":
+                    if is_set(stream_event.text_delta):
+                        for chunk in chunker.push(stream_event.text_delta):
+                            log_buffer.append(chunk)
+                            yield event_builder.llm_text_delta(text_delta=chunk)
+                    continue
+
+                if stream_event.event_type == "response.function_call_arguments.delta":
+                    # TODO: emit tool call argument deltas once planner wiring lands.
+                    continue
+
+                if stream_event.event_type == "response.error":
+                    if is_set(stream_event.error) and stream_event.error:
+                        raise AceAIRuntimeError(stream_event.error)
+                    raise AceAIRuntimeError("LLM streaming error")
+
+                if stream_event.event_type == "response.completed":
+                    if is_set(stream_event.response):
+                        response = stream_event.response
+                        for chunk in chunker.flush():
+                            log_buffer.append(chunk)
+                            yield event_builder.llm_text_delta(text_delta=chunk)
+                        break
+                    raise AceAIRuntimeError(
+                        "LLM stream completed without a response payload"
+                    )
+            if response is None:
+                for chunk in chunker.flush():
+                    log_buffer.append(chunk)
+                    if chunk:
+                        yield event_builder.llm_text_delta(text_delta=chunk)
+        except Exception:
+            for chunk in chunker.flush():
+                log_buffer.append(chunk)
+                if chunk:
+                    yield event_builder.llm_text_delta(text_delta=chunk)
+            raise
+        finally:
+            reasoning_log = log_buffer.snapshot()
+            final_response = response or LLMResponse(text=reasoning_log)
+            steps[step_index] = AgentStep(
+                step_id=step_id,
+                llm_response=final_response,
+                reasoning_log=reasoning_log,
+                reasoning_log_truncated=log_buffer.truncated,
+            )
+
+        step = steps[step_index]
+        if response is None:
+            raise AceAIRuntimeError("LLM stream ended without completion")
 
         yield event_builder.llm_completed(step=step)
 
-        if not response.tool_calls:
+        if not step.llm_response.tool_calls:
             yield event_builder.step_completed(step=step)
 
-            if final_answer := response.text:
+            if final_answer := step.llm_response.text:
                 yield event_builder.run_completed(
                     step=step,
                     final_answer=final_answer,
                 )
         else:
             assistant_msg = LLMToolCallMessage(
-                content=response.text,
-                tool_calls=response.tool_calls,
+                content=step.llm_response.text,
+                tool_calls=step.llm_response.tool_calls,
             )
             messages.append(assistant_msg)
 
-            for call in response.tool_calls:
+            for call in step.llm_response.tool_calls:
                 yield event_builder.tool_started(tool_call=call)
                 try:
                     tool_output = await self.executor.execute_tool(call)
