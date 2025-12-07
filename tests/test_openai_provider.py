@@ -44,6 +44,7 @@ def fake_openai_client():
                 output_text="",
                 output=[],
                 usage=None,
+                status="completed",
             )
 
     class FakeResponses:
@@ -54,6 +55,7 @@ def fake_openai_client():
                 output_text="",
                 output=[],
                 usage=None,
+                status="completed",
             )
 
         def stream(self, **kwargs):
@@ -149,13 +151,20 @@ def test_format_messages_for_responses_includes_tool_outputs(
     assert formatted[2]["output"] == "result"
 
 
-def test_format_messages_require_tool_output_call_id(
+def test_format_messages_allows_tool_output_without_call_id(
     openai_provider: OpenAI,
 ) -> None:
     messages = [LLMToolUseMessage(content="oops", call_id=None)]
 
-    with pytest.raises(ValueError):
-        openai_provider._format_messages_for_responses(messages)
+    formatted = openai_provider._format_messages_for_responses(messages)
+
+    assert formatted == [
+        {
+            "type": "function_call_output",
+            "call_id": None,
+            "output": "oops",
+        }
+    ]
 
 
 def test_build_text_config_variants(openai_provider: OpenAI) -> None:
@@ -192,6 +201,7 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
             )
         ],
         usage=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3),
+        status="completed",
     )
 
     llm_response = openai_provider._to_llm_response(response)
@@ -218,6 +228,7 @@ def test_extract_tool_calls_falls_back_to_item_id(
         output_text="",
         output=[tool_call],
         usage=None,
+        status="in_progress",
     )
 
     llm_response = openai_provider._to_llm_response(response)
@@ -235,8 +246,11 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         sequence_number=1,
         type="response.output_text.delta",
     )
-    text_chunk = openai_provider._map_stream_event(text_event)
-    assert text_chunk is not None and text_chunk.text_delta == "Hi"
+    text_chunk = openai_provider._map_stream_event(
+        text_event, model_name="gpt-4o"
+    )
+    assert text_chunk is not None
+    assert text_chunk.chunk.text_delta == "Hi"
 
     tool_event = ResponseFunctionCallArgumentsDeltaEvent(
         delta='{"value":1}',
@@ -245,9 +259,11 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         sequence_number=2,
         type="response.function_call_arguments.delta",
     )
-    tool_chunk = openai_provider._map_stream_event(tool_event)
+    tool_chunk = openai_provider._map_stream_event(tool_event, model_name="gpt-4o")
     assert tool_chunk is not None
-    assert tool_chunk.tool_call_delta.arguments_delta == '{"value":1}'
+    assert (
+        tool_chunk.chunk.tool_call_delta.arguments_delta == '{"value":1}'
+    )
 
     error_event = ResponseErrorEvent(
         code=None,
@@ -256,13 +272,17 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         sequence_number=3,
         type="error",
     )
-    error_chunk = openai_provider._map_stream_event(error_event)
-    assert error_chunk is not None and error_chunk.error == "boom"
+    error_chunk = openai_provider._map_stream_event(error_event, model_name="gpt-4o")
+    assert error_chunk is not None
+    assert error_chunk.chunk.error == "boom"
 
     fallback_event = SimpleNamespace(
         type="response.output_text.delta",
         delta="fallback",
         item_id=None,
     )
-    fallback_chunk = openai_provider._map_stream_event(fallback_event)
-    assert fallback_chunk is not None and fallback_chunk.text_delta == "fallback"
+    fallback_chunk = openai_provider._map_stream_event(
+        fallback_event, model_name="gpt-4o"
+    )
+    assert fallback_chunk is not None
+    assert fallback_chunk.chunk.text_delta == "fallback"

@@ -27,16 +27,21 @@ class StubLLMService:
 
 
 @pytest.mark.anyio
-async def test_agent_requires_non_empty_question() -> None:
+async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
+    responses = [LLMResponse(text="  answer  ")]
+    llm_service = StubLLMService(responses)
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
-        llm_service=StubLLMService([]),
+        llm_service=llm_service,
         executor=StubExecutor(),
     )
 
-    with pytest.raises(ValueError):
-        await agent.handle("   ")
+    answer = await agent.handle("   ")
+
+    assert answer == "answer"
+    assert len(llm_service.calls) == 1
+    assert llm_service.calls[0]["messages"][-1].content == "   "
 
 
 @pytest.mark.anyio
