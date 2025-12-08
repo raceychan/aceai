@@ -7,18 +7,29 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
+from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
-from aceai.errors import AceAIRuntimeError, AceAIValidationError
+from aceai.errors import (
+    AceAIConfigurationError,
+    AceAIRuntimeError,
+    AceAIValidationError,
+)
 from aceai.llm import LLMMessage
 from aceai.llm.models import (
+    LLMResponseFormat,
     LLMToolCall,
     LLMToolCallMessage,
     LLMToolUseMessage,
-    LLMResponseFormat,
 )
 from aceai.llm.openai import OpenAI
 from aceai.tools.interface import ToolSpec
+
+
+class NamespaceWithDump(SimpleNamespace):
+    def model_dump(self):
+        return dict(self.__dict__)
 
 
 @pytest.fixture
@@ -49,22 +60,24 @@ def fake_openai_client():
         def __init__(self):
             self.create_calls: list[dict] = []
             self.stream_calls: list[dict] = []
-            self.response_payload = SimpleNamespace(
+            self.response_payload = NamespaceWithDump(
                 id="fake-response",
                 model="fake-model",
                 output_text="",
                 output=[],
                 usage=None,
                 status="completed",
+                reasoning=None,
             )
             self.stream_events: list = []
-            self.final_stream_response = SimpleNamespace(
+            self.final_stream_response = NamespaceWithDump(
                 id="fake-stream-response",
                 model="fake-stream-model",
                 output_text="",
                 output=[],
                 usage=None,
                 status="completed",
+                reasoning=None,
             )
 
         async def create(self, **kwargs):
@@ -96,8 +109,7 @@ def fake_openai_client():
 def openai_provider(fake_openai_client) -> OpenAI:
     return OpenAI(
         client=fake_openai_client,
-        default_model="gpt-4o",
-        default_stream_model="gpt-4o-mini",
+        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
 
@@ -119,13 +131,10 @@ def test_build_base_response_kwargs_maps_request_fields(
         "response_format": LLMResponseFormat(type="json_object"),
         "tools": [tool_spec],
         "tool_choice": "auto",
-        "metadata": {},
     }
 
     with pytest.warns(UserWarning):
-        params = openai_provider._build_base_response_kwargs(
-            request, default_model="gpt-4o"
-        )
+        params = openai_provider._build_base_response_kwargs(request)
 
     assert params["model"] == "gpt-4o"
     assert params["max_output_tokens"] == 256
@@ -145,12 +154,32 @@ def test_build_base_response_kwargs_skips_temperature_for_gpt5(
         "metadata": {"model": "gpt-5o-mini"},
     }
 
-    params = openai_provider._build_base_response_kwargs(
-        request, default_model="fallback"
-    )
+    params = openai_provider._build_base_response_kwargs(request)
 
     assert "temperature" not in params
     assert params["model"] == "gpt-5o-mini"
+
+
+def test_build_base_response_kwargs_rejects_reasoning_for_unsupported_model(
+    openai_provider: OpenAI,
+) -> None:
+    request = {
+        "messages": [LLMMessage(role="system", content="start")],
+        "metadata": {
+            "model": "gpt-4o",
+            "reasoning": {"summary": "auto"},
+        },
+    }
+
+    with pytest.raises(AceAIConfigurationError):
+        openai_provider._build_base_response_kwargs(request)
+
+
+def test_supports_reasoning_summary(openai_provider: OpenAI) -> None:
+    assert openai_provider._supports_reasoning_summary("o4-mini") is True
+    assert openai_provider._supports_reasoning_summary("o3-large") is True
+    assert openai_provider._supports_reasoning_summary("gpt-5o") is True
+    assert openai_provider._supports_reasoning_summary("gpt-4o") is False
 
 
 def test_format_messages_for_responses_includes_tool_outputs(
@@ -226,7 +255,7 @@ def test_build_text_config_rejects_unknown_type(openai_provider: OpenAI) -> None
 
 
 def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None:
-    response = SimpleNamespace(
+    response = NamespaceWithDump(
         id="resp-1",
         model="gpt-4o",
         output_text="hello",
@@ -240,8 +269,14 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
                 status="completed",
             )
         ],
-        usage=SimpleNamespace(input_tokens=1, output_tokens=2, total_tokens=3),
+        usage=NamespaceWithDump(
+            input_tokens=1,
+            output_tokens=2,
+            total_tokens=3,
+            output_tokens_details=None,
+        ),
         status="completed",
+        reasoning=None,
     )
 
     llm_response = openai_provider._to_llm_response(response)
@@ -250,6 +285,41 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
     assert llm_response.tool_calls[0].name == "lookup"
     assert llm_response.usage is not None
     assert llm_response.usage.input_tokens == 1
+
+
+def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> None:
+    reasoning_item = ResponseReasoningItem(
+        id="rs_1",
+        summary=[ReasoningSummary(text="Chain summary", type="summary_text")],
+        type="reasoning",
+        status="completed",
+    )
+    usage = NamespaceWithDump(
+        input_tokens=5,
+        output_tokens=10,
+        total_tokens=15,
+        output_tokens_details=NamespaceWithDump(reasoning_tokens=7),
+    )
+    response = NamespaceWithDump(
+        id="resp-5",
+        model="o4-mini",
+        output_text="final",
+        output=[reasoning_item],
+        usage=usage,
+        status="completed",
+        reasoning=NamespaceWithDump(effort="medium", summary="auto"),
+    )
+
+    llm_response = openai_provider._to_llm_response(response)
+
+    reasoning_segments = [
+        seg for seg in llm_response.segments if seg.type == "reasoning"
+    ]
+    assert reasoning_segments
+    assert reasoning_segments[0].content == "Chain summary"
+    assert llm_response.extras["reasoning_tokens"] == 7
+    assert llm_response.extras["reasoning_config"]["effort"] == "medium"
+    assert "Chain summary" in llm_response.extras["reasoning_summaries"][0]
 
 
 def test_extract_tool_calls_falls_back_to_item_id(
@@ -262,13 +332,14 @@ def test_extract_tool_calls_falls_back_to_item_id(
         call_id="temp",
     ).model_copy(update={"call_id": None, "id": "tool-1"})
 
-    response = SimpleNamespace(
+    response = NamespaceWithDump(
         id="resp-2",
         model="gpt-4o",
         output_text="",
         output=[tool_call],
         usage=None,
         status="in_progress",
+        reasoning=None,
     )
 
     llm_response = openai_provider._to_llm_response(response)
@@ -283,26 +354,18 @@ def test_extract_tool_calls_requires_identifier(openai_provider: OpenAI) -> None
         arguments="{}",
         call_id="temp",
     ).model_copy(update={"call_id": None, "id": None})
-    response = SimpleNamespace(
+    response = NamespaceWithDump(
         id="resp-3",
         model="gpt-4o",
         output_text="",
         output=[tool_call],
         usage=None,
         status="errored",
+        reasoning=None,
     )
 
     with pytest.raises(AceAIRuntimeError, match="call identifier"):
         openai_provider._extract_tool_calls(response)
-
-
-def test_safe_model_dump_handles_none_and_errors(openai_provider: OpenAI) -> None:
-    class BadModel:
-        def model_dump(self):
-            raise AceAIRuntimeError("fail")
-
-    assert openai_provider._safe_model_dump(None) == {}
-    assert openai_provider._safe_model_dump(BadModel()) == {}
 
 
 def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
@@ -315,9 +378,7 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         sequence_number=1,
         type="response.output_text.delta",
     )
-    text_chunk = openai_provider._map_stream_event(
-        text_event, model_name="gpt-4o"
-    )
+    text_chunk = openai_provider._map_stream_event(text_event, model_name="gpt-4o")
     assert text_chunk is not None
     assert text_chunk.text_delta == "Hi"
 
@@ -343,7 +404,7 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
     assert error_chunk is not None
     assert error_chunk.error == "boom"
 
-    fallback_event = SimpleNamespace(
+    fallback_event = NamespaceWithDump(
         type="response.output_text.delta",
         delta="fallback",
         item_id=None,
@@ -355,8 +416,10 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
     assert fallback_chunk.text_delta == "fallback"
 
 
-def test_map_stream_event_handles_fallback_tool_and_error(openai_provider: OpenAI) -> None:
-    tool_event = SimpleNamespace(
+def test_map_stream_event_handles_fallback_tool_and_error(
+    openai_provider: OpenAI,
+) -> None:
+    tool_event = NamespaceWithDump(
         type="response.function_call_arguments.delta",
         delta="{}",
         item_id="tool-3",
@@ -365,7 +428,7 @@ def test_map_stream_event_handles_fallback_tool_and_error(openai_provider: OpenA
     assert tool_chunk is not None
     assert tool_chunk.tool_call_delta.id == "tool-3"
 
-    error_event = SimpleNamespace(
+    error_event = NamespaceWithDump(
         type="response.error",
         delta=None,
         item_id=None,
@@ -375,7 +438,7 @@ def test_map_stream_event_handles_fallback_tool_and_error(openai_provider: OpenA
     assert error_chunk is not None
     assert error_chunk.error == "nope"
 
-    unknown_event = SimpleNamespace(type="other", delta=None, item_id=None)
+    unknown_event = NamespaceWithDump(type="other", delta=None, item_id=None)
     assert openai_provider._map_stream_event(unknown_event, model_name="gpt-4o") is None
 
 
@@ -384,8 +447,7 @@ async def test_openai_properties_and_stt(fake_openai_client) -> None:
     fake_openai_client.transcription_text = "heard"
     provider = OpenAI(
         client=fake_openai_client,
-        default_model="gpt-4o",
-        default_stream_model="gpt-4o-mini",
+        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     transcript = await provider.stt(
@@ -402,18 +464,18 @@ async def test_openai_properties_and_stt(fake_openai_client) -> None:
 
 @pytest.mark.anyio
 async def test_openai_complete_invokes_client(fake_openai_client) -> None:
-    fake_openai_client.responses.response_payload = SimpleNamespace(
+    fake_openai_client.responses.response_payload = NamespaceWithDump(
         id="resp-final",
         model="gpt-4o",
         output_text="done",
         output=[],
         usage=None,
         status="completed",
+        reasoning=None,
     )
     provider = OpenAI(
         client=fake_openai_client,
-        default_model="gpt-4o",
-        default_stream_model="gpt-4o-mini",
+        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     response = await provider.complete(
@@ -437,18 +499,18 @@ async def test_openai_stream_yields_events_and_completion(fake_openai_client) ->
             type="response.output_text.delta",
         )
     ]
-    fake_openai_client.responses.final_stream_response = SimpleNamespace(
+    fake_openai_client.responses.final_stream_response = NamespaceWithDump(
         id="resp-stream",
         model="gpt-4o",
         output_text="final",
         output=[],
         usage=None,
         status="completed",
+        reasoning=None,
     )
     provider = OpenAI(
         client=fake_openai_client,
-        default_model="gpt-4o",
-        default_stream_model="gpt-4o-mini",
+        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     events = []

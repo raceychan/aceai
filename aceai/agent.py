@@ -32,7 +32,7 @@ class AgentBase:
         llm_service: LLMService,
         executor: ToolExecutor,
         max_steps: int = 5,
-        delta_chunk_size: int = 256,
+        delta_chunk_size: int = 0,
         reasoning_log_max_chars: int | None = None,
     ):
         if max_steps < 1:
