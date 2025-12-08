@@ -113,11 +113,33 @@ class LLMResponseFormat(Record):
     """Alternate schema slot for providers that expect `json_schema`."""
 
 
+class ReasoningConfig(TypedDict, total=False):
+    """Reasoning configuration supported by providers like OpenAI Responses."""
+
+    effort: Literal["low", "medium", "high"]
+    """Requested reasoning depth; providers map onto model-specific tiers."""
+
+    summary: Literal["auto", "none"]
+    """Whether the provider should emit a sanitized reasoning summary."""
+
+    generate_summary: Literal["auto", "none"]
+    """Alias supported by some providers; kept for forward compatibility."""
+
+    encrypted_content: bool
+    """Whether encrypted reasoning blobs should be included in the payload."""
+
+
 class LLMRequestMeta(TypedDict, total=False):
     """Adapter-specific metadata attached to a request."""
 
     model: str
-    """Optional, only set when the caller must override adapter defaults."""
+    """Provider-facing model identifier; adapter defaults must supply this."""
+
+    stream_model: str
+    """Optional streaming override used when the provider exposes separate models."""
+
+    reasoning: ReasoningConfig
+    """Provider-specific reasoning options (e.g., OpenAI Responses `reasoning`)."""
 
 
 class LLMRequest(TypedDict, total=False):
@@ -325,22 +347,6 @@ class LLMProviderBase(ABC):
         """Preferred streaming API returning structured events."""
         raise AceAIImplementationError(
             f"{self.__class__.__name__} must implement stream()"
-        )
-
-    @property
-    @abstractmethod
-    def default_model(self) -> str:
-        """Return the provider's default model identifier."""
-        raise AceAIImplementationError(
-            f"{self.__class__.__name__}.default_model must be implemented"
-        )
-
-    @property
-    @abstractmethod
-    def default_stream_model(self) -> str:
-        """Return the provider's default streaming model identifier."""
-        raise AceAIImplementationError(
-            f"{self.__class__.__name__}.default_stream_model must be implemented"
         )
 
     @abstractmethod

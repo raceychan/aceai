@@ -10,11 +10,16 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
-from aceai.errors import AceAIRuntimeError, AceAIValidationError
+from aceai.errors import (
+    AceAIConfigurationError,
+    AceAIRuntimeError,
+    AceAIValidationError,
+)
 from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
 
 from .models import (
@@ -22,6 +27,7 @@ from .models import (
     LLMProviderBase,
     LLMProviderMeta,
     LLMRequest,
+    LLMRequestMeta,
     LLMResponse,
     LLMResponseFormat,
     LLMSegment,
@@ -38,24 +44,9 @@ from .models import (
 class OpenAI(LLMProviderBase):
     """OpenAI provider for LLM completions."""
 
-    def __init__(
-        self,
-        client: AsyncOpenAI,
-        *,
-        default_model: str,
-        default_stream_model: str | None = None,
-    ):
+    def __init__(self, client: AsyncOpenAI, *, default_meta: LLMRequestMeta):
         self._client = client
-        self._default_model = default_model
-        self._default_stream_model = default_stream_model
-
-    @property
-    def default_model(self) -> str:
-        return self._default_model
-
-    @property
-    def default_stream_model(self) -> str:
-        return self._default_stream_model or self._default_model
+        self._default_metadata: LLMRequestMeta = default_meta
 
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
@@ -69,8 +60,6 @@ class OpenAI(LLMProviderBase):
     def _build_base_response_kwargs(
         self,
         request: LLMRequest,
-        *,
-        default_model: str,
     ) -> dict[str, Any]:
         """Translate LLMRequest into OpenAI Responses kwargs."""
         if "messages" not in request:
@@ -78,10 +67,22 @@ class OpenAI(LLMProviderBase):
 
         input_messages = self._format_messages_for_responses(request["messages"])
         kwargs: dict[str, Any] = {"input": input_messages}
-        metadata = request.get("metadata", {})
-        model_name = metadata.get("model", default_model)
+        request_metadata = request.get("metadata", {})
+
+        model_name = request_metadata.get("model")
+        if not model_name:
+            raise AceAIConfigurationError(
+                "OpenAI request metadata must include a model identifier"
+            )
 
         kwargs["model"] = model_name
+
+        if is_present(reasoning_cfg := request_metadata.get("reasoning", MISSING)):
+            if not self._supports_reasoning_summary(model_name):
+                raise AceAIConfigurationError(
+                    f"Model {model_name} does not support reasoning summaries"
+                )
+            kwargs["reasoning"] = reasoning_cfg
 
         if is_present(max_tokens := request.get("max_tokens", MISSING)):
             kwargs["max_output_tokens"] = max_tokens
@@ -129,7 +130,7 @@ class OpenAI(LLMProviderBase):
             elif isinstance(message, LLMToolCallMessage):
                 if message.content:
                     formatted.append({"role": message.role, "content": message.content})
-                for tc in message.tool_calls or []:
+                for tc in message.tool_calls:
                     formatted.append(tc.asdict())
             else:
                 formatted.append({"role": message.role, "content": message.content})
@@ -167,7 +168,7 @@ class OpenAI(LLMProviderBase):
             "name": tool["name"],
             "description": description,
             "parameters": parameters,
-            "strict": False,
+            "strict": True,
         }
 
     def _provider_meta_entry(
@@ -184,15 +185,45 @@ class OpenAI(LLMProviderBase):
             extra=extra or {},
         )
 
+    def _supports_reasoning_summary(self, model_name: str) -> bool:
+        name = model_name.lower()
+        return name.startswith(("o3", "o4", "gpt-5"))
+
+    def _extract_reasoning_items(
+        self, response: Response
+    ) -> list[ResponseReasoningItem]:
+        items: list[ResponseReasoningItem] = []
+        for output_item in response.output:
+            if isinstance(output_item, ResponseReasoningItem):
+                items.append(output_item)
+        return items
+
     def _build_segments_from_response(
         self,
         *,
         response: Response,
         tool_calls: list[LLMToolCall],
+        reasoning_items: list[ResponseReasoningItem] | None = None,
     ) -> list[LLMSegment]:
         segments: list[LLMSegment] = []
+        reasoning_items = reasoning_items or []
         if response.output_text:
             segments.append(LLMSegment(type="text", content=response.output_text))
+        for reasoning in reasoning_items:
+            summary_texts = [
+                summary.text for summary in reasoning.summary if summary.text
+            ]
+            if summary_texts:
+                segments.append(
+                    LLMSegment(
+                        type="reasoning",
+                        content="\n\n".join(summary_texts),
+                        metadata={
+                            "reasoning_id": reasoning.id,
+                            "status": reasoning.status,
+                        },
+                    )
+                )
         for call in tool_calls:
             segments.append(
                 LLMSegment(
@@ -205,19 +236,6 @@ class OpenAI(LLMProviderBase):
                 )
             )
         return segments
-
-    def _safe_model_dump(self, payload: Any) -> dict[str, Any]:
-        if payload is None:
-            return {}
-        dump = getattr(payload, "model_dump", None)
-        if callable(dump):
-            try:
-                data = dump()
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                return {}
-        return {}
 
     def _extract_tool_calls(self, response: Response) -> list[LLMToolCall]:
         calls: list[LLMToolCall] = []
@@ -249,14 +267,33 @@ class OpenAI(LLMProviderBase):
                 total_tokens=usage.total_tokens,
             )
         tool_calls = self._extract_tool_calls(response)
+        reasoning_items = self._extract_reasoning_items(response)
         segments = self._build_segments_from_response(
-            response=response, tool_calls=tool_calls
+            response=response,
+            tool_calls=tool_calls,
+            reasoning_items=reasoning_items,
         )
         response_model = str(response.model)
         extras: dict[str, Any] = {}
         if response.status is not None:
             extras["status"] = response.status
-        raw_event = self._safe_model_dump(response)
+        reasoning_config = response.reasoning
+        if reasoning_config is not None:
+            extras["reasoning_config"] = reasoning_config.model_dump()
+        reasoning_summaries: list[str] = []
+        for item in reasoning_items:
+            for summary in item.summary:
+                text = summary.text
+                if text:
+                    reasoning_summaries.append(text)
+        if reasoning_summaries:
+            extras["reasoning_summaries"] = reasoning_summaries
+        if usage and usage.output_tokens_details:
+            details = usage.output_tokens_details
+            reasoning_tokens = details.reasoning_tokens
+            if reasoning_tokens is not None:
+                extras["reasoning_tokens"] = reasoning_tokens
+        raw_event = response.model_dump()
         provider_meta = [
             self._provider_meta_entry(
                 model=response_model,
@@ -341,7 +378,9 @@ class OpenAI(LLMProviderBase):
                         event_type = "response.function_call_arguments.delta"
                     case "response.error":
                         error_msg = (
-                            getattr(event, "message", None) or "LLM stream error"
+                            event.message
+                            if hasattr(event, "message")
+                            else "LLM stream error"
                         )
                         error_value = error_msg
                         segments = [LLMSegment(type="error", content=error_msg)]
@@ -349,7 +388,7 @@ class OpenAI(LLMProviderBase):
                     case _:
                         return None
 
-        raw_event = self._safe_model_dump(event)
+        raw_event = event.model_dump()
         provider_meta = [self._provider_meta_entry(model=model_name)]
         return LLMStreamEvent(
             event_type=event_type,
@@ -361,11 +400,20 @@ class OpenAI(LLMProviderBase):
             raw_event=raw_event or None,
         )
 
+    def _apply_default_meta(self, request: LLMRequest) -> LLMRequest:
+        """if not request no metadata, set to default. if partial, fill in missing."""
+        if "metadata" not in request or request["metadata"] is None:
+            request["metadata"] = self._default_metadata
+        else:
+            for key, value in self._default_metadata.items():
+                if key not in request["metadata"]:
+                    request["metadata"][key] = value
+        return request
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         """Complete using OpenAI Responses API."""
-        params = self._build_base_response_kwargs(
-            request, default_model=self._default_model
-        )
+        request = self._apply_default_meta(request)
+        params = self._build_base_response_kwargs(request)
         start = time.perf_counter()
         response: Response = await self._client.responses.create(**params)
         latency_ms = (time.perf_counter() - start) * 1000.0
@@ -373,16 +421,14 @@ class OpenAI(LLMProviderBase):
 
     async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
-        kwargs = self._build_base_response_kwargs(
-            request, default_model=self.default_stream_model
-        )
-        model_name = kwargs.get("model", self.default_stream_model)
+        request = self._apply_default_meta(request)
+        kwargs = self._build_base_response_kwargs(request)
         start = time.perf_counter()
         stream_manager = self._client.responses.stream(**kwargs)
         final_response: Response | None = None
         async with stream_manager as stream:
             async for event in stream:
-                mapped = self._map_stream_event(event, model_name=model_name)
+                mapped = self._map_stream_event(event, model_name=kwargs["model"])
                 if mapped is None:
                     continue
                 yield mapped
@@ -398,6 +444,6 @@ class OpenAI(LLMProviderBase):
             response=final_llm_response,
             segments=final_llm_response.segments,
             provider_meta=final_llm_response.provider_meta,
-            raw_event=self._safe_model_dump(final_response) or None,
+            raw_event=final_response.model_dump() or None,
             extras=final_llm_response.extras,
         )

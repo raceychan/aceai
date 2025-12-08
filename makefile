@@ -1,4 +1,4 @@
-.PHONY: test debug cov
+.PHONY: test debug cov demo
 test:
 	uv run pytest -v tests/
 
@@ -7,6 +7,9 @@ debug:
 
 cov:
 	uv run pytest --cov=aceai --cov-report=term-missing
+
+demo:
+	uv run python demo.py
 
 
 VERSION ?= x.x.x

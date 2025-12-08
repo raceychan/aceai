@@ -5,14 +5,13 @@ from typing import Annotated
 from dotenv import load_dotenv
 from httpx import AsyncClient
 from ididi import use
-from loguru import logger
 from openai import AsyncOpenAI
 
 from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
 from aceai.errors import AceAIValidationError
-from aceai.events import RunCompletedEvent, RunFailedEvent
-from aceai.executor import LoggingToolExecutor
+from aceai.executor import ToolExecutor
 from aceai.llm.openai import OpenAI
+from term_ui import run_agent_with_terminal_ui
 
 WAREHOUSE_ORDERS = {
     "ORD-200": {
@@ -196,7 +195,7 @@ def build_agent(
     client = AsyncOpenAI(api_key=openai_api_key)
     openai_llm = OpenAI(
         client=client,
-        default_model=model,
+        default_meta={"model": model},
     )
     graph = Graph()
 
@@ -204,15 +203,11 @@ def build_agent(
         providers=[openai_llm],
         timeout_seconds=120,
     )
-    executor = LoggingToolExecutor(
-        tools=tools,
-        graph=graph,
-        logger=logger,
-    )
+    executor = ToolExecutor(graph=graph, tools=tools)
 
     return AgentBase(
         prompt=prompt,
-        default_model="gpt-4",
+        default_model=model,
         llm_service=llm_service,
         executor=executor,
         max_steps=max_turns,
@@ -252,18 +247,7 @@ async def main():
         model="gpt-5.1",
     )
 
-    try:
-        async for event in agent.run(multi_step_question):
-            if isinstance(event, RunCompletedEvent):
-                print(event.final_answer)
-                return
-            if isinstance(event, RunFailedEvent):
-                logger.error("Agent run failed: %s", event.error)
-    except Exception:
-        logger.exception("Agent execution aborted")
-        raise
-
-    raise RuntimeError("Agent exited without emitting a completion event")
+    await run_agent_with_terminal_ui(agent, multi_step_question)
 
 
 if __name__ == "__main__":

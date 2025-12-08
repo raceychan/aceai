@@ -23,14 +23,6 @@ class PassthroughProvider(LLMProviderBase):
     def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
         return super().stream(request)
 
-    @property
-    def default_model(self) -> str:
-        return super().default_model
-
-    @property
-    def default_stream_model(self) -> str:
-        return super().default_stream_model
-
     async def stt(self, filename: str, file, *, model: str) -> str:
         return await super().stt(filename, file, model=model)
 
@@ -103,9 +95,3 @@ def test_llm_provider_base_sync_interfaces_raise() -> None:
 
     with pytest.raises(AceAIImplementationError):
         provider.stream(request)
-
-    with pytest.raises(AceAIImplementationError):
-        _ = provider.default_model
-
-    with pytest.raises(AceAIImplementationError):
-        _ = provider.default_stream_model

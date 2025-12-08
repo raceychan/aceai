@@ -268,8 +268,8 @@ def main() -> None:
     elif args.command == "new-branch":
         create_new_branch(
             repo,
-            base_branch=getattr(args, "base_branch", None),
-            increment=getattr(args, "increment", "patch"),
+            base_branch=args.base_branch,
+            increment=args.increment,
         )
     elif args.command == "delete-branch":
         delete_branch(repo, args.version)

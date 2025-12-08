@@ -12,3 +12,4 @@ When modifying this repository, default to introducing breaking changes:
 4. Skip type cleanup helpers such as `str.strip()` or other sanitizers that normalize data; leave values as-is even if this causes errors.
 5. Prefer precise signatures: avoid union-heavy inputs/outputs wherever possible, split APIs so each argument/result has a single, concrete type instead of `Any`/broad unions.
 6. Use eager annotation evaluation: never rely on `from __future__ import annotations`; annotations must evaluate immediately and reference in-scope objects.
+7. Do not use `getattr` to sidestep attribute errors; rely on direct attribute access so mistakes surface immediately.

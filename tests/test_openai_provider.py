@@ -109,7 +109,7 @@ def fake_openai_client():
 def openai_provider(fake_openai_client) -> OpenAI:
     return OpenAI(
         client=fake_openai_client,
-        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
+        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
 
@@ -447,7 +447,7 @@ async def test_openai_properties_and_stt(fake_openai_client) -> None:
     fake_openai_client.transcription_text = "heard"
     provider = OpenAI(
         client=fake_openai_client,
-        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
+        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     transcript = await provider.stt(
@@ -458,8 +458,8 @@ async def test_openai_properties_and_stt(fake_openai_client) -> None:
 
     assert transcript == "heard"
     assert fake_openai_client.transcription_calls[0]["model"] == "whisper-large"
-    assert provider.default_model == "gpt-4o"
-    assert provider.default_stream_model == "gpt-4o-mini"
+    assert provider._default_metadata["model"] == "gpt-4o"
+    assert provider._default_metadata["stream_model"] == "gpt-4o-mini"
 
 
 @pytest.mark.anyio
@@ -475,7 +475,7 @@ async def test_openai_complete_invokes_client(fake_openai_client) -> None:
     )
     provider = OpenAI(
         client=fake_openai_client,
-        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
+        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     response = await provider.complete(
@@ -510,7 +510,7 @@ async def test_openai_stream_yields_events_and_completion(fake_openai_client) ->
     )
     provider = OpenAI(
         client=fake_openai_client,
-        metadata={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
+        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
     )
 
     events = []

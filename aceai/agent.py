@@ -1,4 +1,4 @@
-from typing import AsyncIterator
+from typing import AsyncIterator, Unpack
 from uuid import uuid4
 
 from .errors import AceAIConfigurationError, AceAIRuntimeError
@@ -7,7 +7,12 @@ from .executor import ToolExecutor
 from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
 from .interface import is_set
 from .llm import LLMMessage, LLMResponse, LLMService
-from .llm.models import LLMToolCall, LLMToolCallMessage, LLMToolUseMessage
+from .llm.models import (
+    LLMRequestMeta,
+    LLMToolCall,
+    LLMToolCallMessage,
+    LLMToolUseMessage,
+)
 from .models import AgentStep, ToolExecutionResult
 
 
@@ -56,7 +61,7 @@ class AgentBase:
         *,
         messages: list[LLMMessage],
         steps: list[AgentStep],
-        selected_model: str,
+        **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
         step_index = len(steps)
         step_id = str(uuid4())
@@ -82,7 +87,7 @@ class AgentBase:
         stream = self.llm_service.stream(
             messages=messages,
             tools=self.executor.tool_schemas,
-            metadata={"model": selected_model},
+            metadata=request_meta,
         )
         try:
             async for stream_event in stream:
@@ -125,6 +130,14 @@ class AgentBase:
             raise
         finally:
             reasoning_log = log_buffer.snapshot()
+            if response is not None and not reasoning_log:
+                reasoning_chunks = [
+                    segment.content
+                    for segment in response.segments
+                    if segment.type == "reasoning" and segment.content
+                ]
+                if reasoning_chunks:
+                    reasoning_log = "\n\n".join(reasoning_chunks)
             final_response = response or LLMResponse(text=reasoning_log)
             steps[step_index] = AgentStep(
                 step_id=step_id,
@@ -188,15 +201,13 @@ class AgentBase:
     async def run(
         self,
         question: str,
-        *,
-        model: str | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
         """Yield AgentEvent entries as the agent reasons."""
         messages: list[LLMMessage] = [
             LLMMessage(role="system", content=self.prompt),
             LLMMessage(role="user", content=question),
         ]
-        selected_model = model or self.default_model
         steps: list[AgentStep] = []
 
         for _ in range(self.max_steps):
@@ -204,7 +215,7 @@ class AgentBase:
                 async for event in self._run_step(
                     messages=messages,
                     steps=steps,
-                    selected_model=selected_model,
+                    **request_meta,
                 ):
                     yield event
                     if isinstance(event, RunCompletedEvent):

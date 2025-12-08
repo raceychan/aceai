@@ -11,7 +11,7 @@ from aceai.events import (
 )
 from aceai.errors import AceAIRuntimeError
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMStreamEvent, LLMToolCall
+from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall
 
 
 class StubExecutor:
