@@ -1,6 +1,6 @@
 from typing import Annotated as Annotated
 
-from ._param import spec
+from ._tool_sig import spec
 from .base import tool
 
 

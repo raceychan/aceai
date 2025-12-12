@@ -8,7 +8,7 @@ from aceai.errors import AceAIRuntimeError
 from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
-from aceai.tools._param import Annotated, spec
+from aceai.tools._tool_sig import Annotated, spec
 
 
 class FakeLogger:

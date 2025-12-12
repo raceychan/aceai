@@ -7,9 +7,8 @@ from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from openai import OpenAIError
 
-from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
+from aceai.errors import AceAIConfigurationError, AceAIValidationError
 
 from .models import LLMMessage, LLMProviderBase, LLMRequest, LLMResponse, LLMStreamEvent
 
@@ -61,14 +60,9 @@ class LLMService:
         coro = self._get_current_provider().complete(request)
         timeout = self._timeout_seconds
 
-        try:
-            resp = await asyncio.wait_for(coro, timeout=timeout)
-            self._last_response = resp
-            return resp
-        except OpenAIError as llm_error:
-            raise LLMProviderError(
-                f"LLM provider error: {str(llm_error)}"
-            ) from llm_error
+        resp = await asyncio.wait_for(coro, timeout=timeout)
+        self._last_response = resp
+        return resp
 
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""

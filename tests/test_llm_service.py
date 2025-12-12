@@ -13,7 +13,8 @@ from aceai.llm.models import (
     LLMResponse,
     LLMStreamEvent,
 )
-from aceai.llm.service import LLMProviderError, LLMService
+
+from aceai.llm.service import LLMService
 
 
 class Payload(Struct):
@@ -90,31 +91,38 @@ def test_llm_service_requires_providers() -> None:
 
 
 @pytest.mark.anyio
-async def test_llm_service_complete_applies_default_model() -> None:
+async def test_llm_service_complete_passes_metadata_through() -> None:
     provider = RecordingProvider(responses=[LLMResponse(text="ok")])
     service = LLMService([provider], timeout_seconds=1.0)
+    metadata = {"model": provider.default_model}
 
-    await service.complete(messages=[LLMMessage(role="system", content="Prompt")])
+    await service.complete(
+        messages=[LLMMessage(role="system", content="Prompt")],
+        metadata=metadata,
+    )
 
-    metadata = provider.complete_requests[0]["metadata"]
-    assert metadata["model"] == provider.default_model
+    assert provider.complete_requests[0]["metadata"] is metadata
 
 
 @pytest.mark.anyio
-async def test_llm_service_stream_uses_default_stream_model() -> None:
+async def test_llm_service_stream_preserves_request_metadata() -> None:
     event = LLMStreamEvent(
         event_type="response.output_text.delta",
         text_delta="hello",
     )
     provider = RecordingProvider(stream_events=[event])
     service = LLMService([provider], timeout_seconds=1.0)
+    metadata = {"model": provider.default_stream_model}
 
     received = []
-    async for part in service.stream(messages=[LLMMessage(role="system", content="s")]):
+    async for part in service.stream(
+        messages=[LLMMessage(role="system", content="s")],
+        metadata=metadata,
+    ):
         received.append(part.text_delta)
 
     assert received == ["hello"]
-    assert provider.stream_requests[0]["metadata"]["model"] == provider.default_stream_model
+    assert provider.stream_requests[0]["metadata"] is metadata
 
 
 @pytest.mark.anyio
@@ -160,10 +168,10 @@ async def test_complete_json_inserts_hint_and_retries_on_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_llm_service_wraps_openai_errors() -> None:
+async def test_llm_service_propagates_openai_errors() -> None:
     service = LLMService([ErroringProvider()], timeout_seconds=0.1)
 
-    with pytest.raises(LLMProviderError, match="LLM provider error"):
+    with pytest.raises(OpenAIError):
         await service.complete(messages=[LLMMessage(role="system", content="prompt")])
 
 
@@ -175,7 +183,8 @@ async def test_llm_service_rotation_and_last_response_tracking() -> None:
 
     assert service.get_provider_count() == 2
     assert service.has_provider
-    assert service.last_response is None
+    with pytest.raises(AttributeError):
+        _ = service.last_response
 
     await service.complete(messages=[LLMMessage(role="system", content="start")])
     assert service.last_response is not None

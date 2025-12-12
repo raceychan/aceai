@@ -1,17 +1,23 @@
 import pytest
 
-from aceai.agent import AgentBase
+from aceai.agent import AgentBase, ToolExecutionFailure
 from aceai.events import (
     AgentEvent,
     LLMOutputDeltaEvent,
     LLMStartedEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    ToolFailedEvent,
     ToolStartedEvent,
 )
 from aceai.errors import AceAIRuntimeError
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall
+from aceai.llm.models import (
+    LLMSegment,
+    LLMStreamEvent,
+    LLMToolCall,
+    LLMToolCallDelta,
+)
 
 
 class StubExecutor:
@@ -36,6 +42,45 @@ class StubLLMService:
         self.calls.append(request)
         events = self._streams.pop(0)
         for event in events:
+            yield event
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("AgentBase should not call complete() in streaming mode")
+
+
+class RaisingExecutor(StubExecutor):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+        raise self._error
+
+
+class RaisingStreamLLMService:
+    def __init__(self, events: list[LLMStreamEvent], error: Exception) -> None:
+        self._events = list(events)
+        self._error = error
+        self.calls: list[dict] = []
+
+    async def stream(self, **request):
+        self.calls.append(request)
+        for event in self._events:
+            yield event
+        raise self._error
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("AgentBase should not call complete() in streaming mode")
+
+
+class SimpleLLMService:
+    def __init__(self, events: list[LLMStreamEvent]) -> None:
+        self._events = list(events)
+        self.calls: list[dict] = []
+
+    async def stream(self, **request):
+        self.calls.append(request)
+        for event in self._events:
             yield event
 
     async def complete(self, **request) -> LLMResponse:
@@ -448,3 +493,256 @@ async def test_stream_error_triggers_run_failed_event() -> None:
             events.append(evt)
 
     assert isinstance(events[-1], RunFailedEvent)
+
+
+@pytest.mark.anyio
+async def test_agent_skips_function_call_argument_deltas() -> None:
+    stream = [
+        LLMStreamEvent(
+            event_type="response.function_call_arguments.delta",
+            tool_call_delta=LLMToolCallDelta(id="tool-1", arguments_delta='{"a":'),
+        ),
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="hello ",
+        ),
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="world",
+        ),
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(text="hello world"),
+        ),
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=SimpleLLMService(stream),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question?")
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "hello world"
+
+
+@pytest.mark.anyio
+async def test_agent_uses_default_error_message_when_stream_error_missing_text() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [
+                [
+                    LLMStreamEvent(
+                        event_type="response.error",
+                    )
+                ]
+            ]
+        ),
+        executor=StubExecutor(),
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(AceAIRuntimeError, match="LLM streaming error"):
+        async for evt in agent.run("Boom?"):
+            events.append(evt)
+
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == "LLM streaming error"
+
+
+@pytest.mark.anyio
+async def test_agent_errors_when_completion_event_lacks_response() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [
+                [
+                    LLMStreamEvent(
+                        event_type="response.completed",
+                    )
+                ]
+            ]
+        ),
+        executor=StubExecutor(),
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(
+        AceAIRuntimeError, match="LLM stream completed without a response payload"
+    ):
+        async for evt in agent.run("Question?"):
+            events.append(evt)
+
+    assert isinstance(events[-1], RunFailedEvent)
+    assert (
+        events[-1].error == "LLM stream completed without a response payload"
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_flushes_chunks_when_stream_finishes_without_completion() -> None:
+    stream = [
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="partial",
+        )
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([stream]),
+        executor=StubExecutor(),
+        delta_chunk_size=10,
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(
+        AceAIRuntimeError, match="LLM stream ended without completion"
+    ):
+        async for evt in agent.run("Question?"):
+            events.append(evt)
+
+    deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
+    assert deltas and deltas[0].text_delta == "partial"
+    assert isinstance(events[-1], RunFailedEvent)
+
+
+@pytest.mark.anyio
+async def test_agent_flushes_pending_chunks_when_stream_raises_exception() -> None:
+    stream = [
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="abc",
+        )
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=RaisingStreamLLMService(stream, RuntimeError("splat")),
+        executor=StubExecutor(),
+        delta_chunk_size=10,
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(RuntimeError, match="splat"):
+        async for evt in agent.run("Question?"):
+            events.append(evt)
+
+    deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
+    assert deltas and deltas[0].text_delta == "abc"
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == "splat"
+
+
+@pytest.mark.anyio
+async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
+    response = LLMResponse(
+        text="done",
+        segments=[
+            LLMSegment(type="reasoning", content="first"),
+            LLMSegment(type="reasoning", content="second"),
+        ],
+    )
+    stream = make_stream(response=response, deltas=[])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=SimpleLLMService(stream),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question?")
+    final_event = events[-1]
+
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.step.reasoning_log == "first\n\nsecond"
+
+
+@pytest.mark.anyio
+async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
+    call = LLMToolCall(name="calc", arguments="{}", call_id="calc-1")
+    stream = [
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(text="use calc", tool_calls=[call]),
+        )
+    ]
+    executor = RaisingExecutor(ValueError("no calc"))
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([stream]),
+        executor=executor,
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(ToolExecutionFailure) as exc_info:
+        async for evt in agent.run("Question?"):
+            events.append(evt)
+
+    tool_failed = [evt for evt in events if isinstance(evt, ToolFailedEvent)]
+    assert tool_failed and tool_failed[0].error == "no calc"
+    assert isinstance(events[-1], RunFailedEvent)
+    assert exc_info.value.original_error.__class__ is ValueError
+
+
+@pytest.mark.anyio
+async def test_agent_returns_after_final_answer_tool_call() -> None:
+    final_call = LLMToolCall(name="final_answer", arguments="{}", call_id="final-1")
+    extra_call = LLMToolCall(name="lookup", arguments="{}", call_id="lookup-1")
+    stream = [
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(
+                text="tool outputs",
+                tool_calls=[final_call, extra_call],
+            ),
+        )
+    ]
+    executor = StubExecutor({"final_answer": '"Done"'})
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([stream]),
+        executor=executor,
+    )
+
+    events = await collect_events(agent, "Finish?")
+    final_event = events[-1]
+
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.final_answer == '"Done"'
+    assert executor.calls == [final_call]
+
+
+class ShortCircuitAgent(AgentBase):
+    async def _run_step(
+        self,
+        *,
+        messages,
+        steps,
+        **request_meta,
+    ):
+        if False:  # pragma: no cover - ensures async generator semantics
+            yield None
+        raise RuntimeError("preflight failure")
+
+
+@pytest.mark.anyio
+async def test_agent_run_rethrows_when_no_steps_recorded() -> None:
+    agent = ShortCircuitAgent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+
+    with pytest.raises(RuntimeError, match="preflight failure"):
+        async for _ in agent.run("Question?"):
+            pass

@@ -1,15 +1,32 @@
 from inspect import signature
 from typing import Annotated as Annotated
-from typing import Any, Callable
+from typing import Any, Callable, Literal, TypedDict, Unpack, overload
 
 from msgspec import Struct
 from msgspec.json import Decoder
 from msgspec.json import encode as msg_encode
 from msgspec.structs import asdict as msg_asdict
 
+from aceai.interface import MISSING, Maybe, is_present
 
-from ._param import ToolSignature
-from .interface import ToolSpec
+from ._tool_sig import ToolSignature
+
+
+class ToolSpec(TypedDict):
+    """Tool specification compatible with common LLM tool schemas (JSON Schema)."""
+
+    type: Literal["function"]
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class IToolConfig(TypedDict, total=False):
+    record_in_history: bool
+
+
+class ToolConfig(Struct):
+    record_in_history: bool = True
 
 
 class Tool[**P, R]:
@@ -20,6 +37,7 @@ class Tool[**P, R]:
         signature: ToolSignature,
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
+        config: ToolConfig,
     ):
         self.name = name
         self.description = description
@@ -27,6 +45,7 @@ class Tool[**P, R]:
         self.func = func
         self._tool_schema: ToolSpec | None = None
         self._decoder = decoder
+        self._config = config
 
     def encode_return(self, value: R) -> str:
         return msg_encode(value).decode("utf-8")
@@ -53,7 +72,7 @@ class Tool[**P, R]:
         return self._tool_schema
 
     @classmethod
-    def from_func(cls, func: Callable[P, R]) -> "Tool[P, R]":
+    def from_func(cls, func: Callable[P, R], config: ToolConfig) -> "Tool[P, R]":
         func_sig = signature(func)
         tool_signature = ToolSignature.from_signature(func_sig)
         decoder = Decoder(type=tool_signature.virtual_struct, strict=False)
@@ -63,8 +82,27 @@ class Tool[**P, R]:
             signature=tool_signature,
             func=func,
             decoder=decoder.decode,
+            config=config,
         )
 
 
-def tool[**P, R](func: Callable[P, R]) -> Tool[P, R]:
-    return Tool.from_func(func)
+@overload
+def tool[**P, R](func: Callable[P, R]) -> Tool[P, R]: ...
+
+
+@overload
+def tool[**P, R](
+    **configs: Unpack[IToolConfig],
+) -> Callable[[Callable[P, R]], Tool[P, R]]: ...
+
+
+def tool[**P, R](
+    func: Maybe[Callable[P, R]] = MISSING, **configs: Unpack[IToolConfig]
+) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
+    if is_present(func):
+        return Tool.from_func(func=func, config=ToolConfig(**configs))
+
+    def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
+        return Tool.from_func(func=inner_func, config=ToolConfig(**configs))
+
+    return wrapper

@@ -7,7 +7,7 @@ from ididi import use
 from aceai.errors import AceAIConfigurationError, UnannotatedToolParamError
 from aceai.interface import Record
 from aceai.tools import tool
-from aceai.tools._param import (
+from aceai.tools._tool_sig import (
     Annotated,
     ToolParam,
     ToolSignature,

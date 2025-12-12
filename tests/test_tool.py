@@ -4,7 +4,7 @@ from msgspec import DecodeError, ValidationError
 
 from aceai.errors import UnannotatedToolParamError
 from aceai.tools import tool
-from aceai.tools._param import Annotated, spec
+from aceai.tools._tool_sig import Annotated, spec
 from aceai.tools.builtin_tools import BUILTIN_TOOLS, final_answer
 
 

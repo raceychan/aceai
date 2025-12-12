@@ -131,6 +131,7 @@ def test_build_base_response_kwargs_maps_request_fields(
         "response_format": LLMResponseFormat(type="json_object"),
         "tools": [tool_spec],
         "tool_choice": "auto",
+        "metadata": {"model": "gpt-4o"},
     }
 
     with pytest.warns(UserWarning):
