@@ -109,6 +109,7 @@ class UserService: ...
 @pytest.mark.debug
 def test_tool_with_both_dep_and_tool_params():
 
+    @tool(description="Fetch user info")
     def func(
         user_service: Annotated[
             UserService,

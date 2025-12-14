@@ -192,21 +192,21 @@ def build_agent(
     model: str,
     openai_api_key: str,
 ) -> AgentBase:
-    client = AsyncOpenAI(api_key=openai_api_key)
-    openai_llm = OpenAI(
-        client=client,
-        default_meta={"model": model},
-    )
     graph = Graph()
 
     llm_service = LLMService(
-        providers=[openai_llm],
+        providers=[
+            OpenAI(
+                client=AsyncOpenAI(api_key=openai_api_key),
+                default_meta={"model": model},
+            )
+        ],
         timeout_seconds=120,
     )
     executor = ToolExecutor(graph=graph, tools=tools)
 
     return AgentBase(
-        prompt=prompt,
+        sys_prompt=prompt,
         default_model=model,
         llm_service=llm_service,
         executor=executor,

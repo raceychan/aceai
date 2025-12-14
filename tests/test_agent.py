@@ -7,21 +7,21 @@ from aceai.llm.models import LLMToolCall
 
 def test_build_agent_base() -> None:
     agent = AgentBase(
-        prompt="You are a helpful assistant.",
+        sys_prompt="You are a helpful assistant.",
         default_model="gpt-4",
         llm_service=None,  # type: ignore
         executor=None,  # type: ignore
     )
-    assert agent.prompt == "You are a helpful assistant."
+    assert agent.sys_prompt == "You are a helpful assistant."
     assert agent.default_model == "gpt-4"
-    assert agent.max_steps == 5
+    assert agent.max_turns == 5
     assert hasattr(agent, "run")
 
 
 def test_agent_base_requires_positive_max_steps() -> None:
     with pytest.raises(AceAIConfigurationError):
         AgentBase(
-            prompt="Prompt",
+            sys_prompt="Prompt",
             default_model="gpt-4",
             llm_service=None,  # type: ignore[arg-type]
             executor=None,  # type: ignore[arg-type]
@@ -32,7 +32,7 @@ def test_agent_base_requires_positive_max_steps() -> None:
 def test_agent_base_rejects_negative_chunk_size() -> None:
     with pytest.raises(AceAIConfigurationError):
         AgentBase(
-            prompt="Prompt",
+            sys_prompt="Prompt",
             default_model="gpt-4",
             llm_service=None,  # type: ignore[arg-type]
             executor=None,  # type: ignore[arg-type]
@@ -43,7 +43,7 @@ def test_agent_base_rejects_negative_chunk_size() -> None:
 def test_agent_base_rejects_negative_reasoning_log_limit() -> None:
     with pytest.raises(AceAIConfigurationError):
         AgentBase(
-            prompt="Prompt",
+            sys_prompt="Prompt",
             default_model="gpt-4",
             llm_service=None,  # type: ignore[arg-type]
             executor=None,  # type: ignore[arg-type]

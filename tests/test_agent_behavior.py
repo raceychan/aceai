@@ -1,6 +1,7 @@
 import pytest
 
 from aceai.agent import AgentBase, ToolExecutionFailure
+from aceai.errors import AceAIRuntimeError
 from aceai.events import (
     AgentEvent,
     LLMOutputDeltaEvent,
@@ -10,14 +11,8 @@ from aceai.events import (
     ToolFailedEvent,
     ToolStartedEvent,
 )
-from aceai.errors import AceAIRuntimeError
 from aceai.llm import LLMResponse
-from aceai.llm.models import (
-    LLMSegment,
-    LLMStreamEvent,
-    LLMToolCall,
-    LLMToolCallDelta,
-)
+from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall, LLMToolCallDelta
 
 
 class StubExecutor:
@@ -123,7 +118,7 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
     ]
     llm_service = StubLLMService(streams)
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=StubExecutor(),
@@ -149,7 +144,7 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
     llm_service = StubLLMService(streams)
     executor = StubExecutor()
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=executor,
@@ -178,7 +173,7 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     llm_service = StubLLMService(streams)
     executor = StubExecutor({"lookup": '{"value":42}'})
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=executor,
@@ -206,7 +201,7 @@ async def test_agent_returns_final_answer_from_tool() -> None:
         )
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
         executor=StubExecutor({"final_answer": '"Done"'}),
@@ -225,7 +220,7 @@ async def test_agent_returns_final_answer_from_tool() -> None:
 async def test_agent_raises_after_exceeding_turn_limit() -> None:
     streams = [make_stream(response=LLMResponse(text=""), deltas=[])]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
         executor=StubExecutor(),
@@ -247,7 +242,7 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
 async def test_agent_can_return_structured_response() -> None:
     final_call = LLMToolCall(name="final_answer", arguments="{}", call_id="final-1")
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -272,7 +267,7 @@ async def test_agent_can_return_structured_response() -> None:
 @pytest.mark.anyio
 async def test_agent_stream_emits_run_completed_event() -> None:
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -309,7 +304,7 @@ async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
         ),
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -329,7 +324,7 @@ async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
 @pytest.mark.anyio
 async def test_reasoning_log_is_empty_when_no_deltas() -> None:
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -370,7 +365,7 @@ async def test_delta_chunker_flushes_when_threshold_exceeded() -> None:
         ),
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -398,7 +393,7 @@ async def test_delta_chunker_flushes_on_completion_when_below_threshold() -> Non
         ),
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -424,7 +419,7 @@ async def test_reasoning_log_ring_buffer_truncates_old_content() -> None:
         )
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -453,7 +448,7 @@ async def test_reasoning_log_disabled_when_max_zero() -> None:
         ),
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -472,7 +467,7 @@ async def test_reasoning_log_disabled_when_max_zero() -> None:
 @pytest.mark.anyio
 async def test_stream_error_triggers_run_failed_event() -> None:
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -516,7 +511,7 @@ async def test_agent_skips_function_call_argument_deltas() -> None:
         ),
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
         executor=StubExecutor(),
@@ -529,9 +524,11 @@ async def test_agent_skips_function_call_argument_deltas() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_uses_default_error_message_when_stream_error_missing_text() -> None:
+async def test_agent_uses_default_error_message_when_stream_error_missing_text() -> (
+    None
+):
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -557,7 +554,7 @@ async def test_agent_uses_default_error_message_when_stream_error_missing_text()
 @pytest.mark.anyio
 async def test_agent_errors_when_completion_event_lacks_response() -> None:
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
             [
@@ -579,9 +576,7 @@ async def test_agent_errors_when_completion_event_lacks_response() -> None:
             events.append(evt)
 
     assert isinstance(events[-1], RunFailedEvent)
-    assert (
-        events[-1].error == "LLM stream completed without a response payload"
-    )
+    assert events[-1].error == "LLM stream completed without a response payload"
 
 
 @pytest.mark.anyio
@@ -593,7 +588,7 @@ async def test_agent_flushes_chunks_when_stream_finishes_without_completion() ->
         )
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
@@ -601,9 +596,7 @@ async def test_agent_flushes_chunks_when_stream_finishes_without_completion() ->
     )
 
     events: list[AgentEvent] = []
-    with pytest.raises(
-        AceAIRuntimeError, match="LLM stream ended without completion"
-    ):
+    with pytest.raises(AceAIRuntimeError, match="LLM stream ended without completion"):
         async for evt in agent.run("Question?"):
             events.append(evt)
 
@@ -621,7 +614,7 @@ async def test_agent_flushes_pending_chunks_when_stream_raises_exception() -> No
         )
     ]
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=RaisingStreamLLMService(stream, RuntimeError("splat")),
         executor=StubExecutor(),
@@ -650,7 +643,7 @@ async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
     )
     stream = make_stream(response=response, deltas=[])
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
         executor=StubExecutor(),
@@ -674,7 +667,7 @@ async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
     ]
     executor = RaisingExecutor(ValueError("no calc"))
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=executor,
@@ -706,7 +699,7 @@ async def test_agent_returns_after_final_answer_tool_call() -> None:
     ]
     executor = StubExecutor({"final_answer": '"Done"'})
     agent = AgentBase(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=executor,
@@ -736,7 +729,7 @@ class ShortCircuitAgent(AgentBase):
 @pytest.mark.anyio
 async def test_agent_run_rethrows_when_no_steps_recorded() -> None:
     agent = ShortCircuitAgent(
-        prompt="Prompt",
+        sys_prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),
         executor=StubExecutor(),

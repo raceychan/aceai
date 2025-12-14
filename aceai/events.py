@@ -1,12 +1,12 @@
 """Agent event stream data models segregated by concern."""
 
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
+from aceai.helpers.string import uuid_str
 from aceai.interface import Record
 from aceai.llm.models import LLMToolCall
 
 from .models import AgentStep, ToolExecutionResult
-
 
 AgentEventType = Literal[
     "agent.llm.started",
@@ -94,10 +94,6 @@ class RunCompletedEvent(AgentLifecycleEvent):
     step: AgentStep
     final_answer: str
 
-    @property
-    def is_success(self) -> bool:
-        return True
-
 
 class RunFailedEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.run.failed"
@@ -154,7 +150,9 @@ class AgentEventBuilder:
             tool_name=tool_call.name,
         )
 
-    def tool_output(self, *, tool_call: LLMToolCall, text_delta: str) -> ToolOutputEvent:
+    def tool_output(
+        self, *, tool_call: LLMToolCall, text_delta: str
+    ) -> ToolOutputEvent:
         return ToolOutputEvent(
             step_index=self.step_index,
             step_id=self.step_id,

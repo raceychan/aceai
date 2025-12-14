@@ -2,7 +2,15 @@ from typing import AsyncIterator, Unpack
 from uuid import uuid4
 
 from .errors import AceAIConfigurationError, AceAIRuntimeError
-from .events import AgentEvent, AgentEventBuilder, RunCompletedEvent
+from .events import (
+    AgentEvent,
+    AgentEventBuilder,
+    LLMCompletedEvent,
+    RunCompletedEvent,
+    RunFailedEvent,
+    StepFailedEvent,
+    ToolFailedEvent,
+)
 from .executor import ToolExecutor
 from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
 from .interface import is_set
@@ -31,11 +39,11 @@ class AgentBase:
 
     def __init__(
         self,
+        sys_prompt: str = "",
         *,
-        prompt: str,
         default_model: str,
         llm_service: LLMService,
-        executor: ToolExecutor,
+        executor: ToolExecutor,  # TODO: optional, no need if no tools
         max_steps: int = 5,
         delta_chunk_size: int = 0,
         reasoning_log_max_chars: int | None = None,
@@ -48,7 +56,7 @@ class AgentBase:
             raise AceAIConfigurationError(
                 "reasoning_log_max_chars must be non-negative or None"
             )
-        self.prompt = prompt
+        self.sys_prompt = sys_prompt
         self.default_model = default_model
         self.llm_service = llm_service
         self.executor = executor
@@ -56,29 +64,16 @@ class AgentBase:
         self.delta_chunk_size = delta_chunk_size
         self.reasoning_log_max_chars = reasoning_log_max_chars
 
+    # async def _run_llm()
+
     async def _run_step(
         self,
         *,
         messages: list[LLMMessage],
-        steps: list[AgentStep],
+        event_builder: AgentEventBuilder,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
-        step_index = len(steps)
-        step_id = str(uuid4())
-        event_builder = AgentEventBuilder(
-            step_index=step_index,
-            step_id=step_id,
-        )
         yield event_builder.llm_started()
-
-        steps.append(
-            AgentStep(
-                step_id=step_id,
-                llm_response=LLMResponse(),
-                reasoning_log="",
-                reasoning_log_truncated=False,
-            )
-        )
 
         log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
         chunker = LLMDeltaChunker(self.delta_chunk_size)
@@ -139,35 +134,34 @@ class AgentBase:
                 if reasoning_chunks:
                     reasoning_log = "\n\n".join(reasoning_chunks)
             final_response = response or LLMResponse(text=reasoning_log)
-            steps[step_index] = AgentStep(
-                step_id=step_id,
+            current_step = AgentStep(
+                step_id=event_builder.step_id,
                 llm_response=final_response,
                 reasoning_log=reasoning_log,
                 reasoning_log_truncated=log_buffer.truncated,
             )
 
-        step = steps[step_index]
         if response is None:
             raise AceAIRuntimeError("LLM stream ended without completion")
 
-        yield event_builder.llm_completed(step=step)
+        yield event_builder.llm_completed(step=current_step)
 
-        if not step.llm_response.tool_calls:
-            yield event_builder.step_completed(step=step)
+        if not current_step.llm_response.tool_calls:
+            yield event_builder.step_completed(step=current_step)
 
-            if final_answer := step.llm_response.text:
+            if final_answer := current_step.llm_response.text:
                 yield event_builder.run_completed(
-                    step=step,
+                    step=current_step,
                     final_answer=final_answer,
                 )
         else:
             assistant_msg = LLMToolCallMessage(
-                content=step.llm_response.text,
-                tool_calls=step.llm_response.tool_calls,
+                content=current_step.llm_response.text,
+                tool_calls=current_step.llm_response.tool_calls,
             )
             messages.append(assistant_msg)
 
-            for call in step.llm_response.tool_calls:
+            for call in current_step.llm_response.tool_calls:
                 yield event_builder.tool_started(tool_call=call)
                 try:
                     tool_output = await self.executor.execute_tool(call)
@@ -175,7 +169,7 @@ class AgentBase:
                     raise ToolExecutionFailure(tool_call=call, error=exc) from exc
 
                 tool_result = ToolExecutionResult(call=call, output=tool_output)
-                step.tool_results.append(tool_result)
+                current_step.tool_results.append(tool_result)
                 yield event_builder.tool_completed(
                     tool_call=call,
                     tool_result=tool_result,
@@ -183,7 +177,7 @@ class AgentBase:
 
                 if call.name == "final_answer":
                     yield event_builder.run_completed(
-                        step=step,
+                        step=current_step,
                         final_answer=tool_result.output,
                     )
                     return
@@ -196,7 +190,18 @@ class AgentBase:
                     )
                 )
 
-            yield event_builder.step_completed(step=step)
+            yield event_builder.step_completed(step=current_step)
+
+    async def ask(self, question: str, **request_meta: Unpack[LLMRequestMeta]) -> str:
+        """Run the agent to completion and return the final answer in plain text."""
+        async for event in self.run(
+            question,
+            **request_meta,
+        ):
+            if isinstance(event, RunCompletedEvent):
+                return event.final_answer
+
+        raise AceAIRuntimeError("Agent run did not complete successfully")
 
     async def run(
         self,
@@ -205,19 +210,26 @@ class AgentBase:
     ) -> AsyncIterator[AgentEvent]:
         """Yield AgentEvent entries as the agent reasons."""
         messages: list[LLMMessage] = [
-            LLMMessage(role="system", content=self.prompt),
+            LLMMessage(role="system", content=self.sys_prompt),
             LLMMessage(role="user", content=question),
         ]
         steps: list[AgentStep] = []
 
         for _ in range(self.max_steps):
+            step_id = str(uuid4())
+            event_builder = AgentEventBuilder(
+                step_index=len(steps),
+                step_id=step_id,
+            )
             try:
                 async for event in self._run_step(
                     messages=messages,
-                    steps=steps,
+                    event_builder=event_builder,
                     **request_meta,
                 ):
                     yield event
+                    if isinstance(event, LLMCompletedEvent):
+                        steps.append(event.step)
                     if isinstance(event, RunCompletedEvent):
                         return
             except Exception as exc:
@@ -226,10 +238,6 @@ class AgentBase:
                 error_msg = str(exc)
                 last_step = steps[-1]
                 last_index = len(steps) - 1
-                event_builder = AgentEventBuilder(
-                    step_index=last_index,
-                    step_id=last_step.step_id,
-                )
                 if isinstance(exc, ToolExecutionFailure):
                     tool_call = exc.tool_call
                     error_msg = str(exc.original_error)
@@ -238,22 +246,41 @@ class AgentBase:
                         error=error_msg,
                     )
                     last_step.tool_results.append(failed_result)
-                    yield event_builder.tool_failed(
+                    yield ToolFailedEvent(
+                        step_index=last_index,
+                        step_id=last_step.step_id,
                         tool_call=tool_call,
+                        tool_name=tool_call.name,
                         tool_result=failed_result,
                         error=error_msg,
                     )
-                yield event_builder.step_failed(step=last_step, error=error_msg)
-                yield event_builder.run_failed(step=last_step, error=error_msg)
+                yield StepFailedEvent(
+                    step_index=last_index,
+                    step_id=last_step.step_id,
+                    step=last_step,
+                    error=error_msg,
+                )
+                yield RunFailedEvent(
+                    step_index=last_index,
+                    step_id=last_step.step_id,
+                    step=last_step,
+                    error=error_msg,
+                )
                 raise
-        else:
-            error_msg = "Agent exceeded maximum reasoning turns without answering"
-            last_step = steps[-1]
-            last_index = len(steps) - 1
-            event_builder = AgentEventBuilder(
-                step_index=last_index,
-                step_id=last_step.step_id,
-            )
-            yield event_builder.step_failed(step=last_step, error=error_msg)
-            yield event_builder.run_failed(step=last_step, error=error_msg)
-            raise AceAIRuntimeError(error_msg)
+
+        error_msg = "Agent exceeded maximum reasoning turns without answering"
+        last_step = steps[-1]
+        last_index = len(steps) - 1
+        yield StepFailedEvent(
+            step_index=last_index,
+            step_id=last_step.step_id,
+            step=last_step,
+            error=error_msg,
+        )
+        yield RunFailedEvent(
+            step_index=last_index,
+            step_id=last_step.step_id,
+            step=last_step,
+            error=error_msg,
+        )
+        raise AceAIRuntimeError(error_msg)

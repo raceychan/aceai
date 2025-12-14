@@ -17,6 +17,12 @@ class ToolExecutor:
 
     @property
     def tool_schemas(self) -> list[ToolSpec]:
+        """
+        TODO:
+        dynamic tool schema
+        we might let planner take control over
+        what tools are available to llm
+        """
         if not self._tool_schemas:
             self._tool_schemas = [tool.tool_schema for tool in self.tools.values()]
         return self._tool_schemas

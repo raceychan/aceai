@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal
-from uuid import uuid4
 
 from msgspec import field
 
+from aceai.helpers.string import uuid_str
+from aceai.helpers.time import utc_now
 from aceai.interface import Record
 from aceai.llm.models import LLMCitationRef, LLMResponse, LLMToolCall
 
@@ -63,21 +64,13 @@ class AgentStepAnnotations(Record, kw_only=True):
     """Flexible namespace for provider or agent-specific metadata."""
 
 
-def _default_step_id() -> str:
-    return str(uuid4())
-
-
-def _default_timestamp() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class AgentStep(Record, kw_only=True):
-    """Single agent reasoning turn, including LLM + tool outcomes."""
+    """Single agent reasoning turn, including LLM + tool outcomes. Each LLM Response would trigger at most one step"""
 
-    step_id: str = field(default_factory=_default_step_id)
+    step_id: str = field(default_factory=uuid_str)
     """Stable identifier for this reasoning turn."""
 
-    timestamp: datetime = field(default_factory=_default_timestamp)
+    timestamp: datetime = field(default_factory=utc_now)
     """Wall-clock timestamp captured when the step was recorded."""
 
     llm_response: LLMResponse
@@ -98,11 +91,11 @@ class AgentStep(Record, kw_only=True):
     """Optional metadata bundle for safety/citation data."""
 
 
-class AgentResponse(Record, kw_only=True):
-    """Complete agent run outcome with per-turn traceability."""
+# class AgentResponse(Record, kw_only=True):
+#     """Complete agent run outcome with per-turn traceability."""
 
-    turns: list[AgentStep]
-    """All recorded reasoning turns executed by the agent."""
+#     turns: list[AgentStep]
+#     """All recorded reasoning turns executed by the agent."""
 
-    final_output: str
-    """User-facing answer synthesized by the agent."""
+#     final_output: str
+#     """User-facing answer synthesized by the agent."""

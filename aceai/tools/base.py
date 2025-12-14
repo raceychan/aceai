@@ -21,12 +21,22 @@ class ToolSpec(TypedDict):
     parameters: dict[str, Any]
 
 
-class IToolConfig(TypedDict, total=False):
+class IToolMeta(TypedDict, total=False):
+    description: str
+    """
+    Human-readable description of the tool.
+    """
     record_in_history: bool
+    """
+    Whether to record tool calls and outputs in the agent's history.
+    """
 
 
-class ToolConfig(Struct):
-    record_in_history: bool = True
+class ToolMeta(Struct):
+    "Every meta field should be optional."
+
+    description: Maybe[str] = MISSING
+    record_in_history: Maybe[bool] = MISSING
 
 
 class Tool[**P, R]:
@@ -37,7 +47,7 @@ class Tool[**P, R]:
         signature: ToolSignature,
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
-        config: ToolConfig,
+        meta: ToolMeta,
     ):
         self.name = name
         self.description = description
@@ -45,7 +55,7 @@ class Tool[**P, R]:
         self.func = func
         self._tool_schema: ToolSpec | None = None
         self._decoder = decoder
-        self._config = config
+        self._meta = meta
 
     def encode_return(self, value: R) -> str:
         return msg_encode(value).decode("utf-8")
@@ -72,7 +82,7 @@ class Tool[**P, R]:
         return self._tool_schema
 
     @classmethod
-    def from_func(cls, func: Callable[P, R], config: ToolConfig) -> "Tool[P, R]":
+    def from_func(cls, func: Callable[P, R], meta: ToolMeta) -> "Tool[P, R]":
         func_sig = signature(func)
         tool_signature = ToolSignature.from_signature(func_sig)
         decoder = Decoder(type=tool_signature.virtual_struct, strict=False)
@@ -82,7 +92,7 @@ class Tool[**P, R]:
             signature=tool_signature,
             func=func,
             decoder=decoder.decode,
-            config=config,
+            meta=meta,
         )
 
 
@@ -92,17 +102,17 @@ def tool[**P, R](func: Callable[P, R]) -> Tool[P, R]: ...
 
 @overload
 def tool[**P, R](
-    **configs: Unpack[IToolConfig],
+    **tool_meta: Unpack[IToolMeta],
 ) -> Callable[[Callable[P, R]], Tool[P, R]]: ...
 
 
 def tool[**P, R](
-    func: Maybe[Callable[P, R]] = MISSING, **configs: Unpack[IToolConfig]
+    func: Maybe[Callable[P, R]] = MISSING, **tool_meta: Unpack[IToolMeta]
 ) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
     if is_present(func):
-        return Tool.from_func(func=func, config=ToolConfig(**configs))
+        return Tool.from_func(func=func, meta=ToolMeta(**tool_meta))
 
     def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
-        return Tool.from_func(func=inner_func, config=ToolConfig(**configs))
+        return Tool.from_func(func=inner_func, meta=ToolMeta(**tool_meta))
 
     return wrapper
