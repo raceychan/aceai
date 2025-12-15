@@ -9,7 +9,7 @@ from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError, AceAIValidationError
 from aceai.interface import Record, Struct, Unset
-from aceai.tools.interface import ToolSpec
+from aceai.tools import ToolSpec
 
 
 class LLMToolCall(Record, kw_only=True):

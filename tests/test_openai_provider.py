@@ -24,7 +24,7 @@ from aceai.llm.models import (
     LLMToolUseMessage,
 )
 from aceai.llm.openai import OpenAI
-from aceai.tools.interface import ToolSpec
+from aceai.tools import ToolSpec
 
 
 class NamespaceWithDump(SimpleNamespace):
