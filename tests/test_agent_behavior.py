@@ -41,7 +41,7 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
 
     assert answer == "answer"
     assert len(llm_service.calls) == 1
-    assert llm_service.calls[0]["messages"][-1].content == "   "
+    assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "   "
 
 
 @pytest.mark.anyio

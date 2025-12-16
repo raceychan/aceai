@@ -31,8 +31,8 @@ class AgentBase:
         "TODO: this should be async generator"
 
         messages: list[LLMMessage] = [
-            LLMMessage(role="system", content=self.prompt),
-            LLMMessage(role="user", content=question),
+            LLMMessage.build("system", self.prompt),
+            LLMMessage.build("user", question),
         ]
         selected_model = model or self.default_model
 
@@ -44,8 +44,8 @@ class AgentBase:
             )
 
             if response.tool_calls:
-                assistant_msg = LLMToolCallMessage(
-                    content=response.text,
+                assistant_msg = LLMToolCallMessage.build(
+                    response.text,
                     tool_calls=response.tool_calls,
                 )
                 messages.append(assistant_msg)
@@ -55,10 +55,10 @@ class AgentBase:
                         return tool_result
 
                     messages.append(
-                        LLMToolUseMessage(
+                        LLMToolUseMessage.build(
+                            tool_result,
                             name=call.name,
                             call_id=call.call_id,
-                            content=tool_result,
                         )
                     )
                 continue
@@ -66,6 +66,6 @@ class AgentBase:
             final_answer = response.text.strip()
             if final_answer:
                 return final_answer
-            messages.append(LLMMessage(role="assistant", content=""))
+            messages.append(LLMMessage(role="assistant"))
 
         raise RuntimeError("Agent exceeded maximum reasoning turns without answering")

@@ -60,7 +60,10 @@ def _expand(
             _expand(item, defs, ref_prefix)
 
 
-def inline_schema(type_: RegularTypes, default: Maybe[Any] = MISSING) -> JsonSchema:
+# @lru_cache(1024)
+def inline_schema(
+    type_: RegularTypes, default: Maybe[Any] = MISSING, required: bool = True
+) -> JsonSchema:
     """
     Given a JSON Schema `schema` that may contain `$ref` references to definitions in `defs`, return a new schema with all references expanded inline.
     Examples:
@@ -125,7 +128,19 @@ def inline_schema(type_: RegularTypes, default: Maybe[Any] = MISSING) -> JsonSch
 
     _expand(schema, defs, MSGSPEC_REF_PREFIX)
 
-    if is_present(default) and is_json_compatible(default):
+    if not required and is_present(default) and is_json_compatible(default):
         schema = deepcopy(schema)
         schema.setdefault("default", default)
+
+    if required and (properties := schema.get("properties")):
+        required_keys = schema.get("required")
+        if required_keys is None:
+            schema["required"] = []
+
+        seen = set(schema.get("required"))
+        for key in properties:
+            if key not in seen:
+                schema["required"].append(key)
+            schema["properties"][key].pop("default", None)
+
     return cast(JsonSchema, schema)

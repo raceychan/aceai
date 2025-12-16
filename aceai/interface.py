@@ -5,6 +5,7 @@ from msgspec import UNSET, Struct, UnsetType
 from msgspec.structs import asdict
 from typing_extensions import dataclass_transform
 
+MessageRole = Literal["system", "user", "assistant", "tool"]
 
 @dataclass_transform(frozen_default=True)
 class Record(Struct, frozen=True, kw_only=True):

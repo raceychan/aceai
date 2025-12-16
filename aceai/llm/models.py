@@ -6,8 +6,61 @@ from typing import Any, AsyncIterator, BinaryIO, Literal, Required, Self, TypedD
 from msgspec import UNSET, field
 from msgspec.structs import asdict
 
-from aceai.interface import Record, Struct, Unset
+from aceai.interface import MessageRole, Record, Struct, Unset
 from aceai.tools.interface import ToolSpec
+
+
+class LLMMessagePart(TypedDict, total=False):
+    """Structured message chunk describing a single modality."""
+
+    type: Required[Literal["text", "image", "audio", "file"]]
+    """Semantic modality of this part."""
+
+    data: Required[str | bytes]
+    """Inline payload: string for text, bytes for binary modalities."""
+
+    mime_type: str
+    """Optional MIME type describing the payload."""
+
+    url: str
+    """External reference (HTTP URL, provider handle, etc.)."""
+
+    metadata: dict[str, Any]
+    """Provider- or caller-specific metadata."""
+
+
+def value_to_msgpart(val: str | LLMMessagePart) -> LLMMessagePart:
+    if isinstance(val, str):
+        return LLMMessagePart(type="text", data=val)
+    else:
+        return val
+
+
+type SupportedValueType = str | LLMMessagePart | list[LLMMessagePart]
+
+
+def parts_factory(val: SupportedValueType):
+    if isinstance(val, str):
+        return [value_to_msgpart(val)]
+    elif isinstance(val, dict):
+        return [value_to_msgpart(val)]
+    elif isinstance(val, list):
+        return [value_to_msgpart(v) for v in val]
+    else:
+        raise ValueError(f"Unsupported value {val}")
+
+
+class LLMUploadedAsset(Record, kw_only=True):
+    """Descriptor for an uploaded asset that can be re-used by providers."""
+
+    id: str
+    """Provider-specific identifier for the uploaded asset."""
+
+    mime_type: str
+    """MIME type of the uploaded asset."""
+
+    url: str | None = None
+    """Optional URL referencing the uploaded asset."""
 
 
 class LLMToolCall(Record, kw_only=True):
@@ -39,25 +92,31 @@ class LLMToolCallDelta(Record):
 class LLMMessage(Struct, kw_only=True):
     """Typed chat message that backs `LLMRequest.messages`."""
 
-    role: Literal["system", "user", "assistant", "tool"]
+    role: MessageRole
     """Canonical chat role assigned to this turn."""
 
-    content: str
-    """Message body provided to or produced by the model."""
+    content: list[LLMMessagePart] = field(default_factory=list)
+    """Structured message content; plain strings are not accepted."""
 
-    name: str | None = None
-    """Optional tool/function label associated with the message."""
-
-    def __ior__(self, other: "LLMMessage | str") -> Self:
-        if isinstance(other, str):
-            other = LLMMessage(role=self.role, content=other)
-        elif self.role != other.role:
+    def __ior__(self, other: "LLMMessage") -> Self:
+        if self.role != other.role:
             raise ValueError(f"Can't merge {other}, {self.role=}, {other.role=}")
-        self.content += other.content
+        self.content.extend(other.content)
         return self
 
     def asdict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def build(cls, role: MessageRole, content: SupportedValueType):
+        if isinstance(content, str):
+            return cls(role=role, content=[value_to_msgpart(content)])
+        elif isinstance(content, dict):
+            return cls(role=role, content=[content])
+        elif isinstance(content, list):
+            return cls(role=role, content=content)
+        else:
+            raise NotImplementedError
 
 
 class LLMToolCallMessage(LLMMessage, kw_only=True):
@@ -78,12 +137,24 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
             res["tool_calls"] = [tc.asdict() for tc in self.tool_calls]
         return res
 
+    @classmethod
+    def build(
+        cls,
+        val: SupportedValueType,
+        tool_calls: list[LLMToolCall],
+    ):
+        content = parts_factory(val)
+        return cls(content=content, tool_calls=tool_calls)
+
 
 class LLMToolUseMessage(LLMMessage, kw_only=True):
     """Synthetic tool response message sent back to the model."""
 
     role: Literal["tool"] = "tool"
     """Marks the message as tool output when relayed to the model."""
+
+    name: str
+    """tool/function label associated with the message."""
 
     call_id: str
     """Identifier of the `LLMToolCall` whose output is being returned."""
@@ -93,6 +164,10 @@ class LLMToolUseMessage(LLMMessage, kw_only=True):
         if self.call_id is not None:
             res["tool_call_id"] = self.call_id
         return res
+
+    @classmethod
+    def build(cls, val: SupportedValueType, name: str, call_id: str):
+        return cls(content=parts_factory(val), name=name, call_id=call_id)
 
 
 class LLMResponseFormat(Record):
@@ -222,7 +297,17 @@ class LLMProviderMeta(Record):
 class LLMSegment(Record):
     """Structured slice of provider output with annotations."""
 
-    type: Literal["text", "reasoning", "tool_call", "citation", "error", "other"]
+    type: Literal[
+        "text",
+        "reasoning",
+        "tool_call",
+        "citation",
+        "error",
+        "image",
+        "audio",
+        "file",
+        "other",
+    ]
     """Semantic segment type to help consumers interpret content."""
 
     content: str
@@ -236,6 +321,25 @@ class LLMSegment(Record):
 
     metadata: dict[str, Any] = field(default_factory=dict)
     """Free-form provider-specific metadata for forward compatibility."""
+
+    media: "LLMGeneratedMedia | None" = None
+    """Optional generated media payload for non-text segments."""
+
+
+class LLMGeneratedMedia(Record, kw_only=True):
+    """Descriptor for media emitted by the model."""
+
+    type: Literal["image", "audio", "file"]
+    """Modality of the generated asset."""
+
+    mime_type: str
+    """MIME type of the generated asset."""
+
+    url: str | None = None
+    """Optional URL referencing the media."""
+
+    data: bytes | None = None
+    """Inline media bytes when immediately consumable."""
 
 
 class LLMResponse(Record):
@@ -278,6 +382,9 @@ class LLMStreamChunk(Record):
     tool_call_delta: Unset[LLMToolCallDelta] = UNSET
     """Incremental tool call arguments emitted during streaming."""
 
+    media: Unset[LLMGeneratedMedia] = UNSET
+    """Media payload emitted during streaming (e.g., partial image)."""
+
     response: Unset[LLMResponse] = UNSET
     """Optional final response snapshot delivered when the stream completes."""
 
@@ -293,6 +400,7 @@ class LLMStreamEvent(Record):
         "response.function_call_arguments.delta",
         "response.completed",
         "response.error",
+        "response.media",
     ]
     """Explicit event type mirroring the provider's semantic intent."""
 
@@ -337,7 +445,25 @@ class LLMProviderBase(ABC):
         """Return the provider's default streaming model identifier."""
         raise NotImplementedError
 
+    @property
+    def modality(self) -> "LLMProviderModality":
+        """Return the provider's supported modalities (defaults to text-only)."""
+        return LLMProviderModality()
+
     @abstractmethod
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
         raise NotImplementedError
+
+
+class LLMProviderModality(Record, kw_only=True):
+    """Simple capability flags describing provider modality support."""
+
+    text_in: bool = True
+    text_out: bool = True
+    image_in: bool = False
+    image_out: bool = False
+    audio_in: bool = False
+    audio_out: bool = False
+    file_in: bool = False
+    file_out: bool = False
