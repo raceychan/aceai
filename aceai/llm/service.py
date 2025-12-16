@@ -107,30 +107,6 @@ class LLMService:
 
         async for event in stream_resp:
             yield event
-            # if is_set(event.chunk.text_delta):
-            #     # Placeholder hook for future instrumentation
-            #     pass
-
-    def _apply_defaults(self, request: LLMRequest) -> LLMRequest:
-        """Apply default max_tokens if not explicitly provided.
-
-        - Looks up per_model_max_output_tokens by resolved model name.
-        - Falls back to default_max_output_tokens if configured.
-        - If none configured, leaves request as-is.
-        """
-        self._validate_messages(request)
-        metadata = request.setdefault("metadata", {})
-        if "model" not in metadata:
-            metadata["model"] = self._get_current_provider().default_model
-        return request
-
-    def _apply_stream_defaults(self, request: LLMRequest) -> LLMRequest:
-        """Apply default streaming model if not explicitly provided."""
-        self._validate_messages(request)
-        metadata = request.setdefault("metadata", {})
-        if "model" not in metadata:
-            metadata["model"] = self._get_current_provider().default_stream_model
-        return request
 
     def _validate_messages(self, request: LLMRequest) -> None:
         messages = request.get("messages")
