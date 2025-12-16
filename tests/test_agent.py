@@ -14,7 +14,7 @@ def test_build_agent_base() -> None:
     )
     assert agent.sys_prompt == "You are a helpful assistant."
     assert agent.default_model == "gpt-4"
-    assert agent.max_turns == 5
+    assert agent.max_steps == 5
     assert hasattr(agent, "run")
 
 

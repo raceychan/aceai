@@ -12,7 +12,7 @@ def test_inline_schema_sets_default_only_for_json_compatible_values() -> None:
     class Entry(Record):
         value: int
 
-    with_default = inline_schema(list[Entry], default=("ok",))
+    with_default = inline_schema(list[Entry], default=("ok",), required=False)
     assert with_default["default"] == ("ok",)
 
     class NotSerializable:

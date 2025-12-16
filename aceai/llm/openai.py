@@ -1,3 +1,4 @@
+import base64
 import time
 from typing import Any, AsyncIterator, BinaryIO, cast
 from warnings import warn
@@ -10,6 +11,13 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_image_gen_call_completed_event import (
+    ResponseImageGenCallCompletedEvent,
+)
+from openai.types.responses.response_image_gen_call_partial_image_event import (
+    ResponseImageGenCallPartialImageEvent,
+)
+from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
@@ -23,9 +31,12 @@ from aceai.errors import (
 from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
 
 from .models import (
+    LLMGeneratedMedia,
     LLMMessage,
+    LLMMessagePart,
     LLMProviderBase,
     LLMProviderMeta,
+    LLMProviderModality,
     LLMRequest,
     LLMRequestMeta,
     LLMResponse,
@@ -48,14 +59,17 @@ class OpenAI(LLMProviderBase):
         self._client = client
         self._default_metadata: LLMRequestMeta = default_meta
 
+    @property
+    def modality(self) -> LLMProviderModality:
+        return LLMProviderModality(image_in=True, image_out=True)
+
     async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
         result = await self._client.audio.transcriptions.create(
             model=model,
             file=(filename, file),
         )
-        text = result.text
-        return text
+        return result.text
 
     def _build_base_response_kwargs(
         self,
@@ -124,18 +138,72 @@ class OpenAI(LLMProviderBase):
                     {
                         "type": "function_call_output",
                         "call_id": message.call_id,
-                        "output": message.content,
+                        "output": self._coerce_text_content(
+                            message.content, context="tool output"
+                        ),
                     }
                 )
             elif isinstance(message, LLMToolCallMessage):
                 if message.content:
-                    formatted.append({"role": message.role, "content": message.content})
-                for tc in message.tool_calls:
+                    formatted.append(
+                        {
+                            "role": message.role,
+                            "content": self._format_content_parts(message.content),
+                        }
+                    )
+                for tc in message.tool_calls or []:
                     formatted.append(tc.asdict())
             else:
-                formatted.append({"role": message.role, "content": message.content})
+                formatted.append(
+                    {
+                        "role": message.role,
+                        "content": self._format_content_parts(message.content),
+                    }
+                )
 
         return formatted
+
+    def _coerce_text_content(
+        self, content: list[LLMMessagePart], *, context: str
+    ) -> str:
+        text_parts = []
+        for part in content:
+            if part["type"] != "text":
+                raise ValueError(f"{context} only supports text parts")
+            text_parts.append(part["data"])
+        return "".join(text_parts)
+
+    def _format_content_parts(
+        self, content: list[LLMMessagePart]
+    ) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for part in content:
+            match part["type"]:
+                case "text":
+                    payload.append({"type": "input_text", "text": part["data"]})
+                case "image":
+                    payload.append(self._format_image_part(part))
+                case "audio":
+                    raise ValueError("OpenAI Responses does not support audio input")
+                case "file":
+                    raise ValueError("OpenAI Responses does not support file input")
+                case _:
+                    raise ValueError(f"Unsupported message part: {part.type}")
+        return payload
+
+    def _format_image_part(self, part: LLMMessagePart) -> dict[str, Any]:
+        image_url = part.get("url")
+        if image_url is None and isinstance(part["data"], bytes):
+            mime = part.get("mime_type", "image/png")
+            b64 = base64.b64encode(part["data"]).decode("ascii")
+            image_url = f"data:{mime};base64,{b64}"
+        if image_url is None:
+            raise ValueError("Image parts must include `url` or `data`")
+        return {
+            "type": "input_image",
+            "image_url": image_url,
+            "detail": "auto",
+        }
 
     def _build_text_config(
         self,
@@ -209,21 +277,7 @@ class OpenAI(LLMProviderBase):
         reasoning_items = reasoning_items or []
         if response.output_text:
             segments.append(LLMSegment(type="text", content=response.output_text))
-        for reasoning in reasoning_items:
-            summary_texts = [
-                summary.text for summary in reasoning.summary if summary.text
-            ]
-            if summary_texts:
-                segments.append(
-                    LLMSegment(
-                        type="reasoning",
-                        content="\n\n".join(summary_texts),
-                        metadata={
-                            "reasoning_id": reasoning.id,
-                            "status": reasoning.status,
-                        },
-                    )
-                )
+        segments.extend(self._build_image_segments(response))
         for call in tool_calls:
             segments.append(
                 LLMSegment(
@@ -236,6 +290,44 @@ class OpenAI(LLMProviderBase):
                 )
             )
         return segments
+
+    def _build_image_segments(self, response: Response) -> list[LLMSegment]:
+        segments: list[LLMSegment] = []
+        for idx, item in enumerate(response.output or []):
+            if isinstance(item, ImageGenerationCall):
+                media = self._image_call_to_media(item)
+                segments.append(
+                    LLMSegment(
+                        type="image",
+                        content="",
+                        media=media,
+                        metadata={
+                            "item_id": item.id,
+                            "status": item.status,
+                            "output_index": idx,
+                        },
+                    )
+                )
+        return segments
+
+    def _image_call_to_media(self, item: ImageGenerationCall) -> LLMGeneratedMedia:
+        data: bytes | None = None
+        if item.result:
+            data = base64.b64decode(item.result)
+        return LLMGeneratedMedia(type="image", mime_type="image/png", data=data)
+
+    def _safe_model_dump(self, payload: Any) -> dict[str, Any]:
+        if payload is None:
+            return {}
+        dump = getattr(payload, "model_dump", None)
+        if callable(dump):
+            try:
+                data = dump()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                return {}
+        return {}
 
     def _extract_tool_calls(self, response: Response) -> list[LLMToolCall]:
         calls: list[LLMToolCall] = []
@@ -345,6 +437,25 @@ class OpenAI(LLMProviderBase):
                     )
                 ]
                 event_type = "response.function_call_arguments.delta"
+            case ResponseImageGenCallPartialImageEvent(partial_image_b64=partial_b64):
+                media = self._media_from_base64(partial_b64)
+                metadata = {
+                    "item_id": event.item_id,
+                    "output_index": event.output_index,
+                    "partial_index": event.partial_image_index,
+                    "sequence_number": event.sequence_number,
+                }
+                segments = [
+                    LLMSegment(
+                        type="image",
+                        content="",
+                        media=media,
+                        metadata=metadata,
+                    )
+                ]
+                event_type = "response.media"
+            case ResponseImageGenCallCompletedEvent():
+                return None
             case ResponseErrorEvent(message=message):
                 error_msg = message or "LLM stream error"
                 error_value = error_msg
@@ -385,6 +496,29 @@ class OpenAI(LLMProviderBase):
                         error_value = error_msg
                         segments = [LLMSegment(type="error", content=error_msg)]
                         event_type = "response.error"
+                    case "response.image_generation_call.partial_image":
+                        partial_b64 = getattr(event, "partial_image_b64", None)
+                        if not partial_b64:
+                            return None
+                        media = self._media_from_base64(partial_b64)
+                        metadata = {
+                            "item_id": getattr(event, "item_id", None),
+                            "output_index": getattr(event, "output_index", None),
+                            "partial_index": getattr(
+                                event, "partial_image_index", None
+                            ),
+                            "sequence_number": getattr(event, "sequence_number", None),
+                        }
+                        chunk = LLMStreamChunk(media=media)
+                        segments = [
+                            LLMSegment(
+                                type="image",
+                                content="",
+                                media=media,
+                                metadata=metadata,
+                            )
+                        ]
+                        event_type = "response.media"
                     case _:
                         return None
 
@@ -447,3 +581,7 @@ class OpenAI(LLMProviderBase):
             raw_event=final_response.model_dump() or None,
             extras=final_llm_response.extras,
         )
+
+    def _media_from_base64(self, payload: str) -> LLMGeneratedMedia:
+        data = base64.b64decode(payload)
+        return LLMGeneratedMedia(type="image", mime_type="image/png", data=data)

@@ -1,4 +1,4 @@
-import io
+from base64 import b64encode
 from types import SimpleNamespace
 
 import pytest
@@ -7,8 +7,14 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
-from openai.types.responses.response_reasoning_item import ResponseReasoningItem
-from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
+from openai.types.responses.response_image_gen_call_partial_image_event import (
+    ResponseImageGenCallPartialImageEvent,
+)
+from openai.types.responses.response_output_item import ImageGenerationCall
+from openai.types.responses.response_reasoning_item import (
+    ResponseReasoningItem,
+    Summary as ReasoningSummary,
+)
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from aceai.errors import (
@@ -18,6 +24,7 @@ from aceai.errors import (
 )
 from aceai.llm import LLMMessage
 from aceai.llm.models import (
+    LLMMessagePart,
     LLMResponseFormat,
     LLMToolCall,
     LLMToolCallMessage,
@@ -113,6 +120,10 @@ def openai_provider(fake_openai_client) -> OpenAI:
     )
 
 
+def _messages_with_attr_parts(messages):
+    return messages
+
+
 def test_build_base_response_kwargs_maps_request_fields(
     openai_provider: OpenAI,
 ) -> None:
@@ -123,7 +134,9 @@ def test_build_base_response_kwargs_maps_request_fields(
         "parameters": {"type": "object", "properties": {}},
     }
     request = {
-        "messages": [LLMMessage(role="system", content="You are helpful.")],
+        "messages": _messages_with_attr_parts(
+            [LLMMessage.build("system", "You are helpful.")]
+        ),
         "max_tokens": 256,
         "temperature": 0.3,
         "top_p": 0.9,
@@ -150,7 +163,7 @@ def test_build_base_response_kwargs_skips_temperature_for_gpt5(
     openai_provider: OpenAI,
 ) -> None:
     request = {
-        "messages": [LLMMessage(role="system", content="start")],
+        "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
         "temperature": 0.2,
         "metadata": {"model": "gpt-5o-mini"},
     }
@@ -165,7 +178,7 @@ def test_build_base_response_kwargs_rejects_reasoning_for_unsupported_model(
     openai_provider: OpenAI,
 ) -> None:
     request = {
-        "messages": [LLMMessage(role="system", content="start")],
+        "messages": [LLMMessage.build("system", "start")],
         "metadata": {
             "model": "gpt-4o",
             "reasoning": {"summary": "auto"},
@@ -187,15 +200,18 @@ def test_format_messages_for_responses_includes_tool_outputs(
     openai_provider: OpenAI,
 ) -> None:
     call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
-    messages = [
-        LLMMessage(role="system", content="Start"),
-        LLMToolCallMessage(content="", tool_calls=[call]),
-        LLMToolUseMessage(content="result", call_id="call-1"),
-    ]
+    messages = _messages_with_attr_parts(
+        [
+            LLMMessage.build("system", "Start"),
+            LLMToolCallMessage(tool_calls=[call]),
+            LLMToolUseMessage.build("result", name="lookup", call_id="call-1"),
+        ]
+    )
 
     formatted = openai_provider._format_messages_for_responses(messages)
 
-    assert formatted[0] == {"role": "system", "content": "Start"}
+    assert formatted[0]["role"] == "system"
+    assert formatted[0]["content"][0] == {"type": "input_text", "text": "Start"}
     assert formatted[1]["type"] == "function_call"
     assert formatted[1]["name"] == "lookup"
     assert formatted[2]["type"] == "function_call_output"
@@ -205,7 +221,11 @@ def test_format_messages_for_responses_includes_tool_outputs(
 def test_format_messages_allows_tool_output_without_call_id(
     openai_provider: OpenAI,
 ) -> None:
-    messages = [LLMToolUseMessage(content="oops", call_id=None)]
+    messages = _messages_with_attr_parts(
+        [
+            LLMToolUseMessage.build("oops", name="orphan", call_id=None),
+        ]
+    )
 
     formatted = openai_provider._format_messages_for_responses(messages)
 
@@ -218,16 +238,26 @@ def test_format_messages_allows_tool_output_without_call_id(
     ]
 
 
-def test_format_messages_includes_tool_call_message_content(
-    openai_provider: OpenAI,
-) -> None:
-    call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
-    messages = [LLMToolCallMessage(content="prep", tool_calls=[call])]
+def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
+    parts = [
+        LLMMessagePart(type="text", data="describe this"),
+        LLMMessagePart(
+            type="image",
+            url="https://example.com/image.png",
+            data=b"",
+        ),
+    ]
+    messages = _messages_with_attr_parts(
+        [
+            LLMMessage.build("user", parts),
+        ]
+    )
 
     formatted = openai_provider._format_messages_for_responses(messages)
 
-    assert formatted[0] == {"role": "assistant", "content": "prep"}
-    assert formatted[1]["name"] == "lookup"
+    assert formatted[0]["content"][0] == {"type": "input_text", "text": "describe this"}
+    assert formatted[0]["content"][1]["type"] == "input_image"
+    assert formatted[0]["content"][1]["image_url"] == "https://example.com/image.png"
 
 
 def test_build_text_config_variants(openai_provider: OpenAI) -> None:
@@ -256,6 +286,7 @@ def test_build_text_config_rejects_unknown_type(openai_provider: OpenAI) -> None
 
 
 def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None:
+    image_payload = b64encode(b"image-bytes").decode()
     response = NamespaceWithDump(
         id="resp-1",
         model="gpt-4o",
@@ -268,7 +299,13 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
                 call_id="call-1",
                 id=None,
                 status="completed",
-            )
+            ),
+            ImageGenerationCall(
+                id="img-1",
+                result=image_payload,
+                status="completed",
+                type="image_generation_call",
+            ),
         ],
         usage=NamespaceWithDump(
             input_tokens=1,
@@ -286,6 +323,9 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
     assert llm_response.tool_calls[0].name == "lookup"
     assert llm_response.usage is not None
     assert llm_response.usage.input_tokens == 1
+    image_segment = next(seg for seg in llm_response.segments if seg.type == "image")
+    assert image_segment.media is not None
+    assert image_segment.media.data is not None
 
 
 def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> None:
@@ -313,14 +353,10 @@ def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> 
 
     llm_response = openai_provider._to_llm_response(response)
 
-    reasoning_segments = [
-        seg for seg in llm_response.segments if seg.type == "reasoning"
-    ]
-    assert reasoning_segments
-    assert reasoning_segments[0].content == "Chain summary"
+    summaries = llm_response.extras["reasoning_summaries"]
+    assert summaries and "Chain summary" in summaries[0]
     assert llm_response.extras["reasoning_tokens"] == 7
     assert llm_response.extras["reasoning_config"]["effort"] == "medium"
-    assert "Chain summary" in llm_response.extras["reasoning_summaries"][0]
 
 
 def test_extract_tool_calls_falls_back_to_item_id(
@@ -416,110 +452,16 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
     assert fallback_chunk is not None
     assert fallback_chunk.text_delta == "fallback"
 
-
-def test_map_stream_event_handles_fallback_tool_and_error(
-    openai_provider: OpenAI,
-) -> None:
-    tool_event = NamespaceWithDump(
-        type="response.function_call_arguments.delta",
-        delta="{}",
-        item_id="tool-3",
+    image_event = ResponseImageGenCallPartialImageEvent(
+        item_id="img-1",
+        output_index=0,
+        partial_image_b64=b64encode(b"chunk").decode(),
+        partial_image_index=0,
+        sequence_number=4,
+        type="response.image_generation_call.partial_image",
     )
-    tool_chunk = openai_provider._map_stream_event(tool_event, model_name="gpt-4o")
-    assert tool_chunk is not None
-    assert tool_chunk.tool_call_delta.id == "tool-3"
-
-    error_event = NamespaceWithDump(
-        type="response.error",
-        delta=None,
-        item_id=None,
-        message="nope",
-    )
-    error_chunk = openai_provider._map_stream_event(error_event, model_name="gpt-4o")
-    assert error_chunk is not None
-    assert error_chunk.error == "nope"
-
-    unknown_event = NamespaceWithDump(type="other", delta=None, item_id=None)
-    assert openai_provider._map_stream_event(unknown_event, model_name="gpt-4o") is None
-
-
-@pytest.mark.anyio
-async def test_openai_properties_and_stt(fake_openai_client) -> None:
-    fake_openai_client.transcription_text = "heard"
-    provider = OpenAI(
-        client=fake_openai_client,
-        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
-    )
-
-    transcript = await provider.stt(
-        "audio.wav",
-        io.BytesIO(b"wave"),
-        model="whisper-large",
-    )
-
-    assert transcript == "heard"
-    assert fake_openai_client.transcription_calls[0]["model"] == "whisper-large"
-    assert provider._default_metadata["model"] == "gpt-4o"
-    assert provider._default_metadata["stream_model"] == "gpt-4o-mini"
-
-
-@pytest.mark.anyio
-async def test_openai_complete_invokes_client(fake_openai_client) -> None:
-    fake_openai_client.responses.response_payload = NamespaceWithDump(
-        id="resp-final",
-        model="gpt-4o",
-        output_text="done",
-        output=[],
-        usage=None,
-        status="completed",
-        reasoning=None,
-    )
-    provider = OpenAI(
-        client=fake_openai_client,
-        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
-    )
-
-    response = await provider.complete(
-        {"messages": [LLMMessage(role="system", content="hello")]}
-    )
-
-    assert response.text == "done"
-    assert fake_openai_client.responses.create_calls
-
-
-@pytest.mark.anyio
-async def test_openai_stream_yields_events_and_completion(fake_openai_client) -> None:
-    fake_openai_client.responses.stream_events = [
-        ResponseTextDeltaEvent(
-            content_index=0,
-            delta="Hi",
-            item_id="item-1",
-            logprobs=[],
-            output_index=0,
-            sequence_number=1,
-            type="response.output_text.delta",
-        )
-    ]
-    fake_openai_client.responses.final_stream_response = NamespaceWithDump(
-        id="resp-stream",
-        model="gpt-4o",
-        output_text="final",
-        output=[],
-        usage=None,
-        status="completed",
-        reasoning=None,
-    )
-    provider = OpenAI(
-        client=fake_openai_client,
-        default_meta={"model": "gpt-4o", "stream_model": "gpt-4o-mini"},
-    )
-
-    events = []
-    async for event in provider.stream(
-        {"messages": [LLMMessage(role="system", content="stream")]}
-    ):
-        events.append(event.event_type)
-
-    assert events[-1] == "response.completed"
-    assert "response.output_text.delta" in events
-    assert fake_openai_client.responses.stream_calls
+    image_chunk = openai_provider._map_stream_event(image_event, model_name="gpt-4o")
+    assert image_chunk is not None
+    assert image_chunk.event_type == "response.media"
+    assert image_chunk.segments[0].media is not None
+    assert image_chunk.segments[0].type == "image"

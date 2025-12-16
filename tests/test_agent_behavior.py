@@ -130,7 +130,7 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
     assert isinstance(final_event, RunCompletedEvent)
     assert final_event.final_answer == "  answer  "
     assert len(llm_service.calls) == 1
-    assert llm_service.calls[0]["messages"][-1].content == "   "
+    assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "   "
 
 
 @pytest.mark.anyio
@@ -465,7 +465,7 @@ async def test_reasoning_log_disabled_when_max_zero() -> None:
 
 
 @pytest.mark.anyio
-async def test_stream_error_triggers_run_failed_event() -> None:
+async def test_stream_error_bubbles_without_run_failed_event() -> None:
     agent = AgentBase(
         sys_prompt="Prompt",
         default_model="gpt-4o",
@@ -487,7 +487,8 @@ async def test_stream_error_triggers_run_failed_event() -> None:
         async for evt in agent.run("boom?"):
             events.append(evt)
 
-    assert isinstance(events[-1], RunFailedEvent)
+    assert isinstance(events[-1], LLMStartedEvent)
+    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
 
 
 @pytest.mark.anyio
@@ -547,8 +548,8 @@ async def test_agent_uses_default_error_message_when_stream_error_missing_text()
         async for evt in agent.run("Boom?"):
             events.append(evt)
 
-    assert isinstance(events[-1], RunFailedEvent)
-    assert events[-1].error == "LLM streaming error"
+    assert isinstance(events[-1], LLMStartedEvent)
+    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
 
 
 @pytest.mark.anyio
@@ -575,8 +576,8 @@ async def test_agent_errors_when_completion_event_lacks_response() -> None:
         async for evt in agent.run("Question?"):
             events.append(evt)
 
-    assert isinstance(events[-1], RunFailedEvent)
-    assert events[-1].error == "LLM stream completed without a response payload"
+    assert isinstance(events[-1], LLMStartedEvent)
+    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
 
 
 @pytest.mark.anyio
@@ -602,7 +603,7 @@ async def test_agent_flushes_chunks_when_stream_finishes_without_completion() ->
 
     deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
     assert deltas and deltas[0].text_delta == "partial"
-    assert isinstance(events[-1], RunFailedEvent)
+    assert isinstance(events[-1], LLMOutputDeltaEvent)
 
 
 @pytest.mark.anyio
@@ -628,8 +629,8 @@ async def test_agent_flushes_pending_chunks_when_stream_raises_exception() -> No
 
     deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
     assert deltas and deltas[0].text_delta == "abc"
-    assert isinstance(events[-1], RunFailedEvent)
-    assert events[-1].error == "splat"
+    assert isinstance(events[-1], LLMOutputDeltaEvent)
+    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
 
 
 @pytest.mark.anyio
@@ -718,11 +719,10 @@ class ShortCircuitAgent(AgentBase):
         self,
         *,
         messages,
-        steps,
+        event_builder,
         **request_meta,
     ):
-        if False:  # pragma: no cover - ensures async generator semantics
-            yield None
+        yield event_builder.llm_started()
         raise RuntimeError("preflight failure")
 
 

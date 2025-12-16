@@ -1,3 +1,4 @@
+from .models import LLMMessagePart as LLMMessagePart
 from .models import LLMRequest as LLMRequest
 from .models import LLMResponse as LLMResponse
 from .models import LLMMessage as LLMMessage

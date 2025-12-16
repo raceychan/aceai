@@ -8,9 +8,16 @@ from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
 
-from aceai.errors import AceAIConfigurationError, AceAIValidationError
+from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
-from .models import LLMMessage, LLMProviderBase, LLMRequest, LLMResponse, LLMStreamEvent
+from .models import (
+    LLMMessage,
+    LLMProviderBase,
+    LLMProviderModality,
+    LLMRequest,
+    LLMResponse,
+    LLMStreamEvent,
+)
 
 JSONDecodeErrors = (ValidationError, DecodeError)
 
@@ -100,6 +107,63 @@ class LLMService:
 
         async for event in stream_resp:
             yield event
+            # if is_set(event.chunk.text_delta):
+            #     # Placeholder hook for future instrumentation
+            #     pass
+
+    def _apply_defaults(self, request: LLMRequest) -> LLMRequest:
+        """Apply default max_tokens if not explicitly provided.
+
+        - Looks up per_model_max_output_tokens by resolved model name.
+        - Falls back to default_max_output_tokens if configured.
+        - If none configured, leaves request as-is.
+        """
+        self._validate_messages(request)
+        metadata = request.setdefault("metadata", {})
+        if "model" not in metadata:
+            metadata["model"] = self._get_current_provider().default_model
+        return request
+
+    def _apply_stream_defaults(self, request: LLMRequest) -> LLMRequest:
+        """Apply default streaming model if not explicitly provided."""
+        self._validate_messages(request)
+        metadata = request.setdefault("metadata", {})
+        if "model" not in metadata:
+            metadata["model"] = self._get_current_provider().default_stream_model
+        return request
+
+    def _validate_messages(self, request: LLMRequest) -> None:
+        messages = request.get("messages")
+        if not messages:
+            raise ValueError("LLM requests require at least one message")
+        modality: LLMProviderModality = self._get_current_provider().modality
+        for message in messages:
+            if not isinstance(message.content, list):
+                raise TypeError("LLMMessage.content must be a list[LLMMessagePart]")
+            for part in message.content:
+                match part["type"]:
+                    case "text":
+                        if not modality.text_in:
+                            raise LLMProviderError(
+                                "Provider does not support text input"
+                            )
+                    case "image":
+                        if not modality.image_in:
+                            raise LLMProviderError(
+                                "Provider does not support image input"
+                            )
+                    case "audio":
+                        if not modality.audio_in:
+                            raise LLMProviderError(
+                                "Provider does not support audio input"
+                            )
+                    case "file":
+                        if not modality.file_in:
+                            raise LLMProviderError(
+                                "Provider does not support file input"
+                            )
+                    case _:
+                        raise ValueError(f"Unsupported message part type: {part.type}")
 
     async def _complete_json_with_retry(
         self,
@@ -127,7 +191,10 @@ class LLMService:
                 schema_name=schema_name,
                 error=str(last_error),
             )
-            error_message = LLMMessage(role="system", content=error_prompt)
+            error_message = LLMMessage.build(
+                content=error_prompt,
+                role="system",
+            )
             request["messages"].append(error_message)
 
         assert last_error is not None
@@ -145,10 +212,7 @@ class LLMService:
         On decode failure, appends a system error-handling message with the decoder
         error to help the LLM self-correct, retrying up to `max_retries` times.
         """
-        if "messages" not in request:
-            raise AceAIValidationError("complete_json requires a messages list")
-
-        messages = request["messages"]
+        messages = request.get("messages")
         if not messages:
             raise AceAIValidationError("complete_json requires at least one message")
 
@@ -161,7 +225,7 @@ class LLMService:
         schema_output = get_schema(schema)
         schema_def = schema_output.get("$defs", schema_output)
 
-        schema_hint = LLMMessage(
+        schema_hint = LLMMessage.build(
             role="system",
             content="\n\nReturn Format Advisory:\n"
             f"You must respond with ONLY JSON that matches the `{schema.__name__}` schema.\n"

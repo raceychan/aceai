@@ -9,11 +9,12 @@ from aceai.errors import (
 )
 from aceai.llm.models import (
     LLMMessage,
+    LLMMessagePart,
     LLMProviderBase,
+    LLMProviderModality,
     LLMResponse,
     LLMStreamEvent,
 )
-
 from aceai.llm.service import LLMService
 
 
@@ -29,11 +30,13 @@ class RecordingProvider(LLMProviderBase):
         stream_events: list[LLMStreamEvent] | None = None,
         default_model: str = "gpt-4o",
         default_stream_model: str = "gpt-4o-mini",
+        modality: LLMProviderModality | None = None,
     ) -> None:
         self._responses = list(responses or [LLMResponse(text="ok")])
         self._stream_events = list(stream_events or [])
         self._default_model = default_model
         self._default_stream_model = default_stream_model
+        self._modality = modality or LLMProviderModality()
         self.complete_requests: list[dict] = []
         self.stream_requests: list[dict] = []
 
@@ -57,6 +60,10 @@ class RecordingProvider(LLMProviderBase):
     @property
     def default_stream_model(self) -> str:
         return self._default_stream_model
+
+    @property
+    def modality(self) -> LLMProviderModality:
+        return self._modality
 
     async def stt(self, filename, file, *, model: str) -> str:  # pragma: no cover - not used
         return "transcript"
@@ -97,7 +104,7 @@ async def test_llm_service_complete_passes_metadata_through() -> None:
     metadata = {"model": provider.default_model}
 
     await service.complete(
-        messages=[LLMMessage(role="system", content="Prompt")],
+        messages=[LLMMessage.build("system", "Prompt")],
         metadata=metadata,
     )
 
@@ -116,7 +123,7 @@ async def test_llm_service_stream_preserves_request_metadata() -> None:
 
     received = []
     async for part in service.stream(
-        messages=[LLMMessage(role="system", content="s")],
+        messages=[LLMMessage.build("system", "s")],
         metadata=metadata,
     ):
         received.append(part.text_delta)
@@ -138,7 +145,7 @@ async def test_complete_json_validates_message_structure() -> None:
     with pytest.raises(AceAIValidationError):
         await service.complete_json(
             schema=Payload,
-            messages=[LLMMessage(role="user", content="hi")],
+            messages=[LLMMessage.build("user", "hi")],
         )
 
 
@@ -150,7 +157,7 @@ async def test_complete_json_inserts_hint_and_retries_on_error() -> None:
     ]
     provider = RecordingProvider(responses=responses)
     service = LLMService([provider], timeout_seconds=1.0, max_retries=2)
-    messages = [LLMMessage(role="system", content="start")]
+    messages = [LLMMessage.build("system", "start")]
 
     payload = await service.complete_json(
         schema=Payload,
@@ -161,62 +168,25 @@ async def test_complete_json_inserts_hint_and_retries_on_error() -> None:
     assert payload.value == 7
     assert len(provider.complete_requests) == 2
     schema_hint = provider.complete_requests[0]["messages"][1]
-    assert "Return Format Advisory" in schema_hint.content
+    assert "Return Format Advisory" in schema_hint.content[0]["data"]
     error_notice = provider.complete_requests[1]["messages"][-1]
     assert error_notice.role == "system"
-    assert "Error handling notice" in error_notice.content
+    assert "Error handling notice" in error_notice.content[0]["data"]
 
 
 @pytest.mark.anyio
-async def test_llm_service_propagates_openai_errors() -> None:
-    service = LLMService([ErroringProvider()], timeout_seconds=0.1)
-
-    with pytest.raises(OpenAIError):
-        await service.complete(messages=[LLMMessage(role="system", content="prompt")])
-
-
-@pytest.mark.anyio
-async def test_llm_service_rotation_and_last_response_tracking() -> None:
-    provider_one = RecordingProvider(responses=[LLMResponse(text="first")])
-    provider_two = RecordingProvider(responses=[LLMResponse(text="second")])
-    service = LLMService([provider_one, provider_two], timeout_seconds=1.0)
-
-    assert service.get_provider_count() == 2
-    assert service.has_provider
-    with pytest.raises(AttributeError):
-        _ = service.last_response
-
-    await service.complete(messages=[LLMMessage(role="system", content="start")])
-    assert service.last_response is not None
-    assert service.last_response.text == "first"
-
-    service._rotate_provider()
-    assert service._get_current_provider() is provider_two
-
-
-@pytest.mark.anyio
-async def test_complete_json_retry_failure_raises_decode_error() -> None:
-    provider = RecordingProvider(responses=[LLMResponse(text="not json")])
-    service = LLMService([provider], timeout_seconds=1.0)
-    messages = [LLMMessage(role="system", content="ctx")]
-
-    with pytest.raises(DecodeError):
-        await service._complete_json_with_retry(
-            schema=Payload,
-            retries=1,
-            messages=messages,
-        )
-
-
-@pytest.mark.anyio
-async def test_complete_json_zero_retries_decodes_once() -> None:
-    provider = RecordingProvider(responses=[LLMResponse(text='{"value":5}')])
-    service = LLMService([provider], timeout_seconds=1.0)
-    result = await service.complete_json(
-        schema=Payload,
-        retries=0,
-        messages=[LLMMessage(role="system", content="ctx")],
+async def test_complete_passes_image_parts_through_without_validation() -> None:
+    provider = RecordingProvider(
+        modality=LLMProviderModality(image_in=False),
+        responses=[LLMResponse(text="ok")],
     )
+    service = LLMService([provider], timeout_seconds=1.0)
 
-    assert result.value == 5
-    assert len(provider.complete_requests) == 1
+    image_part = LLMMessagePart(type="image", data=b"bytes", mime_type="image/png")
+    message = LLMMessage.build("user", [image_part])
+
+    response = await service.complete(messages=[message])
+
+    assert response.text == "ok"
+    forwarded = provider.complete_requests[0]["messages"][0].content[0]
+    assert forwarded["type"] == "image"

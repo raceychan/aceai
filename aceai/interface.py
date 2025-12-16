@@ -4,6 +4,7 @@ from typing import Any, Literal, TypedDict, TypeGuard, cast
 from msgspec import UNSET, Struct, UnsetType, to_builtins
 from typing_extensions import dataclass_transform
 
+MessageRole = Literal["system", "user", "assistant", "tool"]
 
 @dataclass_transform(frozen_default=True)
 class Record(Struct, frozen=True, kw_only=True):

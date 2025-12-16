@@ -109,7 +109,6 @@ class UserService: ...
 @pytest.mark.debug
 def test_tool_with_both_dep_and_tool_params():
 
-    @tool(description="Fetch user info")
     def func(
         user_service: Annotated[
             UserService,
@@ -119,7 +118,7 @@ def test_tool_with_both_dep_and_tool_params():
     ) -> str:
         return f"User {user_id}"
 
-    my_tool = tool(func)
+    my_tool = tool(description="Fetch user info")(func)
 
     assert "user_service" in my_tool.signature.dep_nodes
     assert "user_id" in my_tool.signature.params

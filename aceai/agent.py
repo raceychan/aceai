@@ -64,8 +64,6 @@ class AgentBase:
         self.delta_chunk_size = delta_chunk_size
         self.reasoning_log_max_chars = reasoning_log_max_chars
 
-    # async def _run_llm()
-
     async def _run_step(
         self,
         *,
@@ -155,7 +153,7 @@ class AgentBase:
                     final_answer=final_answer,
                 )
         else:
-            assistant_msg = LLMToolCallMessage(
+            assistant_msg = LLMToolCallMessage.build(
                 content=current_step.llm_response.text,
                 tool_calls=current_step.llm_response.tool_calls,
             )
@@ -183,7 +181,7 @@ class AgentBase:
                     return
 
                 messages.append(
-                    LLMToolUseMessage(
+                    LLMToolUseMessage.build(
                         name=call.name,
                         call_id=call.call_id,
                         content=tool_result.output,
@@ -210,8 +208,8 @@ class AgentBase:
     ) -> AsyncIterator[AgentEvent]:
         """Yield AgentEvent entries as the agent reasons."""
         messages: list[LLMMessage] = [
-            LLMMessage(role="system", content=self.sys_prompt),
-            LLMMessage(role="user", content=question),
+            LLMMessage.build(role="system", content=self.sys_prompt),
+            LLMMessage.build(role="user", content=question),
         ]
         steps: list[AgentStep] = []
 
