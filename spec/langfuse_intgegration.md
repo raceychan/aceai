@@ -13,7 +13,7 @@
 
 ### 代码扫描要点
 - `aceai/agent.py`：`AgentBase.handle` 是会话入口，循环体中串联了 LLM -> Tool -> LLM，可在这里注入 trace 生命周期管理（开始、更新状态、结束）。
-- `aceai/llm/service.py`：所有 LLM 请求（包括 `complete_json`）都走这层，是记录 Langfuse generation 的最佳位置；`stream` 需要对 chunk 做聚合以便最终写入实体。
+- `aceai/llm/service.py`：所有 LLM 请求（包括 `complete_json`）都走这层，是记录 Langfuse generation 的最佳位置；`stream` 需要对 text/tool delta 做聚合以便最终写入实体。
 - `aceai/executor.py`：`ToolExecutor/LoggingToolExecutor` 执行工具并计算耗时，可在这里扩展一个 `InstrumentedToolExecutor` 或给现有类加可选的 telemetry hook。
 - `aceai/llm/openai.py`：provider 适配层；一般不需要直接改动，只需从 `LLMService` 传入 metadata（model、usage）给 Langfuse。
 - Tests (`tests/test_agent_behavior.py` 等) 依赖轻量 stub，在落地 Langfuse 时需提供假 Telemetry stub，保证单测不引入真实网络。

@@ -5,16 +5,7 @@ from typing import Any, Callable
 from ididi import Graph
 
 from aceai.llm.models import LLMToolCall
-from aceai.tools import Tool, tool
-
-
-@tool
-def final_answer(answer: str) -> str:
-    """Tool to indicate the final answer from the agent."""
-    return answer
-
-
-BUILTIN_TOOLS = [final_answer]
+from aceai.tools import BUILTIN_TOOLS, Tool, ToolSpec
 
 
 class ToolExecutor:
@@ -22,7 +13,19 @@ class ToolExecutor:
         self.graph = graph
         self.tools = {tool.name: tool for tool in (tools + BUILTIN_TOOLS)}
         self._analyze_tool_deps()
-        self.tool_schemas = [tool.tool_schema for tool in tools]
+        self._tool_schemas: list[ToolSpec] = []
+
+    @property
+    def tool_schemas(self) -> list[ToolSpec]:
+        """
+        TODO:
+        dynamic tool schema
+        we might let planner take control over
+        what tools are available to llm
+        """
+        if not self._tool_schemas:
+            self._tool_schemas = [tool.tool_schema for tool in self.tools.values()]
+        return self._tool_schemas
 
     def _analyze_tool_deps(self) -> None:
         for tool in self.tools.values():

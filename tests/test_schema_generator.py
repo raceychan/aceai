@@ -1,6 +1,7 @@
 from aceai.interface import Record
 from aceai.tools.schema_generator import (
     MSGSPEC_REF_PREFIX,
+    _default_schema_hook,
     _expand,
     inline_schema,
     json_schema,
@@ -48,3 +49,21 @@ def test_expand_inlines_refs_and_preserves_overrides() -> None:
 
     assert schema["properties"]["item"]["type"] == "object"
     assert schema["properties"]["item"]["description"] == "Custom"
+
+
+def test_default_schema_hook_returns_none_for_non_object_type() -> None:
+    assert _default_schema_hook(int) is None
+
+
+def test_json_schema_prefers_custom_schema_hook() -> None:
+    class CustomPayload:
+        ...
+
+    def custom_hook(t: type) -> dict | None:
+        if t is CustomPayload:
+            return {"type": "string", "maxLength": 4}
+        return None
+
+    schema, _defs = json_schema(CustomPayload, schema_hook=custom_hook)
+
+    assert schema["maxLength"] == 4

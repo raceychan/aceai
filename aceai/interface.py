@@ -1,15 +1,14 @@
 from functools import lru_cache
-from typing import Any, Literal, TypedDict, TypeGuard
+from typing import Any, Literal, TypedDict, TypeGuard, cast
 
-from msgspec import UNSET, Struct, UnsetType
-from msgspec.structs import asdict
+from msgspec import UNSET, Struct, UnsetType, to_builtins
 from typing_extensions import dataclass_transform
 
 
 @dataclass_transform(frozen_default=True)
 class Record(Struct, frozen=True, kw_only=True):
     def asdict(self) -> dict[str, Any]:
-        return asdict(self)
+        return cast(dict[str, Any], to_builtins(self))
 
 
 class _Missed:

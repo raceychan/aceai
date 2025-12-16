@@ -7,6 +7,7 @@ from ididi import USE_FACTORY_MARK, DependentNode
 from ididi.utils.typing_utils import flatten_annotated
 from msgspec import Meta, Struct, defstruct
 
+from aceai.errors import AceAIConfigurationError, UnannotatedToolParamError
 from aceai.interface import MISSING, JsonSchema, Maybe, is_present
 from aceai.tools.schema_generator import inline_schema
 
@@ -70,12 +71,17 @@ def spec[T](
     )
 
 
-def get_param_meta(param: Parameter) -> list[Any] | None:
+def get_param_meta(param: Parameter) -> list[Any]:
     if not param.annotation:
-        return None
+        raise UnannotatedToolParamError(
+            f"Tool parameter {param.name!r} must use typing.Annotated with spec or dep metadata"
+        )
 
-    if not (t_origin := get_origin(param.annotation)) or t_origin is not Annotated:
-        return None
+    t_origin = get_origin(param.annotation)
+    if t_origin is not Annotated:
+        raise UnannotatedToolParamError(
+            f"Tool parameter {param.name!r} must use typing.Annotated with spec or dep metadata"
+        )
 
     param_meta = flatten_annotated(param.annotation)
     return param_meta
@@ -196,9 +202,6 @@ class ToolSignature:
         params: dict[str, ToolParam] = {}
         dep_nodes: dict[str, Callable[..., Any]] = {}
         for param in func_sig.parameters.values():
-            if not param.annotation:
-                raise ValueError(f"Parameter {param.name!r} is missing type annotation")
-
             param_metas = get_param_meta(param)
             if not param_metas:
                 continue
@@ -212,7 +215,7 @@ class ToolSignature:
             dep_node = get_dep_node(param_metas, param_type)
             if dep_node:
                 if param.name in params:
-                    raise ValueError(
+                    raise AceAIConfigurationError(
                         f"Parameter {param.name!r} is defined as both ToolParam and DependentNode"
                     )
                 dep_nodes[param.name] = dep_node.factory

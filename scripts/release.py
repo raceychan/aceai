@@ -9,6 +9,8 @@ from pathlib import Path
 from git import GitCommandError, Repo
 from packaging.version import Version
 
+from aceai.errors import AceAIValidationError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = PROJECT_ROOT / "aceai" / "__init__.py"
 
@@ -83,7 +85,7 @@ def bump_version(version: Version, increment: str) -> Version:
         return Version(f"{version.major}.{version.minor + 1}.0")
     if increment == "major":
         return Version(f"{version.major + 1}.0.0")
-    raise ValueError(f"Unsupported increment: {increment}")
+    raise AceAIValidationError(f"Unsupported increment: {increment}")
 
 
 def stage_and_commit(repo: Repo, version: str) -> None:
@@ -122,6 +124,18 @@ def push_changes(repo: Repo, base_branch: str, tag_name: str) -> None:
 def run_build() -> None:
     subprocess.run(["uv", "build"], cwd=PROJECT_ROOT, check=True)
     print("uv build completed")
+
+
+def run_tests() -> None:
+    subprocess.run([
+        "uv",
+        "run",
+        "--group",
+        "dev",
+        "pytest",
+        "-v",
+    ], cwd=PROJECT_ROOT, check=True)
+    print("pytest suite passed")
 
 
 def create_new_branch(repo: Repo, *, base_branch: str | None, increment: str) -> None:
@@ -187,6 +201,7 @@ def handle_release(repo: Repo, args: argparse.Namespace) -> None:
     if not args.skip_version_update and current_version != args.version:
         write_version(args.version)
 
+    run_tests()
     stage_and_commit(repo, args.version)
     merge_into_base(repo, base_branch, release_branch)
     tag_name = tag_release(repo, args.version)
@@ -253,8 +268,8 @@ def main() -> None:
     elif args.command == "new-branch":
         create_new_branch(
             repo,
-            base_branch=getattr(args, "base_branch", None),
-            increment=getattr(args, "increment", "patch"),
+            base_branch=args.base_branch,
+            increment=args.increment,
         )
     elif args.command == "delete-branch":
         delete_branch(repo, args.version)
