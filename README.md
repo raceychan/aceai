@@ -17,11 +17,42 @@ pip install aceai
 ## Usage
 
 ### Quick Start
-
 ```python
+from aceai import tool, Param, use
 
-@tool(hide_from_history=True, remote={"cpu": 2, "memory": "2gb"})
+class Tracer:
+    """
+    Minimal tracer interface for demo.
+    Your real implementation can map to OpenTelemetry / Langfuse / LangSmith / your own tracing.
+    """
+
+    @contextmanager
+    def span(self, name: str, **attrs):
+        yield
+
+    def event(self, name: str, payload: dict):
+        pass
+
+
+def get_tracer(secrets: Annotated[Secrets, use(get_secrets)]) -> Tracer:
+    return Tracer()
+
+@tool(hide_from_history=True, remote={"cpu": 2, "memory": "2gb"}, description="""
+    - You have access to a forecasting tool arima_forecast.
+    - Use it only when the user asks for time-series forecasting, trend projection, or short-term prediction.
+    
+    Before calling the tool:
+        - Ensure the input values are ordered by time.
+        - Choose order=(p,d,q) if the user specifies it; otherwise start with (1,1,1).
+        - Decide steps from the user request (default 14).
+        - If timestamps are provided, ensure freq is provided or inferable; otherwise pass a freq.
+    After the tool returns:
+        - Present the forecast clearly and mention the chosen ARIMA order and steps.
+        - If the tool returns warnings, surface them briefly.
+"""
+)
 def arima_forecast(
+    tracer: Annotated[Tracer, use(get_tracer)],
     values: Annotated[
         list[float],
         Param("Time-series values ordered from oldest to newest (already validated)."),
@@ -68,66 +99,107 @@ def arima_forecast(
       - diagnostics: {aic, bic}
       - warnings: list[str]
     """
-    s = pd.Series(values, index=pd.to_datetime(timestamps))
+    with tracer.span(
+        "tool.arima_forecast",
+        order={"p": p, "d": d, "q": q},
+        steps=steps,
+        freq=freq,
+        return_conf_int=return_conf_int,
+        n_points=len(values),
+    ):
+        tracer.event(
+            "tool.input",
+            {
+                "n_points": len(values),
+                "start_ts": timestamps[0],
+                "end_ts": timestamps[-1],
+                "order": {"p": p, "d": d, "q": q},
+                "steps": steps,
+                "freq": freq,
+                "return_conf_int": return_conf_int,
+                "method": method,
+            },
+        )
 
-    tool_warnings: list[str] = []
+        s = pd.Series(values, index=pd.to_datetime(timestamps))
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        fitted = ARIMA(
-            s,
-            order=(p, d, q),
-            enforce_stationarity=True,
-            enforce_invertibility=True,
-        ).fit()
+        tool_warnings: list[str] = []
+        t0 = perf_counter()
+        with tracer.span("arima.fit"):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                fitted = ARIMA(
+                    s,
+                    order=(p, d, q),
+                    enforce_stationarity=True,
+                    enforce_invertibility=True,
+                ).fit()
 
-        for ww in w:
-            msg = str(ww.message).strip()
-            if msg:
-                tool_warnings.append(msg)
+                for ww in w:
+                    msg = str(ww.message).strip()
+                    if msg:
+                        tool_warnings.append(msg)
 
-    if return_conf_int:
-        pred = fitted.get_forecast(steps=steps)
-        mean = pred.predicted_mean
+        fit_ms = (perf_counter() - t0) * 1000.0
 
-        ci = pred.conf_int(alpha=0.05)  # 95%
-        lower = ci.iloc[:, 0]
-        upper = ci.iloc[:, 1]
-    else:
-        mean = fitted.forecast(steps=steps)
-        lower = upper = None
+        with tracer.span("arima.forecast", steps=steps):
+            if return_conf_int:
+                pred = fitted.get_forecast(steps=steps)
+                mean = pred.predicted_mean
 
-    last_t = s.index[-1]
-    future_index = pd.date_range(start=last_t, periods=steps + 1, freq=freq)[1:]
+                ci = pred.conf_int(alpha=0.05)  # 95%
+                lower = ci.iloc[:, 0]
+                upper = ci.iloc[:, 1]
+            else:
+                mean = fitted.forecast(steps=steps)
+                lower = upper = None
 
-    # Reindex to our generated future_index (avoid index mismatch without manual casting)
-    mean = pd.Series(mean.to_numpy(), index=future_index)
-    if return_conf_int:
-        lower = pd.Series(lower.to_numpy(), index=future_index)
-        upper = pd.Series(upper.to_numpy(), index=future_index)
+        future_index = pd.date_range(start=s.index[-1], periods=steps + 1, freq=freq)[1:]
 
-    forecast_points: list[dict] = []
-    if return_conf_int:
-        for t in future_index:
-            forecast_points.append(
-                {
-                    "t": t.isoformat(),
-                    "yhat": mean.loc[t],
-                    "yhat_lower": lower.loc[t],
-                    "yhat_upper": upper.loc[t],
-                }
-            )
-    else:
-        for t in future_index:
-            forecast_points.append({"t": t.isoformat(), "yhat": mean.loc[t]})
+        mean = pd.Series(mean.to_numpy(), index=future_index)
+        if return_conf_int:
+            lower = pd.Series(lower.to_numpy(), index=future_index)
+            upper = pd.Series(upper.to_numpy(), index=future_index)
 
-    return {
-        "order": {"p": p, "d": d, "q": q},
-        "steps": steps,
-        "forecast": forecast_points,
-        "diagnostics": {"aic": fitted.aic, "bic": fitted.bic},
-        "warnings": tool_warnings,
-    }
+        forecast_points: list[dict] = []
+        if return_conf_int:
+            for t in future_index:
+                forecast_points.append(
+                    {
+                        "t": t.isoformat(),
+                        "yhat": mean.loc[t],
+                        "yhat_lower": lower.loc[t],
+                        "yhat_upper": upper.loc[t],
+                    }
+                )
+        else:
+            for t in future_index:
+                forecast_points.append({"t": t.isoformat(), "yhat": mean.loc[t]})
+
+        result = {
+            "order": {"p": p, "d": d, "q": q},
+            "steps": steps,
+            "freq": freq,
+            "forecast": forecast_points,
+            "diagnostics": {"aic": fitted.aic, "bic": fitted.bic},
+            "warnings": tool_warnings,
+        }
+
+        tracer.event(
+            "tool.output",
+            {
+                "fit_ms": fit_ms,
+                "aic": fitted.aic,
+                "bic": fitted.bic,
+                "warnings_count": len(tool_warnings),
+                "forecast_points": len(forecast_points),
+            },
+        )
+
+        if tool_warnings:
+            tracer.event("tool.warnings", {"warnings": tool_warnings})
+
+        return result
 ```
 
 ### Advanced Agent Example
