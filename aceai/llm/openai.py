@@ -158,7 +158,9 @@ class OpenAI(LLMProviderBase):
                     formatted.append(
                         {
                             "role": message.role,
-                            "content": self._format_content_parts(message.content),
+                            "content": self._format_content_parts(
+                                message.content, role=message.role
+                            ),
                         }
                     )
                 for tc in message.tool_calls or []:
@@ -167,7 +169,9 @@ class OpenAI(LLMProviderBase):
                 formatted.append(
                     {
                         "role": message.role,
-                        "content": self._format_content_parts(message.content),
+                        "content": self._format_content_parts(
+                            message.content, role=message.role
+                        ),
                     }
                 )
 
@@ -184,13 +188,14 @@ class OpenAI(LLMProviderBase):
         return "".join(text_parts)
 
     def _format_content_parts(
-        self, content: list[LLMMessagePart]
+        self, content: list[LLMMessagePart], *, role: str = "user"
     ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
         for part in content:
             match part["type"]:
                 case "text":
-                    payload.append({"type": "input_text", "text": part["data"]})
+                    text_type = "output_text" if role == "assistant" else "input_text"
+                    payload.append({"type": text_type, "text": part["data"]})
                 case "image":
                     payload.append(self._format_image_part(part))
                 case "audio":
