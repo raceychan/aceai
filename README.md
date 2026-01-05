@@ -57,6 +57,143 @@ def build_agent(api_key: str):
 
 Plug your own loop/UI into `AgentBase`. See `demo.py` for a multi-tool async workflow.
 
+## Concepts: workflow / agent / hybrid
+
+### Workflow
+A workflow is an LLM app where *you* own the control flow: what happens each step, the order, branching, and validation are all explicit in your code. The LLM is just one step (or a few steps) you call into.
+
+In AceAI, implementing a workflow usually means calling `LLMService` directly:
+- Use `LLMService.complete(...)` for plain text completion.
+- Use `LLMService.complete_json(schema=...)` for structured steps, strictly decoding output into a `msgspec.Struct` (mismatches fail/retry).
+
+Example: a two-stage workflow (extract structure first, then generate an answer).
+
+```python
+from msgspec import Struct
+from openai import AsyncOpenAI
+
+from aceai import LLMService
+from aceai.llm import LLMMessage
+from aceai.llm.openai import OpenAI
+
+
+class Intent(Struct):
+    task: str
+    language: str
+
+
+async def run_workflow(question: str) -> str:
+    llm = LLMService(
+        providers=[
+            OpenAI(
+                client=AsyncOpenAI(api_key="..."),
+                default_meta={"model": "gpt-4o-mini"},
+            )
+        ],
+        timeout_seconds=60,
+    )
+
+    intent = await llm.complete_json(
+        schema=Intent,
+        messages=[
+            LLMMessage.build(role="system", content="Extract {task, language}."),
+            LLMMessage.build(role="user", content=question),
+        ],
+    )
+
+    resp = await llm.complete(
+        messages=[
+            LLMMessage.build(
+                role="system",
+                content=f"Answer the user. language={intent.language}; task={intent.task}.",
+            ),
+            LLMMessage.build(role="user", content=question),
+        ],
+    )
+    return resp.text
+```
+
+### Agent
+An agent is a workflow where the *LLM* owns the control flow: at each step it decides whether to call tools, which tool to call, and with what arguments. The framework executes tools, appends tool outputs back into context, and keeps the loop running until a final answer is produced.
+
+In AceAI, building an agent is wiring three pieces:
+- `LLMService`: talks to a concrete LLM provider (complete/stream/complete_json).
+- `ToolExecutor`: strictly decodes tool args, resolves DI, runs tools, and encodes returns back to strings.
+- `AgentBase`: runs the multi-step loop, maintains message history, orchestrates tool calls, and emits events.
+
+Example: a minimal agent (one `add` tool).
+
+```python
+from typing import Annotated
+
+from openai import AsyncOpenAI
+
+from aceai import AgentBase, Graph, LLMService, spec, tool
+from aceai.executor import ToolExecutor
+from aceai.llm.openai import OpenAI
+
+
+@tool
+def add(
+    a: Annotated[int, spec(description="Left operand")],
+    b: Annotated[int, spec(description="Right operand")],
+) -> int:
+    return a + b
+
+
+def build_agent(api_key: str) -> AgentBase:
+    graph = Graph()
+    llm = LLMService(
+        providers=[
+            OpenAI(
+                client=AsyncOpenAI(api_key=api_key),
+                default_meta={"model": "gpt-4o-mini"},
+            )
+        ],
+        timeout_seconds=60,
+    )
+    executor = ToolExecutor(graph=graph, tools=[add])
+    return AgentBase(
+        sys_prompt="You are a strict calculator. Use tools when needed.",
+        default_model="gpt-4o-mini",
+        llm_service=llm,
+        executor=executor,
+        max_steps=5,
+    )
+```
+
+### Hybrid
+The most common production shape is hybrid: keep the deterministic parts as a workflow (call `LLMService` directly; `complete_json` is great for strict I/O), and delegate open-ended reasoning + tool use to `AgentBase`.
+
+A simple approach is to subclass `AgentBase`, add helper methods that call `LLMService` for pre/post-processing, then hand off to `super().ask(...)`:
+
+```python
+from msgspec import Struct
+
+from aceai.agent import AgentBase
+from aceai.llm import LLMMessage
+
+
+class Route(Struct):
+    department: str
+
+
+class RoutedAgent(AgentBase):
+    async def classify(self, question: str) -> Route:
+        return await self.llm_service.complete_json(
+            schema=Route,
+            messages=[
+                LLMMessage.build(role="system", content="Classify department."),
+                LLMMessage.build(role="user", content=question),
+            ],
+            metadata={"model": self.default_model},
+        )
+
+    async def ask(self, question: str, **request_meta) -> str:
+        route = await self.classify(question)
+        return await super().ask(f"[dept={route.department}] {question}", **request_meta)
+```
+
 ## Features
 
 ### Tools-first

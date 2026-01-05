@@ -69,19 +69,20 @@ class LLMService:
         # Apply default max_tokens based on settings and model if not provided
         provider = self._get_current_provider()
         meta = request.get("metadata", {})
+        attributes = {
+            "llm.provider": provider.__class__.__name__,
+            "llm.model": meta.get("model", ""),
+            "llm.stream": False,
+            "llm.tool_count": len(request.get("tools", [])),
+            "llm.temperature": request.get("temperature", "null"),
+            "llm.top_p": request.get("top_p", "null"),
+        }
         with self._tracer.start_as_current_span(
             "llm.complete",
             kind=SpanKind.CLIENT,
             record_exception=True,
             set_status_on_exception=True,
-            attributes={
-                "llm.provider": provider.__class__.__name__,
-                "llm.model": meta.get("model", ""),
-                "llm.stream": False,
-                "llm.tool_count": len(request.get("tools", []) or []),
-                "llm.temperature": request.get("temperature"),
-                "llm.top_p": request.get("top_p"),
-            },
+            attributes=attributes,
         ):
             coro = provider.complete(request)
             timeout = self._timeout_seconds
@@ -123,19 +124,20 @@ class LLMService:
         """
         provider = self._get_current_provider()
         meta = request.get("metadata", {})
+        attributes = {
+            "llm.provider": provider.__class__.__name__,
+            "llm.model": meta.get("model", ""),
+            "llm.stream": True,
+            "llm.tool_count": len(request.get("tools", []) or []),
+            "llm.temperature": request.get("temperature", "null"),
+            "llm.top_p": request.get("top_p", "null"),
+        }
         with self._tracer.start_as_current_span(
             "llm.stream",
             kind=SpanKind.CLIENT,
             record_exception=True,
             set_status_on_exception=True,
-            attributes={
-                "llm.provider": provider.__class__.__name__,
-                "llm.model": meta.get("model", ""),
-                "llm.stream": True,
-                "llm.tool_count": len(request.get("tools", []) or []),
-                "llm.temperature": request.get("temperature"),
-                "llm.top_p": request.get("top_p"),
-            },
+            attributes=attributes,
         ):
             stream_resp = provider.stream(request)
 
