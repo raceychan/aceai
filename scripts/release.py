@@ -45,9 +45,12 @@ def ensure_release_branch(repo: Repo, base_branch: str, release_branch: str) -> 
 
 
 def read_current_version() -> str:
-    namespace: dict[str, object] = {}
-    exec(VERSION_FILE.read_text(), namespace)  # noqa: S102 - trusted file
-    return str(namespace["__version__"])
+    pattern = re.compile(r"__version__\s*=\s*\"([^\"]+)\"")
+    content = VERSION_FILE.read_text()
+    match = pattern.search(content)
+    if not match:
+        raise SystemExit("Could not locate __version__ assignment in aceai/__init__.py")
+    return match.group(1)
 
 
 def write_version(new_version: str) -> None:
