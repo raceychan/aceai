@@ -3,17 +3,25 @@ from time import perf_counter
 from typing import Any, Callable
 
 from ididi import Graph
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 
 from aceai.llm.models import LLMToolCall
 from aceai.tools import BUILTIN_TOOLS, IToolSpec, Tool
 
 
 class ToolExecutor:
-    def __init__(self, graph: Graph, tools: list[Tool]):
+    def __init__(
+        self,
+        graph: Graph,
+        tools: list[Tool],
+        tracer: trace.Tracer | None = None,
+    ):
         self.graph = graph
         self.tools = {tool.name: tool for tool in (tools + BUILTIN_TOOLS)}
         self._analyze_tool_deps()
         self._tool_specs: list[IToolSpec] = []
+        self._tracer = tracer or trace.get_tracer("aceai.executor")
 
     @property
     def tool_specs(self) -> list[IToolSpec]:
@@ -35,15 +43,26 @@ class ToolExecutor:
         tool_name = tool_call.name
         param_json = tool_call.arguments
         tool = self.tools[tool_name]
-        params = tool.decode_params(param_json)
-        dep_params = {
-            dname: await self.graph.aresolve(dep, **params)
-            for dname, dep in tool.signature.dep_nodes.items()
-        }
-        result = tool(**params, **dep_params)
-        if inspect.isawaitable(result):
-            result = await result
-        return tool.encode_return(result)
+        with self._tracer.start_as_current_span(
+            f"tool.{tool_name}",
+            kind=SpanKind.INTERNAL,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes={
+                "tool.call_id": tool_call.call_id,
+                "tool.arguments.raw_len": len(param_json),
+                "tool.dep_count": len(tool.signature.dep_nodes),
+            },
+        ):
+            params = tool.decode_params(param_json)
+            dep_params = {
+                dname: await self.graph.aresolve(dep, **params)
+                for dname, dep in tool.signature.dep_nodes.items()
+            }
+            result = tool(**params, **dep_params)
+            if inspect.isawaitable(result):
+                result = await result
+            return tool.encode_return(result)
 
 
 class ILogger:
@@ -64,8 +83,9 @@ class LoggingToolExecutor(ToolExecutor):
         tools: list[Tool],
         logger: ILogger,
         timer: ITimer = perf_counter,
+        tracer: trace.Tracer | None = None,
     ) -> None:
-        super().__init__(graph, tools)
+        super().__init__(graph, tools, tracer=tracer)
         self.logger = logger
         self.timer = timer
 

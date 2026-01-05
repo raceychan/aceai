@@ -3,6 +3,14 @@ import time
 from typing import Any, AsyncIterator, BinaryIO, cast
 from warnings import warn
 
+try:
+    import openai  # type: ignore[unused-import]
+except ImportError as exc:
+    raise RuntimeError(
+        "openai provider requires the `openai` package. "
+        "Install with `uv add openai` or `pip install openai`."
+    ) from exc
+
 from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam
 from openai.types.responses.response import Response
@@ -10,7 +18,9 @@ from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
 )
-from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_function_tool_call import (
+    ResponseFunctionToolCall,
+)
 from openai.types.responses.response_image_gen_call_completed_event import (
     ResponseImageGenCallCompletedEvent,
 )

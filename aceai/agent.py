@@ -1,6 +1,9 @@
 from typing import AsyncIterator, Unpack
 from uuid import uuid4
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+
 from .errors import AceAIConfigurationError, AceAIRuntimeError
 from .events import (
     AgentEvent,
@@ -47,6 +50,7 @@ class AgentBase:
         max_steps: int = 5,
         delta_chunk_size: int = 0,
         reasoning_log_max_chars: int | None = None,
+        tracer: trace.Tracer | None = None,
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
@@ -63,6 +67,7 @@ class AgentBase:
         self.max_steps = max_steps
         self.delta_chunk_size = delta_chunk_size
         self.reasoning_log_max_chars = reasoning_log_max_chars
+        self._tracer = tracer or trace.get_tracer("aceai.agent")
 
     async def _run_step(
         self,
@@ -71,73 +76,83 @@ class AgentBase:
         event_builder: AgentEventBuilder,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
-        yield event_builder.llm_started()
+        with self._tracer.start_as_current_span(
+            "agent.step",
+            kind=SpanKind.INTERNAL,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes={
+                "agent.step_id": event_builder.step_id,
+                "agent.max_steps": self.max_steps,
+            },
+        ) as step_span:
+            yield event_builder.llm_started()
 
-        log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
-        chunker = LLMDeltaChunker(self.delta_chunk_size)
+            log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
+            chunker = LLMDeltaChunker(self.delta_chunk_size)
 
-        response: LLMResponse | None = None
-        stream = self.llm_service.stream(
-            messages=messages,
-            tools=self.executor.tool_specs,
-            metadata=request_meta,
-        )
-        try:
-            async for stream_event in stream:
-                if stream_event.event_type == "response.output_text.delta":
-                    if is_set(stream_event.text_delta):
-                        for chunk in chunker.push(stream_event.text_delta):
-                            log_buffer.append(chunk)
+            response: LLMResponse | None = None
+            stream = self.llm_service.stream(
+                messages=messages,
+                tools=self.executor.tool_specs,
+                metadata=request_meta,
+            )
+            try:
+                async for stream_event in stream:
+                    if stream_event.event_type == "response.output_text.delta":
+                        if is_set(stream_event.text_delta):
+                            for chunk in chunker.push(stream_event.text_delta):
+                                log_buffer.append(chunk)
+                                yield event_builder.llm_text_delta(text_delta=chunk)
+                        continue
+
+                    if stream_event.event_type == "response.function_call_arguments.delta":
+                        # TODO: emit tool call argument deltas once planner wiring lands.
+                        continue
+
+                    if stream_event.event_type == "response.error":
+                        if is_set(stream_event.error) and stream_event.error:
+                            raise AceAIRuntimeError(stream_event.error)
+                        raise AceAIRuntimeError("LLM streaming error")
+
+                    if stream_event.event_type == "response.completed":
+                        if is_set(stream_event.response):
+                            response = stream_event.response
+                            for chunk in chunker.flush():
+                                log_buffer.append(chunk)
+                                yield event_builder.llm_text_delta(text_delta=chunk)
+                            break
+                        raise AceAIRuntimeError(
+                            "LLM stream completed without a response payload"
+                        )
+                if response is None:
+                    for chunk in chunker.flush():
+                        log_buffer.append(chunk)
+                        if chunk:
                             yield event_builder.llm_text_delta(text_delta=chunk)
-                    continue
-
-                if stream_event.event_type == "response.function_call_arguments.delta":
-                    # TODO: emit tool call argument deltas once planner wiring lands.
-                    continue
-
-                if stream_event.event_type == "response.error":
-                    if is_set(stream_event.error) and stream_event.error:
-                        raise AceAIRuntimeError(stream_event.error)
-                    raise AceAIRuntimeError("LLM streaming error")
-
-                if stream_event.event_type == "response.completed":
-                    if is_set(stream_event.response):
-                        response = stream_event.response
-                        for chunk in chunker.flush():
-                            log_buffer.append(chunk)
-                            yield event_builder.llm_text_delta(text_delta=chunk)
-                        break
-                    raise AceAIRuntimeError(
-                        "LLM stream completed without a response payload"
-                    )
-            if response is None:
+            except Exception:
                 for chunk in chunker.flush():
                     log_buffer.append(chunk)
                     if chunk:
                         yield event_builder.llm_text_delta(text_delta=chunk)
-        except Exception:
-            for chunk in chunker.flush():
-                log_buffer.append(chunk)
-                if chunk:
-                    yield event_builder.llm_text_delta(text_delta=chunk)
-            raise
-        finally:
-            reasoning_log = log_buffer.snapshot()
-            if response is not None and not reasoning_log:
-                reasoning_chunks = [
-                    segment.content
-                    for segment in response.segments
-                    if segment.type == "reasoning" and segment.content
-                ]
-                if reasoning_chunks:
-                    reasoning_log = "\n\n".join(reasoning_chunks)
-            final_response = response or LLMResponse(text=reasoning_log)
-            current_step = AgentStep(
-                step_id=event_builder.step_id,
-                llm_response=final_response,
-                reasoning_log=reasoning_log,
-                reasoning_log_truncated=log_buffer.truncated,
-            )
+                raise
+            finally:
+                reasoning_log = log_buffer.snapshot()
+                if response is not None and not reasoning_log:
+                    reasoning_chunks = [
+                        segment.content
+                        for segment in response.segments
+                        if segment.type == "reasoning" and segment.content
+                    ]
+                    if reasoning_chunks:
+                        reasoning_log = "\n\n".join(reasoning_chunks)
+                final_response = response or LLMResponse(text=reasoning_log)
+                current_step = AgentStep(
+                    step_id=event_builder.step_id,
+                    llm_response=final_response,
+                    reasoning_log=reasoning_log,
+                    reasoning_log_truncated=log_buffer.truncated,
+                )
 
         if response is None:
             raise AceAIRuntimeError("LLM stream ended without completion")

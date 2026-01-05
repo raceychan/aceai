@@ -9,6 +9,7 @@ from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
 from aceai.tools._tool_sig import Annotated, spec
+from msgspec import Struct
 
 
 class FakeLogger:
@@ -195,6 +196,30 @@ async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
     result = await executor.execute_tool(call)
 
     assert result == '"AsyncClient"'
+
+
+class Payload(Struct):
+    value: int
+
+
+def build_struct(value: Annotated[int, spec(description="Value to wrap")]) -> Payload:
+    return Payload(value)
+
+
+@pytest.mark.anyio
+async def test_tool_executor_encodes_struct_return(graph: Graph) -> None:
+    struct_tool = build_tool(build_struct)
+    executor = ToolExecutor(graph, [struct_tool])
+
+    call = LLMToolCall(
+        name=struct_tool.name,
+        arguments='{"value":5}',
+        call_id="req-struct",
+    )
+
+    encoded = await executor.execute_tool(call)
+
+    assert encoded == '{"value":5}'
 
 
 @pytest.mark.anyio

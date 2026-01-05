@@ -7,6 +7,8 @@ from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 
 from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
@@ -52,6 +54,7 @@ class LLMService:
         providers: list[LLMProviderBase],
         timeout_seconds: float,
         max_retries: int = 2,
+        tracer: trace.Tracer | None = None,
     ):
         if not providers:
             raise AceAIConfigurationError("At least one provider is required")
@@ -59,17 +62,32 @@ class LLMService:
         self._current_provider_index = 0
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        self._tracer = tracer or trace.get_tracer("aceai.llm")
 
     async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse:
         """Complete using a unified LLMRequest or raw messages."""
         # Apply default max_tokens based on settings and model if not provided
-
-        coro = self._get_current_provider().complete(request)
-        timeout = self._timeout_seconds
-
-        resp = await asyncio.wait_for(coro, timeout=timeout)
-        self._last_response = resp
-        return resp
+        provider = self._get_current_provider()
+        meta = request.get("metadata", {})
+        with self._tracer.start_as_current_span(
+            "llm.complete",
+            kind=SpanKind.CLIENT,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes={
+                "llm.provider": provider.__class__.__name__,
+                "llm.model": meta.get("model", ""),
+                "llm.stream": False,
+                "llm.tool_count": len(request.get("tools", []) or []),
+                "llm.temperature": request.get("temperature"),
+                "llm.top_p": request.get("top_p"),
+            },
+        ):
+            coro = provider.complete(request)
+            timeout = self._timeout_seconds
+            resp = await asyncio.wait_for(coro, timeout=timeout)
+            self._last_response = resp
+            return resp
 
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""
@@ -103,10 +121,26 @@ class LLMService:
         Business logic (e.g., output sanitization/formatting) must be handled at
         higher layers such as ContextManager or agents, not here.
         """
-        stream_resp = self._get_current_provider().stream(request)
+        provider = self._get_current_provider()
+        meta = request.get("metadata", {})
+        with self._tracer.start_as_current_span(
+            "llm.stream",
+            kind=SpanKind.CLIENT,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes={
+                "llm.provider": provider.__class__.__name__,
+                "llm.model": meta.get("model", ""),
+                "llm.stream": True,
+                "llm.tool_count": len(request.get("tools", []) or []),
+                "llm.temperature": request.get("temperature"),
+                "llm.top_p": request.get("top_p"),
+            },
+        ):
+            stream_resp = provider.stream(request)
 
-        async for event in stream_resp:
-            yield event
+            async for event in stream_resp:
+                yield event
 
     def _validate_messages(self, request: LLMRequest) -> None:
         messages = request.get("messages")
