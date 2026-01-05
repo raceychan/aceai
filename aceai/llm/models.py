@@ -477,7 +477,14 @@ class LLMProviderBase(ABC):
         return LLMProviderModality()
 
     @abstractmethod
-    async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
+    async def stt(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str,
+        prompt: str | None = None,
+    ) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
         raise NotImplementedError
 

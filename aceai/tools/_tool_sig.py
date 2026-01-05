@@ -3,7 +3,7 @@ from inspect import Parameter, Signature
 from typing import Annotated as Annotated, Callable
 from typing import Any, TypedDict, Unpack, get_args, get_origin
 
-from ididi import USE_FACTORY_MARK, DependentNode
+from ididi import DependentNode, NodeMeta, is_provided
 from ididi.utils.typing_utils import flatten_annotated
 from msgspec import Meta, Struct, defstruct
 
@@ -97,15 +97,13 @@ def get_param_spec(param_metas: list[Any] | None) -> ParamSpec | None:
 
 
 def get_dep_node(param_metas: list[Any], param_type: Any) -> DependentNode | None:
-    try:
-        mark_idx = param_metas.index(USE_FACTORY_MARK)
-    except ValueError as ve:
-        return None
-
-    dep = param_metas[mark_idx + 1]
-    dep = dep or param_type
-    dep_node = DependentNode.from_node(dep)
-    return dep_node
+    for meta in param_metas:
+        if isinstance(meta, NodeMeta):
+            if meta.ignore is True:
+                return None
+            dep = meta.factory if is_provided(meta.factory) else param_type
+            return DependentNode.from_node(dep)
+    return None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

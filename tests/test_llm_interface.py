@@ -23,8 +23,10 @@ class PassthroughProvider(LLMProviderBase):
     def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
         return super().stream(request)
 
-    async def stt(self, filename: str, file, *, model: str) -> str:
-        return await super().stt(filename, file, model=model)
+    async def stt(
+        self, filename: str, file, *, model: str, prompt: str | None = None
+    ) -> str:
+        return await super().stt(filename, file, model=model, prompt=prompt)
 
 
 def test_llm_message_inplace_merge_with_structured_message() -> None:
@@ -73,7 +75,7 @@ async def test_llm_provider_base_async_methods_raise_not_implemented() -> None:
         await provider.complete(request)
 
     with pytest.raises(NotImplementedError):
-        await provider.stt("file.wav", io.BytesIO(b"_"), model="whisper")
+        await provider.stt("file.wav", io.BytesIO(b"_"), model="whisper", prompt=None)
 
 
 def test_llm_provider_base_sync_interfaces_raise() -> None:

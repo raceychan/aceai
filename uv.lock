@@ -42,7 +42,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ididi", specifier = ">=1.8.0" },
+    { name = "ididi", specifier = ">=1.8.4" },
     { name = "msgspec", specifier = ">=0.20.0" },
     { name = "opentelemetry-api", specifier = ">=1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.39.1" },
@@ -811,14 +811,14 @@ wheels = [
 
 [[package]]
 name = "ididi"
-version = "1.8.0"
+version = "1.8.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/f9/31d8223bc961d6fc598017300cfc65257cfdf23f3223bc48caacb3eb2b5b/ididi-1.8.0.tar.gz", hash = "sha256:b9ba6bf0c5b3079a0b1925c2c65d0014ae7dce1f21aab7446c6b1e8d5ef04a03", size = 268815, upload-time = "2025-12-05T19:53:28.828Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/62/4d5be5c50c3197a45c3b38ed2a2cdb983b355c8ab045eb7d2aa8a82eee2d/ididi-1.8.4.tar.gz", hash = "sha256:5ad3bdb7743ae8cadcd01165712cd5e867f4a2f7f36972fbef26df2ed9076e29", size = 274365, upload-time = "2025-12-30T17:33:38.487Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/3b/681da10aa699664fbf4bc6437d01324b2255d229eaa0ec53bd2c8dabc5f3/ididi-1.8.0-py3-none-any.whl", hash = "sha256:5dc41735793026dc882e42933217439d9da96640ae36193db73da95f444e1d9d", size = 31229, upload-time = "2025-12-05T19:53:26.759Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/71/247e85ddf5c98c38337ecc05bdc8f696e0348f314ee9edca0e211351047f/ididi-1.8.4-py3-none-any.whl", hash = "sha256:a1b12dd086c18f68bd16a6e38f6fa0b138bdbb11dc2a7487d990ceef38463045", size = 31439, upload-time = "2025-12-30T17:33:36.384Z" },
 ]
 
 [[package]]

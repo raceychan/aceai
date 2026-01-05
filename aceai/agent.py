@@ -17,7 +17,7 @@ from .events import (
 from .executor import ToolExecutor
 from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
 from .interface import is_set
-from .llm import LLMMessage, LLMResponse, LLMService
+from .llm import ILLMService, LLMMessage, LLMResponse
 from .llm.models import (
     LLMRequestMeta,
     LLMToolCall,
@@ -45,8 +45,8 @@ class AgentBase:
         sys_prompt: str = "",
         *,
         default_model: str,
-        llm_service: LLMService,
-        executor: ToolExecutor,  # TODO: optional, no need if no tools
+        llm_service: ILLMService,
+        executor: ToolExecutor | None = None,
         max_steps: int = 5,
         delta_chunk_size: int = 0,
         reasoning_log_max_chars: int | None = None,
@@ -63,7 +63,7 @@ class AgentBase:
         self.sys_prompt = sys_prompt
         self.default_model = default_model
         self.llm_service = llm_service
-        self.executor = executor
+        self._executor = executor
         self.max_steps = max_steps
         self.delta_chunk_size = delta_chunk_size
         self.reasoning_log_max_chars = reasoning_log_max_chars
@@ -76,6 +76,7 @@ class AgentBase:
         event_builder: AgentEventBuilder,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
+        executor = self._executor
         with self._tracer.start_as_current_span(
             "agent.step",
             kind=SpanKind.INTERNAL,
@@ -85,18 +86,24 @@ class AgentBase:
                 "agent.step_id": event_builder.step_id,
                 "agent.max_steps": self.max_steps,
             },
-        ) as step_span:
+        ):
             yield event_builder.llm_started()
 
             log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
             chunker = LLMDeltaChunker(self.delta_chunk_size)
 
             response: LLMResponse | None = None
-            stream = self.llm_service.stream(
-                messages=messages,
-                tools=self.executor.tool_specs,
-                metadata=request_meta,
-            )
+            if executor:
+                stream = self.llm_service.stream(
+                    messages=messages,
+                    tools=executor.tool_specs,
+                    metadata=request_meta,
+                )
+            else:
+                stream = self.llm_service.stream(
+                    messages=messages, metadata=request_meta
+                )
+
             try:
                 async for stream_event in stream:
                     if stream_event.event_type == "response.output_text.delta":
@@ -106,7 +113,10 @@ class AgentBase:
                                 yield event_builder.llm_text_delta(text_delta=chunk)
                         continue
 
-                    if stream_event.event_type == "response.function_call_arguments.delta":
+                    if (
+                        stream_event.event_type
+                        == "response.function_call_arguments.delta"
+                    ):
                         # TODO: emit tool call argument deltas once planner wiring lands.
                         continue
 
@@ -176,8 +186,12 @@ class AgentBase:
 
             for call in current_step.llm_response.tool_calls:
                 yield event_builder.tool_started(tool_call=call)
+                if executor is None:
+                    raise AceAIConfigurationError(
+                        "executor must be provided when tool calls are enabled"
+                    )
                 try:
-                    tool_output = await self.executor.execute_tool(call)
+                    tool_output = await executor.execute_tool(call)
                 except Exception as exc:
                     raise ToolExecutionFailure(tool_call=call, error=exc) from exc
 

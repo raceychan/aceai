@@ -73,12 +73,22 @@ class OpenAI(LLMProviderBase):
     def modality(self) -> LLMProviderModality:
         return LLMProviderModality(image_in=True, image_out=True)
 
-    async def stt(self, filename: str, file: BinaryIO, *, model: str) -> str:
+    async def stt(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str,
+        prompt: str | None = None,
+    ) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
-        result = await self._client.audio.transcriptions.create(
-            model=model,
-            file=(filename, file),
-        )
+        kwargs = {
+            "model": model,
+            "file": (filename, file),
+        }
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        result = await self._client.audio.transcriptions.create(**kwargs)
         return result.text
 
     def _build_base_response_kwargs(

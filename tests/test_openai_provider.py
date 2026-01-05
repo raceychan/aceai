@@ -192,10 +192,16 @@ async def test_stt_delegates_to_openai_client(
     audio_bytes = io.BytesIO(b"pcm")
     fake_openai_client.transcription_text = "transcribed"
 
-    text = await openai_provider.stt("clip.wav", audio_bytes, model="gpt-whisper")
+    text = await openai_provider.stt(
+        "clip.wav",
+        audio_bytes,
+        model="gpt-whisper",
+        prompt="noise profile",
+    )
 
     assert text == "transcribed"
     assert fake_openai_client.transcription_calls[0]["file"][0] == "clip.wav"
+    assert fake_openai_client.transcription_calls[0]["prompt"] == "noise profile"
 
 
 def test_build_base_response_kwargs_requires_messages(

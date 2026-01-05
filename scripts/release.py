@@ -118,9 +118,7 @@ def tag_release(repo: Repo, version: str) -> str:
 
 
 def push_changes(repo: Repo, base_branch: str, tag_name: str) -> None:
-    origin = repo.remotes.origin
-    origin.push(base_branch)
-    origin.push(tag_name)
+    repo.git.push("--atomic", "origin", base_branch, tag_name)
     print("Pushed base branch and tag to origin")
 
 
@@ -179,14 +177,7 @@ def create_next_version_branch(
 
     ensure_local_branch(repo, base_branch)
     repo.git.checkout(base_branch)
-
-    try:
-        repo.git.checkout("-b", next_branch)
-    except GitCommandError as exc:
-        print(f"Failed to create next-version branch {next_branch}: {exc}")
-        repo.git.checkout(base_branch)
-        return
-
+    repo.git.checkout("-b", next_branch)
     print(f"Created next-version branch {next_branch} from {base_branch}")
 
 

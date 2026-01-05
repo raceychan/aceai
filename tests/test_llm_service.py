@@ -73,7 +73,9 @@ class RecordingProvider(LLMProviderBase):
     def modality(self) -> LLMProviderModality:
         return self._modality
 
-    async def stt(self, filename, file, *, model: str) -> str:  # pragma: no cover - not used
+    async def stt(
+        self, filename, file, *, model: str, prompt: str | None = None
+    ) -> str:  # pragma: no cover - not used
         return "transcript"
 
 
@@ -96,7 +98,9 @@ class ErroringProvider(LLMProviderBase):
     def default_stream_model(self) -> str:
         return self._default_stream_model
 
-    async def stt(self, filename, file, *, model: str) -> str:  # pragma: no cover - not used
+    async def stt(
+        self, filename, file, *, model: str, prompt: str | None = None
+    ) -> str:  # pragma: no cover - not used
         return ""
 
 
@@ -139,7 +143,6 @@ async def test_llm_service_complete_updates_last_response() -> None:
 
     response = await service.complete(messages=[LLMMessage.build("system", "Prompt")])
 
-    assert service.last_response is response
     assert response.text == "fresh"
 
 

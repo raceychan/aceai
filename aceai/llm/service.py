@@ -1,7 +1,7 @@
 """LLM Service - Provider-agnostic LLM interface with clean responsibilities."""
 
 import asyncio
-from typing import AsyncIterator, Type, TypeVar, Unpack
+from typing import AsyncIterator, BinaryIO, Protocol, Type, TypeVar, Unpack
 
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
@@ -34,6 +34,36 @@ ERROR_PROMPT_TEMPLATE = (
 )
 
 
+class ILLMService(Protocol):
+    async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse: ...
+
+    async def complete_json(
+        self,
+        *,
+        schema: Type[T],
+        retries: int | None = None,
+        **request: Unpack[LLMRequest],
+    ) -> T: ...
+
+    async def transcribe(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str | None = None,
+        prompt: str | None = None,
+    ) -> str: ...
+
+    def stream(
+        self, **request: Unpack[LLMRequest]
+    ) -> AsyncIterator[LLMStreamEvent]: ...
+
+    def get_provider_count(self) -> int: ...
+
+    @property
+    def has_provider(self) -> bool: ...
+
+
 class LLMService:
     """
     Clean LLM service that handles provider selection, timeouts, retries, and response parsing.
@@ -64,32 +94,6 @@ class LLMService:
         self._max_retries = max_retries
         self._tracer = tracer or trace.get_tracer("aceai.llm")
 
-    async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse:
-        """Complete using a unified LLMRequest or raw messages."""
-        # Apply default max_tokens based on settings and model if not provided
-        provider = self._get_current_provider()
-        meta = request.get("metadata", {})
-        attributes = {
-            "llm.provider": provider.__class__.__name__,
-            "llm.model": meta.get("model", ""),
-            "llm.stream": False,
-            "llm.tool_count": len(request.get("tools", [])),
-            "llm.temperature": request.get("temperature", "null"),
-            "llm.top_p": request.get("top_p", "null"),
-        }
-        with self._tracer.start_as_current_span(
-            "llm.complete",
-            kind=SpanKind.CLIENT,
-            record_exception=True,
-            set_status_on_exception=True,
-            attributes=attributes,
-        ):
-            coro = provider.complete(request)
-            timeout = self._timeout_seconds
-            resp = await asyncio.wait_for(coro, timeout=timeout)
-            self._last_response = resp
-            return resp
-
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""
         return self._providers[self._current_provider_index]
@@ -108,41 +112,6 @@ class LLMService:
     def has_provider(self) -> bool:
         """Get the current provider for direct access."""
         return self.get_provider_count() > 0
-
-    @property
-    def last_response(self) -> LLMResponse | None:
-        """Return the most recent LLMResponse emitted by complete/complete_json."""
-        return self._last_response
-
-    async def stream(
-        self, **request: Unpack[LLMRequest]
-    ) -> AsyncIterator[LLMStreamEvent]:
-        """Provider passthrough streaming.
-
-        Business logic (e.g., output sanitization/formatting) must be handled at
-        higher layers such as ContextManager or agents, not here.
-        """
-        provider = self._get_current_provider()
-        meta = request.get("metadata", {})
-        attributes = {
-            "llm.provider": provider.__class__.__name__,
-            "llm.model": meta.get("model", ""),
-            "llm.stream": True,
-            "llm.tool_count": len(request.get("tools", []) or []),
-            "llm.temperature": request.get("temperature", "null"),
-            "llm.top_p": request.get("top_p", "null"),
-        }
-        with self._tracer.start_as_current_span(
-            "llm.stream",
-            kind=SpanKind.CLIENT,
-            record_exception=True,
-            set_status_on_exception=True,
-            attributes=attributes,
-        ):
-            stream_resp = provider.stream(request)
-
-            async for event in stream_resp:
-                yield event
 
     def _validate_messages(self, request: LLMRequest) -> None:
         messages = request.get("messages")
@@ -212,6 +181,31 @@ class LLMService:
         assert last_error is not None
         raise last_error
 
+    async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse:
+        """Complete using a unified LLMRequest or raw messages."""
+        # Apply default max_tokens based on settings and model if not provided
+        provider = self._get_current_provider()
+        meta = request.get("metadata", {})
+        attributes = {
+            "llm.provider": provider.__class__.__name__,
+            "llm.model": meta.get("model", ""),
+            "llm.stream": False,
+            "llm.tool_count": len(request.get("tools", [])),
+            "llm.temperature": request.get("temperature", "null"),
+            "llm.top_p": request.get("top_p", "null"),
+        }
+        with self._tracer.start_as_current_span(
+            "llm.complete",
+            kind=SpanKind.CLIENT,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes=attributes,
+        ):
+            coro = provider.complete(request)
+            timeout = self._timeout_seconds
+            resp = await asyncio.wait_for(coro, timeout=timeout)
+            return resp
+
     async def complete_json(
         self,
         *,
@@ -254,3 +248,60 @@ class LLMService:
         return await self._complete_json_with_retry(
             schema=schema, retries=retries, **request
         )
+
+    async def transcribe(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str | None = None,
+        prompt: str | None = None,
+    ) -> str:
+        provider = self._get_current_provider()
+        if model is None:
+            raise AceAIConfigurationError("STT requests require a model identifier")
+
+        attributes = {
+            "llm.provider": provider.__class__.__name__,
+            "llm.model": model,
+            "llm.audio.filename": filename,
+        }
+        with self._tracer.start_as_current_span(
+            "llm.stt",
+            kind=SpanKind.CLIENT,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes=attributes,
+        ):
+            coro = provider.stt(filename, file, model=model, prompt=prompt)
+            return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
+
+    async def stream(
+        self, **request: Unpack[LLMRequest]
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """Provider passthrough streaming.
+
+        Business logic (e.g., output sanitization/formatting) must be handled at
+        higher layers such as ContextManager or agents, not here.
+        """
+        provider = self._get_current_provider()
+        meta = request.get("metadata", {})
+        attributes = {
+            "llm.provider": provider.__class__.__name__,
+            "llm.model": meta.get("model", ""),
+            "llm.stream": True,
+            "llm.tool_count": len(request.get("tools", [])),
+            "llm.temperature": request.get("temperature", "null"),
+            "llm.top_p": request.get("top_p", "null"),
+        }
+        with self._tracer.start_as_current_span(
+            "llm.stream",
+            kind=SpanKind.CLIENT,
+            record_exception=True,
+            set_status_on_exception=True,
+            attributes=attributes,
+        ):
+            stream_resp = provider.stream(request)
+
+            async for event in stream_resp:
+                yield event
