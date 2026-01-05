@@ -9,7 +9,7 @@ from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError
 from aceai.interface import MessageRole, Record, Struct, Unset
-from aceai.tools import ToolSpec
+from aceai.tools import IToolSpec
 
 
 class LLMMessagePart(TypedDict, total=False):
@@ -236,7 +236,7 @@ class LLMRequest(TypedDict, total=False):
     stop: list[str]
     """Optional stop-sequence list when the caller needs early termination."""
 
-    tools: list[ToolSpec]
+    tools: list[IToolSpec]
     """Optional tool registry; omit when the task is pure text completion."""
 
     tool_choice: Literal["auto", "none"] | str

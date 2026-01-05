@@ -1,6 +1,6 @@
 from inspect import signature
 from typing import Annotated as Annotated
-from typing import Any, Callable, Literal, TypedDict, Unpack, overload
+from typing import Any, Callable, Protocol, TypedDict, Unpack, overload
 
 from msgspec import Struct
 from msgspec.json import Decoder
@@ -12,13 +12,30 @@ from aceai.interface import MISSING, Maybe, is_present
 from ._tool_sig import ToolSignature
 
 
-class ToolSpec(TypedDict):
-    """Tool specification compatible with common LLM tool schemas (JSON Schema)."""
+class IToolSpec(Protocol):
+    def __init__(
+        self, *, signature: ToolSignature, name: str, description: str
+    ) -> None: ...
 
-    type: Literal["function"]
-    name: str
-    description: str
-    parameters: dict[str, Any]
+    def generate_schema(self) -> dict[str, Any]: ...
+
+
+class OpenAIToolSpec:
+    def __init__(
+        self, *, signature: ToolSignature, name: str, description: str
+    ) -> None:
+        self.signature = signature
+        self.name = name
+        self.description = description
+
+    def generate_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.signature.generate_params_schema(),
+            "strict": True,
+        }
 
 
 class IToolMeta(TypedDict, total=False):
@@ -48,41 +65,67 @@ class Tool[**P, R]:
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
         meta: ToolMeta,
+        spec_cls: type[IToolSpec] = OpenAIToolSpec,
     ):
         self.name = name
         self.description = description
         self.signature = signature
         self.func = func
-        self._tool_schema: ToolSpec | None = None
+        self._tool_spec_cache: dict[type[object], IToolSpec] = {}
         self._decoder = decoder
         self._meta = meta
+        self._spec_cls = spec_cls
 
     def encode_return(self, value: R) -> str:
+        """Serialize a tool return value to a JSON string."""
         return msg_encode(value).decode("utf-8")
 
     def decode_params(self, data: str) -> dict[str, Any]:
+        """Decode a JSON tool arguments payload into a plain dict."""
         payload = self._decoder(data.encode("utf-8"))
         return msg_asdict(payload)
 
     def __call__(self, *args: P.args, **kwds: P.kwargs) -> R:
+        """Invoke the wrapped tool function directly."""
         return self.func(*args, **kwds)
 
     def reset_tool_schema(self) -> None:
-        self._tool_schema = None
+        """Drop all cached provider-specific tool specs."""
+        self._tool_spec_cache.clear()
+
+    def spec_for(self, spec_cls: type[IToolSpec]) -> IToolSpec:
+        """Get or build a provider spec instance for the given spec class."""
+        target_cls = spec_cls
+        cached = self._tool_spec_cache.get(target_cls)
+        if cached is not None:
+            return cached
+
+        spec = target_cls(
+            signature=self.signature,
+            name=self.name,
+            description=self.description,
+        )
+        self._tool_spec_cache[target_cls] = spec
+        return spec
 
     @property
-    def tool_schema(self) -> ToolSpec:
-        if self._tool_schema is None:
-            self._tool_schema = ToolSpec(
-                type="function",
-                name=self.name,
-                description=self.description,
-                parameters=self.signature.generate_params_schema(),
-            )
-        return self._tool_schema
+    def tool_spec(self) -> IToolSpec:
+        """Return the default provider spec instance."""
+        return self.spec_for(self._spec_cls)
+
+    @property
+    def tool_schema(self) -> dict[str, Any]:
+        """Generate a schema dict from the default provider spec."""
+        return self.tool_spec.generate_schema()
 
     @classmethod
-    def from_func(cls, func: Callable[P, R], meta: ToolMeta) -> "Tool[P, R]":
+    def from_func(
+        cls,
+        func: Callable[P, R],
+        meta: ToolMeta,
+        spec_cls: type[IToolSpec] = OpenAIToolSpec,
+    ) -> "Tool[P, R]":
+        """Construct a Tool from a callable using its annotated signature."""
         func_sig = signature(func)
         tool_signature = ToolSignature.from_signature(func_sig)
         decoder = Decoder(type=tool_signature.virtual_struct, strict=False)
@@ -93,26 +136,36 @@ class Tool[**P, R]:
             func=func,
             decoder=decoder.decode,
             meta=meta,
+            spec_cls=spec_cls,
         )
 
 
 @overload
-def tool[**P, R](func: Callable[P, R]) -> Tool[P, R]: ...
+def tool[**P, R](
+    func: Callable[P, R], *, spec_cls: type[IToolSpec] = OpenAIToolSpec
+) -> Tool[P, R]: ...
 
 
 @overload
 def tool[**P, R](
+    *,
+    spec_cls: type[IToolSpec] = OpenAIToolSpec,
     **tool_meta: Unpack[IToolMeta],
 ) -> Callable[[Callable[P, R]], Tool[P, R]]: ...
 
 
 def tool[**P, R](
-    func: Maybe[Callable[P, R]] = MISSING, **tool_meta: Unpack[IToolMeta]
+    func: Maybe[Callable[P, R]] = MISSING,
+    *,
+    spec_cls: type[IToolSpec] = OpenAIToolSpec,
+    **tool_meta: Unpack[IToolMeta],
 ) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
     if is_present(func):
-        return Tool.from_func(func=func, meta=ToolMeta(**tool_meta))
+        return Tool.from_func(func=func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls)
 
     def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
-        return Tool.from_func(func=inner_func, meta=ToolMeta(**tool_meta))
+        return Tool.from_func(
+            func=inner_func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
+        )
 
     return wrapper

@@ -198,14 +198,14 @@ async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
 
 
 @pytest.mark.anyio
-async def test_tool_executor_exposes_tool_schemas(graph: Graph) -> None:
+async def test_tool_executor_exposes_tool_specs(graph: Graph) -> None:
     echo_tool = build_tool(echo_message)
     executor = ToolExecutor(graph, [echo_tool])
 
-    first = executor.tool_schemas
-    second = executor.tool_schemas
+    first = executor.tool_specs
+    second = executor.tool_specs
 
     assert first is second
-    schema_names = {schema["name"] for schema in first}
+    schema_names = {spec.name for spec in first}
     assert echo_tool.name in schema_names
     assert "final_answer" in schema_names

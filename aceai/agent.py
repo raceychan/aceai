@@ -79,7 +79,7 @@ class AgentBase:
         response: LLMResponse | None = None
         stream = self.llm_service.stream(
             messages=messages,
-            tools=self.executor.tool_schemas,
+            tools=self.executor.tool_specs,
             metadata=request_meta,
         )
         try:

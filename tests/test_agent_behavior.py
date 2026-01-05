@@ -17,7 +17,7 @@ from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall, LLMToolCal
 
 class StubExecutor:
     def __init__(self, results: dict[str, str] | None = None) -> None:
-        self.tool_schemas: list[dict] = []
+        self.tool_specs: list[object] = []
         self._results = results or {}
         self.calls: list[LLMToolCall] = []
 

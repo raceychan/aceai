@@ -38,7 +38,8 @@ from aceai.llm.models import (
     LLMToolUseMessage,
 )
 from aceai.llm.openai import OpenAI
-from aceai.tools import ToolSpec
+from aceai.tools import tool
+from aceai.tools._tool_sig import Annotated, spec
 
 
 class NamespaceWithDump(SimpleNamespace):
@@ -133,19 +134,25 @@ def openai_provider(fake_openai_client) -> OpenAI:
     )
 
 
+@pytest.fixture
+def openai_echo_spec():
+    @tool
+    def echo(
+        message: Annotated[str, spec(description="Echo message")],
+    ) -> str:
+        return message
+
+    return echo.tool_spec
+
+
 def _messages_with_attr_parts(messages):
     return messages
 
 
 def test_build_base_response_kwargs_maps_request_fields(
     openai_provider: OpenAI,
+    openai_echo_spec,
 ) -> None:
-    tool_spec: ToolSpec = {
-        "type": "function",
-        "name": "echo",
-        "description": "Echo",
-        "parameters": {"type": "object", "properties": {}},
-    }
     request = {
         "messages": _messages_with_attr_parts(
             [LLMMessage.build("system", "You are helpful.")]
@@ -155,7 +162,7 @@ def test_build_base_response_kwargs_maps_request_fields(
         "top_p": 0.9,
         "stop": ["END"],
         "response_format": LLMResponseFormat(type="json_object"),
-        "tools": [tool_spec],
+        "tools": [openai_echo_spec],
         "tool_choice": "auto",
         "metadata": {"model": "gpt-4o"},
     }

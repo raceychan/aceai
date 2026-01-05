@@ -29,6 +29,7 @@ from aceai.errors import (
     AceAIValidationError,
 )
 from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
+from aceai.tools import IToolSpec
 
 from .models import (
     LLMGeneratedMedia,
@@ -48,7 +49,6 @@ from .models import (
     LLMToolCallMessage,
     LLMToolUseMessage,
     LLMUsage,
-    ToolSpec,
 )
 
 
@@ -228,16 +228,9 @@ class OpenAI(LLMProviderBase):
                     f"Unsupported OpenAI response format type: {response_format.type}"
                 )
 
-    def _format_tool(self, tool: ToolSpec) -> FunctionToolParam:
-        description = tool["description"]
-        parameters = tool["parameters"]
-        return {
-            "type": "function",
-            "name": tool["name"],
-            "description": description,
-            "parameters": parameters,
-            "strict": True,
-        }
+    def _format_tool(self, tool: IToolSpec) -> FunctionToolParam:
+        schema = tool.generate_schema()
+        return cast(FunctionToolParam, schema)
 
     def _provider_meta_entry(
         self,

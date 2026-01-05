@@ -5,7 +5,7 @@ from typing import Any, Callable
 from ididi import Graph
 
 from aceai.llm.models import LLMToolCall
-from aceai.tools import BUILTIN_TOOLS, Tool, ToolSpec
+from aceai.tools import BUILTIN_TOOLS, IToolSpec, Tool
 
 
 class ToolExecutor:
@@ -13,19 +13,19 @@ class ToolExecutor:
         self.graph = graph
         self.tools = {tool.name: tool for tool in (tools + BUILTIN_TOOLS)}
         self._analyze_tool_deps()
-        self._tool_schemas: list[ToolSpec] = []
+        self._tool_specs: list[IToolSpec] = []
 
     @property
-    def tool_schemas(self) -> list[ToolSpec]:
+    def tool_specs(self) -> list[IToolSpec]:
         """
         TODO:
         dynamic tool schema
         we might let planner take control over
         what tools are available to llm
         """
-        if not self._tool_schemas:
-            self._tool_schemas = [tool.tool_schema for tool in self.tools.values()]
-        return self._tool_schemas
+        if not self._tool_specs:
+            self._tool_specs = [tool.tool_spec for tool in self.tools.values()]
+        return self._tool_specs
 
     def _analyze_tool_deps(self) -> None:
         for tool in self.tools.values():

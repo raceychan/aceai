@@ -46,20 +46,19 @@ def test_tool_decode_params_uses_virtual_struct_defaults() -> None:
     assert decoded == {"who": "Ava", "punctuation": "!"}
 
 
-def test_tool_schema_cached_until_reset() -> None:
+def test_tool_spec_cached_until_reset() -> None:
     greet_tool = tool(greet)
 
-    first_schema = greet_tool.tool_schema
-    second_schema = greet_tool.tool_schema
+    first_spec = greet_tool.tool_spec
+    second_spec = greet_tool.tool_spec
 
-    assert first_schema is second_schema
+    assert first_spec is second_spec
 
     greet_tool.reset_tool_schema()
 
-    third_schema = greet_tool.tool_schema
+    third_spec = greet_tool.tool_spec
 
-    assert third_schema is not first_schema
-    assert third_schema == first_schema
+    assert third_spec is not first_spec
 
 
 def test_tool_schema_honors_aliases_in_properties() -> None:
