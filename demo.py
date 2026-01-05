@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from typing import Annotated
@@ -5,6 +6,10 @@ from typing import Annotated
 from dotenv import load_dotenv
 from httpx import AsyncClient
 from ididi import use
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from openai import AsyncOpenAI
 
 from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
@@ -100,6 +105,23 @@ OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
 
+def build_langfuse_tracer() -> trace.Tracer:
+    public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
+    secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+    host = os.environ["LANGFUSE_HOST"]
+
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+
+    otel_provider = TracerProvider()
+    exporter = OTLPSpanExporter(
+        endpoint=f"{host}/api/public/otel/v1/traces",
+        headers={"Authorization": f"Basic {auth}"},
+    )
+    otel_provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(otel_provider)
+    return trace.get_tracer("aceai-demo")
+
+
 async def build_async_http_client() -> AsyncClient:
     return AsyncClient(timeout=20.0)
 
@@ -191,6 +213,7 @@ def build_agent(
     *,
     model: str,
     openai_api_key: str,
+    tracer: trace.Tracer,
 ) -> AgentBase:
     graph = Graph()
 
@@ -202,8 +225,9 @@ def build_agent(
             )
         ],
         timeout_seconds=120,
+        tracer=tracer,
     )
-    executor = ToolExecutor(graph=graph, tools=tools)
+    executor = ToolExecutor(graph=graph, tools=tools, tracer=tracer)
 
     return AgentBase(
         sys_prompt=prompt,
@@ -211,12 +235,14 @@ def build_agent(
         llm_service=llm_service,
         executor=executor,
         max_steps=max_turns,
+        tracer=tracer,
     )
 
 
 async def main():
     load_dotenv(".env")
     api_key = os.environ["OPENAI_API_KEY"]
+    tracer = build_langfuse_tracer()
     multi_step_question = """
     You are preparing a logistics brief for Helios Labs covering order ORD-200.
     
@@ -245,6 +271,7 @@ async def main():
         ],
         openai_api_key=api_key,
         model="gpt-5.1",
+        tracer=tracer,
     )
 
     await run_agent_with_terminal_ui(agent, multi_step_question)
