@@ -6,11 +6,11 @@ from typing import Annotated
 from dotenv import load_dotenv
 from httpx import AsyncClient
 from ididi import use
+from openai import AsyncOpenAI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from openai import AsyncOpenAI
 
 from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
 from aceai.errors import AceAIValidationError
@@ -230,7 +230,7 @@ def build_agent(
     executor = ToolExecutor(graph=graph, tools=tools, tracer=tracer)
 
     return AgentBase(
-        sys_prompt=prompt,
+        prompt=prompt,
         default_model=model,
         llm_service=llm_service,
         executor=executor,

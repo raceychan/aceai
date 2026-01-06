@@ -64,7 +64,7 @@ class Tool[**P, R]:
         signature: ToolSignature,
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
-        meta: ToolMeta,
+        record_in_history: Maybe[bool],
         spec_cls: type[IToolSpec] = OpenAIToolSpec,
     ):
         self.name = name
@@ -73,7 +73,7 @@ class Tool[**P, R]:
         self.func = func
         self._tool_spec_cache: dict[type[object], IToolSpec] = {}
         self._decoder = decoder
-        self._meta = meta
+        self._record_in_history = record_in_history
         self._spec_cls = spec_cls
 
     def encode_return(self, value: R) -> str:
@@ -129,13 +129,17 @@ class Tool[**P, R]:
         func_sig = signature(func)
         tool_signature = ToolSignature.from_signature(func_sig)
         decoder = Decoder(type=tool_signature.virtual_struct, strict=False)
+        if is_present(meta.description):
+            description = meta.description
+        else:
+            description = func.__doc__ or ""
         return cls(
             name=func.__name__,
-            description=func.__doc__ or "",
+            description=description,
             signature=tool_signature,
             func=func,
             decoder=decoder.decode,
-            meta=meta,
+            record_in_history=meta.record_in_history,
             spec_cls=spec_cls,
         )
 

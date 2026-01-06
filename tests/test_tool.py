@@ -76,6 +76,80 @@ def test_tool_from_func_uses_docstring_for_description() -> None:
     assert increment_tool.description == "Increment the supplied value by one."
 
 
+def test_tool_description_prefers_meta_description_over_docstring() -> None:
+
+    def docstring_func(
+        value: Annotated[int, spec(description="Value")],
+    ) -> int:
+        """Docstring description."""
+        return value
+
+    my_tool = tool(description="Meta description.")(docstring_func)
+
+    assert my_tool.description == "Meta description."
+
+
+def test_tool_description_uses_docstring_when_meta_missing() -> None:
+
+    def docstring_func(
+        value: Annotated[int, spec(description="Value")],
+    ) -> int:
+        """Docstring description."""
+        return value
+
+    my_tool = tool()(docstring_func)
+
+    assert my_tool.description == "Docstring description."
+
+
+def test_tool_description_is_empty_when_both_missing() -> None:
+
+    def no_docstring_func(
+        value: Annotated[int, spec(description="Value")],
+    ) -> int:
+        return value
+
+    my_tool = tool()(no_docstring_func)
+
+    assert my_tool.description == ""
+
+
+def test_tool_description_prefers_meta_description_when_func_has_no_docstring() -> None:
+
+    def no_docstring_func(
+        value: Annotated[int, spec(description="Value")],
+    ) -> int:
+        return value
+
+    my_tool = tool(description="Meta description.")(no_docstring_func)
+
+    assert my_tool.description == "Meta description."
+
+
+@pytest.mark.parametrize(
+    ("tool_kwargs", "docstring", "expected"),
+    [
+        ({"description": "Meta description."}, "Docstring description.", "Meta description."),
+        ({}, "Docstring description.", "Docstring description."),
+        ({}, None, ""),
+        ({"description": "Meta description."}, None, "Meta description."),
+    ],
+)
+def test_tool_schema_description_follows_meta_docstring_precedence(
+    tool_kwargs: dict[str, str],
+    docstring: str | None,
+    expected: str,
+) -> None:
+    def func(value: Annotated[int, spec(description="Value")]) -> int:
+        return value
+
+    func.__doc__ = docstring
+
+    my_tool = tool(**tool_kwargs)(func) if tool_kwargs else tool()(func)
+
+    assert my_tool.tool_schema["description"] == expected
+
+
 def test_tool_decode_params_invalid_json_raises_decode_error() -> None:
     greet_tool = tool(greet)
 

@@ -50,7 +50,7 @@ class ToolExecutor:
             set_status_on_exception=True,
             attributes={
                 "tool.call_id": tool_call.call_id,
-                "tool.arguments.raw_len": len(param_json),
+                "tool.arguments": param_json,
                 "tool.dep_count": len(tool.signature.dep_nodes),
             },
         ):
@@ -80,7 +80,7 @@ class LoggingToolExecutor(ToolExecutor):
     def __init__(
         self,
         graph: Graph,
-        tools: list[Tool],
+        tools: list[Tool[Any, Any]],
         logger: ILogger,
         timer: ITimer = perf_counter,
         tracer: trace.Tracer | None = None,

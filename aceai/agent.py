@@ -42,7 +42,7 @@ class AgentBase:
 
     def __init__(
         self,
-        sys_prompt: str = "",
+        prompt: str = "",
         *,
         default_model: str,
         llm_service: ILLMService,
@@ -60,14 +60,32 @@ class AgentBase:
             raise AceAIConfigurationError(
                 "reasoning_log_max_chars must be non-negative or None"
             )
-        self.sys_prompt = sys_prompt
+        self._instructions: list[str] = [prompt]
         self.default_model = default_model
         self.llm_service = llm_service
         self._executor = executor
-        self.max_steps = max_steps
+        self._max_steps = max_steps
         self.delta_chunk_size = delta_chunk_size
         self.reasoning_log_max_chars = reasoning_log_max_chars
         self._tracer = tracer or trace.get_tracer("aceai.agent")
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
+    def add_instruction(self, instruction: str) -> None:
+        if not instruction:
+            raise ValueError(f"Empty Instruction")
+        self._instructions.append(instruction)
+
+    @property
+    def instructions(self) -> list[str]:
+        return self._instructions
+
+    @property
+    def system_message(self) -> LLMMessage:
+        content = "".join(c for c in self._instructions if c)
+        return LLMMessage.build(role="system", content=content)
 
     async def _run_step(
         self,
@@ -84,7 +102,7 @@ class AgentBase:
             set_status_on_exception=True,
             attributes={
                 "agent.step_id": event_builder.step_id,
-                "agent.max_steps": self.max_steps,
+                "agent.max_steps": self._max_steps,
             },
         ):
             yield event_builder.llm_started()
@@ -237,12 +255,12 @@ class AgentBase:
     ) -> AsyncIterator[AgentEvent]:
         """Yield AgentEvent entries as the agent reasons."""
         messages: list[LLMMessage] = [
-            LLMMessage.build(role="system", content=self.sys_prompt),
+            self.system_message,
             LLMMessage.build(role="user", content=question),
         ]
         steps: list[AgentStep] = []
 
-        for _ in range(self.max_steps):
+        for _ in range(self._max_steps):
             step_id = str(uuid4())
             event_builder = AgentEventBuilder(
                 step_index=len(steps),
@@ -295,7 +313,7 @@ class AgentBase:
                 )
                 raise
 
-        error_msg = "Agent exceeded maximum reasoning turns without answering"
+        error_msg = f"Agent exceeded maximum steps: {self._max_steps} without answering"
         last_step = steps[-1]
         last_index = len(steps) - 1
         yield StepFailedEvent(
