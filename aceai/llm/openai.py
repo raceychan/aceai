@@ -571,8 +571,6 @@ class OpenAI(LLMProviderBase):
         self, request: LLMRequest, *, trace_ctx: Context | None = None
     ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
-        if trace_ctx is None:
-            trace_ctx = Context()
         request = self._apply_default_meta(request)
         kwargs = self._build_base_response_kwargs(request)
         start = time.perf_counter()

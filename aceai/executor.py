@@ -3,8 +3,8 @@ from time import perf_counter
 from typing import Any, Callable
 
 from ididi import Graph
-from opentelemetry.context import Context
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind
 
 from aceai.llm.models import LLMToolCall
@@ -46,8 +46,6 @@ class ToolExecutor:
         tool_name = tool_call.name
         param_json = tool_call.arguments
         tool = self.tools[tool_name]
-        if trace_ctx is None:
-            trace_ctx = Context()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
             kind=SpanKind.INTERNAL,
