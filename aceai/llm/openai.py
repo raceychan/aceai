@@ -18,9 +18,7 @@ from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
 )
-from openai.types.responses.response_function_tool_call import (
-    ResponseFunctionToolCall,
-)
+from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_image_gen_call_completed_event import (
     ResponseImageGenCallCompletedEvent,
 )
@@ -43,11 +41,15 @@ from aceai.tools import IToolSpec
 
 from .models import (
     LLMGeneratedMedia,
+    LLMImageSegmentMeta,
     LLMMessage,
     LLMMessagePart,
     LLMProviderBase,
     LLMProviderMeta,
     LLMProviderModality,
+    LLMReasoningConfigSnapshot,
+    LLMReasoningMeta,
+    LLMReasoningSegmentMeta,
     LLMRequest,
     LLMRequestMeta,
     LLMResponse,
@@ -57,6 +59,7 @@ from .models import (
     LLMToolCall,
     LLMToolCallDelta,
     LLMToolCallMessage,
+    LLMToolCallSegmentMeta,
     LLMToolUseMessage,
     LLMUsage,
 )
@@ -154,6 +157,8 @@ class OpenAI(LLMProviderBase):
 
         for message in messages:
             if isinstance(message, LLMToolUseMessage):
+                if message.call_id is None:
+                    raise ValueError("Tool outputs require a call_id")
                 formatted.append(
                     {
                         "type": "function_call_output",
@@ -190,11 +195,14 @@ class OpenAI(LLMProviderBase):
     def _coerce_text_content(
         self, content: list[LLMMessagePart], *, context: str
     ) -> str:
-        text_parts = []
+        text_parts: list[str] = []
         for part in content:
             if part["type"] != "text":
                 raise ValueError(f"{context} only supports text parts")
-            text_parts.append(part["data"])
+            data = part["data"]
+            if not isinstance(data, str):
+                raise TypeError(f"{context} text parts must be str")
+            text_parts.append(data)
         return "".join(text_parts)
 
     def _format_content_parts(
@@ -205,7 +213,10 @@ class OpenAI(LLMProviderBase):
             match part["type"]:
                 case "text":
                     text_type = "output_text" if role == "assistant" else "input_text"
-                    payload.append({"type": text_type, "text": part["data"]})
+                    data = part["data"]
+                    if not isinstance(data, str):
+                        raise TypeError("Text message parts must be str")
+                    payload.append({"type": text_type, "text": data})
                 case "image":
                     payload.append(self._format_image_part(part))
                 case "audio":
@@ -262,13 +273,13 @@ class OpenAI(LLMProviderBase):
         *,
         model: str,
         latency_ms: float | None = None,
-        extra: dict[str, Any] | None = None,
+        response_id: str | None = None,
     ) -> LLMProviderMeta:
         return LLMProviderMeta(
             provider_name="openai",
             model=model,
             latency_ms=latency_ms,
-            extra=extra or {},
+            response_id=response_id,
         )
 
     def _supports_reasoning_summary(self, model_name: str) -> bool:
@@ -284,6 +295,40 @@ class OpenAI(LLMProviderBase):
                 items.append(output_item)
         return items
 
+    def _build_reasoning_segments(
+        self, reasoning_items: list[ResponseReasoningItem]
+    ) -> list[LLMSegment]:
+        segments: list[LLMSegment] = []
+        for item in reasoning_items:
+            for idx, summary in enumerate(item.summary):
+                segments.append(
+                    LLMSegment(
+                        type="reasoning",
+                        content=summary.text,
+                        meta=LLMReasoningSegmentMeta(
+                            item_id=item.id,
+                            status=item.status,
+                            kind="summary",
+                            index=idx,
+                        ),
+                    )
+                )
+            if item.content is not None:
+                for idx, content in enumerate(item.content):
+                    segments.append(
+                        LLMSegment(
+                            type="reasoning",
+                            content=content.text,
+                            meta=LLMReasoningSegmentMeta(
+                                item_id=item.id,
+                                status=item.status,
+                                kind="content",
+                                index=idx,
+                            ),
+                        )
+                    )
+        return segments
+
     def _build_segments_from_response(
         self,
         *,
@@ -296,15 +341,16 @@ class OpenAI(LLMProviderBase):
         if response.output_text:
             segments.append(LLMSegment(type="text", content=response.output_text))
         segments.extend(self._build_image_segments(response))
+        segments.extend(self._build_reasoning_segments(reasoning_items))
         for call in tool_calls:
             segments.append(
                 LLMSegment(
                     type="tool_call",
                     content=call.arguments or "",
-                    metadata={
-                        "call_id": call.call_id,
-                        "tool_name": call.name,
-                    },
+                    meta=LLMToolCallSegmentMeta(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                    ),
                 )
             )
         return segments
@@ -319,11 +365,11 @@ class OpenAI(LLMProviderBase):
                         type="image",
                         content="",
                         media=media,
-                        metadata={
-                            "item_id": item.id,
-                            "status": item.status,
-                            "output_index": idx,
-                        },
+                        meta=LLMImageSegmentMeta(
+                            item_id=item.id,
+                            status=item.status,
+                            output_index=idx,
+                        ),
                     )
                 )
         return segments
@@ -333,19 +379,6 @@ class OpenAI(LLMProviderBase):
         if item.result:
             data = base64.b64decode(item.result)
         return LLMGeneratedMedia(type="image", mime_type="image/png", data=data)
-
-    def _safe_model_dump(self, payload: Any) -> dict[str, Any]:
-        if payload is None:
-            return {}
-        dump = getattr(payload, "model_dump", None)
-        if callable(dump):
-            try:
-                data = dump()
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                return {}
-        return {}
 
     def _extract_tool_calls(self, response: Response) -> list[LLMToolCall]:
         calls: list[LLMToolCall] = []
@@ -384,31 +417,29 @@ class OpenAI(LLMProviderBase):
             reasoning_items=reasoning_items,
         )
         response_model = str(response.model)
-        extras: dict[str, Any] = {}
-        if response.status is not None:
-            extras["status"] = response.status
+        reasoning_meta: LLMReasoningMeta | None = None
         reasoning_config = response.reasoning
+        reasoning_config_snapshot: LLMReasoningConfigSnapshot | None = None
         if reasoning_config is not None:
-            extras["reasoning_config"] = reasoning_config.model_dump()
-        reasoning_summaries: list[str] = []
-        for item in reasoning_items:
-            for summary in item.summary:
-                text = summary.text
-                if text:
-                    reasoning_summaries.append(text)
-        if reasoning_summaries:
-            extras["reasoning_summaries"] = reasoning_summaries
+            reasoning_config_snapshot = LLMReasoningConfigSnapshot(
+                effort=reasoning_config.effort,
+                summary=reasoning_config.summary,
+                generate_summary=reasoning_config.generate_summary,
+            )
         if usage and usage.output_tokens_details:
             details = usage.output_tokens_details
             reasoning_tokens = details.reasoning_tokens
-            if reasoning_tokens is not None:
-                extras["reasoning_tokens"] = reasoning_tokens
-        raw_event = response.model_dump()
+            reasoning_meta = LLMReasoningMeta(
+                config=reasoning_config_snapshot,
+                tokens=reasoning_tokens,
+            )
+        if reasoning_meta is None and reasoning_config_snapshot is not None:
+            reasoning_meta = LLMReasoningMeta(config=reasoning_config_snapshot)
         provider_meta = [
             self._provider_meta_entry(
                 model=response_model,
                 latency_ms=latency_ms,
-                extra={"response_id": response.id} if response.id else None,
+                response_id=response.id,
             )
         ]
         return LLMResponse(
@@ -419,8 +450,8 @@ class OpenAI(LLMProviderBase):
             usage=usage_block,
             segments=segments,
             provider_meta=provider_meta,
-            raw_events=[raw_event] if raw_event else [],
-            extras=extras,
+            status=response.status,
+            reasoning=reasoning_meta,
         )
 
     def _map_stream_event(
@@ -451,24 +482,26 @@ class OpenAI(LLMProviderBase):
                     LLMSegment(
                         type="tool_call",
                         content=delta,
-                        metadata={"call_id": item_id, "is_delta": True},
+                        meta=LLMToolCallSegmentMeta(
+                            call_id=item_id,
+                            is_delta=True,
+                        ),
                     )
                 ]
                 event_type = "response.function_call_arguments.delta"
             case ResponseImageGenCallPartialImageEvent(partial_image_b64=partial_b64):
                 media = self._media_from_base64(partial_b64)
-                metadata = {
-                    "item_id": event.item_id,
-                    "output_index": event.output_index,
-                    "partial_index": event.partial_image_index,
-                    "sequence_number": event.sequence_number,
-                }
                 segments = [
                     LLMSegment(
                         type="image",
                         content="",
                         media=media,
-                        metadata=metadata,
+                        meta=LLMImageSegmentMeta(
+                            item_id=event.item_id,
+                            output_index=event.output_index,
+                            partial_index=event.partial_image_index,
+                            sequence_number=event.sequence_number,
+                        ),
                     )
                 ]
                 event_type = "response.media"
@@ -480,67 +513,8 @@ class OpenAI(LLMProviderBase):
                 segments = [LLMSegment(type="error", content=error_msg)]
                 event_type = "response.error"
             case _:
-                match event.type:
-                    case "response.output_text.delta" if event.delta:
-                        text_delta = event.delta
-                        segments = [LLMSegment(type="text", content=event.delta)]
-                        event_type = "response.output_text.delta"
-                    case "response.function_call_arguments.delta" if (
-                        event.delta and event.item_id
-                    ):
-                        call_id = event.item_id
-                        delta_value = event.delta
-                        tool_call_delta = LLMToolCallDelta(
-                            id=call_id,
-                            arguments_delta=delta_value,
-                        )
-                        segments = [
-                            LLMSegment(
-                                type="tool_call",
-                                content=delta_value,
-                                metadata={
-                                    "call_id": call_id,
-                                    "is_delta": True,
-                                },
-                            )
-                        ]
-                        event_type = "response.function_call_arguments.delta"
-                    case "response.error":
-                        error_msg = (
-                            event.message
-                            if hasattr(event, "message")
-                            else "LLM stream error"
-                        )
-                        error_value = error_msg
-                        segments = [LLMSegment(type="error", content=error_msg)]
-                        event_type = "response.error"
-                    case "response.image_generation_call.partial_image":
-                        partial_b64 = getattr(event, "partial_image_b64", None)
-                        if not partial_b64:
-                            return None
-                        media = self._media_from_base64(partial_b64)
-                        metadata = {
-                            "item_id": getattr(event, "item_id", None),
-                            "output_index": getattr(event, "output_index", None),
-                            "partial_index": getattr(
-                                event, "partial_image_index", None
-                            ),
-                            "sequence_number": getattr(event, "sequence_number", None),
-                        }
-                        chunk = LLMStreamChunk(media=media)
-                        segments = [
-                            LLMSegment(
-                                type="image",
-                                content="",
-                                media=media,
-                                metadata=metadata,
-                            )
-                        ]
-                        event_type = "response.media"
-                    case _:
-                        return None
+                return None
 
-        raw_event = event.model_dump()
         provider_meta = [self._provider_meta_entry(model=model_name)]
         return LLMStreamEvent(
             event_type=event_type,
@@ -549,17 +523,17 @@ class OpenAI(LLMProviderBase):
             error=error_value,
             segments=segments,
             provider_meta=provider_meta,
-            raw_event=raw_event or None,
         )
 
     def _apply_default_meta(self, request: LLMRequest) -> LLMRequest:
         """if not request no metadata, set to default. if partial, fill in missing."""
-        if "metadata" not in request or request["metadata"] is None:
+        if "metadata" not in request or not request["metadata"]:
             request["metadata"] = self._default_metadata
         else:
+            request_meta = request["metadata"]
             for key, value in self._default_metadata.items():
-                if key not in request["metadata"]:
-                    request["metadata"][key] = value
+                if key not in request_meta:
+                    request_meta[key] = value
         return request
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
@@ -596,8 +570,6 @@ class OpenAI(LLMProviderBase):
             response=final_llm_response,
             segments=final_llm_response.segments,
             provider_meta=final_llm_response.provider_meta,
-            raw_event=final_response.model_dump() or None,
-            extras=final_llm_response.extras,
         )
 
     def _media_from_base64(self, payload: str) -> LLMGeneratedMedia:

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from inspect import Parameter, Signature
-from typing import Annotated as Annotated, Callable
-from typing import Any, TypedDict, Unpack, get_args, get_origin
+from typing import Annotated as Annotated
+from typing import Any, Callable, TypedDict, Unpack, get_args, get_origin
 
 from ididi import DependentNode, NodeMeta, is_provided
 from ididi.utils.typing_utils import flatten_annotated
@@ -22,7 +22,7 @@ class ParamConstraint(TypedDict, total=False):
     min_length: int
     max_length: int
     tz: bool
-    extra: dict
+    extra: dict[str, Any]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -32,8 +32,8 @@ class ParamSpec[T]:
     required: Maybe[bool] = MISSING
     annotation: Maybe[type[T]] = MISSING
     title: Maybe[str] = MISSING
-    examples: list
-    extra_json_schema: dict
+    examples: list[str]
+    extra_json_schema: JsonSchema
     constraint: ParamConstraint
 
 
@@ -43,8 +43,8 @@ def spec[T](
     required: Maybe[bool] = MISSING,
     annotation: Maybe[type[T]] = MISSING,
     title: Maybe[str] = MISSING,
-    examples: Maybe[list] = MISSING,
-    extra_json_schema: Maybe[dict] = MISSING,
+    examples: Maybe[list[Any]] = MISSING,
+    extra_json_schema: Maybe[JsonSchema] = MISSING,
     **constraint: Unpack[ParamConstraint],
 ) -> ParamSpec[T]:
     """
@@ -87,7 +87,7 @@ def get_param_meta(param: Parameter) -> list[Any]:
     return param_meta
 
 
-def get_param_spec(param_metas: list[Any] | None) -> ParamSpec | None:
+def get_param_spec(param_metas: list[Any] | None) -> ParamSpec[Any] | None:
     if not param_metas:
         return None
 
@@ -160,7 +160,7 @@ class ToolParam[T]:
 
 @dataclass(kw_only=True, slots=True)
 class ToolSignature:
-    params: dict[str, ToolParam]
+    params: dict[str, ToolParam[Any]]
     dep_nodes: dict[str, Callable[..., Any]]
     return_type: Maybe[type]
 
@@ -197,7 +197,7 @@ class ToolSignature:
 
     @classmethod
     def from_signature(cls, func_sig: Signature) -> "ToolSignature":
-        params: dict[str, ToolParam] = {}
+        params: dict[str, ToolParam[Any]] = {}
         dep_nodes: dict[str, Callable[..., Any]] = {}
         for param in func_sig.parameters.values():
             param_metas = get_param_meta(param)
@@ -206,7 +206,7 @@ class ToolSignature:
 
             param_spec = get_param_spec(param_metas)
             if param_spec:
-                tool_param = ToolParam.from_param(param, param_spec)
+                tool_param = ToolParam[Any].from_param(param, param_spec)
                 params[param.name] = tool_param
 
             param_type = get_args(param.annotation)[0]

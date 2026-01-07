@@ -32,7 +32,6 @@ packages = ["aceai"]
 dev = [
     "openai>=2.9.0",
     "dotenv>=0.9.9",
-    "langfuse>2,<3",
     "hatch>=1.16.1",
     "httpx>=0.28.1",
     "jupyterlab>=4.5.0",
@@ -44,7 +43,7 @@ dev = [
     "twine>=5.0.0",
     "pyright>=1.1.407",
     "rich>=14.2.0",
-    "langfuse>=2.60.10",
+    "langfuse>=3.11.2,<4",
 ]
 
 [tool.pytest.ini_options]

@@ -1,14 +1,14 @@
 """Shared LLM data models and provider contracts."""
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, BinaryIO, Literal, TypedDict
+from typing import AsyncIterator, BinaryIO, Literal, TypedDict
 
 from msgspec import UNSET, field
 from msgspec.structs import asdict
 from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError
-from aceai.interface import MessageRole, Record, Struct, Unset
+from aceai.interface import MessageRole, Record, StrDict, Struct, Unset
 from aceai.tools import IToolSpec
 
 
@@ -27,7 +27,7 @@ class LLMMessagePart(TypedDict, total=False):
     url: str
     """External reference (HTTP URL, provider handle, etc.)."""
 
-    metadata: dict[str, Any]
+    metadata: StrDict
     """Provider- or caller-specific metadata."""
 
 
@@ -46,10 +46,8 @@ def parts_factory(val: SupportedValueType):
         return [value_to_msgpart(val)]
     elif isinstance(val, dict):
         return [value_to_msgpart(val)]
-    elif isinstance(val, list):
-        return [value_to_msgpart(v) for v in val]
     else:
-        raise ValueError(f"Unsupported value {val}")
+        return [value_to_msgpart(v) for v in val]
 
 
 class LLMUploadedAsset(Record, kw_only=True):
@@ -97,16 +95,16 @@ class LLMMessage(Struct, kw_only=True):
     role: MessageRole
     """Canonical chat role assigned to this turn."""
 
-    content: list[LLMMessagePart] = field(default_factory=list)
+    content: list[LLMMessagePart] = field(default_factory=list[LLMMessagePart])
     """Structured message content; plain strings are not accepted."""
 
-    def __ior__(self, other: "LLMMessage") -> Self:
+    def __ior__(self, other: Self) -> Self:
         if self.role != other.role:
             raise ValueError(f"Can't merge {other}, {self.role=}, {other.role=}")
         self.content.extend(other.content)
         return self
 
-    def asdict(self) -> dict[str, Any]:
+    def asdict(self) -> StrDict:
         # TODO: exclude UNSET values
         return asdict(self)
 
@@ -116,10 +114,8 @@ class LLMMessage(Struct, kw_only=True):
             return cls(role=role, content=[value_to_msgpart(content)])
         elif isinstance(content, dict):
             return cls(role=role, content=[content])
-        elif isinstance(content, list):
-            return cls(role=role, content=content)
         else:
-            raise NotImplementedError
+            return cls(role=role, content=content)
 
 
 class LLMToolCallMessage(LLMMessage, kw_only=True):
@@ -134,18 +130,17 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
     tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
     """Always a list; empty list indicates a bug in the caller."""
 
-    def asdict(self) -> dict[str, Any]:
+    def asdict(self) -> StrDict:
         res = super().asdict()
-        if self.tool_calls is not None:
-            res["tool_calls"] = [tc.asdict() for tc in self.tool_calls]
+        res["tool_calls"] = [tc.asdict() for tc in self.tool_calls]
         return res
 
     @classmethod
-    def build(
+    def from_content(
         cls,
         content: SupportedValueType,
         tool_calls: list[LLMToolCall],
-    ):
+    ) -> "LLMToolCallMessage":
         content = parts_factory(content)
         return cls(content=content, tool_calls=tool_calls)
 
@@ -162,14 +157,10 @@ class LLMToolUseMessage(LLMMessage, kw_only=True):
     call_id: str
     """Identifier of the `LLMToolCall` whose output is being returned."""
 
-    def asdict(self) -> dict[str, Any]:
-        res = super().asdict()
-        if self.call_id is not None:
-            res["tool_call_id"] = self.call_id
-        return res
-
     @classmethod
-    def build(cls, content: SupportedValueType, name: str, call_id: str):
+    def from_content(
+        cls, content: SupportedValueType, name: str, call_id: str
+    ) -> "LLMToolUseMessage":
         return cls(content=parts_factory(content), name=name, call_id=call_id)
 
 
@@ -179,10 +170,10 @@ class LLMResponseFormat(Record):
     type: Literal["json_object", "text", "json_schema"] = "text"
     """Desired response style: plain text, generic JSON, or schema-constrained JSON."""
 
-    schema: Unset[dict[str, Any]] = UNSET
+    schema: Unset[StrDict] = UNSET
     """JSON Schema payload for providers that expect a `schema` field."""
 
-    json_schema: Unset[dict[str, Any]] = UNSET
+    json_schema: Unset[StrDict] = UNSET
     """Alternate schema slot for providers that expect `json_schema`."""
 
 
@@ -200,6 +191,45 @@ class ReasoningConfig(TypedDict, total=False):
 
     encrypted_content: bool
     """Whether encrypted reasoning blobs should be included in the payload."""
+
+
+class LLMReasoningConfigSnapshot(Record, kw_only=True):
+    """Provider-reported reasoning configuration applied to a response."""
+
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    """Requested reasoning depth tier (provider-specific semantics)."""
+
+    summary: Literal["auto", "concise", "detailed"] | None = None
+    """Whether the provider emitted a reasoning summary."""
+
+    generate_summary: Literal["auto", "concise", "detailed"] | None = None
+    """Alias used by some providers; preserved for compatibility."""
+
+    encrypted_content: bool | None = None
+    """Whether encrypted reasoning blobs were included by the provider."""
+
+
+class LLMReasoningMeta(Record, kw_only=True):
+    """Reasoning-related metadata surfaced by the provider."""
+
+    config: LLMReasoningConfigSnapshot | None = None
+    """Provider-reported reasoning config for this response."""
+
+    tokens: int | None = None
+    """Provider-reported reasoning token count (if available)."""
+
+
+class LLMProviderModality(Record, kw_only=True):
+    """Simple capability flags describing provider modality support."""
+
+    text_in: bool = True
+    text_out: bool = True
+    image_in: bool = False
+    image_out: bool = False
+    audio_in: bool = False
+    audio_out: bool = False
+    file_in: bool = False
+    file_out: bool = False
 
 
 class LLMRequestMeta(TypedDict, total=False):
@@ -283,8 +313,8 @@ class LLMCitationRef(Record):
     url: str | None = None
     """Optional public URL; only present when the provider shares resolved links."""
 
-    metadata: dict[str, Any] = field(default_factory=dict)
-    """Loose bag for provider-specific citation metadata."""
+    provider_name: str | None = None
+    """Optional provider identifier for this citation payload."""
 
 
 class LLMSafetyAnnotation(Record):
@@ -315,8 +345,54 @@ class LLMProviderMeta(Record):
     latency_ms: float | None = None
     """Optional because some adapters cannot observe provider latency."""
 
-    extra: dict[str, Any] = field(default_factory=dict)
-    """Provider-specific metadata kept for debugging/telemetry."""
+    response_id: str | None = None
+    """Optional provider-native response identifier for this attempt."""
+
+
+class LLMGeneratedMedia(Record, kw_only=True):
+    """Descriptor for media emitted by the model."""
+
+    type: Literal["image", "audio", "file"]
+    """Modality of the generated asset."""
+
+    mime_type: str
+    """MIME type of the generated asset."""
+
+    url: str | None = None
+    """Optional URL referencing the media."""
+
+    data: bytes | None = None
+    """Inline media bytes when immediately consumable."""
+
+
+class LLMToolCallSegmentMeta(Record, kw_only=True):
+    """Metadata for a tool call segment."""
+
+    call_id: str
+    tool_name: str | None = None
+    is_delta: bool = False
+
+
+class LLMImageSegmentMeta(Record, kw_only=True):
+    """Metadata for an image segment."""
+
+    item_id: str
+    status: Literal["in_progress", "completed", "generating", "failed"] | None = None
+    output_index: int | None = None
+    partial_index: int | None = None
+    sequence_number: int | None = None
+
+
+class LLMReasoningSegmentMeta(Record, kw_only=True):
+    """Metadata for a reasoning segment."""
+
+    item_id: str
+    kind: Literal["summary", "content"]
+    index: int
+    status: Literal["in_progress", "completed", "incomplete"] | None = None
+
+
+type LLMSegmentMeta = LLMToolCallSegmentMeta | LLMImageSegmentMeta | LLMReasoningSegmentMeta
 
 
 class LLMSegment(Record):
@@ -344,28 +420,11 @@ class LLMSegment(Record):
     safety: list[LLMSafetyAnnotation] = field(default_factory=list[LLMSafetyAnnotation])
     """Structured safety annotations attached to this segment."""
 
-    metadata: dict[str, Any] = field(default_factory=dict)
-    """Free-form provider-specific metadata for forward compatibility."""
+    meta: LLMSegmentMeta | None = None
+    """Optional typed metadata for this segment."""
 
-    media: "LLMGeneratedMedia | None" = None
+    media: LLMGeneratedMedia | None = None
     """Optional generated media payload for non-text segments."""
-
-
-class LLMGeneratedMedia(Record, kw_only=True):
-    """Descriptor for media emitted by the model."""
-
-    type: Literal["image", "audio", "file"]
-    """Modality of the generated asset."""
-
-    mime_type: str
-    """MIME type of the generated asset."""
-
-    url: str | None = None
-    """Optional URL referencing the media."""
-
-    data: bytes | None = None
-    """Inline media bytes when immediately consumable."""
-
 
 class LLMResponse(Record):
     """Provider-agnostic completion payload."""
@@ -391,11 +450,11 @@ class LLMResponse(Record):
     provider_meta: list[LLMProviderMeta] = field(default_factory=list[LLMProviderMeta])
     """All provider attempts (including retries/failovers) for this request."""
 
-    raw_events: list[dict[str, Any]] = field(default_factory=list)
-    """Provider-native event payloads preserved for debugging."""
+    status: str | None = None
+    """Optional provider status label (e.g., completed, incomplete)."""
 
-    extras: dict[str, Any] = field(default_factory=dict)
-    """Adapter-defined extension fields for advanced consumers."""
+    reasoning: LLMReasoningMeta | None = None
+    """Optional reasoning-related metadata (usage/config), separate from segments."""
 
 
 class LLMStreamChunk(Record):
@@ -447,12 +506,6 @@ class LLMStreamEvent(Record):
     provider_meta: list[LLMProviderMeta] = field(default_factory=list[LLMProviderMeta])
     """Provider attempt metadata as of this event emission."""
 
-    raw_event: dict[str, Any] | None = None
-    """Optional raw payload; only present when adapters expose vendor JSON."""
-
-    extras: dict[str, Any] = field(default_factory=dict)
-    """Adapter-defined extension fields for advanced consumers."""
-
 
 class LLMProviderBase(ABC):
     """Interface for LLM providers that bridge vendor SDKs to this contract."""
@@ -472,7 +525,7 @@ class LLMProviderBase(ABC):
         )
 
     @property
-    def modality(self) -> "LLMProviderModality":
+    def modality(self) -> LLMProviderModality:
         """Return the provider's supported modalities (defaults to text-only)."""
         return LLMProviderModality()
 
@@ -487,16 +540,3 @@ class LLMProviderBase(ABC):
     ) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
         raise NotImplementedError
-
-
-class LLMProviderModality(Record, kw_only=True):
-    """Simple capability flags describing provider modality support."""
-
-    text_in: bool = True
-    text_out: bool = True
-    image_in: bool = False
-    image_out: bool = False
-    audio_in: bool = False
-    audio_out: bool = False
-    file_in: bool = False
-    file_out: bool = False

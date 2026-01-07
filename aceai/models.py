@@ -1,11 +1,11 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from msgspec import field
 
 from aceai.helpers.string import uuid_str
 from aceai.helpers.time import utc_now
-from aceai.interface import Record
+from aceai.interface import Record, StrDict
 from aceai.llm.models import LLMCitationRef, LLMResponse, LLMToolCall
 
 
@@ -18,7 +18,7 @@ class AgentSafetyNote(Record):
     verdict: Literal["allow", "review", "block"] = "allow"
     """Outcome category aligned with upstream provider policies."""
 
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: StrDict = field(default_factory=StrDict)
     """Optional structured metadata for downstream renders."""
 
 
@@ -47,7 +47,7 @@ class ToolExecutionResult(Record, kw_only=True):
     error: str | None = None
     """Optional error message when execution fails."""
 
-    annotations: dict[str, Any] = field(default_factory=dict)
+    annotations: StrDict = field(default_factory=StrDict)
     """Optional executor-provided metadata (latency, logs, etc.)."""
 
 
@@ -60,7 +60,7 @@ class AgentStepAnnotations(Record, kw_only=True):
     citations: list[AgentCitationRef] = field(default_factory=list[AgentCitationRef])
     """Citation references linked to this step."""
 
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: StrDict = field(default_factory=StrDict)
     """Flexible namespace for provider or agent-specific metadata."""
 
 

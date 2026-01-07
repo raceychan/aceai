@@ -95,16 +95,15 @@ class AgentBase:
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncIterator[AgentEvent]:
         executor = self._executor
-        with self._tracer.start_as_current_span(
+        span = self._tracer.start_span(
             "agent.step",
             kind=SpanKind.INTERNAL,
-            record_exception=True,
-            set_status_on_exception=True,
             attributes={
                 "agent.step_id": event_builder.step_id,
                 "agent.max_steps": self._max_steps,
             },
-        ):
+        )
+        try:
             yield event_builder.llm_started()
 
             log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
@@ -167,11 +166,11 @@ class AgentBase:
             finally:
                 reasoning_log = log_buffer.snapshot()
                 if response is not None and not reasoning_log:
-                    reasoning_chunks = [
-                        segment.content
-                        for segment in response.segments
-                        if segment.type == "reasoning" and segment.content
-                    ]
+                    reasoning_chunks: list[str] = []
+                    for segment in response.segments:
+                        if segment.type == "reasoning" and segment.content:
+                            reasoning_chunks.append(segment.content)
+
                     if reasoning_chunks:
                         reasoning_log = "\n\n".join(reasoning_chunks)
                 final_response = response or LLMResponse(text=reasoning_log)
@@ -181,6 +180,8 @@ class AgentBase:
                     reasoning_log=reasoning_log,
                     reasoning_log_truncated=log_buffer.truncated,
                 )
+        finally:
+            span.end()
 
         if response is None:
             raise AceAIRuntimeError("LLM stream ended without completion")
@@ -196,7 +197,7 @@ class AgentBase:
                     final_answer=final_answer,
                 )
         else:
-            assistant_msg = LLMToolCallMessage.build(
+            assistant_msg = LLMToolCallMessage.from_content(
                 content=current_step.llm_response.text,
                 tool_calls=current_step.llm_response.tool_calls,
             )
@@ -228,7 +229,7 @@ class AgentBase:
                     return
 
                 messages.append(
-                    LLMToolUseMessage.build(
+                    LLMToolUseMessage.from_content(
                         name=call.name,
                         call_id=call.call_id,
                         content=tool_result.output,

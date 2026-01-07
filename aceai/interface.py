@@ -6,6 +6,9 @@ from typing_extensions import dataclass_transform
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
+StrDict = dict[str, Any]
+
+
 @dataclass_transform(frozen_default=True)
 class Record(Struct, frozen=True, kw_only=True):
     def asdict(self) -> dict[str, Any]:

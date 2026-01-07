@@ -64,7 +64,11 @@ def write_version(new_version: str) -> None:
 
 
 def ensure_version_order(
-    current: str, target: str, *, skip_update: bool
+    current: str,
+    target: str,
+    latest_remote_tag: str | None,
+    *,
+    skip_update: bool,
 ) -> tuple[Version, Version]:
     current_v = Version(current)
     target_v = Version(target)
@@ -73,10 +77,14 @@ def ensure_version_order(
             raise SystemExit(
                 "--skip-version-update set but __version__ does not match target"
             )
-    else:
-        if target_v <= current_v:
+    # Compare the version that will actually live on this branch (after a potential
+    # version-file update) against the latest remote tag.
+    branch_version = current_v if current_v == target_v else target_v
+    if latest_remote_tag is not None:
+        latest_v = Version(latest_remote_tag)
+        if branch_version <= latest_v:
             raise SystemExit(
-                f"Target version {target_v} must be greater than current {current_v}"
+                f"Local branch version {branch_version} must be greater than latest remote tag v{latest_v}"
             )
     return current_v, target_v
 
@@ -120,6 +128,36 @@ def tag_release(repo: Repo, version: str) -> str:
 def push_changes(repo: Repo, base_branch: str, tag_name: str) -> None:
     repo.git.push("--atomic", "origin", base_branch, tag_name)
     print("Pushed base branch and tag to origin")
+
+
+def read_latest_remote_tag_version(repo: Repo, remote_name: str = "origin") -> str | None:
+    """
+    Return the highest semantic version from remote tags matching `vX.Y.Z`.
+
+    Uses `git ls-remote --tags` so we don't rely on local tag state.
+    """
+    try:
+        output = repo.git.ls_remote("--tags", remote_name)
+    except GitCommandError as exc:
+        raise SystemExit(f"Failed to read remote tags from {remote_name}: {exc}") from exc
+
+    pattern = re.compile(r"^refs/tags/v(?P<version>[^\\^]+)$")
+    versions: list[Version] = []
+    for line in output.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        ref = parts[1]
+        if ref.endswith("^{}"):
+            continue
+        match = pattern.match(ref)
+        if not match:
+            continue
+        versions.append(Version(match.group("version")))
+
+    if not versions:
+        return None
+    return str(max(versions))
 
 
 def run_build() -> None:
@@ -188,8 +226,12 @@ def handle_release(repo: Repo, args: argparse.Namespace) -> None:
     ensure_release_branch(repo, base_branch, release_branch)
 
     current_version = read_current_version()
+    latest_remote_tag = read_latest_remote_tag_version(repo, "origin")
     ensure_version_order(
-        current_version, args.version, skip_update=args.skip_version_update
+        current_version,
+        args.version,
+        latest_remote_tag,
+        skip_update=args.skip_version_update,
     )
 
     if not args.skip_version_update and current_version != args.version:

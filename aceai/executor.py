@@ -14,7 +14,7 @@ class ToolExecutor:
     def __init__(
         self,
         graph: Graph,
-        tools: list[Tool],
+        tools: list[Tool[Any, Any]],
         tracer: trace.Tracer | None = None,
     ):
         self.graph = graph

@@ -294,14 +294,15 @@ class LLMService:
             "llm.temperature": request.get("temperature", "null"),
             "llm.top_p": request.get("top_p", "null"),
         }
-        with self._tracer.start_as_current_span(
+        span = self._tracer.start_span(
             "llm.stream",
             kind=SpanKind.CLIENT,
-            record_exception=True,
-            set_status_on_exception=True,
             attributes=attributes,
-        ):
+        )
+        try:
             stream_resp = provider.stream(request)
 
             async for event in stream_resp:
                 yield event
+        finally:
+            span.end()

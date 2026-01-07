@@ -1,7 +1,7 @@
 import base64
 import json
 import os
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from dotenv import load_dotenv
 from httpx import AsyncClient
@@ -9,6 +9,7 @@ from ididi import use
 from openai import AsyncOpenAI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
@@ -108,13 +109,19 @@ OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 def build_langfuse_tracer() -> trace.Tracer:
     public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
     secret_key = os.environ["LANGFUSE_SECRET_KEY"]
-    host = os.environ["LANGFUSE_HOST"]
+    base_url = os.environ["LANGFUSE_BASE_URL"]
 
     auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
 
-    otel_provider = TracerProvider()
+    otel_provider = TracerProvider(
+        resource=Resource.create(
+            {
+                "service.name": "aceai-demo",
+            }
+        )
+    )
     exporter = OTLPSpanExporter(
-        endpoint=f"{host}/api/public/otel/v1/traces",
+        endpoint=f"{base_url}/api/public/otel/v1/traces",
         headers={"Authorization": f"Basic {auth}"},
     )
     otel_provider.add_span_processor(BatchSpanProcessor(exporter))
@@ -164,7 +171,7 @@ async def fetch_weather_window(
             )
             geo_resp.raise_for_status()
             geo_payload = geo_resp.json()
-            results = geo_payload.get("results") or []
+            results = geo_payload.get("results", [])
             if results:
                 location = results[0]
                 break
@@ -209,7 +216,7 @@ async def fetch_weather_window(
 def build_agent(
     prompt: str,
     max_turns: int,
-    tools: list[Tool],
+    tools: list[Tool[Any, Any]],
     *,
     model: str,
     openai_api_key: str,
@@ -274,7 +281,12 @@ async def main():
         tracer=tracer,
     )
 
-    await run_agent_with_terminal_ui(agent, multi_step_question)
+    try:
+        await run_agent_with_terminal_ui(agent, multi_step_question)
+    finally:
+        provider = cast(TracerProvider, trace.get_tracer_provider())
+        provider.force_flush()
+        provider.shutdown()
 
 
 if __name__ == "__main__":

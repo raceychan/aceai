@@ -4,7 +4,6 @@ from typing import cast
 from types import SimpleNamespace
 
 import pytest
-import aceai.llm.openai as openai_module
 from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
@@ -280,7 +279,7 @@ def test_format_messages_for_responses_includes_tool_outputs(
         [
             LLMMessage.build("system", "Start"),
             LLMToolCallMessage(tool_calls=[call]),
-            LLMToolUseMessage.build("result", name="lookup", call_id="call-1"),
+            LLMToolUseMessage.from_content("result", name="lookup", call_id="call-1"),
         ]
     )
 
@@ -308,24 +307,21 @@ def test_format_messages_includes_tool_call_content(
     assert formatted[0]["content"][0]["text"] == "tool prelude"
 
 
-def test_format_messages_allows_tool_output_without_call_id(
+def test_format_messages_rejects_tool_output_without_call_id(
     openai_provider: OpenAI,
 ) -> None:
     messages = _messages_with_attr_parts(
         [
-            LLMToolUseMessage.build("oops", name="orphan", call_id=None),
+            LLMToolUseMessage.from_content(
+                "oops",
+                name="orphan",
+                call_id=cast(str, None),
+            ),
         ]
     )
 
-    formatted = openai_provider._format_messages_for_responses(messages)
-
-    assert formatted == [
-        {
-            "type": "function_call_output",
-            "call_id": None,
-            "output": "oops",
-        }
-    ]
+    with pytest.raises(ValueError, match="call_id"):
+        openai_provider._format_messages_for_responses(messages)
 
 
 def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
@@ -410,21 +406,6 @@ def test_build_text_config_rejects_unknown_type(openai_provider: OpenAI) -> None
         openai_provider._build_text_config(invalid)
 
 
-def test_safe_model_dump_handles_multiple_payloads(
-    openai_provider: OpenAI,
-) -> None:
-    class Good:
-        def model_dump(self):
-            return {"a": 1}
-
-    class Bad:
-        def model_dump(self):
-            raise RuntimeError("boom")
-
-    assert openai_provider._safe_model_dump(None) == {}
-    assert openai_provider._safe_model_dump(Good()) == {"a": 1}
-    assert openai_provider._safe_model_dump(Bad()) == {}
-    assert openai_provider._safe_model_dump(object()) == {}
 
 
 def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None:
@@ -490,15 +471,21 @@ def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> 
         output=[reasoning_item],
         usage=usage,
         status="completed",
-        reasoning=NamespaceWithDump(effort="medium", summary="auto"),
+        reasoning=NamespaceWithDump(
+            effort="medium",
+            summary="auto",
+            generate_summary=None,
+        ),
     )
 
     llm_response = openai_provider._to_llm_response(response)
 
-    summaries = llm_response.extras["reasoning_summaries"]
-    assert summaries and "Chain summary" in summaries[0]
-    assert llm_response.extras["reasoning_tokens"] == 7
-    assert llm_response.extras["reasoning_config"]["effort"] == "medium"
+    assert llm_response.reasoning is not None
+    assert llm_response.reasoning.tokens == 7
+    assert llm_response.reasoning.config is not None
+    assert llm_response.reasoning.config.effort == "medium"
+    reasoning_segments = [seg for seg in llm_response.segments if seg.type == "reasoning"]
+    assert reasoning_segments and reasoning_segments[0].content == "Chain summary"
 
 
 def test_extract_tool_calls_falls_back_to_item_id(
@@ -588,11 +575,10 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         delta="fallback",
         item_id=None,
     )
-    fallback_chunk = openai_provider._map_stream_event(
-        fallback_event, model_name="gpt-4o"
+    assert (
+        openai_provider._map_stream_event(fallback_event, model_name="gpt-4o")
+        is None
     )
-    assert fallback_chunk is not None
-    assert fallback_chunk.text_delta == "fallback"
 
     image_event = ResponseImageGenCallPartialImageEvent(
         item_id="img-1",
@@ -633,8 +619,7 @@ def test_map_stream_event_handles_fallback_tool_and_error_events(
     tool_chunk = openai_provider._map_stream_event(
         fallback_tool, model_name="gpt-4o"
     )
-    assert tool_chunk is not None
-    assert tool_chunk.tool_call_delta.arguments_delta == "{}"
+    assert tool_chunk is None
 
     fallback_error = NamespaceWithDump(
         type="response.error",
@@ -643,14 +628,12 @@ def test_map_stream_event_handles_fallback_tool_and_error_events(
     error_chunk = openai_provider._map_stream_event(
         fallback_error, model_name="gpt-4o"
     )
-    assert error_chunk is not None
-    assert error_chunk.error == "fail"
+    assert error_chunk is None
 
 
 def test_map_stream_event_handles_fallback_partial_images(
-    monkeypatch, openai_provider: OpenAI,
+    openai_provider: OpenAI,
 ) -> None:
-    monkeypatch.setattr(openai_module, "LLMStreamChunk", SimpleNamespace, raising=False)
     payload = b64encode(b"bytes").decode()
     fallback_image = NamespaceWithDump(
         type="response.image_generation_call.partial_image",
@@ -661,10 +644,10 @@ def test_map_stream_event_handles_fallback_partial_images(
         sequence_number=6,
     )
 
-    chunk = openai_provider._map_stream_event(fallback_image, model_name="gpt-4o")
-
-    assert chunk is not None
-    assert chunk.event_type == "response.media"
+    assert (
+        openai_provider._map_stream_event(fallback_image, model_name="gpt-4o")
+        is None
+    )
 
     missing_payload = NamespaceWithDump(
         type="response.image_generation_call.partial_image",
@@ -674,9 +657,7 @@ def test_map_stream_event_handles_fallback_partial_images(
         sequence_number=7,
     )
 
-    assert (
-        openai_provider._map_stream_event(missing_payload, model_name="gpt-4o") is None
-    )
+    assert openai_provider._map_stream_event(missing_payload, model_name="gpt-4o") is None
 
 
 @pytest.mark.anyio
@@ -690,7 +671,7 @@ async def test_complete_uses_default_metadata(
 
     create_call = fake_openai_client.responses.create_calls[0]
     assert create_call["model"] == "gpt-4o"
-    assert response.provider_meta[0].extra["response_id"] == "fake-response"
+    assert response.provider_meta[0].response_id == "fake-response"
 
 
 @pytest.mark.anyio

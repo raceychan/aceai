@@ -165,11 +165,12 @@ def tool[**P, R](
     **tool_meta: Unpack[IToolMeta],
 ) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
     if is_present(func):
-        return Tool.from_func(func=func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls)
-
-    def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
-        return Tool.from_func(
-            func=inner_func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
+        return Tool[P, R].from_func(
+            func=func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
         )
 
+    def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
+        return Tool[P, R].from_func(
+            func=inner_func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
+        )
     return wrapper
