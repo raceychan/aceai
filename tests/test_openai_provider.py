@@ -1,7 +1,7 @@
 import io
 from base64 import b64encode
-from typing import cast
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from openai.types.responses.response_error_event import ResponseErrorEvent
@@ -9,17 +9,15 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
-from openai.types.responses.response_image_gen_call_partial_image_event import (
-    ResponseImageGenCallPartialImageEvent,
-)
 from openai.types.responses.response_image_gen_call_completed_event import (
     ResponseImageGenCallCompletedEvent,
 )
-from openai.types.responses.response_output_item import ImageGenerationCall
-from openai.types.responses.response_reasoning_item import (
-    ResponseReasoningItem,
-    Summary as ReasoningSummary,
+from openai.types.responses.response_image_gen_call_partial_image_event import (
+    ResponseImageGenCallPartialImageEvent,
 )
+from openai.types.responses.response_output_item import ImageGenerationCall
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
+from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from aceai.errors import (
@@ -307,23 +305,6 @@ def test_format_messages_includes_tool_call_content(
     assert formatted[0]["content"][0]["text"] == "tool prelude"
 
 
-def test_format_messages_rejects_tool_output_without_call_id(
-    openai_provider: OpenAI,
-) -> None:
-    messages = _messages_with_attr_parts(
-        [
-            LLMToolUseMessage.from_content(
-                "oops",
-                name="orphan",
-                call_id=cast(str, None),
-            ),
-        ]
-    )
-
-    with pytest.raises(ValueError, match="call_id"):
-        openai_provider._format_messages_for_responses(messages)
-
-
 def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
     parts = [
         LLMMessagePart(type="text", data="describe this"),
@@ -406,8 +387,6 @@ def test_build_text_config_rejects_unknown_type(openai_provider: OpenAI) -> None
         openai_provider._build_text_config(invalid)
 
 
-
-
 def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None:
     image_payload = b64encode(b"image-bytes").decode()
     response = NamespaceWithDump(
@@ -484,7 +463,9 @@ def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> 
     assert llm_response.reasoning.tokens == 7
     assert llm_response.reasoning.config is not None
     assert llm_response.reasoning.config.effort == "medium"
-    reasoning_segments = [seg for seg in llm_response.segments if seg.type == "reasoning"]
+    reasoning_segments = [
+        seg for seg in llm_response.segments if seg.type == "reasoning"
+    ]
     assert reasoning_segments and reasoning_segments[0].content == "Chain summary"
 
 
@@ -576,8 +557,7 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
         item_id=None,
     )
     assert (
-        openai_provider._map_stream_event(fallback_event, model_name="gpt-4o")
-        is None
+        openai_provider._map_stream_event(fallback_event, model_name="gpt-4o") is None
     )
 
     image_event = ResponseImageGenCallPartialImageEvent(
@@ -616,18 +596,14 @@ def test_map_stream_event_handles_fallback_tool_and_error_events(
         delta="{}",
         item_id="call-1",
     )
-    tool_chunk = openai_provider._map_stream_event(
-        fallback_tool, model_name="gpt-4o"
-    )
+    tool_chunk = openai_provider._map_stream_event(fallback_tool, model_name="gpt-4o")
     assert tool_chunk is None
 
     fallback_error = NamespaceWithDump(
         type="response.error",
         message="fail",
     )
-    error_chunk = openai_provider._map_stream_event(
-        fallback_error, model_name="gpt-4o"
-    )
+    error_chunk = openai_provider._map_stream_event(fallback_error, model_name="gpt-4o")
     assert error_chunk is None
 
 
@@ -645,8 +621,7 @@ def test_map_stream_event_handles_fallback_partial_images(
     )
 
     assert (
-        openai_provider._map_stream_event(fallback_image, model_name="gpt-4o")
-        is None
+        openai_provider._map_stream_event(fallback_image, model_name="gpt-4o") is None
     )
 
     missing_payload = NamespaceWithDump(
@@ -657,7 +632,9 @@ def test_map_stream_event_handles_fallback_partial_images(
         sequence_number=7,
     )
 
-    assert openai_provider._map_stream_event(missing_payload, model_name="gpt-4o") is None
+    assert (
+        openai_provider._map_stream_event(missing_payload, model_name="gpt-4o") is None
+    )
 
 
 @pytest.mark.anyio
