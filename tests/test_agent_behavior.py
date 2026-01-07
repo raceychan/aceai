@@ -22,7 +22,7 @@ class StubExecutor:
         self._results = results or {}
         self.calls: list[LLMToolCall] = []
 
-    async def execute_tool(self, tool_call: LLMToolCall, *, parent_context: Context) -> str:
+    async def execute_tool(self, tool_call: LLMToolCall, *, trace_ctx: Context) -> str:
         self.calls.append(tool_call)
         return self._results[tool_call.name]
 
@@ -32,7 +32,7 @@ class StubLLMService:
         self._streams = [list(stream) for stream in streams]
         self.calls: list[dict] = []
 
-    async def stream(self, *, parent_context: Context, **request):
+    async def stream(self, *, trace_ctx: Context | None = None, **request):
         if not self._streams:
             raise AssertionError("StubLLMService has no remaining stream fixtures")
         self.calls.append(request)
@@ -49,7 +49,7 @@ class RaisingExecutor(StubExecutor):
         super().__init__()
         self._error = error
 
-    async def execute_tool(self, tool_call: LLMToolCall, *, parent_context: Context) -> str:
+    async def execute_tool(self, tool_call: LLMToolCall, *, trace_ctx: Context) -> str:
         raise self._error
 
 
@@ -59,7 +59,7 @@ class RaisingStreamLLMService:
         self._error = error
         self.calls: list[dict] = []
 
-    async def stream(self, *, parent_context: Context, **request):
+    async def stream(self, *, trace_ctx: Context | None = None, **request):
         self.calls.append(request)
         for event in self._events:
             yield event
@@ -74,7 +74,7 @@ class SimpleLLMService:
         self._events = list(events)
         self.calls: list[dict] = []
 
-    async def stream(self, *, parent_context: Context, **request):
+    async def stream(self, *, trace_ctx: Context | None = None, **request):
         self.calls.append(request)
         for event in self._events:
             yield event

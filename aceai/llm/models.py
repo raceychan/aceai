@@ -1,10 +1,11 @@
 """Shared LLM data models and provider contracts."""
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, BinaryIO, Literal, TypedDict
+from typing import AsyncGenerator, BinaryIO, Literal, TypedDict
 
 from msgspec import UNSET, field
 from msgspec.structs import asdict
+from opentelemetry.context import Context
 from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError
@@ -511,14 +512,18 @@ class LLMProviderBase(ABC):
     """Interface for LLM providers that bridge vendor SDKs to this contract."""
 
     @abstractmethod
-    async def complete(self, request: LLMRequest) -> LLMResponse:
+    async def complete(
+        self, request: LLMRequest, *, trace_ctx: Context | None = None
+    ) -> LLMResponse:
         """Complete a chat conversation with a unified request."""
         raise AceAIImplementationError(
             f"{self.__class__.__name__} must implement complete()"
         )
 
     @abstractmethod
-    def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
+    def stream(
+        self, request: LLMRequest, *, trace_ctx: Context | None = None
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Preferred streaming API returning structured events."""
         raise AceAIImplementationError(
             f"{self.__class__.__name__} must implement stream()"

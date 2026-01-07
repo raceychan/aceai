@@ -16,11 +16,11 @@ from aceai.llm.models import (
 
 
 class PassthroughProvider(LLMProviderBase):
-    async def complete(self, request: LLMRequest) -> LLMResponse:
-        return await super().complete(request)
+    async def complete(self, request: LLMRequest, *, trace_ctx=None) -> LLMResponse:
+        return await super().complete(request, trace_ctx=trace_ctx)
 
-    def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
-        return super().stream(request)
+    def stream(self, request: LLMRequest, *, trace_ctx=None) -> AsyncIterator[LLMStreamEvent]:
+        return super().stream(request, trace_ctx=trace_ctx)
 
     async def stt(
         self, filename: str, file, *, model: str, prompt: str | None = None

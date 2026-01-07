@@ -48,11 +48,11 @@ class RecordingProvider(LLMProviderBase):
         self.complete_requests: list[dict] = []
         self.stream_requests: list[dict] = []
 
-    async def complete(self, request: dict) -> LLMResponse:
+    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:
         self.complete_requests.append(request)
         return self._responses.pop(0)
 
-    def stream(self, request: dict):
+    def stream(self, request: dict, *, trace_ctx=None):
         self.stream_requests.append(request)
 
         async def iterator():
@@ -84,10 +84,10 @@ class ErroringProvider(LLMProviderBase):
         self._default_model = "gpt-4o"
         self._default_stream_model = "gpt-4o-mini"
 
-    async def complete(self, request: dict) -> LLMResponse:
+    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:
         raise OpenAIError("boom")
 
-    def stream(self, request: dict):
+    def stream(self, request: dict, *, trace_ctx=None):
         raise AceAIRuntimeError("unused stream")
 
     @property

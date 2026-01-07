@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from ididi import use
 from openai import AsyncOpenAI
 from opentelemetry import trace
+from opentelemetry.trace import SpanKind, set_span_in_context
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -282,7 +283,13 @@ async def main():
     )
 
     try:
-        await run_agent_with_terminal_ui(agent, multi_step_question)
+        with tracer.start_as_current_span(
+            "demo.run",
+            kind=SpanKind.INTERNAL,
+            attributes={"demo.question": multi_step_question},
+        ) as span:
+            parent_ctx = set_span_in_context(span)
+            await run_agent_with_terminal_ui(agent, multi_step_question, trace_ctx=parent_ctx)
     finally:
         provider = cast(TracerProvider, trace.get_tracer_provider())
         provider.force_flush()

@@ -10,6 +10,7 @@ from aceai.events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
+from opentelemetry.context import Context
 
 
 class EventStreamPrinter:
@@ -85,11 +86,13 @@ class EventStreamPrinter:
             return
 
 
-async def run_agent_with_terminal_ui(agent: AgentBase, question: str) -> str:
+async def run_agent_with_terminal_ui(
+    agent: AgentBase, question: str, *, trace_ctx: Context | None = None
+) -> str:
     console = Console()
     printer = EventStreamPrinter(question, console)
     printer.start()
-    async for event in agent.run(question):
+    async for event in agent.run(question, trace_ctx=trace_ctx):
         printer.handle_event(event)
         if isinstance(event, RunCompletedEvent):
             printer.print_final_answer(event.final_answer)

@@ -1,7 +1,11 @@
 import base64
 import time
-from typing import Any, AsyncIterator, BinaryIO, cast
+from typing import Any, AsyncGenerator, BinaryIO, cast
 from warnings import warn
+
+from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.trace import SpanKind
 
 try:
     import openai  # type: ignore[unused-import]
@@ -71,6 +75,7 @@ class OpenAI(LLMProviderBase):
     def __init__(self, client: AsyncOpenAI, *, default_meta: LLMRequestMeta):
         self._client = client
         self._default_metadata: LLMRequestMeta = default_meta
+        self._tracer = trace.get_tracer("aceai.llm.openai")
 
     @property
     def modality(self) -> LLMProviderModality:
@@ -157,8 +162,6 @@ class OpenAI(LLMProviderBase):
 
         for message in messages:
             if isinstance(message, LLMToolUseMessage):
-                if message.call_id is None:
-                    raise ValueError("Tool outputs require a call_id")
                 formatted.append(
                     {
                         "type": "function_call_output",
@@ -536,41 +539,77 @@ class OpenAI(LLMProviderBase):
                     request_meta[key] = value
         return request
 
-    async def complete(self, request: LLMRequest) -> LLMResponse:
+    async def complete(
+        self, request: LLMRequest, *, trace_ctx: Context | None = None
+    ) -> LLMResponse:
         """Complete using OpenAI Responses API."""
+        if trace_ctx is None:
+            trace_ctx = Context()
         request = self._apply_default_meta(request)
         params = self._build_base_response_kwargs(request)
         start = time.perf_counter()
-        response: Response = await self._client.responses.create(**params)
-        latency_ms = (time.perf_counter() - start) * 1000.0
-        return self._to_llm_response(response, latency_ms=latency_ms)
+        attributes = {
+            "llm.provider": self.__class__.__name__,
+            "llm.model": params["model"],
+            "llm.stream": False,
+            "llm.tool_count": len(params.get("tools", [])),
+        }
+        span = self._tracer.start_span(
+            "openai.responses.create",
+            kind=SpanKind.CLIENT,
+            context=trace_ctx,
+            attributes=attributes,
+        )
+        try:
+            response: Response = await self._client.responses.create(**params)
+            latency_ms = (time.perf_counter() - start) * 1000.0
+            return self._to_llm_response(response, latency_ms=latency_ms)
+        finally:
+            span.end()
 
-    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMStreamEvent]:
+    async def stream(
+        self, request: LLMRequest, *, trace_ctx: Context | None = None
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
+        if trace_ctx is None:
+            trace_ctx = Context()
         request = self._apply_default_meta(request)
         kwargs = self._build_base_response_kwargs(request)
         start = time.perf_counter()
+        attributes = {
+            "llm.provider": self.__class__.__name__,
+            "llm.model": kwargs["model"],
+            "llm.stream": True,
+            "llm.tool_count": len(kwargs.get("tools", [])),
+        }
+        span = self._tracer.start_span(
+            "openai.responses.stream",
+            kind=SpanKind.CLIENT,
+            context=trace_ctx,
+            attributes=attributes,
+        )
         stream_manager = self._client.responses.stream(**kwargs)
-        final_response: Response | None = None
-        async with stream_manager as stream:
-            async for event in stream:
-                mapped = self._map_stream_event(event, model_name=kwargs["model"])
-                if mapped is None:
-                    continue
-                yield mapped
-            parsed = await stream.get_final_response()
-            final_response = cast(Response, parsed)
-        assert final_response is not None
-        latency_ms = (time.perf_counter() - start) * 1000.0
-        final_llm_response = self._to_llm_response(
-            final_response, latency_ms=latency_ms
-        )
-        yield LLMStreamEvent(
-            event_type="response.completed",
-            response=final_llm_response,
-            segments=final_llm_response.segments,
-            provider_meta=final_llm_response.provider_meta,
-        )
+        try:
+            async with stream_manager as stream:
+                async for event in stream:
+                    mapped = self._map_stream_event(event, model_name=kwargs["model"])
+                    if mapped is None:
+                        continue
+                    yield mapped
+
+                parsed = await stream.get_final_response()
+                latency_ms = (time.perf_counter() - start) * 1000.0
+                final_llm_response = self._to_llm_response(
+                    parsed, latency_ms=latency_ms
+                )
+                yield LLMStreamEvent(
+                    event_type="response.completed",
+                    response=final_llm_response,
+                    segments=final_llm_response.segments,
+                    provider_meta=final_llm_response.provider_meta,
+                )
+        finally:
+            span.end()
 
     def _media_from_base64(self, payload: str) -> LLMGeneratedMedia:
         data = base64.b64decode(payload)

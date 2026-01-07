@@ -26,10 +26,10 @@ class StreamingProvider(LLMProviderBase):
     def __init__(self, events: list[LLMStreamEvent]) -> None:
         self._events = list(events)
 
-    async def complete(self, request: dict) -> LLMResponse:  # pragma: no cover
+    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:  # pragma: no cover
         raise AssertionError("StreamingProvider.complete should not be used in this test")
 
-    def stream(self, request: dict):
+    def stream(self, request: dict, *, trace_ctx=None):
         async def iterator():
             for event in self._events:
                 yield event

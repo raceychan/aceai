@@ -41,19 +41,19 @@ class ToolExecutor:
             self.graph.add_nodes(*tool.signature.dep_nodes.values())
 
     async def execute_tool(
-        self, tool_call: LLMToolCall, *, parent_context: Context | None = None
+        self, tool_call: LLMToolCall, *, trace_ctx: Context | None = None
     ) -> str:
         tool_name = tool_call.name
         param_json = tool_call.arguments
         tool = self.tools[tool_name]
-        if parent_context is None:
-            parent_context = Context()
+        if trace_ctx is None:
+            trace_ctx = Context()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
             kind=SpanKind.INTERNAL,
             record_exception=True,
             set_status_on_exception=True,
-            context=parent_context,
+            context=trace_ctx,
             attributes={
                 "tool.call_id": tool_call.call_id,
                 "tool.arguments": param_json,
@@ -96,7 +96,7 @@ class LoggingToolExecutor(ToolExecutor):
         self.timer = timer
 
     async def execute_tool(
-        self, tool_call: LLMToolCall, *, parent_context: Context | None = None
+        self, tool_call: LLMToolCall, *, trace_ctx: Context | None = None
     ) -> str:
         call_id = tool_call.call_id
         self.logger.info(
@@ -104,7 +104,7 @@ class LoggingToolExecutor(ToolExecutor):
         )
         start = self.timer()
         try:
-            result = await super().execute_tool(tool_call, parent_context=parent_context)
+            result = await super().execute_tool(tool_call, trace_ctx=trace_ctx)
         except Exception:
             duration = self.timer() - start
             self.logger.exception(

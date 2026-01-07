@@ -1,15 +1,15 @@
 """LLM Service - Provider-agnostic LLM interface with clean responsibilities."""
 
 import asyncio
-from typing import AsyncGenerator, AsyncIterator, BinaryIO, Protocol, Type, TypeVar, Unpack
+from typing import AsyncGenerator, BinaryIO, Protocol, Type, TypedDict, TypeVar, Unpack
 
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from opentelemetry.context import Context
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
+from opentelemetry.context import Context
+from opentelemetry.trace import SpanKind, set_span_in_context
 
 from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
@@ -18,6 +18,7 @@ from .models import (
     LLMProviderBase,
     LLMProviderModality,
     LLMRequest,
+    LLMRequestMeta,
     LLMResponse,
     LLMStreamEvent,
 )
@@ -35,14 +36,28 @@ ERROR_PROMPT_TEMPLATE = (
 )
 
 
+LLMSpanAttributes = TypedDict(
+    "LLMSpanAttributes",
+    {
+        "llm.provider": str,
+        "llm.model": str,
+        "llm.stream": bool,
+        "llm.tool_count": int,
+    },
+)
+
+
 class ILLMService(Protocol):
-    async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse: ...
+    async def complete(
+        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+    ) -> LLMResponse: ...
 
     async def complete_json(
         self,
         *,
         schema: Type[T],
         retries: int | None = None,
+        trace_ctx: Context | None = None,
         **request: Unpack[LLMRequest],
     ) -> T: ...
 
@@ -53,10 +68,11 @@ class ILLMService(Protocol):
         *,
         model: str | None = None,
         prompt: str | None = None,
+        trace_ctx: Context | None = None,
     ) -> str: ...
 
     def stream(
-        self, *, parent_context: Context | None = None, **request: Unpack[LLMRequest]
+        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
     ) -> AsyncGenerator[LLMStreamEvent, None]: ...
 
     def get_provider_count(self) -> int: ...
@@ -152,12 +168,13 @@ class LLMService:
         *,
         schema: Type[T],
         retries: int,
+        trace_ctx: Context | None = None,
         **request: Unpack[LLMRequest],
     ) -> T:
         attempts = max(1, retries)
         last_error: Exception | None = None
         for attempt in range(attempts):
-            raw_response = await self.complete(**request)
+            raw_response = await self.complete(trace_ctx=trace_ctx, **request)
             raw_text = raw_response.text
             try:
                 return decode(raw_text, type=schema)
@@ -182,36 +199,44 @@ class LLMService:
         assert last_error is not None
         raise last_error
 
-    async def complete(self, **request: Unpack[LLMRequest]) -> LLMResponse:
+    async def complete(
+        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+    ) -> LLMResponse:
         """Complete using a unified LLMRequest or raw messages."""
         # Apply default max_tokens based on settings and model if not provided
         provider = self._get_current_provider()
-        meta = request.get("metadata", {})
-        attributes = {
+        meta: LLMRequestMeta = request["metadata"] if "metadata" in request else {}
+        model = meta["model"] if "model" in meta else ""
+        tool_count = len(request["tools"]) if "tools" in request else 0
+        attributes: LLMSpanAttributes = {
             "llm.provider": provider.__class__.__name__,
-            "llm.model": meta.get("model", ""),
+            "llm.model": model,
             "llm.stream": False,
-            "llm.tool_count": len(request.get("tools", [])),
-            "llm.temperature": request.get("temperature", "null"),
-            "llm.top_p": request.get("top_p", "null"),
+            "llm.tool_count": tool_count,
         }
-        with self._tracer.start_as_current_span(
+        if trace_ctx is None:
+            trace_ctx = Context()
+        span = self._tracer.start_span(
             "llm.complete",
             kind=SpanKind.CLIENT,
-            record_exception=True,
-            set_status_on_exception=True,
+            context=trace_ctx,
             attributes=attributes,
-        ):
-            coro = provider.complete(request)
+        )
+        try:
+            provider_ctx = set_span_in_context(span, trace_ctx)
+            coro = provider.complete(request, trace_ctx=provider_ctx)
             timeout = self._timeout_seconds
             resp = await asyncio.wait_for(coro, timeout=timeout)
             return resp
+        finally:
+            span.end()
 
     async def complete_json(
         self,
         *,
         schema: Type[T],
         retries: int | None = None,
+        trace_ctx: Context | None = None,
         **request: Unpack[LLMRequest],
     ) -> T:
         """Complete a request and parse the response into the provided schema.
@@ -243,11 +268,14 @@ class LLMService:
         retries = retries or self._max_retries
 
         if retries <= 0:
-            raw_response = await self.complete(**request)
+            raw_response = await self.complete(trace_ctx=trace_ctx, **request)
             return decode(raw_response.text, type=schema)
 
         return await self._complete_json_with_retry(
-            schema=schema, retries=retries, **request
+            schema=schema,
+            retries=retries,
+            trace_ctx=trace_ctx,
+            **request,
         )
 
     async def transcribe(
@@ -257,6 +285,7 @@ class LLMService:
         *,
         model: str | None = None,
         prompt: str | None = None,
+        trace_ctx: Context | None = None,
     ) -> str:
         provider = self._get_current_provider()
         if model is None:
@@ -267,18 +296,21 @@ class LLMService:
             "llm.model": model,
             "llm.audio.filename": filename,
         }
+        if trace_ctx is None:
+            trace_ctx = Context()
         with self._tracer.start_as_current_span(
             "llm.stt",
             kind=SpanKind.CLIENT,
             record_exception=True,
             set_status_on_exception=True,
+            context=trace_ctx,
             attributes=attributes,
         ):
             coro = provider.stt(filename, file, model=model, prompt=prompt)
             return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
 
     async def stream(
-        self, *, parent_context: Context | None = None, **request: Unpack[LLMRequest]
+        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
     ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Provider passthrough streaming.
 
@@ -286,27 +318,28 @@ class LLMService:
         higher layers such as ContextManager or agents, not here.
         """
         provider = self._get_current_provider()
-        meta = request.get("metadata", {})
-        attributes = {
+        meta: LLMRequestMeta = request["metadata"] if "metadata" in request else {}
+        model = meta["model"] if "model" in meta else ""
+        tool_count = len(request["tools"]) if "tools" in request else 0
+        attributes: LLMSpanAttributes = {
             "llm.provider": provider.__class__.__name__,
-            "llm.model": meta.get("model", ""),
+            "llm.model": model,
             "llm.stream": True,
-            "llm.tool_count": len(request.get("tools", [])),
-            "llm.temperature": request.get("temperature", "null"),
-            "llm.top_p": request.get("top_p", "null"),
+            "llm.tool_count": tool_count,
         }
-        if parent_context is None:
-            parent_context = Context()
+        if trace_ctx is None:
+            trace_ctx = Context()
         span = self._tracer.start_span(
             "llm.stream",
             kind=SpanKind.CLIENT,
-            context=parent_context,
+            context=trace_ctx,
             attributes=attributes,
         )
+        provider_ctx = set_span_in_context(span, trace_ctx)
+        stream_resp = provider.stream(request, trace_ctx=provider_ctx)
         try:
-            stream_resp = provider.stream(request)
-
             async for event in stream_resp:
                 yield event
         finally:
+            await stream_resp.aclose()
             span.end()
