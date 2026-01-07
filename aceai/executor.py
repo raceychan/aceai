@@ -3,6 +3,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 from ididi import Graph
+from opentelemetry.context import Context
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -39,15 +40,20 @@ class ToolExecutor:
         for tool in self.tools.values():
             self.graph.add_nodes(*tool.signature.dep_nodes.values())
 
-    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+    async def execute_tool(
+        self, tool_call: LLMToolCall, *, parent_context: Context | None = None
+    ) -> str:
         tool_name = tool_call.name
         param_json = tool_call.arguments
         tool = self.tools[tool_name]
+        if parent_context is None:
+            parent_context = Context()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
             kind=SpanKind.INTERNAL,
             record_exception=True,
             set_status_on_exception=True,
+            context=parent_context,
             attributes={
                 "tool.call_id": tool_call.call_id,
                 "tool.arguments": param_json,
@@ -89,14 +95,16 @@ class LoggingToolExecutor(ToolExecutor):
         self.logger = logger
         self.timer = timer
 
-    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+    async def execute_tool(
+        self, tool_call: LLMToolCall, *, parent_context: Context | None = None
+    ) -> str:
         call_id = tool_call.call_id
         self.logger.info(
             f"Tool {tool_call.name} starting (call_id={call_id}) with {tool_call.arguments}"
         )
         start = self.timer()
         try:
-            result = await super().execute_tool(tool_call)
+            result = await super().execute_tool(tool_call, parent_context=parent_context)
         except Exception:
             duration = self.timer() - start
             self.logger.exception(

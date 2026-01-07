@@ -23,6 +23,7 @@
 - async generator 的生命周期由**消费方**决定：可能提前停止、被取消、或者从未完全消费。
 - 不能依赖 “一个大 `with` 块” 覆盖整个 generator 期间的上下文保持；这类写法在提前中断时非常容易产生不平衡的 attach/detach。
 - “span 串联” 的关键不是 current span，而是 **parent context** 一致。
+- 仅靠 `break`/`return` 退出 `async for` 并不会保证触发被消费 generator 的 `finally`；若 span 的 `end()` 写在 generator 的 `finally` 中，需要显式 `await agen.aclose()` 才能确保 span 结束并上报。
 
 ## 结论：推荐的串联策略（显式 parent context 传递）
 
@@ -113,13 +114,13 @@ with tracer.start_as_current_span("agent.step"):
 
 ## TODO（可执行清单）
 
-- [ ] 在 `AgentBase.run()` 增加 `agent.run` span，并生成/保存 `run_ctx`
-- [ ] 在 `AgentBase._run_step()` 用 `context=run_ctx` 创建 `agent.step`，并生成 `step_ctx = set_span_in_context(step_span, run_ctx)`
-- [ ] 调整 `agent.step` 生命周期：覆盖 LLM + tool 执行，避免“父 span 先结束、子 span 后发生”的时间轴错位
-- [ ] 扩展 `ILLMService.stream()`/`LLMService.stream()` 签名：显式接收 `parent_context`（或等价结构）并用于创建 `llm.stream`（`context=parent_context`）
-- [ ] 扩展 `ToolExecutor.execute_tool()` 签名：显式接收 `parent_context` 并用于创建 `tool.*`（`context=parent_context`）
-- [ ] 在 `_run_step()` 里把同一个 `step_ctx` 传入 `llm_service.stream(..., parent_context=step_ctx)` 与 `executor.execute_tool(..., parent_context=step_ctx)`，确保它们成为 `agent.step` 的子 span
-- [ ] 严格禁止在 async generator 中用“大 `with start_as_current_span(...)` 包住 `yield`”的写法；如需 current span，只包住短小的同步片段
+- [x] 在 `AgentBase.run()` 增加 `agent.run` span，并生成/保存 `run_ctx`
+- [x] 在 `AgentBase._run_step()` 用 `context=run_ctx` 创建 `agent.step`，并生成 `step_ctx = set_span_in_context(step_span, run_ctx)`
+- [x] 调整 `agent.step` 生命周期：覆盖 LLM + tool 执行，避免“父 span 先结束、子 span 后发生”的时间轴错位
+- [x] 扩展 `ILLMService.stream()`/`LLMService.stream()` 签名：显式接收 `parent_context`（或等价结构）并用于创建 `llm.stream`（`context=parent_context`）
+- [x] 扩展 `ToolExecutor.execute_tool()` 签名：显式接收 `parent_context` 并用于创建 `tool.*`（`context=parent_context`）
+- [x] 在 `_run_step()` 里把同一个 `step_ctx` 传入 `llm_service.stream(..., parent_context=step_ctx)` 与 `executor.execute_tool(..., parent_context=step_ctx)`，确保它们成为 `agent.step` 的子 span
+- [x] 严格禁止在 async generator 中用“大 `with start_as_current_span(...)` 包住 `yield`”的写法；如需 current span，只包住短小的同步片段
 - [ ] 若引入 threadpool / `run_in_executor`：在工作线程入口显式 attach `parent_context`，线程退出时在同一线程 detach（成对）
-- [ ] 增加单测：断言一次 `run()` 内 `agent.run -> agent.step -> (llm.stream + tool.*)` 的 parent/trace 关系正确（不再出现多个 root span）
-- [ ] 增加回归单测：模拟提前中断/取消 async generator，确保不再触发 `Failed to detach context`
+- [x] 增加单测：断言一次 `run()` 内 `agent.run -> agent.step -> (llm.stream + tool.*)` 的 parent/trace 关系正确（不再出现多个 root span）
+- [x] 增加回归单测：模拟提前中断/取消 async generator，确保不再触发 `Failed to detach context`

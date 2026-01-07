@@ -13,6 +13,7 @@ from aceai.events import (
 )
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall, LLMToolCallDelta
+from opentelemetry.context import Context
 
 
 class StubExecutor:
@@ -21,7 +22,7 @@ class StubExecutor:
         self._results = results or {}
         self.calls: list[LLMToolCall] = []
 
-    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+    async def execute_tool(self, tool_call: LLMToolCall, *, parent_context: Context) -> str:
         self.calls.append(tool_call)
         return self._results[tool_call.name]
 
@@ -31,7 +32,7 @@ class StubLLMService:
         self._streams = [list(stream) for stream in streams]
         self.calls: list[dict] = []
 
-    async def stream(self, **request):
+    async def stream(self, *, parent_context: Context, **request):
         if not self._streams:
             raise AssertionError("StubLLMService has no remaining stream fixtures")
         self.calls.append(request)
@@ -48,7 +49,7 @@ class RaisingExecutor(StubExecutor):
         super().__init__()
         self._error = error
 
-    async def execute_tool(self, tool_call: LLMToolCall) -> str:
+    async def execute_tool(self, tool_call: LLMToolCall, *, parent_context: Context) -> str:
         raise self._error
 
 
@@ -58,7 +59,7 @@ class RaisingStreamLLMService:
         self._error = error
         self.calls: list[dict] = []
 
-    async def stream(self, **request):
+    async def stream(self, *, parent_context: Context, **request):
         self.calls.append(request)
         for event in self._events:
             yield event
@@ -73,7 +74,7 @@ class SimpleLLMService:
         self._events = list(events)
         self.calls: list[dict] = []
 
-    async def stream(self, **request):
+    async def stream(self, *, parent_context: Context, **request):
         self.calls.append(request)
         for event in self._events:
             yield event

@@ -1,12 +1,13 @@
 """LLM Service - Provider-agnostic LLM interface with clean responsibilities."""
 
 import asyncio
-from typing import AsyncIterator, BinaryIO, Protocol, Type, TypeVar, Unpack
+from typing import AsyncGenerator, AsyncIterator, BinaryIO, Protocol, Type, TypeVar, Unpack
 
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
+from opentelemetry.context import Context
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -55,8 +56,8 @@ class ILLMService(Protocol):
     ) -> str: ...
 
     def stream(
-        self, **request: Unpack[LLMRequest]
-    ) -> AsyncIterator[LLMStreamEvent]: ...
+        self, *, parent_context: Context | None = None, **request: Unpack[LLMRequest]
+    ) -> AsyncGenerator[LLMStreamEvent, None]: ...
 
     def get_provider_count(self) -> int: ...
 
@@ -277,8 +278,8 @@ class LLMService:
             return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
 
     async def stream(
-        self, **request: Unpack[LLMRequest]
-    ) -> AsyncIterator[LLMStreamEvent]:
+        self, *, parent_context: Context | None = None, **request: Unpack[LLMRequest]
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Provider passthrough streaming.
 
         Business logic (e.g., output sanitization/formatting) must be handled at
@@ -294,9 +295,12 @@ class LLMService:
             "llm.temperature": request.get("temperature", "null"),
             "llm.top_p": request.get("top_p", "null"),
         }
+        if parent_context is None:
+            parent_context = Context()
         span = self._tracer.start_span(
             "llm.stream",
             kind=SpanKind.CLIENT,
+            context=parent_context,
             attributes=attributes,
         )
         try:
