@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
 from aceai.errors import AceAIValidationError
-from aceai.executor import ToolExecutor
+from aceai.agent.executor import ToolExecutor
 from aceai.llm.openai import OpenAI
 from term_ui import run_agent_with_terminal_ui
 

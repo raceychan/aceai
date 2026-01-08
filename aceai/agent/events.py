@@ -2,11 +2,10 @@
 
 from typing import ClassVar, Literal
 
-from aceai.helpers.string import uuid_str
 from aceai.interface import Record
 from aceai.llm.models import LLMSegment, LLMToolCall
 
-from .models import AgentStep, ToolExecutionResult
+from ..models import AgentStep, ToolExecutionResult
 
 AgentEventType = Literal[
     "agent.llm.started",

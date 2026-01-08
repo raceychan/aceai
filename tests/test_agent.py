@@ -1,6 +1,6 @@
 import pytest
 
-from aceai.agent import AgentBase, BufferedStreamingAgent, ToolExecutionFailure
+from aceai.agent.base import AgentBase, ToolExecutionFailure
 from aceai.errors import AceAIConfigurationError
 from aceai.llm.models import LLMToolCall
 
@@ -12,7 +12,6 @@ def test_build_agent_base() -> None:
         llm_service=None,  # type: ignore
         executor=None,  # type: ignore
     )
-    assert agent.instructions == ["You are a helpful assistant."]
     assert agent.system_message.content[0]["data"] == "You are a helpful assistant."
     assert agent.default_model == "gpt-4"
     assert agent.max_steps == 5
@@ -27,7 +26,7 @@ def test_agent_base_add_instruction_updates_system_message() -> None:
         executor=None,  # type: ignore[arg-type]
     )
     agent.add_instruction(" + More")
-    assert agent.instructions == ["Initial", " + More"]
+    agent.add_instruction(" + More")
     assert agent.system_message.content[0]["data"] == "Initial + More"
 
 
@@ -53,47 +52,25 @@ def test_agent_base_requires_positive_max_steps() -> None:
         )
 
 
-def test_agent_base_rejects_negative_chunk_size() -> None:
+def test_agent_base_rejects_chunk_size_argument() -> None:
     with pytest.raises(TypeError):
         AgentBase(
             prompt="Prompt",
             default_model="gpt-4",
             llm_service=None,  # type: ignore[arg-type]
             executor=None,  # type: ignore[arg-type]
-            delta_chunk_size=-1,
+            delta_chunk_size=1,
         )
 
 
-def test_agent_base_rejects_negative_reasoning_log_limit() -> None:
+def test_agent_base_rejects_reasoning_log_argument() -> None:
     with pytest.raises(TypeError):
         AgentBase(
             prompt="Prompt",
             default_model="gpt-4",
             llm_service=None,  # type: ignore[arg-type]
             executor=None,  # type: ignore[arg-type]
-            reasoning_log_max_chars=-10,
-        )
-
-
-def test_buffered_streaming_agent_rejects_negative_chunk_size() -> None:
-    with pytest.raises(AceAIConfigurationError):
-        BufferedStreamingAgent(
-            prompt="Prompt",
-            default_model="gpt-4",
-            llm_service=None,  # type: ignore[arg-type]
-            executor=None,  # type: ignore[arg-type]
-            delta_chunk_size=-1,
-        )
-
-
-def test_buffered_streaming_agent_rejects_negative_reasoning_log_limit() -> None:
-    with pytest.raises(AceAIConfigurationError):
-        BufferedStreamingAgent(
-            prompt="Prompt",
-            default_model="gpt-4",
-            llm_service=None,  # type: ignore[arg-type]
-            executor=None,  # type: ignore[arg-type]
-            reasoning_log_max_chars=-10,
+            reasoning_log_max_chars=10,
         )
 
 

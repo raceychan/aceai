@@ -5,7 +5,11 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, set_span_in_context
 
-from .errors import AceAIConfigurationError, AceAIRuntimeError
+from ..errors import AceAIConfigurationError, AceAIRuntimeError
+from ..llm import ILLMService, LLMMessage, LLMResponse
+from ..llm.models import LLMRequestMeta, LLMToolCall
+from ..models import AgentStep, ToolExecutionResult
+from .context_manager import ContextManager
 from .events import (
     AgentEvent,
     AgentEventBuilder,
@@ -17,15 +21,6 @@ from .events import (
     ToolFailedEvent,
 )
 from .executor import ToolExecutor
-from .interface import is_set
-from .llm import ILLMService, LLMMessage, LLMResponse
-from .llm.models import (
-    LLMRequestMeta,
-    LLMToolCall,
-    LLMToolCallMessage,
-    LLMToolUseMessage,
-)
-from .models import AgentStep, ToolExecutionResult
 
 
 class ToolExecutionFailure(AceAIRuntimeError):
@@ -53,9 +48,9 @@ class AgentBase:
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
-        self._instructions: list[str] = [prompt]
         self.default_model = default_model
         self.llm_service = llm_service
+        self._ctx_mgr = ContextManager(prompt)
         self._executor = executor
         self._max_steps = max_steps
         self._tracer = tracer or trace.get_tracer("aceai.agent")
@@ -67,20 +62,14 @@ class AgentBase:
     def add_instruction(self, instruction: str) -> None:
         if not instruction:
             raise ValueError(f"Empty Instruction")
-        self._instructions.append(instruction)
-
-    @property
-    def instructions(self) -> list[str]:
-        return self._instructions
+        self._ctx_mgr.add_instruction(instruction)
 
     @property
     def system_message(self) -> LLMMessage:
-        content = "".join(c for c in self._instructions if c)
-        return LLMMessage.build(role="system", content=content)
+        return self._ctx_mgr.system_message
 
     async def _call_llm(
         self,
-        messages: list[LLMMessage],
         request_meta: LLMRequestMeta,
         event_builder: AgentEventBuilder,
         step_context: Context,
@@ -89,14 +78,14 @@ class AgentBase:
 
         if executor:
             stream = self.llm_service.stream(
-                messages=messages,
+                messages=self._ctx_mgr.context,
                 tools=executor.select_tools(),
                 metadata=request_meta,
                 trace_ctx=step_context,
             )
         else:
             stream = self.llm_service.stream(
-                messages=messages,
+                messages=self._ctx_mgr.context,
                 metadata=request_meta,
                 trace_ctx=step_context,
             )
@@ -163,7 +152,6 @@ class AgentBase:
     async def _run_step(
         self,
         *,
-        messages: list[LLMMessage],
         event_builder: AgentEventBuilder,
         trace_ctx: Context,
         **request_meta: Unpack[LLMRequestMeta],
@@ -181,9 +169,7 @@ class AgentBase:
 
         try:
             yield event_builder.llm_started()
-            llm_gen = self._call_llm(
-                messages, request_meta, event_builder, step_context
-            )
+            llm_gen = self._call_llm(request_meta, event_builder, step_context)
             try:
                 async for event in llm_gen:
                     if not isinstance(event, AgentStep):
@@ -201,27 +187,14 @@ class AgentBase:
                                 final_answer=final_answer,
                             )
                         return
-
-                    assistant_msg = LLMToolCallMessage.from_content(
-                        content=current_step.llm_response.text,
-                        tool_calls=current_step.llm_response.tool_calls,
-                    )
-                    messages.append(assistant_msg)
-
+                    self._ctx_mgr.add_tool_call(current_step.llm_response)
                     tool_gen = self._make_toolcalls(
                         current_step, event_builder, step_context
                     )
                     try:
                         async for tool_event in tool_gen:
                             if isinstance(tool_event, ToolCompletedEvent):
-                                call = tool_event.tool_call
-                                res = tool_event.tool_result.output
-                                tool_use_msg = LLMToolUseMessage.from_content(
-                                    name=call.name,
-                                    call_id=call.call_id,
-                                    content=res,
-                                )
-                                messages.append(tool_use_msg)
+                                self._ctx_mgr.add_tool_use(tool_event)
                             yield tool_event
                     finally:
                         await tool_gen.aclose()
@@ -293,10 +266,9 @@ class AgentBase:
             },
         )
         run_context = set_span_in_context(run_span, trace_ctx or Context())
-        messages: list[LLMMessage] = [
-            self.system_message,
-            LLMMessage.build(role="user", content=question),
-        ]
+        self._ctx_mgr.reset_context()
+        self._ctx_mgr.init_context(question)
+
         steps: list[AgentStep] = []
         error_msg: str | None = None
         try:
@@ -306,9 +278,7 @@ class AgentBase:
                     step_index=len(steps),
                     step_id=step_id,
                 )
-
                 step_gen = self._run_step(
-                    messages=messages,
                     event_builder=event_builder,
                     trace_ctx=run_context,
                     **request_meta,
@@ -374,136 +344,3 @@ class AgentBase:
                 return event.final_answer
 
         raise AceAIRuntimeError("Agent run did not complete successfully")
-
-
-class BufferedStreamingAgent(AgentBase):
-    """AgentBase variant that chunks streaming deltas and buffers a reasoning log."""
-
-    def __init__(
-        self,
-        prompt: str = "",
-        *,
-        default_model: str,
-        llm_service: ILLMService,
-        max_steps: int = 5,
-        executor: ToolExecutor | None = None,
-        delta_chunk_size: int = 0,
-        reasoning_log_max_chars: int | None = None,
-        tracer: trace.Tracer | None = None,
-    ):
-        if delta_chunk_size < 0:
-            raise AceAIConfigurationError("delta_chunk_size must be non-negative")
-        if reasoning_log_max_chars is not None and reasoning_log_max_chars < 0:
-            raise AceAIConfigurationError(
-                "reasoning_log_max_chars must be non-negative or None"
-            )
-
-        super().__init__(
-            prompt,
-            default_model=default_model,
-            llm_service=llm_service,
-            max_steps=max_steps,
-            executor=executor,
-            tracer=tracer,
-        )
-        self.delta_chunk_size = delta_chunk_size
-        self.reasoning_log_max_chars = reasoning_log_max_chars
-
-    async def _call_llm(
-        self,
-        messages: list[LLMMessage],
-        request_meta: LLMRequestMeta,
-        event_builder: AgentEventBuilder,
-        step_context: Context,
-    ):
-        from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
-
-        executor = self._executor
-        log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
-        chunker = LLMDeltaChunker(self.delta_chunk_size)
-        completed = False
-
-        if executor:
-            stream = self.llm_service.stream(
-                messages=messages,
-                tools=executor.select_tools(),
-                metadata=request_meta,
-                trace_ctx=step_context,
-            )
-        else:
-            stream = self.llm_service.stream(
-                messages=messages,
-                metadata=request_meta,
-                trace_ctx=step_context,
-            )
-
-        try:
-            async for stream_event in stream:
-                match stream_event.event_type:
-                    case "response.output_text.delta":
-                        if is_set(stream_event.text_delta):
-                            for chunk in chunker.push(stream_event.text_delta):
-                                log_buffer.append(chunk)
-                                yield event_builder.llm_text_delta(text_delta=chunk)
-                        continue
-
-                    case "response.media":
-                        if not stream_event.segments:
-                            raise AceAIRuntimeError("LLM media event missing segments")
-                        yield event_builder.llm_media(segments=stream_event.segments)
-                        continue
-
-                    case "response.function_call_arguments.delta":
-                        continue
-
-                    case "response.error":
-                        if is_set(stream_event.error) and stream_event.error:
-                            raise AceAIRuntimeError(stream_event.error)
-                        raise AceAIRuntimeError("LLM streaming error")
-
-                    case "response.completed":
-                        response = stream_event.response
-                        if not isinstance(response, LLMResponse):
-                            raise AceAIRuntimeError(
-                                "LLM stream completed without a response payload"
-                            )
-                        for chunk in chunker.flush():
-                            log_buffer.append(chunk)
-                            yield event_builder.llm_text_delta(text_delta=chunk)
-                        reasoning_log = log_buffer.snapshot()
-                        if not reasoning_log:
-                            reasoning_chunks: list[str] = []
-                            for segment in response.segments:
-                                if segment.type == "reasoning" and segment.content:
-                                    reasoning_chunks.append(segment.content)
-
-                            if reasoning_chunks:
-                                reasoning_log = "\n\n".join(reasoning_chunks)
-                        yield AgentStep(
-                            step_id=event_builder.step_id,
-                            llm_response=response,
-                            reasoning_log=reasoning_log,
-                            reasoning_log_truncated=log_buffer.truncated,
-                        )
-                        completed = True
-                        break
-
-                    case _:
-                        raise AceAIRuntimeError(
-                            f"Unsupported LLM stream event: {stream_event.event_type}"
-                        )
-        except Exception:
-            for chunk in chunker.flush():
-                log_buffer.append(chunk)
-                if chunk:
-                    yield event_builder.llm_text_delta(text_delta=chunk)
-            raise
-        finally:
-            await stream.aclose()
-
-        if not completed:
-            for chunk in chunker.flush():
-                log_buffer.append(chunk)
-                if chunk:
-                    yield event_builder.llm_text_delta(text_delta=chunk)
-            raise AceAIRuntimeError("LLM stream ended without completion")

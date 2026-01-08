@@ -1,8 +1,9 @@
 import pytest
+from opentelemetry.context import Context
 
-from aceai.agent import AgentBase, BufferedStreamingAgent, ToolExecutionFailure
+from aceai.agent.base import AgentBase, ToolExecutionFailure
 from aceai.errors import AceAIRuntimeError
-from aceai.events import (
+from aceai.agent.events import (
     AgentEvent,
     LLMMediaEvent,
     LLMOutputDeltaEvent,
@@ -20,7 +21,6 @@ from aceai.llm.models import (
     LLMToolCall,
     LLMToolCallDelta,
 )
-from opentelemetry.context import Context
 
 
 class StubExecutor:
@@ -327,7 +327,7 @@ async def test_agent_stream_emits_run_completed_event() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
+async def test_agent_emits_text_deltas_without_buffering_reasoning_log() -> None:
     stream = [
         LLMStreamEvent(
             event_type="response.output_text.delta",
@@ -342,12 +342,11 @@ async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
             response=LLMResponse(text="foobar"),
         ),
     ]
-    agent = BufferedStreamingAgent(
+    agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
         executor=StubExecutor(),
-        delta_chunk_size=1,
     )
 
     events = await collect_events(agent, "Question?")
@@ -356,8 +355,10 @@ async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
     assert len(deltas) == 2
     assert deltas[0].text_delta == "foo"
     assert deltas[1].text_delta == "bar"
-    assert isinstance(events[-1], RunCompletedEvent)
-    assert events[-1].step.reasoning_log == "foobar"
+    final_event = events[-1]
+    assert isinstance(final_event, RunCompletedEvent)
+    assert final_event.step.reasoning_log == ""
+    assert final_event.step.reasoning_log_truncated is False
 
 
 @pytest.mark.anyio
@@ -381,126 +382,6 @@ async def test_reasoning_log_is_empty_when_no_deltas() -> None:
     assert isinstance(events[-1], RunCompletedEvent)
     assert events[-1].step.reasoning_log == ""
     assert events[-1].final_answer == "final"
-
-
-@pytest.mark.anyio
-async def test_delta_chunker_flushes_when_threshold_exceeded() -> None:
-    stream = [
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="ab",
-        ),
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="cd",
-        ),
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="ef",
-        ),
-        LLMStreamEvent(
-            event_type="response.completed",
-            response=LLMResponse(text="abcdef"),
-        ),
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
-        executor=StubExecutor(),
-        delta_chunk_size=4,
-    )
-
-    events = await collect_events(agent, "Question?")
-    deltas = [event for event in events if isinstance(event, LLMOutputDeltaEvent)]
-
-    assert len(deltas) == 2
-    assert deltas[0].text_delta == "abcd"
-    assert deltas[1].text_delta == "ef"
-
-
-@pytest.mark.anyio
-async def test_delta_chunker_flushes_on_completion_when_below_threshold() -> None:
-    stream = [
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="hi",
-        ),
-        LLMStreamEvent(
-            event_type="response.completed",
-            response=LLMResponse(text="hi"),
-        ),
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
-        executor=StubExecutor(),
-        delta_chunk_size=256,
-    )
-
-    events = await collect_events(agent, "Question?")
-    deltas = [event for event in events if isinstance(event, LLMOutputDeltaEvent)]
-
-    assert len(deltas) == 1
-    assert deltas[0].text_delta == "hi"
-
-
-@pytest.mark.anyio
-async def test_reasoning_log_ring_buffer_truncates_old_content() -> None:
-    stream = [
-        LLMStreamEvent(event_type="response.output_text.delta", text_delta=str(i))
-        for i in range(10)
-    ] + [
-        LLMStreamEvent(
-            event_type="response.completed",
-            response=LLMResponse(text="0123456789"),
-        )
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
-        executor=StubExecutor(),
-        delta_chunk_size=1,
-        reasoning_log_max_chars=5,
-    )
-
-    events = await collect_events(agent, "Question?")
-    final_event = events[-1]
-
-    assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.step.reasoning_log == "56789"
-    assert final_event.step.reasoning_log_truncated is True
-
-
-@pytest.mark.anyio
-async def test_reasoning_log_disabled_when_max_zero() -> None:
-    stream = [
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="partial",
-        ),
-        LLMStreamEvent(
-            event_type="response.completed",
-            response=LLMResponse(text="partial"),
-        ),
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
-        executor=StubExecutor(),
-        delta_chunk_size=1,
-        reasoning_log_max_chars=0,
-    )
-
-    events = await collect_events(agent, "Question?")
-    final_event = events[-1]
-
-    assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.step.reasoning_log == ""
-    assert final_event.step.reasoning_log_truncated is False
 
 
 @pytest.mark.anyio
@@ -620,60 +501,7 @@ async def test_agent_errors_when_completion_event_lacks_response() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_flushes_chunks_when_stream_finishes_without_completion() -> None:
-    stream = [
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="partial",
-        )
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
-        executor=StubExecutor(),
-        delta_chunk_size=10,
-    )
-
-    events: list[AgentEvent] = []
-    with pytest.raises(AceAIRuntimeError, match="LLM stream ended without completion"):
-        async for evt in agent.run("Question?"):
-            events.append(evt)
-
-    deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
-    assert deltas and deltas[0].text_delta == "partial"
-    assert isinstance(events[-1], LLMOutputDeltaEvent)
-
-
-@pytest.mark.anyio
-async def test_agent_flushes_pending_chunks_when_stream_raises_exception() -> None:
-    stream = [
-        LLMStreamEvent(
-            event_type="response.output_text.delta",
-            text_delta="abc",
-        )
-    ]
-    agent = BufferedStreamingAgent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=RaisingStreamLLMService(stream, RuntimeError("splat")),
-        executor=StubExecutor(),
-        delta_chunk_size=10,
-    )
-
-    events: list[AgentEvent] = []
-    with pytest.raises(RuntimeError, match="splat"):
-        async for evt in agent.run("Question?"):
-            events.append(evt)
-
-    deltas = [evt for evt in events if isinstance(evt, LLMOutputDeltaEvent)]
-    assert deltas and deltas[0].text_delta == "abc"
-    assert isinstance(events[-1], LLMOutputDeltaEvent)
-    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
-
-
-@pytest.mark.anyio
-async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
+async def test_reasoning_segments_do_not_populate_reasoning_log() -> None:
     response = LLMResponse(
         text="done",
         segments=[
@@ -682,7 +510,7 @@ async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
         ],
     )
     stream = make_stream(response=response, deltas=[])
-    agent = BufferedStreamingAgent(
+    agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
@@ -693,7 +521,8 @@ async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
     final_event = events[-1]
 
     assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.step.reasoning_log == "first\n\nsecond"
+    assert final_event.step.reasoning_log == ""
+    assert final_event.step.reasoning_log_truncated is False
 
 
 @pytest.mark.anyio
@@ -763,8 +592,8 @@ class ShortCircuitAgent(AgentBase):
     async def _run_step(
         self,
         *,
-        messages,
         event_builder,
+        trace_ctx,
         **request_meta,
     ):
         yield event_builder.llm_started()
