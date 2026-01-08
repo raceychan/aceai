@@ -1,4 +1,3 @@
-import inspect
 from time import perf_counter
 from typing import Any, Callable
 
@@ -20,25 +19,42 @@ class ToolExecutor:
     ):
         self.graph = graph
         self.tools = {tool.name: tool for tool in (tools + BUILTIN_TOOLS)}
-        self._analyze_tool_deps()
-        self._tool_specs: list[IToolSpec] = []
+        self._all_tools: list[IToolSpec] = []
         self._tracer = tracer or trace.get_tracer("aceai.executor")
 
-    @property
-    def tool_specs(self) -> list[IToolSpec]:
-        """
-        TODO:
-        dynamic tool schema
-        we might let planner take control over
-        what tools are available to llm
-        """
-        if not self._tool_specs:
-            self._tool_specs = [tool.tool_spec for tool in self.tools.values()]
-        return self._tool_specs
+    def select_tools(
+        self, include: set[str] | None = None, exclude: set[str] | None = None
+    ) -> list[IToolSpec]:
+        "select tools by names, good for dynamic tool selection"
 
-    def _analyze_tool_deps(self) -> None:
-        for tool in self.tools.values():
-            self.graph.add_nodes(*tool.signature.dep_nodes.values())
+        if include and exclude:
+            raise ValueError("Cannot specify both include and exclude")
+        if not include and not exclude:
+            return self.all_tools
+
+        include = include or set()
+        exclude = exclude or set()
+
+        selected_tools: list[IToolSpec] = []
+        for tool_name, tool in self.tools.items():
+            if (include and tool_name not in include) or (tool_name in exclude):
+                continue
+            selected_tools.append(tool.tool_spec)
+        return selected_tools
+
+    @property
+    def all_tools(self) -> list[IToolSpec]:
+        if not self._all_tools:
+            self._all_tools = [tool.tool_spec for tool in self.tools.values()]
+        return self._all_tools
+
+    async def resolve_tool(self, tool: Tool[Any, Any], /, **params: Any) -> Any:
+        dep_params = {
+            dname: await self.graph.aresolve(dep, **params)
+            for dname, dep in tool.signature.dep_nodes.items()
+        }
+        result = tool(**params, **dep_params)
+        return await result if tool.is_async else result
 
     async def execute_tool(
         self, tool_call: LLMToolCall, *, trace_ctx: Context | None = None
@@ -59,13 +75,7 @@ class ToolExecutor:
             },
         ):
             params = tool.decode_params(param_json)
-            dep_params = {
-                dname: await self.graph.aresolve(dep, **params)
-                for dname, dep in tool.signature.dep_nodes.items()
-            }
-            result = tool(**params, **dep_params)
-            if inspect.isawaitable(result):
-                result = await result
+            result = await self.resolve_tool(tool, **params)
             return tool.encode_return(result)
 
 

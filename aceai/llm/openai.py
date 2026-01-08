@@ -88,16 +88,36 @@ class OpenAI(LLMProviderBase):
         *,
         model: str,
         prompt: str | None = None,
+        trace_ctx: Context | None = None,
     ) -> str:
         """Transcribe audio using OpenAI Whisper (async)."""
+        attributes = {
+            "llm.provider": self.__class__.__name__,
+            "llm.model": model,
+            "llm.audio.filename": filename,
+        }
+        span = self._tracer.start_span(
+            "openai.audio.transcriptions.create",
+            kind=SpanKind.CLIENT,
+            context=trace_ctx,
+            attributes=attributes,
+        )
         kwargs = {
             "model": model,
             "file": (filename, file),
         }
         if prompt is not None:
             kwargs["prompt"] = prompt
-        result = await self._client.audio.transcriptions.create(**kwargs)
-        return result.text
+        try:
+            result = await self._client.audio.transcriptions.create(**kwargs)
+            return result.text
+        finally:
+            span.end()
+
+    def _tool_names(self, request: LLMRequest) -> list[str]:
+        if "tools" not in request:
+            return []
+        return [tool.name for tool in request["tools"]]
 
     def _build_base_response_kwargs(
         self,
@@ -543,16 +563,16 @@ class OpenAI(LLMProviderBase):
         self, request: LLMRequest, *, trace_ctx: Context | None = None
     ) -> LLMResponse:
         """Complete using OpenAI Responses API."""
-        if trace_ctx is None:
-            trace_ctx = Context()
         request = self._apply_default_meta(request)
         params = self._build_base_response_kwargs(request)
         start = time.perf_counter()
+        tool_names = self._tool_names(request)
         attributes = {
             "llm.provider": self.__class__.__name__,
             "llm.model": params["model"],
             "llm.stream": False,
-            "llm.tool_count": len(params.get("tools", [])),
+            "llm.tool_count": len(tool_names),
+            "llm.tool_names": tool_names,
         }
         span = self._tracer.start_span(
             "openai.responses.create",
@@ -574,11 +594,13 @@ class OpenAI(LLMProviderBase):
         request = self._apply_default_meta(request)
         kwargs = self._build_base_response_kwargs(request)
         start = time.perf_counter()
+        tool_names = self._tool_names(request)
         attributes = {
             "llm.provider": self.__class__.__name__,
             "llm.model": kwargs["model"],
             "llm.stream": True,
-            "llm.tool_count": len(kwargs.get("tools", [])),
+            "llm.tool_count": len(tool_names),
+            "llm.tool_names": tool_names,
         }
         span = self._tracer.start_span(
             "openai.responses.stream",

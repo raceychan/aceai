@@ -3,13 +3,13 @@ from typing import AsyncGenerator
 import httpx
 import pytest
 from ididi import Graph, use
+from msgspec import Struct
 
 from aceai.errors import AceAIRuntimeError
 from aceai.executor import LoggingToolExecutor, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
 from aceai.tools._tool_sig import Annotated, spec
-from msgspec import Struct
 
 
 class FakeLogger:
@@ -227,10 +227,9 @@ async def test_tool_executor_exposes_tool_specs(graph: Graph) -> None:
     echo_tool = build_tool(echo_message)
     executor = ToolExecutor(graph, [echo_tool])
 
-    first = executor.tool_specs
-    second = executor.tool_specs
+    first = executor.all_tools
+    second = executor.all_tools
 
     assert first is second
     schema_names = {spec.name for spec in first}
     assert echo_tool.name in schema_names
-    assert "final_answer" in schema_names

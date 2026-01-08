@@ -50,7 +50,7 @@
   - 基于字符阈值（默认 `chunk_size=256`）累积；超过阈值或捕获到换行符时立即 flush。
   - 在 flush 时一次写入 `reasoning_log` 并发送单条 delta 事件，从而把上游 N 条 provider token 合并为 1 条 agent 事件。
   - 流结束前调用 `chunker.flush(force=True)`，确保尾部碎片不会丢失。
-- 配置入口：`AgentBase` 构造函数暴露 `delta_chunk_size`；默认启用固定大小阈值，后续如需更复杂策略，再另行扩展。
+- 配置入口：`BufferedStreamingAgent` 构造函数暴露 `delta_chunk_size`；默认启用固定大小阈值，后续如需更复杂策略，再另行扩展。
 
 ### Reasoning Log 内存上限
 - 立即实现一个轻量环形缓冲 `ReasoningLogBuffer`，内部维护 `deque[str]` 与累计长度。`append(chunk)` 时：

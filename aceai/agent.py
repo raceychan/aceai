@@ -17,7 +17,6 @@ from .events import (
     ToolFailedEvent,
 )
 from .executor import ToolExecutor
-from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
 from .interface import is_set
 from .llm import ILLMService, LLMMessage, LLMResponse
 from .llm.models import (
@@ -48,27 +47,17 @@ class AgentBase:
         *,
         default_model: str,
         llm_service: ILLMService,
-        executor: ToolExecutor | None = None,
         max_steps: int = 5,
-        delta_chunk_size: int = 0,
-        reasoning_log_max_chars: int | None = None,
+        executor: ToolExecutor | None = None,
         tracer: trace.Tracer | None = None,
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
-        if delta_chunk_size < 0:
-            raise AceAIConfigurationError("delta_chunk_size must be non-negative")
-        if reasoning_log_max_chars is not None and reasoning_log_max_chars < 0:
-            raise AceAIConfigurationError(
-                "reasoning_log_max_chars must be non-negative or None"
-            )
         self._instructions: list[str] = [prompt]
         self.default_model = default_model
         self.llm_service = llm_service
         self._executor = executor
         self._max_steps = max_steps
-        self.delta_chunk_size = delta_chunk_size
-        self.reasoning_log_max_chars = reasoning_log_max_chars
         self._tracer = tracer or trace.get_tracer("aceai.agent")
 
     @property
@@ -97,14 +86,11 @@ class AgentBase:
         step_context: Context,
     ):
         executor = self._executor
-        log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
-        chunker = LLMDeltaChunker(self.delta_chunk_size)
-        completed = False
 
         if executor:
             stream = self.llm_service.stream(
                 messages=messages,
-                tools=executor.tool_specs,
+                tools=executor.select_tools(),
                 metadata=request_meta,
                 trace_ctx=step_context,
             )
@@ -117,64 +103,36 @@ class AgentBase:
 
         try:
             async for stream_event in stream:
-                if stream_event.event_type == "response.output_text.delta":
-                    if is_set(stream_event.text_delta):
-                        for chunk in chunker.push(stream_event.text_delta):
-                            log_buffer.append(chunk)
+                match stream_event.event_type:
+                    case "response.output_text.delta":
+                        chunk = stream_event.text_delta
+                        if isinstance(chunk, str):
                             yield event_builder.llm_text_delta(text_delta=chunk)
-                    continue
-
-                if stream_event.event_type == "response.function_call_arguments.delta":
-                    continue
-
-                if stream_event.event_type == "response.error":
-                    if is_set(stream_event.error) and stream_event.error:
-                        raise AceAIRuntimeError(stream_event.error)
-                    raise AceAIRuntimeError("LLM streaming error")
-
-                if stream_event.event_type == "response.completed":
-                    if is_set(stream_event.response):
+                    case "response.media":
+                        yield event_builder.llm_media(segments=stream_event.segments)
+                    case "response.function_call_arguments.delta":
+                        pass  # ignore
+                    case "response.error":
+                        if isinstance(stream_event.error, str):
+                            raise AceAIRuntimeError(stream_event.error)
+                        raise AceAIRuntimeError("LLM streaming error")
+                    case "response.completed":
                         response = stream_event.response
-                        for chunk in chunker.flush():
-                            log_buffer.append(chunk)
-                            yield event_builder.llm_text_delta(text_delta=chunk)
-                        reasoning_log = log_buffer.snapshot()
-                        if not reasoning_log:
-                            reasoning_chunks: list[str] = []
-                            for segment in response.segments:
-                                if segment.type == "reasoning" and segment.content:
-                                    reasoning_chunks.append(segment.content)
-
-                            if reasoning_chunks:
-                                reasoning_log = "\n\n".join(reasoning_chunks)
-                        final_response = response or LLMResponse(text=reasoning_log)
+                        if not isinstance(response, LLMResponse):
+                            raise AceAIRuntimeError(
+                                "LLM stream completed without a response payload"
+                            )
                         yield AgentStep(
                             step_id=event_builder.step_id,
-                            llm_response=final_response,
-                            reasoning_log=reasoning_log,
-                            reasoning_log_truncated=log_buffer.truncated,
+                            llm_response=response,
                         )
-                        completed = True
-                        break
-
-                    raise AceAIRuntimeError(
-                        "LLM stream completed without a response payload"
-                    )
-        except Exception:
-            for chunk in chunker.flush():
-                log_buffer.append(chunk)
-                if chunk:
-                    yield event_builder.llm_text_delta(text_delta=chunk)
-            raise
+                        return
+                    case _:
+                        raise AceAIRuntimeError(
+                            f"Unsupported LLM stream event: {stream_event.event_type}"
+                        )
         finally:
             await stream.aclose()
-
-        if not completed:
-            for chunk in chunker.flush():
-                log_buffer.append(chunk)
-                if chunk:
-                    yield event_builder.llm_text_delta(text_delta=chunk)
-            raise AceAIRuntimeError("LLM stream ended without completion")
 
     async def _make_toolcalls(
         self,
@@ -202,13 +160,6 @@ class AgentBase:
                 tool_result=tool_result,
             )
 
-            if call.name == "final_answer":
-                yield event_builder.run_completed(
-                    step=current_step,
-                    final_answer=tool_result.output,
-                )
-                return
-
     async def _run_step(
         self,
         *,
@@ -230,7 +181,9 @@ class AgentBase:
 
         try:
             yield event_builder.llm_started()
-            llm_gen = self._call_llm(messages, request_meta, event_builder, step_context)
+            llm_gen = self._call_llm(
+                messages, request_meta, event_builder, step_context
+            )
             try:
                 async for event in llm_gen:
                     if not isinstance(event, AgentStep):
@@ -270,8 +223,6 @@ class AgentBase:
                                 )
                                 messages.append(tool_use_msg)
                             yield tool_event
-                            if isinstance(tool_event, RunCompletedEvent):
-                                return
                     finally:
                         await tool_gen.aclose()
             finally:
@@ -334,11 +285,14 @@ class AgentBase:
             context=trace_ctx,
             attributes={
                 "agent.max_steps": self._max_steps,
+                "agent.run.input": question,
+                "agent.run.output": "",
                 "langfuse.trace.name": "aceai.run",
                 "langfuse.trace.input": question,
+                "langfuse.trace.output": "",
             },
         )
-        run_context = set_span_in_context(run_span)
+        run_context = set_span_in_context(run_span, trace_ctx or Context())
         messages: list[LLMMessage] = [
             self.system_message,
             LLMMessage.build(role="user", content=question),
@@ -363,7 +317,10 @@ class AgentBase:
                     async for event in step_gen:
                         if isinstance(event, LLMCompletedEvent):
                             steps.append(event.step)
-                        if isinstance(event, RunCompletedEvent):
+                        elif isinstance(event, RunCompletedEvent):
+                            run_span.set_attribute(
+                                "agent.run.output", event.final_answer
+                            )
                             run_span.set_attribute(
                                 "langfuse.trace.output", event.final_answer
                             )
@@ -395,7 +352,8 @@ class AgentBase:
                     yield event
                 raise AceAIRuntimeError(error_msg)
         finally:
-            if error_msg:
+            if error_msg is not None:
+                run_span.set_attribute("agent.run.output", error_msg)
                 run_span.set_attribute("langfuse.trace.output", error_msg)
             if run_span.is_recording():
                 run_span.end()
@@ -416,3 +374,136 @@ class AgentBase:
                 return event.final_answer
 
         raise AceAIRuntimeError("Agent run did not complete successfully")
+
+
+class BufferedStreamingAgent(AgentBase):
+    """AgentBase variant that chunks streaming deltas and buffers a reasoning log."""
+
+    def __init__(
+        self,
+        prompt: str = "",
+        *,
+        default_model: str,
+        llm_service: ILLMService,
+        max_steps: int = 5,
+        executor: ToolExecutor | None = None,
+        delta_chunk_size: int = 0,
+        reasoning_log_max_chars: int | None = None,
+        tracer: trace.Tracer | None = None,
+    ):
+        if delta_chunk_size < 0:
+            raise AceAIConfigurationError("delta_chunk_size must be non-negative")
+        if reasoning_log_max_chars is not None and reasoning_log_max_chars < 0:
+            raise AceAIConfigurationError(
+                "reasoning_log_max_chars must be non-negative or None"
+            )
+
+        super().__init__(
+            prompt,
+            default_model=default_model,
+            llm_service=llm_service,
+            max_steps=max_steps,
+            executor=executor,
+            tracer=tracer,
+        )
+        self.delta_chunk_size = delta_chunk_size
+        self.reasoning_log_max_chars = reasoning_log_max_chars
+
+    async def _call_llm(
+        self,
+        messages: list[LLMMessage],
+        request_meta: LLMRequestMeta,
+        event_builder: AgentEventBuilder,
+        step_context: Context,
+    ):
+        from .helpers.delta_buffer import LLMDeltaChunker, ReasoningLogBuffer
+
+        executor = self._executor
+        log_buffer = ReasoningLogBuffer(max_chars=self.reasoning_log_max_chars)
+        chunker = LLMDeltaChunker(self.delta_chunk_size)
+        completed = False
+
+        if executor:
+            stream = self.llm_service.stream(
+                messages=messages,
+                tools=executor.select_tools(),
+                metadata=request_meta,
+                trace_ctx=step_context,
+            )
+        else:
+            stream = self.llm_service.stream(
+                messages=messages,
+                metadata=request_meta,
+                trace_ctx=step_context,
+            )
+
+        try:
+            async for stream_event in stream:
+                match stream_event.event_type:
+                    case "response.output_text.delta":
+                        if is_set(stream_event.text_delta):
+                            for chunk in chunker.push(stream_event.text_delta):
+                                log_buffer.append(chunk)
+                                yield event_builder.llm_text_delta(text_delta=chunk)
+                        continue
+
+                    case "response.media":
+                        if not stream_event.segments:
+                            raise AceAIRuntimeError("LLM media event missing segments")
+                        yield event_builder.llm_media(segments=stream_event.segments)
+                        continue
+
+                    case "response.function_call_arguments.delta":
+                        continue
+
+                    case "response.error":
+                        if is_set(stream_event.error) and stream_event.error:
+                            raise AceAIRuntimeError(stream_event.error)
+                        raise AceAIRuntimeError("LLM streaming error")
+
+                    case "response.completed":
+                        response = stream_event.response
+                        if not isinstance(response, LLMResponse):
+                            raise AceAIRuntimeError(
+                                "LLM stream completed without a response payload"
+                            )
+                        for chunk in chunker.flush():
+                            log_buffer.append(chunk)
+                            yield event_builder.llm_text_delta(text_delta=chunk)
+                        reasoning_log = log_buffer.snapshot()
+                        if not reasoning_log:
+                            reasoning_chunks: list[str] = []
+                            for segment in response.segments:
+                                if segment.type == "reasoning" and segment.content:
+                                    reasoning_chunks.append(segment.content)
+
+                            if reasoning_chunks:
+                                reasoning_log = "\n\n".join(reasoning_chunks)
+                        yield AgentStep(
+                            step_id=event_builder.step_id,
+                            llm_response=response,
+                            reasoning_log=reasoning_log,
+                            reasoning_log_truncated=log_buffer.truncated,
+                        )
+                        completed = True
+                        break
+
+                    case _:
+                        raise AceAIRuntimeError(
+                            f"Unsupported LLM stream event: {stream_event.event_type}"
+                        )
+        except Exception:
+            for chunk in chunker.flush():
+                log_buffer.append(chunk)
+                if chunk:
+                    yield event_builder.llm_text_delta(text_delta=chunk)
+            raise
+        finally:
+            await stream.aclose()
+
+        if not completed:
+            for chunk in chunker.flush():
+                log_buffer.append(chunk)
+                if chunk:
+                    yield event_builder.llm_text_delta(text_delta=chunk)
+            raise AceAIRuntimeError("LLM stream ended without completion")

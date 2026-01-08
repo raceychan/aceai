@@ -1,15 +1,13 @@
 """LLM Service - Provider-agnostic LLM interface with clean responsibilities."""
 
 import asyncio
-from typing import AsyncGenerator, BinaryIO, Protocol, Type, TypedDict, TypeVar, Unpack
+from typing import AsyncGenerator, BinaryIO, Protocol, Type, TypeVar, Unpack
 
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from opentelemetry import trace
 from opentelemetry.context import Context
-from opentelemetry.trace import SpanKind, set_span_in_context
 
 from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
@@ -18,7 +16,6 @@ from .models import (
     LLMProviderBase,
     LLMProviderModality,
     LLMRequest,
-    LLMRequestMeta,
     LLMResponse,
     LLMStreamEvent,
 )
@@ -33,17 +30,6 @@ ERROR_PROMPT_TEMPLATE = (
     "Decoder error: {error}\n"
     "Please respond again with ONLY valid JSON that conforms to the schema. "
     "Do not include explanations or surrounding text."
-)
-
-
-LLMSpanAttributes = TypedDict(
-    "LLMSpanAttributes",
-    {
-        "llm.provider": str,
-        "llm.model": str,
-        "llm.stream": bool,
-        "llm.tool_count": int,
-    },
 )
 
 
@@ -101,7 +87,6 @@ class LLMService:
         providers: list[LLMProviderBase],
         timeout_seconds: float,
         max_retries: int = 2,
-        tracer: trace.Tracer | None = None,
     ):
         if not providers:
             raise AceAIConfigurationError("At least one provider is required")
@@ -109,7 +94,6 @@ class LLMService:
         self._current_provider_index = 0
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
-        self._tracer = tracer or trace.get_tracer("aceai.llm")
 
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""
@@ -205,31 +189,9 @@ class LLMService:
         """Complete using a unified LLMRequest or raw messages."""
         # Apply default max_tokens based on settings and model if not provided
         provider = self._get_current_provider()
-        meta: LLMRequestMeta = request["metadata"] if "metadata" in request else {}
-        model = meta["model"] if "model" in meta else ""
-        tool_count = len(request["tools"]) if "tools" in request else 0
-        attributes: LLMSpanAttributes = {
-            "llm.provider": provider.__class__.__name__,
-            "llm.model": model,
-            "llm.stream": False,
-            "llm.tool_count": tool_count,
-        }
-        if trace_ctx is None:
-            trace_ctx = Context()
-        span = self._tracer.start_span(
-            "llm.complete",
-            kind=SpanKind.CLIENT,
-            context=trace_ctx,
-            attributes=attributes,
-        )
-        try:
-            provider_ctx = set_span_in_context(span, trace_ctx)
-            coro = provider.complete(request, trace_ctx=provider_ctx)
-            timeout = self._timeout_seconds
-            resp = await asyncio.wait_for(coro, timeout=timeout)
-            return resp
-        finally:
-            span.end()
+        coro = provider.complete(request, trace_ctx=trace_ctx)
+        timeout = self._timeout_seconds
+        return await asyncio.wait_for(coro, timeout=timeout)
 
     async def complete_json(
         self,
@@ -291,23 +253,14 @@ class LLMService:
         if model is None:
             raise AceAIConfigurationError("STT requests require a model identifier")
 
-        attributes = {
-            "llm.provider": provider.__class__.__name__,
-            "llm.model": model,
-            "llm.audio.filename": filename,
-        }
-        if trace_ctx is None:
-            trace_ctx = Context()
-        with self._tracer.start_as_current_span(
-            "llm.stt",
-            kind=SpanKind.CLIENT,
-            record_exception=True,
-            set_status_on_exception=True,
-            context=trace_ctx,
-            attributes=attributes,
-        ):
-            coro = provider.stt(filename, file, model=model, prompt=prompt)
-            return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
+        coro = provider.stt(
+            filename,
+            file,
+            model=model,
+            prompt=prompt,
+            trace_ctx=trace_ctx,
+        )
+        return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
 
     async def stream(
         self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
@@ -318,28 +271,9 @@ class LLMService:
         higher layers such as ContextManager or agents, not here.
         """
         provider = self._get_current_provider()
-        meta: LLMRequestMeta = request["metadata"] if "metadata" in request else {}
-        model = meta["model"] if "model" in meta else ""
-        tool_count = len(request["tools"]) if "tools" in request else 0
-        attributes: LLMSpanAttributes = {
-            "llm.provider": provider.__class__.__name__,
-            "llm.model": model,
-            "llm.stream": True,
-            "llm.tool_count": tool_count,
-        }
-        if trace_ctx is None:
-            trace_ctx = Context()
-        span = self._tracer.start_span(
-            "llm.stream",
-            kind=SpanKind.CLIENT,
-            context=trace_ctx,
-            attributes=attributes,
-        )
-        provider_ctx = set_span_in_context(span, trace_ctx)
-        stream_resp = provider.stream(request, trace_ctx=provider_ctx)
+        stream_resp = provider.stream(request, trace_ctx=trace_ctx)
         try:
             async for event in stream_resp:
                 yield event
         finally:
             await stream_resp.aclose()
-            span.end()

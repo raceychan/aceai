@@ -4,13 +4,14 @@ from typing import ClassVar, Literal
 
 from aceai.helpers.string import uuid_str
 from aceai.interface import Record
-from aceai.llm.models import LLMToolCall
+from aceai.llm.models import LLMSegment, LLMToolCall
 
 from .models import AgentStep, ToolExecutionResult
 
 AgentEventType = Literal[
     "agent.llm.started",
     "agent.llm.output_text.delta",
+    "agent.llm.media",
     "agent.llm.completed",
     "agent.tool.started",
     "agent.tool.output",
@@ -46,6 +47,11 @@ class LLMStartedEvent(AgentLifecycleEvent):
 class LLMOutputDeltaEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.llm.output_text.delta"
     text_delta: str
+
+
+class LLMMediaEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.llm.media"
+    segments: list[LLMSegment]
 
 
 class LLMCompletedEvent(AgentLifecycleEvent):
@@ -104,6 +110,7 @@ class RunFailedEvent(AgentLifecycleEvent):
 type AgentEvent = (
     LLMStartedEvent
     | LLMOutputDeltaEvent
+    | LLMMediaEvent
     | LLMCompletedEvent
     | ToolStartedEvent
     | ToolOutputEvent
@@ -133,6 +140,13 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             text_delta=text_delta,
+        )
+
+    def llm_media(self, *, segments: list[LLMSegment]) -> LLMMediaEvent:
+        return LLMMediaEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            segments=segments,
         )
 
     def llm_completed(self, *, step: AgentStep) -> LLMCompletedEvent:

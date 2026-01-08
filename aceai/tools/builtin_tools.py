@@ -1,15 +1,5 @@
-from typing import Annotated as Annotated
+from typing import Any
 
-from ._tool_sig import spec
-from .base import tool
+from .base import Tool
 
-
-@tool
-def final_answer(
-    answer: Annotated[str, spec(description="Final response to emit")],
-) -> str:
-    """Tool to indicate the final answer from the agent."""
-    return answer
-
-
-BUILTIN_TOOLS = [final_answer]
+BUILTIN_TOOLS: list[Tool[Any, Any]] = []

@@ -233,7 +233,6 @@ def build_agent(
             )
         ],
         timeout_seconds=120,
-        tracer=tracer,
     )
     executor = ToolExecutor(graph=graph, tools=tools, tracer=tracer)
 
@@ -286,10 +285,19 @@ async def main():
         with tracer.start_as_current_span(
             "demo.run",
             kind=SpanKind.INTERNAL,
-            attributes={"demo.question": multi_step_question},
+            attributes={
+                "demo.question": multi_step_question,
+                "langfuse.trace.name": "aceai.demo",
+                "langfuse.trace.input": multi_step_question,
+            },
         ) as span:
             parent_ctx = set_span_in_context(span)
-            await run_agent_with_terminal_ui(agent, multi_step_question, trace_ctx=parent_ctx)
+            answer = await run_agent_with_terminal_ui(
+                agent,
+                multi_step_question,
+                trace_ctx=parent_ctx,
+            )
+            span.set_attribute("langfuse.trace.output", answer)
     finally:
         provider = cast(TracerProvider, trace.get_tracer_provider())
         provider.force_flush()

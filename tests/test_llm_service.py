@@ -74,7 +74,7 @@ class RecordingProvider(LLMProviderBase):
         return self._modality
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None
+        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
     ) -> str:  # pragma: no cover - not used
         return "transcript"
 
@@ -99,7 +99,7 @@ class ErroringProvider(LLMProviderBase):
         return self._default_stream_model
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None
+        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
     ) -> str:  # pragma: no cover - not used
         return ""
 

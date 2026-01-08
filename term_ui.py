@@ -92,13 +92,17 @@ async def run_agent_with_terminal_ui(
     console = Console()
     printer = EventStreamPrinter(question, console)
     printer.start()
-    async for event in agent.run(question, trace_ctx=trace_ctx):
-        printer.handle_event(event)
-        if isinstance(event, RunCompletedEvent):
-            printer.print_final_answer(event.final_answer)
-            return event.final_answer
-        if isinstance(event, RunFailedEvent):
-            error_message = event.error or "agent run failed"
-            printer.print_run_failure(error_message)
-            raise RuntimeError(error_message)
-    raise RuntimeError("agent terminated without RunCompletedEvent")
+    agen = agent.run(question, trace_ctx=trace_ctx)
+    try:
+        async for event in agen:
+            printer.handle_event(event)
+            if isinstance(event, RunCompletedEvent):
+                printer.print_final_answer(event.final_answer)
+                return event.final_answer
+            if isinstance(event, RunFailedEvent):
+                error_message = event.error or "agent run failed"
+                printer.print_run_failure(error_message)
+                raise RuntimeError(error_message)
+        raise RuntimeError("agent terminated without RunCompletedEvent")
+    finally:
+        await agen.aclose()

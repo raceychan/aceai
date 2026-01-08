@@ -23,9 +23,21 @@ class PassthroughProvider(LLMProviderBase):
         return super().stream(request, trace_ctx=trace_ctx)
 
     async def stt(
-        self, filename: str, file, *, model: str, prompt: str | None = None
+        self,
+        filename: str,
+        file,
+        *,
+        model: str,
+        prompt: str | None = None,
+        trace_ctx=None,
     ) -> str:
-        return await super().stt(filename, file, model=model, prompt=prompt)
+        return await super().stt(
+            filename,
+            file,
+            model=model,
+            prompt=prompt,
+            trace_ctx=trace_ctx,
+        )
 
 
 def test_llm_message_inplace_merge_with_structured_message() -> None:

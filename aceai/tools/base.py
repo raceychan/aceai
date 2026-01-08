@@ -1,4 +1,4 @@
-from inspect import signature
+from inspect import iscoroutinefunction, signature
 from typing import Annotated as Annotated
 from typing import Any, Callable, Protocol, TypedDict, Unpack, overload
 
@@ -75,6 +75,12 @@ class Tool[**P, R]:
         self._decoder = decoder
         self._record_in_history = record_in_history
         self._spec_cls = spec_cls
+        self._is_async = iscoroutinefunction(func)
+
+    @property
+    def is_async(self) -> bool:
+        """Whether the tool function is asynchronous."""
+        return self._is_async
 
     def encode_return(self, value: R) -> str:
         """Serialize a tool return value to a JSON string."""
@@ -173,4 +179,5 @@ def tool[**P, R](
         return Tool[P, R].from_func(
             func=inner_func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
         )
+
     return wrapper

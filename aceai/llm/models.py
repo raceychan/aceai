@@ -542,6 +542,7 @@ class LLMProviderBase(ABC):
         *,
         model: str,
         prompt: str | None = None,
+        trace_ctx: Context | None = None,
     ) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
         raise NotImplementedError

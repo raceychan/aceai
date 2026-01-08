@@ -323,7 +323,7 @@ trace.set_tracer_provider(otel_provider)
 
 tracer = trace.get_tracer("aceai-app")
 
-llm_service = LLMService(providers=[provider], timeout_seconds=60, tracer=tracer)
+llm_service = LLMService(providers=[provider], timeout_seconds=60)
 executor = ToolExecutor(graph=graph, tools=[greet], tracer=tracer)
 agent = AgentBase(..., tracer=tracer)
 ```
@@ -360,21 +360,8 @@ trace.set_tracer_provider(otel_provider)
 spans = exporter.get_finished_spans()
 ```
 
-### Built-ins (DX helpers)
-Framework ships with `final_answer` (explicit completion) and will keep adding small DX helpers to reduce boilerplate; use them alongside your tools.
-
-```python
-from aceai.tools.builtin_tools import final_answer
-from aceai.tools import tool, spec
-from typing import Annotated
-
-@tool
-def echo(msg: Annotated[str, spec(description="Message")]) -> str:
-    return msg
-
-executor = ToolExecutor(graph=graph, tools=[echo, final_answer])
-# LLM can call final_answer to emit the final response; you can still return text directly.
-```
+### Completion semantics
+An agent run completes when the model returns a step with **no tool calls**; that step's `LLMResponse.text` is treated as the final answer (and can be streamed via `response.output_text.delta`).
 
 ## Code notes & caveats
 - **Tool signatures**: keep types concrete; no broad unions. Unannotated params raise immediately.  
@@ -432,7 +419,7 @@ from aceai.errors import AceAIValidationError
 class AuditedExecutor(ToolExecutor):
     async def execute_tool(self, tool_call):
         # pre-hook (e.g., allowlist)
-        if tool_call.name not in {"lookup_order", "create_order", "final_answer"}:
+        if tool_call.name not in {"lookup_order", "create_order"}:
             raise AceAIValidationError(f"Tool not allowed: {tool_call.name}")
         result = await super().execute_tool(tool_call)
         # post-hook (e.g., audit log / metrics)

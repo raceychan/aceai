@@ -1,9 +1,10 @@
 import pytest
 
-from aceai.agent import AgentBase, ToolExecutionFailure
+from aceai.agent import AgentBase, BufferedStreamingAgent, ToolExecutionFailure
 from aceai.errors import AceAIRuntimeError
 from aceai.events import (
     AgentEvent,
+    LLMMediaEvent,
     LLMOutputDeltaEvent,
     LLMStartedEvent,
     RunCompletedEvent,
@@ -12,7 +13,13 @@ from aceai.events import (
     ToolStartedEvent,
 )
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMSegment, LLMStreamEvent, LLMToolCall, LLMToolCallDelta
+from aceai.llm.models import (
+    LLMGeneratedMedia,
+    LLMSegment,
+    LLMStreamEvent,
+    LLMToolCall,
+    LLMToolCallDelta,
+)
 from opentelemetry.context import Context
 
 
@@ -21,6 +28,13 @@ class StubExecutor:
         self.tool_specs: list[object] = []
         self._results = results or {}
         self.calls: list[LLMToolCall] = []
+
+    def select_tools(
+        self, include: set[str] | None = None, exclude: set[str] | None = None
+    ) -> list[object]:
+        if include and exclude:
+            raise ValueError("Cannot specify both include and exclude")
+        return self.tool_specs
 
     async def execute_tool(self, tool_call: LLMToolCall, *, trace_ctx: Context) -> str:
         self.calls.append(tool_call)
@@ -159,6 +173,39 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_surfaces_media_events() -> None:
+    media = LLMGeneratedMedia(type="image", mime_type="image/png", data=b"\x89")
+    media_segment = LLMSegment(type="image", content="", media=media)
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.media",
+                segments=[media_segment],
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done", segments=[media_segment]),
+            ),
+        ]
+    ]
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Need an image")
+
+    media_events = [event for event in events if isinstance(event, LLMMediaEvent)]
+    assert media_events
+    assert media_events[0].segments[0].media is media
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
+
+
+@pytest.mark.anyio
 async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     lookup_call = LLMToolCall(name="lookup", arguments="{}", call_id="tool-1")
     streams = [
@@ -193,28 +240,30 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_returns_final_answer_from_tool() -> None:
-    final_call = LLMToolCall(name="final_answer", arguments="{}", call_id="final-1")
+async def test_agent_does_not_complete_mid_step_after_tool_calls() -> None:
+    lookup_call = LLMToolCall(name="lookup", arguments="{}", call_id="tool-1")
     streams = [
         make_stream(
-            response=LLMResponse(text="calling tool", tool_calls=[final_call]),
-            deltas=["calling tool"],
-        )
+            response=LLMResponse(text="use lookup", tool_calls=[lookup_call]),
+            deltas=["use lookup"],
+        ),
+        make_stream(
+            response=LLMResponse(text="done"),
+            deltas=["done"],
+        ),
     ]
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
-        executor=StubExecutor({"final_answer": '"Done"'}),
+        executor=StubExecutor({"lookup": '{"value":42}'}),
+        max_steps=2,
     )
 
     events = await collect_events(agent, "Finish up")
-    final_event = events[-1]
 
-    assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.final_answer == '"Done"'
-    assert final_event.step.tool_results
-    assert final_event.step.tool_results[0].output == '"Done"'
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
 
 
 @pytest.mark.anyio
@@ -239,28 +288,19 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
 
 @pytest.mark.anyio
 async def test_agent_can_return_structured_response() -> None:
-    final_call = LLMToolCall(name="final_answer", arguments="{}", call_id="final-1")
+    response = LLMResponse(text="final")
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
-        llm_service=StubLLMService(
-            [
-                make_stream(
-                    response=LLMResponse(text="calling tool", tool_calls=[final_call]),
-                    deltas=["calling tool"],
-                )
-            ]
-        ),
-        executor=StubExecutor({"final_answer": '"Done"'}),
+        llm_service=StubLLMService([make_stream(response=response, deltas=["final"])]),
+        executor=StubExecutor(),
     )
 
     events = await collect_events(agent, "Finish up")
     final_event = events[-1]
 
     assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.final_answer == '"Done"'
-    assert final_event.step.llm_response.text == "calling tool"
-    assert final_event.step.tool_results[0].output == '"Done"'
+    assert final_event.final_answer == "final"
 
 
 @pytest.mark.anyio
@@ -302,7 +342,7 @@ async def test_agent_emits_text_deltas_and_populates_reasoning_log() -> None:
             response=LLMResponse(text="foobar"),
         ),
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -363,7 +403,7 @@ async def test_delta_chunker_flushes_when_threshold_exceeded() -> None:
             response=LLMResponse(text="abcdef"),
         ),
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -391,7 +431,7 @@ async def test_delta_chunker_flushes_on_completion_when_below_threshold() -> Non
             response=LLMResponse(text="hi"),
         ),
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -417,7 +457,7 @@ async def test_reasoning_log_ring_buffer_truncates_old_content() -> None:
             response=LLMResponse(text="0123456789"),
         )
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -446,7 +486,7 @@ async def test_reasoning_log_disabled_when_max_zero() -> None:
             response=LLMResponse(text="partial"),
         ),
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -587,7 +627,7 @@ async def test_agent_flushes_chunks_when_stream_finishes_without_completion() ->
             text_delta="partial",
         )
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -613,7 +653,7 @@ async def test_agent_flushes_pending_chunks_when_stream_raises_exception() -> No
             text_delta="abc",
         )
     ]
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=RaisingStreamLLMService(stream, RuntimeError("splat")),
@@ -642,7 +682,7 @@ async def test_agent_populates_reasoning_log_from_reasoning_segments() -> None:
         ],
     )
     stream = make_stream(response=response, deltas=[])
-    agent = AgentBase(
+    agent = BufferedStreamingAgent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
@@ -685,32 +725,38 @@ async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_returns_after_final_answer_tool_call() -> None:
-    final_call = LLMToolCall(name="final_answer", arguments="{}", call_id="final-1")
-    extra_call = LLMToolCall(name="lookup", arguments="{}", call_id="lookup-1")
-    stream = [
-        LLMStreamEvent(
-            event_type="response.completed",
-            response=LLMResponse(
-                text="tool outputs",
-                tool_calls=[final_call, extra_call],
-            ),
-        )
+async def test_agent_executes_all_tool_calls_in_step() -> None:
+    first_call = LLMToolCall(name="lookup", arguments="{}", call_id="lookup-1")
+    second_call = LLMToolCall(name="calc", arguments="{}", call_id="calc-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text="tool outputs",
+                    tool_calls=[first_call, second_call],
+                ),
+            )
+        ],
+        make_stream(
+            response=LLMResponse(text="done"),
+            deltas=["done"],
+        ),
     ]
-    executor = StubExecutor({"final_answer": '"Done"'})
+    executor = StubExecutor({"lookup": '{"value":42}', "calc": "3"})
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
-        llm_service=StubLLMService([stream]),
+        llm_service=StubLLMService(streams),
         executor=executor,
+        max_steps=2,
     )
 
     events = await collect_events(agent, "Finish?")
-    final_event = events[-1]
 
-    assert isinstance(final_event, RunCompletedEvent)
-    assert final_event.final_answer == '"Done"'
-    assert executor.calls == [final_call]
+    assert executor.calls == [first_call, second_call]
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
 
 
 class ShortCircuitAgent(AgentBase):

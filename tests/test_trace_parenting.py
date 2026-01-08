@@ -2,6 +2,7 @@ from typing import AsyncGenerator
 
 import pytest
 from ididi import Graph
+from opentelemetry.trace import SpanKind
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -23,16 +24,34 @@ from aceai.tools._tool_sig import Annotated, spec
 
 
 class StreamingProvider(LLMProviderBase):
-    def __init__(self, events: list[LLMStreamEvent]) -> None:
-        self._events = list(events)
+    def __init__(self, streams: list[list[LLMStreamEvent]], *, tracer) -> None:
+        self._streams = [list(stream) for stream in streams]
+        self._tracer = tracer
 
     async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:  # pragma: no cover
         raise AssertionError("StreamingProvider.complete should not be used in this test")
 
     def stream(self, request: dict, *, trace_ctx=None):
+        if not self._streams:
+            raise AssertionError("StreamingProvider has no remaining stream fixtures")
+        events = self._streams.pop(0)
+
         async def iterator():
-            for event in self._events:
-                yield event
+            tool_names = [tool.name for tool in request.get("tools", [])]
+            span = self._tracer.start_span(
+                "llm.provider.stream",
+                kind=SpanKind.CLIENT,
+                context=trace_ctx,
+                attributes={
+                    "llm.tool_count": len(tool_names),
+                    "llm.tool_names": tool_names,
+                },
+            )
+            try:
+                for event in events:
+                    yield event
+            finally:
+                span.end()
 
         return iterator()
 
@@ -49,16 +68,16 @@ class StreamingProvider(LLMProviderBase):
         return LLMProviderModality()
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None
+        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
     ) -> str:  # pragma: no cover
         raise AssertionError("StreamingProvider.stt should not be used in this test")
 
 
-def make_stream(*, response: LLMResponse) -> list[LLMStreamEvent]:
+def make_stream(*, delta: str, response: LLMResponse) -> list[LLMStreamEvent]:
     return [
         LLMStreamEvent(
             event_type="response.output_text.delta",
-            text_delta="calling tools",
+            text_delta=delta,
         ),
         LLMStreamEvent(
             event_type="response.completed",
@@ -88,7 +107,7 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
     agent_tracer = tracer_provider.get_tracer("aceai.agent")
-    llm_tracer = tracer_provider.get_tracer("aceai.llm")
+    provider_tracer = tracer_provider.get_tracer("aceai.llm.provider")
     executor_tracer = tracer_provider.get_tracer("aceai.executor")
 
     tool_calls = [
@@ -102,15 +121,17 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
             arguments='{"sku":"SKU-1"}',
             call_id="call-weight",
         ),
-        LLMToolCall(
-            name="final_answer",
-            arguments='{"answer":"done"}',
-            call_id="call-final",
-        ),
     ]
-    response = LLMResponse(text="use tools", tool_calls=tool_calls)
-    provider = StreamingProvider(make_stream(response=response))
-    service = LLMService([provider], timeout_seconds=1.0, tracer=llm_tracer)
+    response_step1 = LLMResponse(text="use tools", tool_calls=tool_calls)
+    response_step2 = LLMResponse(text="done")
+    provider = StreamingProvider(
+        [
+            make_stream(delta="calling tools", response=response_step1),
+            make_stream(delta="done", response=response_step2),
+        ],
+        tracer=provider_tracer,
+    )
+    service = LLMService([provider], timeout_seconds=1.0)
     executor = ToolExecutor(
         graph=graph,
         tools=[tool(lookup_order), tool(get_sku_weight)],
@@ -121,7 +142,7 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
         default_model="gpt-4o",
         llm_service=service,
         executor=executor,
-        max_steps=1,
+        max_steps=2,
         tracer=agent_tracer,
     )
 
@@ -129,28 +150,40 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
     assert isinstance(events[-1], RunCompletedEvent)
 
     spans = list(exporter.get_finished_spans())
-    spans_by_name = {span.name: span for span in spans}
-
-    run_span = spans_by_name["agent.run"]
-    step_span = spans_by_name["agent.step"]
-    llm_span = spans_by_name["llm.stream"]
-    tool_lookup_span = spans_by_name["tool.lookup_order"]
-    tool_weight_span = spans_by_name["tool.get_sku_weight"]
-    tool_final_span = spans_by_name["tool.final_answer"]
+    run_span = next(span for span in spans if span.name == "agent.run")
+    step_spans = [span for span in spans if span.name == "agent.step"]
+    llm_spans = [span for span in spans if span.name == "llm.provider.stream"]
+    tool_lookup_span = next(span for span in spans if span.name == "tool.lookup_order")
+    tool_weight_span = next(span for span in spans if span.name == "tool.get_sku_weight")
 
     assert run_span.attributes["langfuse.trace.input"] == "question"
-    assert run_span.attributes["langfuse.trace.output"] == '"done"'
+    assert run_span.attributes["langfuse.trace.output"] == "done"
 
-    assert step_span.parent is not None
-    assert step_span.parent.span_id == run_span.context.span_id
-    assert llm_span.parent is not None
-    assert llm_span.parent.span_id == step_span.context.span_id
+    assert len(step_spans) == 2
+    for step_span in step_spans:
+        assert step_span.parent is not None
+        assert step_span.parent.span_id == run_span.context.span_id
+
+    assert len(llm_spans) == 2
+    step_ids = {step_span.context.span_id for step_span in step_spans}
+    for llm_span in llm_spans:
+        assert llm_span.parent is not None
+        assert llm_span.parent.span_id in step_ids
+        assert set(llm_span.attributes["llm.tool_names"]) == {
+            "lookup_order",
+            "get_sku_weight",
+        }
+
+    first_step_span = next(
+        step_span
+        for step_span in step_spans
+        if tool_lookup_span.parent is not None
+        and step_span.context.span_id == tool_lookup_span.parent.span_id
+    )
     assert tool_lookup_span.parent is not None
-    assert tool_lookup_span.parent.span_id == step_span.context.span_id
+    assert tool_lookup_span.parent.span_id == first_step_span.context.span_id
     assert tool_weight_span.parent is not None
-    assert tool_weight_span.parent.span_id == step_span.context.span_id
-    assert tool_final_span.parent is not None
-    assert tool_final_span.parent.span_id == step_span.context.span_id
+    assert tool_weight_span.parent.span_id == first_step_span.context.span_id
 
     trace_ids = {span.context.trace_id for span in spans}
     assert len(trace_ids) == 1
@@ -161,17 +194,24 @@ async def test_agent_run_can_be_closed_early_without_context_detach_errors(
     graph: Graph,
 ) -> None:
     response = LLMResponse(text="ok")
-    provider = StreamingProvider(make_stream(response=response))
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    provider = StreamingProvider(
+        [make_stream(delta="ok", response=response)],
+        tracer=tracer_provider.get_tracer("aceai.llm.provider"),
+    )
     tracer = tracer_provider.get_tracer("aceai.agent")
-    service = LLMService([provider], timeout_seconds=1.0, tracer=tracer_provider.get_tracer("aceai.llm"))
+    service = LLMService([provider], timeout_seconds=1.0)
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=service,
-        executor=ToolExecutor(graph=graph, tools=[], tracer=tracer_provider.get_tracer("aceai.executor")),
+        executor=ToolExecutor(
+            graph=graph,
+            tools=[],
+            tracer=tracer_provider.get_tracer("aceai.executor"),
+        ),
         max_steps=1,
         tracer=tracer,
     )
