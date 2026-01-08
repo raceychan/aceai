@@ -65,3 +65,24 @@ def test_ensure_version_order_rejects_target_not_greater_than_remote_tag() -> No
             "0.1.6",
             skip_update=False,
         )
+
+
+def test_infer_version_from_version_branch(tmp_path: Path) -> None:
+    repo = Repo.init(tmp_path)
+    (tmp_path / "README.md").write_text("hi\n")
+    repo.index.add(["README.md"])
+    repo.index.commit("init")
+    repo.git.checkout("-b", "version/1.2.3")
+
+    assert release.infer_version_from_branch(repo) == "1.2.3"
+
+
+def test_infer_version_requires_version_branch(tmp_path: Path) -> None:
+    repo = Repo.init(tmp_path)
+    (tmp_path / "README.md").write_text("hi\n")
+    repo.index.add(["README.md"])
+    repo.index.commit("init")
+    repo.git.checkout("-b", "feature/foo")
+
+    with pytest.raises(SystemExit, match="Provide --version or check out version/"):
+        release.infer_version_from_branch(repo)

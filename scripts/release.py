@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from git import GitCommandError, Repo
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from aceai.errors import AceAIValidationError
 
@@ -28,6 +28,23 @@ def ensure_local_branch(repo: Repo, branch_name: str) -> None:
         return
     origin = repo.remotes.origin
     origin.fetch(branch_name)
+
+
+def infer_version_from_branch(repo: Repo) -> str:
+    if repo.head.is_detached:
+        raise SystemExit("Cannot infer version from detached HEAD")
+    branch_name = repo.active_branch.name
+    match = re.match(r"version/(?P<version>.+)$", branch_name)
+    if not match:
+        raise SystemExit(
+            f"Provide --version or check out version/<x.y.z>; current branch is {branch_name}"
+        )
+    version = match.group("version")
+    try:
+        Version(version)
+    except InvalidVersion as exc:
+        raise SystemExit(f"Invalid version suffix on branch {branch_name}") from exc
+    return version
 
 
 def ensure_release_branch(repo: Repo, base_branch: str, release_branch: str) -> None:
@@ -221,7 +238,8 @@ def create_next_version_branch(
 
 def handle_release(repo: Repo, args: argparse.Namespace) -> None:
     base_branch = args.base_branch or detect_default_base_branch(repo)
-    release_branch = f"version/{args.version}"
+    release_version = args.version or infer_version_from_branch(repo)
+    release_branch = f"version/{release_version}"
 
     ensure_release_branch(repo, base_branch, release_branch)
 
@@ -229,22 +247,25 @@ def handle_release(repo: Repo, args: argparse.Namespace) -> None:
     latest_remote_tag = read_latest_remote_tag_version(repo, "origin")
     ensure_version_order(
         current_version,
-        args.version,
+        release_version,
         latest_remote_tag,
         skip_update=args.skip_version_update,
     )
 
-    if not args.skip_version_update and current_version != args.version:
-        write_version(args.version)
+    if not args.skip_version_update and current_version != release_version:
+        write_version(release_version)
 
     run_tests()
-    stage_and_commit(repo, args.version)
+    stage_and_commit(repo, release_version)
     merge_into_base(repo, base_branch, release_branch)
-    tag_name = tag_release(repo, args.version)
+    tag_name = tag_release(repo, release_version)
     push_changes(repo, base_branch, tag_name)
     run_build()
     create_next_version_branch(
-        repo, base_branch=base_branch, released_version=args.version, increment="patch"
+        repo,
+        base_branch=base_branch,
+        released_version=release_version,
+        increment="patch",
     )
 
 
@@ -256,7 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
         "release", help="Perform a full release (merge, tag, push, build)"
     )
     release_parser.add_argument(
-        "--version", required=True, help="Target semantic version"
+        "--version",
+        help="Target semantic version (defaults to version/<x.y.z> suffix from current branch)",
     )
     release_parser.add_argument(
         "--base-branch",
