@@ -5,9 +5,10 @@ import pytest
 
 from aceai.errors import AceAIImplementationError
 from aceai.llm.models import (
+    LLMInput,
     LLMMessage,
     LLMProviderBase,
-    LLMRequest,
+    LLMProviderModality,
     LLMResponse,
     LLMStreamEvent,
     LLMToolCall,
@@ -16,11 +17,15 @@ from aceai.llm.models import (
 
 
 class PassthroughProvider(LLMProviderBase):
-    async def complete(self, request: LLMRequest, *, trace_ctx=None) -> LLMResponse:
-        return await super().complete(request, trace_ctx=trace_ctx)
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        return await super().complete(request)
 
-    def stream(self, request: LLMRequest, *, trace_ctx=None) -> AsyncIterator[LLMStreamEvent]:
-        return super().stream(request, trace_ctx=trace_ctx)
+    def stream(self, request: LLMInput) -> AsyncIterator[LLMStreamEvent]:
+        return super().stream(request)
+
+    @property
+    def modality(self) -> LLMProviderModality:
+        return LLMProviderModality()
 
     async def stt(
         self,
@@ -29,14 +34,12 @@ class PassthroughProvider(LLMProviderBase):
         *,
         model: str,
         prompt: str | None = None,
-        trace_ctx=None,
     ) -> str:
         return await super().stt(
             filename,
             file,
             model=model,
             prompt=prompt,
-            trace_ctx=trace_ctx,
         )
 
 
@@ -71,7 +74,7 @@ def test_llm_message_asdict_includes_optional_fields() -> None:
 @pytest.mark.anyio
 async def test_llm_provider_base_async_methods_raise_not_implemented() -> None:
     provider = PassthroughProvider()
-    request: LLMRequest = {"messages": [LLMMessage(role="system", content="hi")]}
+    request = {"messages": [LLMMessage(role="system", content="hi")]}
 
     with pytest.raises(AceAIImplementationError):
         await provider.complete(request)
@@ -82,7 +85,7 @@ async def test_llm_provider_base_async_methods_raise_not_implemented() -> None:
 
 def test_llm_provider_base_sync_interfaces_raise() -> None:
     provider = PassthroughProvider()
-    request: LLMRequest = {"messages": [LLMMessage(role="system", content="hi")]}
+    request = {"messages": [LLMMessage(role="system", content="hi")]}
 
     with pytest.raises(AceAIImplementationError):
         provider.stream(request)

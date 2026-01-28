@@ -1,5 +1,4 @@
 import pytest
-from opentelemetry.context import Context
 
 from aceai.agent.base import AgentBase, ToolExecutionFailure
 from aceai.errors import AceAIRuntimeError
@@ -42,7 +41,6 @@ class StubExecutor:
         tool_call: LLMToolCall,
         *,
         run_state: RunState,
-        trace_ctx: Context,
     ) -> str:
         self.calls.append(tool_call)
         return self._results[tool_call.name]
@@ -53,7 +51,7 @@ class StubLLMService:
         self._streams = [list(stream) for stream in streams]
         self.calls: list[dict] = []
 
-    async def stream(self, *, trace_ctx: Context | None = None, **request):
+    async def stream(self, **request):
         if not self._streams:
             raise AssertionError("StubLLMService has no remaining stream fixtures")
         self.calls.append(request)
@@ -75,7 +73,6 @@ class RaisingExecutor(StubExecutor):
         tool_call: LLMToolCall,
         *,
         run_state: RunState,
-        trace_ctx: Context,
     ) -> str:
         raise self._error
 
@@ -86,7 +83,7 @@ class RaisingStreamLLMService:
         self._error = error
         self.calls: list[dict] = []
 
-    async def stream(self, *, trace_ctx: Context | None = None, **request):
+    async def stream(self, **request):
         self.calls.append(request)
         for event in self._events:
             yield event
@@ -101,7 +98,7 @@ class SimpleLLMService:
         self._events = list(events)
         self.calls: list[dict] = []
 
-    async def stream(self, *, trace_ctx: Context | None = None, **request):
+    async def stream(self, **request):
         self.calls.append(request)
         for event in self._events:
             yield event
@@ -606,7 +603,7 @@ class ShortCircuitAgent(AgentBase):
         self,
         *,
         event_builder,
-        trace_ctx,
+        run_state,
         **request_meta,
     ):
         yield event_builder.llm_started()

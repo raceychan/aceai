@@ -10,6 +10,7 @@ from aceai.errors import (
     LLMProviderError,
 )
 from aceai.llm.models import (
+    LLMInput,
     LLMMessage,
     LLMMessagePart,
     LLMProviderBase,
@@ -45,14 +46,14 @@ class RecordingProvider(LLMProviderBase):
         self._default_model = default_model
         self._default_stream_model = default_stream_model
         self._modality = modality or LLMProviderModality()
-        self.complete_requests: list[dict] = []
-        self.stream_requests: list[dict] = []
+        self.complete_requests: list[LLMInput] = []
+        self.stream_requests: list[LLMInput] = []
 
-    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:
+    async def complete(self, request: LLMInput) -> LLMResponse:
         self.complete_requests.append(request)
         return self._responses.pop(0)
 
-    def stream(self, request: dict, *, trace_ctx=None):
+    def stream(self, request: LLMInput):
         self.stream_requests.append(request)
 
         async def iterator():
@@ -74,7 +75,7 @@ class RecordingProvider(LLMProviderBase):
         return self._modality
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
+        self, filename, file, *, model: str, prompt: str | None = None
     ) -> str:  # pragma: no cover - not used
         return "transcript"
 
@@ -84,10 +85,10 @@ class ErroringProvider(LLMProviderBase):
         self._default_model = "gpt-4o"
         self._default_stream_model = "gpt-4o-mini"
 
-    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:
+    async def complete(self, request: LLMInput) -> LLMResponse:
         raise OpenAIError("boom")
 
-    def stream(self, request: dict, *, trace_ctx=None):
+    def stream(self, request: LLMInput):
         raise AceAIRuntimeError("unused stream")
 
     @property
@@ -99,7 +100,7 @@ class ErroringProvider(LLMProviderBase):
         return self._default_stream_model
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
+        self, filename, file, *, model: str, prompt: str | None = None
     ) -> str:  # pragma: no cover - not used
         return ""
 
@@ -217,7 +218,7 @@ async def test_complete_passes_image_parts_through_without_validation() -> None:
     )
     service = LLMService([provider], timeout_seconds=1.0)
 
-    image_part = LLMMessagePart(type="image", data=b"bytes", mime_type="image/png")
+    image_part = LLMMessagePart(type="image", binary=b"bytes", mime_type="image/png")
     message = LLMMessage.build("user", [image_part])
 
     response = await service.complete(messages=[message])
@@ -230,7 +231,7 @@ async def test_complete_passes_image_parts_through_without_validation() -> None:
 def test_validate_messages_requires_messages() -> None:
     service = LLMService([RecordingProvider()], timeout_seconds=1.0)
     with pytest.raises(ValueError):
-        service._validate_messages({})
+        service._validate_messages({"messages": []})
 
 
 def test_validate_messages_requires_list_content() -> None:
@@ -245,15 +246,15 @@ def test_validate_messages_requires_list_content() -> None:
     [
         (LLMMessagePart(type="text", data="t"), LLMProviderModality(text_in=False)),
         (
-            LLMMessagePart(type="image", data=b"raw"),
+            LLMMessagePart(type="image", binary=b"raw"),
             LLMProviderModality(image_in=False),
         ),
         (
-            LLMMessagePart(type="audio", data=b"pcm"),
+            LLMMessagePart(type="audio", binary=b"pcm"),
             LLMProviderModality(audio_in=False),
         ),
         (
-            LLMMessagePart(type="file", data=b"blob"),
+            LLMMessagePart(type="file", binary=b"blob"),
             LLMProviderModality(file_in=False),
         ),
     ],
@@ -290,12 +291,13 @@ async def test_complete_json_with_retry_raises_after_failures() -> None:
     provider = RecordingProvider(responses=responses)
     service = LLMService([provider], timeout_seconds=1.0)
     messages = [LLMMessage.build("system", "start")]
+    llm_input = {"messages": messages}
 
     with pytest.raises(DecodeError):
         await service._complete_json_with_retry(
             schema=Payload,
             retries=2,
-            messages=messages,
+            llm_input=llm_input,
         )
 
 

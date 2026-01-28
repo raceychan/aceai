@@ -11,6 +11,7 @@ from aceai.agent.base import AgentBase
 from aceai.agent.events import RunCompletedEvent
 from aceai.agent.executor import ToolExecutor
 from aceai.llm.models import (
+    LLMInput,
     LLMMessage,
     LLMProviderBase,
     LLMProviderModality,
@@ -19,6 +20,7 @@ from aceai.llm.models import (
     LLMToolCall,
 )
 from aceai.llm.service import LLMService
+from aceai.tracing import get_trace_ctx
 from aceai.tools import tool
 from aceai.tools._tool_sig import Annotated, spec
 
@@ -28,16 +30,19 @@ class StreamingProvider(LLMProviderBase):
         self._streams = [list(stream) for stream in streams]
         self._tracer = tracer
 
-    async def complete(self, request: dict, *, trace_ctx=None) -> LLMResponse:  # pragma: no cover
+    async def complete(self, request: LLMInput) -> LLMResponse:  # pragma: no cover
         raise AssertionError("StreamingProvider.complete should not be used in this test")
 
-    def stream(self, request: dict, *, trace_ctx=None):
+    def stream(self, request: LLMInput):
         if not self._streams:
             raise AssertionError("StreamingProvider has no remaining stream fixtures")
         events = self._streams.pop(0)
 
         async def iterator():
-            tool_names = [tool.name for tool in request.get("tools", [])]
+            tool_names = []
+            if "tools" in request:
+                tool_names = [tool.name for tool in request["tools"]]
+            trace_ctx = get_trace_ctx()
             span = self._tracer.start_span(
                 "llm.provider.stream",
                 kind=SpanKind.CLIENT,
@@ -68,7 +73,7 @@ class StreamingProvider(LLMProviderBase):
         return LLMProviderModality()
 
     async def stt(
-        self, filename, file, *, model: str, prompt: str | None = None, trace_ctx=None
+        self, filename, file, *, model: str, prompt: str | None = None
     ) -> str:  # pragma: no cover
         raise AssertionError("StreamingProvider.stt should not be used in this test")
 

@@ -5,7 +5,6 @@ from typing import AsyncGenerator, BinaryIO, Literal, TypedDict
 
 from msgspec import UNSET, field
 from msgspec.structs import asdict
-from opentelemetry.context import Context
 from typing_extensions import Required, Self
 
 from aceai.errors import AceAIImplementationError
@@ -19,8 +18,11 @@ class LLMMessagePart(TypedDict, total=False):
     type: Required[Literal["text", "image", "audio", "file"]]
     """Semantic modality of this part."""
 
-    data: Required[str | bytes]
-    """Inline payload: string for text, bytes for binary modalities."""
+    data: str
+    """Inline payload for text parts."""
+
+    binary: bytes
+    """Inline payload for binary modalities."""
 
     mime_type: str
     """Optional MIME type describing the payload."""
@@ -91,7 +93,7 @@ class LLMToolCallDelta(Record):
 
 
 class LLMMessage(Struct, kw_only=True):
-    """Typed chat message that backs `LLMRequest.messages`."""
+    """Typed chat message that backs `LLMInput.messages`."""
 
     role: MessageRole
     """Canonical chat role assigned to this turn."""
@@ -246,8 +248,8 @@ class LLMRequestMeta(TypedDict, total=False):
     """Provider-specific reasoning options (e.g., OpenAI Responses `reasoning`)."""
 
 
-class LLMRequest(TypedDict, total=False):
-    """Unified request bag accepted by all LLM adapters."""
+class LLMInput(TypedDict, total=False):
+    """Unified request bag accepted by top-level LLM APIs."""
 
     messages: Required[list[LLMMessage]]
     """Ordered chat history supplied to the provider."""
@@ -512,27 +514,24 @@ class LLMProviderBase(ABC):
     """Interface for LLM providers that bridge vendor SDKs to this contract."""
 
     @abstractmethod
-    async def complete(
-        self, request: LLMRequest, *, trace_ctx: Context | None = None
-    ) -> LLMResponse:
-        """Complete a chat conversation with a unified request."""
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        """Complete a chat conversation with a unified input."""
         raise AceAIImplementationError(
             f"{self.__class__.__name__} must implement complete()"
         )
 
     @abstractmethod
-    def stream(
-        self, request: LLMRequest, *, trace_ctx: Context | None = None
-    ) -> AsyncGenerator[LLMStreamEvent, None]:
+    def stream(self, request: LLMInput) -> AsyncGenerator[LLMStreamEvent, None]:
         """Preferred streaming API returning structured events."""
         raise AceAIImplementationError(
             f"{self.__class__.__name__} must implement stream()"
         )
 
     @property
+    @abstractmethod
     def modality(self) -> LLMProviderModality:
         """Return the provider's supported modalities (defaults to text-only)."""
-        return LLMProviderModality()
+        raise NotImplementedError
 
     @abstractmethod
     async def stt(
@@ -542,7 +541,6 @@ class LLMProviderBase(ABC):
         *,
         model: str,
         prompt: str | None = None,
-        trace_ctx: Context | None = None,
     ) -> str:
         """Speech-to-text for an audio file. Default impl not provided."""
         raise NotImplementedError

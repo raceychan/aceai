@@ -7,15 +7,13 @@ from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from opentelemetry.context import Context
-
 from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
 from .models import (
+    LLMInput,
     LLMMessage,
     LLMProviderBase,
     LLMProviderModality,
-    LLMRequest,
     LLMResponse,
     LLMStreamEvent,
 )
@@ -35,7 +33,7 @@ ERROR_PROMPT_TEMPLATE = (
 
 class ILLMService(Protocol):
     async def complete(
-        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+        self, **request: Unpack[LLMInput]
     ) -> LLMResponse: ...
 
     async def complete_json(
@@ -43,8 +41,7 @@ class ILLMService(Protocol):
         *,
         schema: Type[T],
         retries: int | None = None,
-        trace_ctx: Context | None = None,
-        **request: Unpack[LLMRequest],
+        **request: Unpack[LLMInput],
     ) -> T: ...
 
     async def transcribe(
@@ -54,11 +51,10 @@ class ILLMService(Protocol):
         *,
         model: str | None = None,
         prompt: str | None = None,
-        trace_ctx: Context | None = None,
     ) -> str: ...
 
     def stream(
-        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+        self, **request: Unpack[LLMInput]
     ) -> AsyncGenerator[LLMStreamEvent, None]: ...
 
     def get_provider_count(self) -> int: ...
@@ -114,12 +110,11 @@ class LLMService:
         """Get the current provider for direct access."""
         return self.get_provider_count() > 0
 
-    def _validate_messages(self, request: LLMRequest) -> None:
-        messages = request.get("messages")
-        if not messages:
+    def _validate_messages(self, llm_input: LLMInput) -> None:
+        if "messages" not in llm_input or not llm_input["messages"]:
             raise ValueError("LLM requests require at least one message")
         modality: LLMProviderModality = self._get_current_provider().modality
-        for message in messages:
+        for message in llm_input["messages"]:
             if not isinstance(message.content, list):
                 raise TypeError("LLMMessage.content must be a list[LLMMessagePart]")
             for part in message.content:
@@ -145,20 +140,21 @@ class LLMService:
                                 "Provider does not support file input"
                             )
                     case _:
-                        raise ValueError(f"Unsupported message part type: {part.type}")
+                        raise ValueError(
+                            f"Unsupported message part type: {part['type']}"
+                        )
 
     async def _complete_json_with_retry(
         self,
         *,
         schema: Type[T],
         retries: int,
-        trace_ctx: Context | None = None,
-        **request: Unpack[LLMRequest],
+        llm_input: LLMInput,
     ) -> T:
         attempts = max(1, retries)
         last_error: Exception | None = None
         for attempt in range(attempts):
-            raw_response = await self.complete(trace_ctx=trace_ctx, **request)
+            raw_response = await self._complete_request(llm_input)
             raw_text = raw_response.text
             try:
                 return decode(raw_text, type=schema)
@@ -178,18 +174,20 @@ class LLMService:
                 content=error_prompt,
                 role="system",
             )
-            request["messages"].append(error_message)
+            llm_input["messages"].append(error_message)
 
         assert last_error is not None
         raise last_error
 
     async def complete(
-        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+        self, **request: Unpack[LLMInput]
     ) -> LLMResponse:
-        """Complete using a unified LLMRequest or raw messages."""
-        # Apply default max_tokens based on settings and model if not provided
+        """Complete using a unified LLMInput or raw messages."""
+        return await self._complete_request(request)
+
+    async def _complete_request(self, request: LLMInput) -> LLMResponse:
         provider = self._get_current_provider()
-        coro = provider.complete(request, trace_ctx=trace_ctx)
+        coro = provider.complete(request)
         timeout = self._timeout_seconds
         return await asyncio.wait_for(coro, timeout=timeout)
 
@@ -198,15 +196,17 @@ class LLMService:
         *,
         schema: Type[T],
         retries: int | None = None,
-        trace_ctx: Context | None = None,
-        **request: Unpack[LLMRequest],
+        **request: Unpack[LLMInput],
     ) -> T:
         """Complete a request and parse the response into the provided schema.
 
         On decode failure, appends a system error-handling message with the decoder
         error to help the LLM self-correct, retrying up to `max_retries` times.
         """
-        messages = request.get("messages")
+        if "messages" not in request:
+            raise AceAIValidationError("LLMInput.messages is required")
+
+        messages = request["messages"]
         if not messages:
             raise AceAIValidationError("complete_json requires at least one message")
 
@@ -230,14 +230,13 @@ class LLMService:
         retries = retries or self._max_retries
 
         if retries <= 0:
-            raw_response = await self.complete(trace_ctx=trace_ctx, **request)
+            raw_response = await self._complete_request(request)
             return decode(raw_response.text, type=schema)
 
         return await self._complete_json_with_retry(
             schema=schema,
             retries=retries,
-            trace_ctx=trace_ctx,
-            **request,
+            llm_input=request,
         )
 
     async def transcribe(
@@ -247,7 +246,6 @@ class LLMService:
         *,
         model: str | None = None,
         prompt: str | None = None,
-        trace_ctx: Context | None = None,
     ) -> str:
         provider = self._get_current_provider()
         if model is None:
@@ -258,12 +256,11 @@ class LLMService:
             file,
             model=model,
             prompt=prompt,
-            trace_ctx=trace_ctx,
         )
         return await asyncio.wait_for(coro, timeout=self._timeout_seconds)
 
     async def stream(
-        self, *, trace_ctx: Context | None = None, **request: Unpack[LLMRequest]
+        self, **request: Unpack[LLMInput]
     ) -> AsyncGenerator[LLMStreamEvent, None]:
         """Provider passthrough streaming.
 
@@ -271,7 +268,7 @@ class LLMService:
         higher layers such as ContextManager or agents, not here.
         """
         provider = self._get_current_provider()
-        stream_resp = provider.stream(request, trace_ctx=trace_ctx)
+        stream_resp = provider.stream(request)
         try:
             async for event in stream_resp:
                 yield event

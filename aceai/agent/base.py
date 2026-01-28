@@ -9,6 +9,7 @@ from ..errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm import ILLMService, LLMResponse
 from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall
 from ..models import AgentStep, ToolExecutionResult
+from ..tracing import get_trace_ctx, set_trace_ctx
 from .context_manager import ContextManager
 from .events import (
     AgentEvent,
@@ -83,7 +84,6 @@ class AgentBase:
         request_meta: LLMRequestMeta,
         messages: list[LLMMessage],
         event_builder: AgentEventBuilder,
-        step_context: Context,
     ):
         executor = self._executor
 
@@ -92,13 +92,11 @@ class AgentBase:
                 messages=messages,
                 tools=executor.select_tools(),
                 metadata=request_meta,
-                trace_ctx=step_context,
             )
         else:
             stream = self._llm_service.stream(
                 messages=messages,
                 metadata=request_meta,
-                trace_ctx=step_context,
             )
 
         try:
@@ -138,7 +136,6 @@ class AgentBase:
         self,
         current_step: AgentStep,
         event_builder: AgentEventBuilder,
-        trace_ctx: Context,
         run_state: RunState,
     ):
         executor = self._executor
@@ -153,7 +150,6 @@ class AgentBase:
                 tool_output = await executor.execute_tool(
                     call,
                     run_state=run_state,
-                    trace_ctx=trace_ctx,
                 )
             except Exception as exc:
                 raise ToolExecutionFailure(tool_call=call, error=exc) from exc
@@ -169,20 +165,23 @@ class AgentBase:
         self,
         *,
         event_builder: AgentEventBuilder,
-        trace_ctx: Context,
         run_state: RunState,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
+        run_context = get_trace_ctx()
+        if run_context is None:
+            raise AceAIRuntimeError("trace context is not set for agent step")
         step_span = self._tracer.start_span(
             "agent.step",
             kind=SpanKind.INTERNAL,
-            context=trace_ctx,
+            context=run_context,
             attributes={
                 "agent.step_id": event_builder.step_id,
                 "agent.max_steps": self._max_steps,
             },
         )
-        step_context = set_span_in_context(step_span, trace_ctx)
+        step_context = set_span_in_context(step_span, run_context)
+        set_trace_ctx(step_context)
 
         try:
             yield event_builder.llm_started()
@@ -190,7 +189,6 @@ class AgentBase:
                 request_meta,
                 messages=self._ctx_mgr.context,
                 event_builder=event_builder,
-                step_context=step_context,
             )
             try:
                 async for event in llm_gen:
@@ -213,7 +211,6 @@ class AgentBase:
                     tool_gen = self._make_toolcalls(
                         current_step,
                         event_builder,
-                        step_context,
                         run_state,
                     )
                     try:
@@ -227,6 +224,7 @@ class AgentBase:
                 await llm_gen.aclose()
 
         finally:
+            set_trace_ctx(run_context)
             if step_span.is_recording():
                 step_span.end()
 
@@ -291,6 +289,7 @@ class AgentBase:
             },
         )
         run_context = set_span_in_context(run_span, trace_ctx or Context())
+        set_trace_ctx(run_context)
         self._ctx_mgr.init_context([LLMMessage.build(role="user", content=question)])
 
         steps: list[AgentStep] = []
@@ -305,7 +304,6 @@ class AgentBase:
                 )
                 step_gen = self._run_step(
                     event_builder=event_builder,
-                    trace_ctx=run_context,
                     run_state=run_state,
                     **request_meta,
                 )
@@ -351,6 +349,7 @@ class AgentBase:
             if error_msg is not None:
                 run_span.set_attribute("agent.run.output", error_msg)
                 run_span.set_attribute("langfuse.trace.output", error_msg)
+            set_trace_ctx(None)
             if run_span.is_recording():
                 run_span.end()
 

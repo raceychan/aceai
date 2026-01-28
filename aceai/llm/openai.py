@@ -1,10 +1,10 @@
 import base64
 import time
-from typing import Any, AsyncGenerator, BinaryIO, cast
+from typing import Any, AsyncGenerator, BinaryIO, Literal, TypedDict, cast
 from warnings import warn
 
+from msgspec import Struct, convert, to_builtins
 from opentelemetry import trace
-from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind
 
 try:
@@ -40,22 +40,23 @@ from aceai.errors import (
     AceAIRuntimeError,
     AceAIValidationError,
 )
-from aceai.interface import MISSING, UNSET, Unset, is_present, is_set
+from aceai.interface import UNSET, StrDict, Unset, is_set
 from aceai.tools import IToolSpec
+from aceai.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
     LLMImageSegmentMeta,
+    LLMInput,
     LLMMessage,
     LLMMessagePart,
     LLMProviderBase,
     LLMProviderMeta,
     LLMProviderModality,
+    ReasoningConfig,
     LLMReasoningConfigSnapshot,
     LLMReasoningMeta,
     LLMReasoningSegmentMeta,
-    LLMRequest,
-    LLMRequestMeta,
     LLMResponse,
     LLMResponseFormat,
     LLMSegment,
@@ -69,67 +70,143 @@ from .models import (
 )
 
 
-class OpenAI(LLMProviderBase):
-    """OpenAI provider for LLM completions."""
+OpenAIModel = Literal[
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-5o",
+    "gpt-5o-mini",
+    "gpt-5.1",
+    "o3-large",
+    "o4-mini",
+]
 
-    def __init__(self, client: AsyncOpenAI, *, default_meta: LLMRequestMeta):
-        self._client = client
-        self._default_metadata: LLMRequestMeta = default_meta
-        self._tracer = trace.get_tracer("aceai.llm.openai")
+
+class OpenAIMeta(TypedDict, total=False):
+    model: OpenAIModel
+    stream_model: OpenAIModel
+    reasoning: ReasoningConfig
+
+
+class OpenAIPayload(Struct, kw_only=True):
+    messages: list[LLMMessage]
+    temperature: Unset[float] = UNSET
+    top_p: Unset[float] = UNSET
+    top_k: Unset[int] = UNSET
+    max_tokens: Unset[int] = UNSET
+    stop: Unset[list[str]] = UNSET
+    tools: Unset[list[IToolSpec]] = UNSET
+    tool_choice: Unset[Literal["auto", "none"] | str] = UNSET
+    response_format: Unset[LLMResponseFormat] = UNSET
+    stream: Unset[bool] = UNSET
+    metadata: Unset[OpenAIMeta] = UNSET
+
+    @classmethod
+    def from_input(cls, llm_input: LLMInput) -> "OpenAIPayload":
+        messages = llm_input["messages"]
+        if not isinstance(messages, list):
+            raise TypeError("OpenAIPayload.messages must be a list[LLMMessage]")
+        messages = cls._validate_messages(messages)
+        payload: dict[str, Any] = {"messages": messages}
+
+        if "temperature" in llm_input:
+            temperature = llm_input["temperature"]
+            if type(temperature) is not float:
+                raise TypeError("OpenAIPayload.temperature must be float")
+            payload["temperature"] = temperature
+        if "top_p" in llm_input:
+            top_p = llm_input["top_p"]
+            if type(top_p) is not float:
+                raise TypeError("OpenAIPayload.top_p must be float")
+            payload["top_p"] = top_p
+        if "top_k" in llm_input:
+            top_k = llm_input["top_k"]
+            if type(top_k) is not int:
+                raise TypeError("OpenAIPayload.top_k must be int")
+            payload["top_k"] = top_k
+        if "max_tokens" in llm_input:
+            max_tokens = llm_input["max_tokens"]
+            if type(max_tokens) is not int:
+                raise TypeError("OpenAIPayload.max_tokens must be int")
+            payload["max_tokens"] = max_tokens
+        if "stop" in llm_input:
+            stop = llm_input["stop"]
+            if not isinstance(stop, list) or not all(
+                type(item) is str for item in stop
+            ):
+                raise TypeError("OpenAIPayload.stop must be list[str]")
+            payload["stop"] = stop
+        if "tools" in llm_input:
+            tools = llm_input["tools"]
+            if not isinstance(tools, list):
+                raise TypeError("OpenAIPayload.tools must be list[IToolSpec]")
+            for tool in tools:
+                if not isinstance(tool, IToolSpec):
+                    raise TypeError("OpenAIPayload.tools must be IToolSpec instances")
+            payload["tools"] = tools
+        if "tool_choice" in llm_input:
+            tool_choice = llm_input["tool_choice"]
+            if type(tool_choice) is not str:
+                raise TypeError("OpenAIPayload.tool_choice must be str")
+            payload["tool_choice"] = tool_choice
+        if "response_format" in llm_input:
+            response_format = llm_input["response_format"]
+            if not isinstance(response_format, LLMResponseFormat):
+                raise TypeError(
+                    "OpenAIPayload.response_format must be LLMResponseFormat"
+                )
+            payload["response_format"] = response_format
+        if "stream" in llm_input:
+            stream = llm_input["stream"]
+            if type(stream) is not bool:
+                raise TypeError("OpenAIPayload.stream must be bool")
+            payload["stream"] = stream
+        if "metadata" in llm_input:
+            payload["metadata"] = convert(llm_input["metadata"], type=OpenAIMeta)
+
+        return cls(**payload)
+
+    @staticmethod
+    def _validate_messages(messages: list[LLMMessage]) -> list[LLMMessage]:
+        validated: list[LLMMessage] = []
+        for message in messages:
+            if isinstance(message, LLMToolCallMessage):
+                validated.append(
+                    convert(message.asdict(), type=LLMToolCallMessage)
+                )
+                continue
+            if isinstance(message, LLMToolUseMessage):
+                validated.append(convert(message.asdict(), type=LLMToolUseMessage))
+                continue
+            if isinstance(message, LLMMessage):
+                validated.append(convert(message.asdict(), type=LLMMessage))
+                continue
+            raise TypeError("OpenAIPayload.messages must be LLMMessage instances")
+        return validated
 
     @property
-    def modality(self) -> LLMProviderModality:
-        return LLMProviderModality(image_in=True, image_out=True)
+    def tool_names(self) -> list[str]:
+        if is_set(self.tools):
+            return [tool.name for tool in self.tools]
+        return []
 
-    async def stt(
-        self,
-        filename: str,
-        file: BinaryIO,
-        *,
-        model: str,
-        prompt: str | None = None,
-        trace_ctx: Context | None = None,
-    ) -> str:
-        """Transcribe audio using OpenAI Whisper (async)."""
-        attributes = {
-            "llm.provider": self.__class__.__name__,
-            "llm.model": model,
-            "llm.audio.filename": filename,
-        }
-        span = self._tracer.start_span(
-            "openai.audio.transcriptions.create",
-            kind=SpanKind.CLIENT,
-            context=trace_ctx,
-            attributes=attributes,
-        )
-        kwargs = {
-            "model": model,
-            "file": (filename, file),
-        }
-        if prompt is not None:
-            kwargs["prompt"] = prompt
-        try:
-            result = await self._client.audio.transcriptions.create(**kwargs)
-            return result.text
-        finally:
-            span.end()
+    def asdict(self) -> StrDict:
+        def _enc_hook(obj: object) -> object:
+            if isinstance(obj, IToolSpec):
+                return obj.generate_schema()
+            raise TypeError(
+                f"Encoding objects of type {type(obj).__name__} is unsupported"
+            )
 
-    def _tool_names(self, request: LLMRequest) -> list[str]:
-        if "tools" not in request:
-            return []
-        return [tool.name for tool in request["tools"]]
+        return cast(StrDict, to_builtins(self, enc_hook=_enc_hook))
 
-    def _build_base_response_kwargs(
-        self,
-        request: LLMRequest,
-    ) -> dict[str, Any]:
-        """Translate LLMRequest into OpenAI Responses kwargs."""
-        if "messages" not in request:
-            raise AceAIValidationError("LLMRequest.messages is required")
+    def build_response_kwargs(self) -> dict[str, Any]:
+        payload = self.asdict()
+        if not self.messages:
+            raise AceAIValidationError("OpenAIPayload.messages is required")
 
-        input_messages = self._format_messages_for_responses(request["messages"])
+        input_messages = self._format_messages_for_responses(self.messages)
         kwargs: dict[str, Any] = {"input": input_messages}
-        request_metadata = request.get("metadata", {})
+        request_metadata = self.metadata if "metadata" in payload else {}
 
         model_name = request_metadata.get("model")
         if not model_name:
@@ -139,45 +216,44 @@ class OpenAI(LLMProviderBase):
 
         kwargs["model"] = model_name
 
-        if is_present(reasoning_cfg := request_metadata.get("reasoning", MISSING)):
+        if "reasoning" in request_metadata:
+            reasoning_cfg = request_metadata["reasoning"]
             if not self._supports_reasoning_summary(model_name):
                 raise AceAIConfigurationError(
                     f"Model {model_name} does not support reasoning summaries"
                 )
             kwargs["reasoning"] = reasoning_cfg
 
-        if is_present(max_tokens := request.get("max_tokens", MISSING)):
-            kwargs["max_output_tokens"] = max_tokens
+        if "max_tokens" in payload:
+            kwargs["max_output_tokens"] = self.max_tokens
 
-        if is_present(temperature := request.get("temperature", MISSING)):
-            if not model_name.startswith("gpt-5"):
-                kwargs["temperature"] = temperature
+        if "temperature" in payload and not model_name.startswith("gpt-5"):
+            kwargs["temperature"] = self.temperature
 
-        if is_present(top_p := request.get("top_p", MISSING)):
-            kwargs["top_p"] = top_p
+        if "top_p" in payload:
+            kwargs["top_p"] = self.top_p
 
-        if is_present(request.get("stop", MISSING)):
+        if "stop" in payload:
             warn(
                 "OpenAI Responses API does not support stop sequences; ignoring request.stop"
             )
 
-        if is_present(response_format := request.get("response_format", MISSING)):
-            text_config = self._build_text_config(response_format)
+        if "response_format" in payload:
+            text_config = self._build_text_config(self.response_format)
             if text_config:
                 kwargs["text"] = text_config
 
-        if is_present(tools := request.get("tools", MISSING)):
-            kwargs["tools"] = [self._format_tool(tool) for tool in tools]
+        if "tools" in payload:
+            kwargs["tools"] = [self._format_tool(tool) for tool in self.tools]
 
-        if is_present(tool_choice := request.get("tool_choice", MISSING)):
-            kwargs["tool_choice"] = tool_choice
+        if "tool_choice" in payload:
+            kwargs["tool_choice"] = self.tool_choice
 
         return kwargs
 
     def _format_messages_for_responses(
         self, messages: list[LLMMessage]
     ) -> list[dict[str, Any]]:
-        """Project internal chat messages into Responses API input items."""
         formatted: list[dict[str, Any]] = []
 
         for message in messages:
@@ -252,9 +328,9 @@ class OpenAI(LLMProviderBase):
 
     def _format_image_part(self, part: LLMMessagePart) -> dict[str, Any]:
         image_url = part.get("url")
-        if image_url is None and isinstance(part["data"], bytes):
+        if image_url is None and isinstance(part.get("binary"), bytes):
             mime = part.get("mime_type", "image/png")
-            b64 = base64.b64encode(part["data"]).decode("ascii")
+            b64 = base64.b64encode(part["binary"]).decode("ascii")
             image_url = f"data:{mime};base64,{b64}"
         if image_url is None:
             raise ValueError("Image parts must include `url` or `data`")
@@ -291,6 +367,56 @@ class OpenAI(LLMProviderBase):
         schema = tool.generate_schema()
         return cast(FunctionToolParam, schema)
 
+    def _supports_reasoning_summary(self, model_name: str) -> bool:
+        name = model_name.lower()
+        return name.startswith(("o3", "o4", "gpt-5"))
+
+
+class OpenAI(LLMProviderBase):
+    """OpenAI provider for LLM completions."""
+
+    def __init__(self, client: AsyncOpenAI, *, default_meta: OpenAIMeta):
+        self._client = client
+        self._default_metadata = convert(default_meta, type=OpenAIMeta)
+        self._tracer = trace.get_tracer("aceai.llm.openai")
+
+    @property
+    def modality(self) -> LLMProviderModality:
+        return LLMProviderModality(image_in=True, image_out=True)
+
+    async def stt(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str,
+        prompt: str | None = None,
+    ) -> str:
+        """Transcribe audio using OpenAI Whisper (async)."""
+        attributes = {
+            "llm.provider": self.__class__.__name__,
+            "llm.model": model,
+            "llm.audio.filename": filename,
+        }
+        trace_ctx = get_trace_ctx()
+        span = self._tracer.start_span(
+            "openai.audio.transcriptions.create",
+            kind=SpanKind.CLIENT,
+            context=trace_ctx,
+            attributes=attributes,
+        )
+        kwargs = {
+            "model": model,
+            "file": (filename, file),
+        }
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        try:
+            result = await self._client.audio.transcriptions.create(**kwargs)
+            return result.text
+        finally:
+            span.end()
+
     def _provider_meta_entry(
         self,
         *,
@@ -304,10 +430,6 @@ class OpenAI(LLMProviderBase):
             latency_ms=latency_ms,
             response_id=response_id,
         )
-
-    def _supports_reasoning_summary(self, model_name: str) -> bool:
-        name = model_name.lower()
-        return name.startswith(("o3", "o4", "gpt-5"))
 
     def _extract_reasoning_items(
         self, response: Response
@@ -548,25 +670,28 @@ class OpenAI(LLMProviderBase):
             provider_meta=provider_meta,
         )
 
-    def _apply_default_meta(self, request: LLMRequest) -> LLMRequest:
-        """if not request no metadata, set to default. if partial, fill in missing."""
-        if "metadata" not in request or not request["metadata"]:
-            request["metadata"] = self._default_metadata
+    def _apply_default_meta(self, payload: OpenAIPayload) -> OpenAIPayload:
+        """If no metadata, set defaults; if partial, fill in missing keys."""
+        if not is_set(payload.metadata) or not payload.metadata:
+            payload.metadata = self._default_metadata
         else:
-            request_meta = request["metadata"]
+            request_meta = payload.metadata
             for key, value in self._default_metadata.items():
                 if key not in request_meta:
                     request_meta[key] = value
-        return request
+        return payload
 
-    async def complete(
-        self, request: LLMRequest, *, trace_ctx: Context | None = None
-    ) -> LLMResponse:
+    def request_to_payload(self, request: LLMInput) -> OpenAIPayload:
+        """Convert LLMInput to an OpenAI-aware payload."""
+        payload = OpenAIPayload.from_input(request)
+        return self._apply_default_meta(payload)
+
+    async def complete(self, request: LLMInput) -> LLMResponse:
         """Complete using OpenAI Responses API."""
-        request = self._apply_default_meta(request)
-        params = self._build_base_response_kwargs(request)
+        payload = self.request_to_payload(request)
+        params = payload.build_response_kwargs()
         start = time.perf_counter()
-        tool_names = self._tool_names(request)
+        tool_names = payload.tool_names
         attributes = {
             "llm.provider": self.__class__.__name__,
             "llm.model": params["model"],
@@ -574,6 +699,7 @@ class OpenAI(LLMProviderBase):
             "llm.tool_count": len(tool_names),
             "llm.tool_names": tool_names,
         }
+        trace_ctx = get_trace_ctx()
         span = self._tracer.start_span(
             "openai.responses.create",
             kind=SpanKind.CLIENT,
@@ -587,14 +713,12 @@ class OpenAI(LLMProviderBase):
         finally:
             span.end()
 
-    async def stream(
-        self, request: LLMRequest, *, trace_ctx: Context | None = None
-    ) -> AsyncGenerator[LLMStreamEvent, None]:
+    async def stream(self, request: LLMInput) -> AsyncGenerator[LLMStreamEvent, None]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
-        request = self._apply_default_meta(request)
-        kwargs = self._build_base_response_kwargs(request)
+        payload = self.request_to_payload(request)
+        kwargs = payload.build_response_kwargs()
         start = time.perf_counter()
-        tool_names = self._tool_names(request)
+        tool_names = payload.tool_names
         attributes = {
             "llm.provider": self.__class__.__name__,
             "llm.model": kwargs["model"],
@@ -602,6 +726,7 @@ class OpenAI(LLMProviderBase):
             "llm.tool_count": len(tool_names),
             "llm.tool_names": tool_names,
         }
+        trace_ctx = get_trace_ctx()
         span = self._tracer.start_span(
             "openai.responses.stream",
             kind=SpanKind.CLIENT,

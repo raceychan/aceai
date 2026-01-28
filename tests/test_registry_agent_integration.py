@@ -15,7 +15,7 @@ class StubLLMService:
         self._streams = [list(stream) for stream in streams]
         self.calls: list[dict] = []
 
-    async def stream(self, *, trace_ctx=None, **request):
+    async def stream(self, **request):
         if not self._streams:
             raise AssertionError("StubLLMService has no remaining stream fixtures")
         self.calls.append(request)
@@ -90,4 +90,3 @@ async def test_registry_tools_injected_by_tag_into_agent_executor(graph: Graph) 
     assert len(tool_messages) == 1
     assert tool_messages[0].name == "add"
     assert tool_messages[0].content[0]["data"] == "3"
-

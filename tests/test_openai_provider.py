@@ -34,7 +34,7 @@ from aceai.llm.models import (
     LLMToolCallMessage,
     LLMToolUseMessage,
 )
-from aceai.llm.openai import OpenAI
+from aceai.llm.openai import OpenAI, OpenAIPayload
 from aceai.tools import tool
 from aceai.tools._tool_sig import Annotated, spec
 
@@ -150,22 +150,24 @@ def test_build_base_response_kwargs_maps_request_fields(
     openai_provider: OpenAI,
     openai_echo_spec,
 ) -> None:
-    request = {
-        "messages": _messages_with_attr_parts(
-            [LLMMessage.build("system", "You are helpful.")]
-        ),
-        "max_tokens": 256,
-        "temperature": 0.3,
-        "top_p": 0.9,
-        "stop": ["END"],
-        "response_format": LLMResponseFormat(type="json_object"),
-        "tools": [openai_echo_spec],
-        "tool_choice": "auto",
-        "metadata": {"model": "gpt-4o"},
-    }
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "You are helpful.")]
+            ),
+            "max_tokens": 256,
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "stop": ["END"],
+            "response_format": LLMResponseFormat(type="json_object"),
+            "tools": [openai_echo_spec],
+            "tool_choice": "auto",
+            "metadata": {"model": "gpt-4o"},
+        }
+    )
 
     with pytest.warns(UserWarning):
-        params = openai_provider._build_base_response_kwargs(request)
+        params = payload.build_response_kwargs()
 
     assert params["model"] == "gpt-4o"
     assert params["max_output_tokens"] == 256
@@ -205,29 +207,33 @@ def test_build_base_response_kwargs_requires_messages(
     openai_provider: OpenAI,
 ) -> None:
     with pytest.raises(AceAIValidationError):
-        openai_provider._build_base_response_kwargs({})
+        OpenAIPayload(messages=[]).build_response_kwargs()
 
 
 def test_build_base_response_kwargs_requires_model(
     openai_provider: OpenAI,
 ) -> None:
-    request = {"messages": _messages_with_attr_parts([LLMMessage.build("system", "x")])}
+    payload = OpenAIPayload.from_input(
+        {"messages": _messages_with_attr_parts([LLMMessage.build("system", "x")])}
+    )
     with pytest.raises(AceAIConfigurationError):
-        openai_provider._build_base_response_kwargs(request)
+        payload.build_response_kwargs()
 
 
 def test_build_base_response_kwargs_accepts_reasoning_for_supported_model(
     openai_provider: OpenAI,
 ) -> None:
-    request = {
-        "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
-        "metadata": {
-            "model": "gpt-5o",
-            "reasoning": {"summary": "auto"},
-        },
-    }
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "metadata": {
+                "model": "gpt-5o",
+                "reasoning": {"summary": "auto"},
+            },
+        }
+    )
 
-    params = openai_provider._build_base_response_kwargs(request)
+    params = payload.build_response_kwargs()
 
     assert params["reasoning"] == {"summary": "auto"}
 
@@ -235,13 +241,15 @@ def test_build_base_response_kwargs_accepts_reasoning_for_supported_model(
 def test_build_base_response_kwargs_skips_temperature_for_gpt5(
     openai_provider: OpenAI,
 ) -> None:
-    request = {
-        "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
-        "temperature": 0.2,
-        "metadata": {"model": "gpt-5o-mini"},
-    }
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "temperature": 0.2,
+            "metadata": {"model": "gpt-5o-mini"},
+        }
+    )
 
-    params = openai_provider._build_base_response_kwargs(request)
+    params = payload.build_response_kwargs()
 
     assert "temperature" not in params
     assert params["model"] == "gpt-5o-mini"
@@ -250,23 +258,26 @@ def test_build_base_response_kwargs_skips_temperature_for_gpt5(
 def test_build_base_response_kwargs_rejects_reasoning_for_unsupported_model(
     openai_provider: OpenAI,
 ) -> None:
-    request = {
-        "messages": [LLMMessage.build("system", "start")],
-        "metadata": {
-            "model": "gpt-4o",
-            "reasoning": {"summary": "auto"},
-        },
-    }
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": [LLMMessage.build("system", "start")],
+            "metadata": {
+                "model": "gpt-4o",
+                "reasoning": {"summary": "auto"},
+            },
+        }
+    )
 
     with pytest.raises(AceAIConfigurationError):
-        openai_provider._build_base_response_kwargs(request)
+        payload.build_response_kwargs()
 
 
 def test_supports_reasoning_summary(openai_provider: OpenAI) -> None:
-    assert openai_provider._supports_reasoning_summary("o4-mini") is True
-    assert openai_provider._supports_reasoning_summary("o3-large") is True
-    assert openai_provider._supports_reasoning_summary("gpt-5o") is True
-    assert openai_provider._supports_reasoning_summary("gpt-4o") is False
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
+    assert payload._supports_reasoning_summary("o4-mini") is True
+    assert payload._supports_reasoning_summary("o3-large") is True
+    assert payload._supports_reasoning_summary("gpt-5o") is True
+    assert payload._supports_reasoning_summary("gpt-4o") is False
 
 
 def test_format_messages_for_responses_includes_tool_outputs(
@@ -281,7 +292,8 @@ def test_format_messages_for_responses_includes_tool_outputs(
         ]
     )
 
-    formatted = openai_provider._format_messages_for_responses(messages)
+    payload = OpenAIPayload(messages=messages)
+    formatted = payload._format_messages_for_responses(messages)
 
     assert formatted[0]["role"] == "system"
     assert formatted[0]["content"][0] == {"type": "input_text", "text": "Start"}
@@ -300,7 +312,8 @@ def test_format_messages_includes_tool_call_content(
         tool_calls=[call],
     )
 
-    formatted = openai_provider._format_messages_for_responses([message])
+    payload = OpenAIPayload(messages=[message])
+    formatted = payload._format_messages_for_responses([message])
 
     assert formatted[0]["content"][0]["text"] == "tool prelude"
 
@@ -311,7 +324,7 @@ def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
         LLMMessagePart(
             type="image",
             url="https://example.com/image.png",
-            data=b"",
+            binary=b"",
         ),
     ]
     messages = _messages_with_attr_parts(
@@ -320,7 +333,8 @@ def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
         ]
     )
 
-    formatted = openai_provider._format_messages_for_responses(messages)
+    payload = OpenAIPayload(messages=messages)
+    formatted = payload._format_messages_for_responses(messages)
 
     assert formatted[0]["content"][0] == {"type": "input_text", "text": "describe this"}
     assert formatted[0]["content"][1]["type"] == "input_image"
@@ -329,62 +343,68 @@ def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
 
 def test_coerce_text_content_rejects_non_text_parts(openai_provider: OpenAI) -> None:
     part = LLMMessagePart(type="image", data="")
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
     with pytest.raises(ValueError, match="tool output"):
-        openai_provider._coerce_text_content([part], context="tool output")
+        payload._coerce_text_content([part], context="tool output")
 
 
 @pytest.mark.parametrize(
     "part",
     [
-        LLMMessagePart(type="audio", data=b"wav"),
-        LLMMessagePart(type="file", data=b"blob"),
+        LLMMessagePart(type="audio", binary=b"wav"),
+        LLMMessagePart(type="file", binary=b"blob"),
         cast(LLMMessagePart, AttrMessagePart(type="binary", data="x")),
     ],
 )
 def test_format_content_parts_rejects_unsupported_modalities(
     openai_provider: OpenAI, part: LLMMessagePart
 ) -> None:
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
     with pytest.raises(ValueError):
-        openai_provider._format_content_parts([part])
+        payload._format_content_parts([part])
 
 
 def test_format_image_part_accepts_inline_data(openai_provider: OpenAI) -> None:
-    part = LLMMessagePart(type="image", data=b"\x01\x02", mime_type="image/jpeg")
+    part = LLMMessagePart(type="image", binary=b"\x01\x02", mime_type="image/jpeg")
 
-    formatted = openai_provider._format_image_part(part)
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
+    formatted = payload._format_image_part(part)
 
     assert formatted["image_url"].startswith("data:image/jpeg;base64,")
 
 
 def test_format_image_part_requires_url_or_bytes(openai_provider: OpenAI) -> None:
     part = LLMMessagePart(type="image", data="not-bytes")
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
     with pytest.raises(ValueError):
-        openai_provider._format_image_part(part)
+        payload._format_image_part(part)
 
 
 def test_build_text_config_variants(openai_provider: OpenAI) -> None:
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
     json_object = LLMResponseFormat(type="json_object")
     json_schema = LLMResponseFormat(type="json_schema", schema={"name": "Payload"})
     plain = LLMResponseFormat()
 
-    assert openai_provider._build_text_config(json_object) == {
+    assert payload._build_text_config(json_object) == {
         "format": {"type": "json_object"}
     }
-    assert openai_provider._build_text_config(json_schema) == {
+    assert payload._build_text_config(json_schema) == {
         "format": {
             "type": "json_schema",
             "schema": {"name": "Payload"},
             "name": "response_schema",
         }
     }
-    assert openai_provider._build_text_config(plain) is None
+    assert payload._build_text_config(plain) is None
 
 
 def test_build_text_config_rejects_unknown_type(openai_provider: OpenAI) -> None:
     invalid = LLMResponseFormat(type="binary")  # type: ignore[arg-type]
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
 
     with pytest.raises(AceAIValidationError):
-        openai_provider._build_text_config(invalid)
+        payload._build_text_config(invalid)
 
 
 def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None:

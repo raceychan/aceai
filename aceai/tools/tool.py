@@ -1,6 +1,6 @@
 from inspect import iscoroutinefunction, signature
 from typing import Annotated as Annotated
-from typing import Any, Callable, Protocol, TypedDict, Unpack, overload
+from typing import Any, Callable, Protocol, TypedDict, Unpack, overload, runtime_checkable
 
 from msgspec import Struct, field
 from msgspec.json import Decoder
@@ -12,7 +12,10 @@ from aceai.interface import MISSING, Maybe, is_present
 from ._tool_sig import ToolSignature
 
 
+@runtime_checkable
 class IToolSpec(Protocol):
+    name: str
+
     def __init__(
         self, *, signature: ToolSignature, name: str, description: str
     ) -> None: ...

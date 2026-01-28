@@ -43,7 +43,7 @@ class TraceContext(Protocol):
 class TelemetryClient(Protocol):
     def start_trace(self, *, name: str, input: dict, metadata: dict) -> TraceContext: ...
     def start_span(self, trace: TraceContext, name: str, input: dict | None = None) -> SpanHandle: ...
-    def log_generation(self, trace: TraceContext, *, request: LLMRequest, response: LLMResponse, error: Exception | None = None) -> None: ...
+    def log_generation(self, trace: TraceContext, *, request: LLMPayload, response: LLMResponse, error: Exception | None = None) -> None: ...
     def log_event(self, trace: TraceContext, message: str, level: Literal["info","warning","error"]) -> None: ...
 ```
 
@@ -105,8 +105,8 @@ class LangfuseTelemetry(TelemetryClient):
         self.client.generation(
             trace_id=trace_id,
             name=name,
-            model=request["metadata"]["model"],
-            input=_serialize_messages(request["messages"]),
+            model=request.metadata["model"],
+            input=_serialize_messages(request.messages),
             output=response.text,
             usage=_usage_dict(response.usage),
             metadata=metadata,

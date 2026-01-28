@@ -4,11 +4,11 @@ from typing import Any, Callable
 from ididi import Graph
 from msgspec import Struct, field
 from opentelemetry import trace
-from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind
 
 from aceai.interface import is_present
 from aceai.llm.models import LLMToolCall
+from aceai.tracing import get_trace_ctx
 from aceai.tools import BUILTIN_TOOLS, IToolSpec, Tool
 
 
@@ -28,7 +28,6 @@ class IExecutor:
         tool_call: LLMToolCall,
         *,
         run_state: RunState,
-        trace_ctx: Context | None = None,
     ) -> str:
         "execute a tool call and return the result as string"
         raise NotImplementedError
@@ -85,7 +84,6 @@ class ToolExecutor(IExecutor):
         tool_call: LLMToolCall,
         *,
         run_state: RunState,
-        trace_ctx: Context | None = None,
     ) -> str:
         tool_name = tool_call.name
         param_json = tool_call.arguments
@@ -102,6 +100,7 @@ class ToolExecutor(IExecutor):
                     f"the tool {tool_name} exceeds its max calls in this run, "
                     "do not call it again"
                 )
+        trace_ctx = get_trace_ctx()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
             kind=SpanKind.INTERNAL,
@@ -152,7 +151,6 @@ class LoggingToolExecutor(ToolExecutor):
         tool_call: LLMToolCall,
         *,
         run_state: RunState,
-        trace_ctx: Context | None = None,
     ) -> str:
         call_id = tool_call.call_id
         self.logger.info(
@@ -163,7 +161,6 @@ class LoggingToolExecutor(ToolExecutor):
             result = await super().execute_tool(
                 tool_call,
                 run_state=run_state,
-                trace_ctx=trace_ctx,
             )
         except Exception:
             duration = self.timer() - start
@@ -176,4 +173,3 @@ class LoggingToolExecutor(ToolExecutor):
             f"Tool {tool_call.name} finished in {duration:.2f}s, result: {result}",
         )
         return result
-
