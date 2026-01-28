@@ -3,6 +3,7 @@ from opentelemetry.context import Context
 
 from aceai.agent.base import AgentBase, ToolExecutionFailure
 from aceai.errors import AceAIRuntimeError
+from aceai.agent.executor import RunState
 from aceai.agent.events import (
     AgentEvent,
     LLMMediaEvent,
@@ -36,7 +37,13 @@ class StubExecutor:
             raise ValueError("Cannot specify both include and exclude")
         return self.tool_specs
 
-    async def execute_tool(self, tool_call: LLMToolCall, *, trace_ctx: Context) -> str:
+    async def execute_tool(
+        self,
+        tool_call: LLMToolCall,
+        *,
+        run_state: RunState,
+        trace_ctx: Context,
+    ) -> str:
         self.calls.append(tool_call)
         return self._results[tool_call.name]
 
@@ -63,7 +70,13 @@ class RaisingExecutor(StubExecutor):
         super().__init__()
         self._error = error
 
-    async def execute_tool(self, tool_call: LLMToolCall, *, trace_ctx: Context) -> str:
+    async def execute_tool(
+        self,
+        tool_call: LLMToolCall,
+        *,
+        run_state: RunState,
+        trace_ctx: Context,
+    ) -> str:
         raise self._error
 
 

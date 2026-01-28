@@ -2,12 +2,18 @@ from time import perf_counter
 from typing import Any, Callable
 
 from ididi import Graph
+from msgspec import Struct, field
 from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind
 
+from aceai.interface import is_present
 from aceai.llm.models import LLMToolCall
 from aceai.tools import BUILTIN_TOOLS, IToolSpec, Tool
+
+
+class RunState(Struct, kw_only=True):
+    tool_call_counts: dict[str, int] = field(default_factory=dict[str, int])
 
 
 class ToolExecutor:
@@ -57,11 +63,27 @@ class ToolExecutor:
         return await result if tool.is_async else result
 
     async def execute_tool(
-        self, tool_call: LLMToolCall, *, trace_ctx: Context | None = None
+        self,
+        tool_call: LLMToolCall,
+        *,
+        run_state: RunState,
+        trace_ctx: Context | None = None,
     ) -> str:
         tool_name = tool_call.name
         param_json = tool_call.arguments
         tool = self.tools[tool_name]
+        max_calls_per_run = tool.metadata.max_calls_per_run
+        if is_present(max_calls_per_run):
+            if max_calls_per_run < 1:
+                raise ValueError(
+                    f"Tool {tool_name!r} has invalid max_calls_per_run={max_calls_per_run}"
+                )
+            current_count = run_state.tool_call_counts.get(tool_name, 0)
+            if current_count >= max_calls_per_run:
+                return (
+                    f"the tool {tool_name} exceeds its max calls in this run, "
+                    "do not call it again"
+                )
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
             kind=SpanKind.INTERNAL,
@@ -76,6 +98,10 @@ class ToolExecutor:
         ):
             params = tool.decode_params(param_json)
             result = await self.resolve_tool(tool, **params)
+            if is_present(max_calls_per_run):
+                run_state.tool_call_counts[tool_name] = (
+                    run_state.tool_call_counts.get(tool_name, 0) + 1
+                )
             return tool.encode_return(result)
 
 
@@ -104,7 +130,11 @@ class LoggingToolExecutor(ToolExecutor):
         self.timer = timer
 
     async def execute_tool(
-        self, tool_call: LLMToolCall, *, trace_ctx: Context | None = None
+        self,
+        tool_call: LLMToolCall,
+        *,
+        run_state: RunState,
+        trace_ctx: Context | None = None,
     ) -> str:
         call_id = tool_call.call_id
         self.logger.info(
@@ -112,7 +142,11 @@ class LoggingToolExecutor(ToolExecutor):
         )
         start = self.timer()
         try:
-            result = await super().execute_tool(tool_call, trace_ctx=trace_ctx)
+            result = await super().execute_tool(
+                tool_call,
+                run_state=run_state,
+                trace_ctx=trace_ctx,
+            )
         except Exception:
             duration = self.timer() - start
             self.logger.exception(

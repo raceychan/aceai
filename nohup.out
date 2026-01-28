@@ -1,0 +1,1860 @@
+[I 2026-01-21 14:05:58.701 ServerApp] jupyter_lsp | extension was successfully linked.
+[I 2026-01-21 14:05:58.703 ServerApp] jupyter_server_terminals | extension was successfully linked.
+[I 2026-01-21 14:05:58.705 ServerApp] jupyterlab | extension was successfully linked.
+[I 2026-01-21 14:05:59.013 ServerApp] notebook_shim | extension was successfully linked.
+[I 2026-01-21 14:05:59.032 ServerApp] notebook_shim | extension was successfully loaded.
+[I 2026-01-21 14:05:59.034 ServerApp] jupyter_lsp | extension was successfully loaded.
+[I 2026-01-21 14:05:59.034 ServerApp] jupyter_server_terminals | extension was successfully loaded.
+[I 2026-01-21 14:05:59.039 LabApp] JupyterLab extension loaded from /home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyterlab
+[I 2026-01-21 14:05:59.039 LabApp] JupyterLab application directory is /home/raceychan/myprojects/pyprojects/aceai/.venv/share/jupyter/lab
+[I 2026-01-21 14:05:59.039 LabApp] Extension Manager is 'pypi'.
+[I 2026-01-21 14:05:59.080 ServerApp] jupyterlab | extension was successfully loaded.
+[I 2026-01-21 14:05:59.084 ServerApp] Serving notebooks from local directory: /home/raceychan/myprojects/pyprojects/aceai
+[I 2026-01-21 14:05:59.084 ServerApp] Jupyter Server 2.17.0 is running at:
+[I 2026-01-21 14:05:59.084 ServerApp] http://localhost:8888/lab?token=42f8ae5939828770ca0174fff7f36393e92562370f24cc07
+[I 2026-01-21 14:05:59.084 ServerApp]     http://127.0.0.1:8888/lab?token=42f8ae5939828770ca0174fff7f36393e92562370f24cc07
+[I 2026-01-21 14:05:59.084 ServerApp] Use Control-C to stop this server and shut down all kernels (twice to skip confirmation).
+[C 2026-01-21 14:05:59.346 ServerApp] 
+    
+    To access the server, open this file in a browser:
+        file:///home/raceychan/.local/share/jupyter/runtime/jpserver-896-open.html
+    Or copy and paste one of these URLs:
+        http://localhost:8888/lab?token=42f8ae5939828770ca0174fff7f36393e92562370f24cc07
+        http://127.0.0.1:8888/lab?token=42f8ae5939828770ca0174fff7f36393e92562370f24cc07
+gio: file:///home/raceychan/.local/share/jupyter/runtime/jpserver-896-open.html: No application is registered as handling this file
+[I 2026-01-21 14:05:59.812 ServerApp] Skipped non-installed server(s): basedpyright, bash-language-server, dockerfile-language-server-nodejs, javascript-typescript-langserver, jedi-language-server, julia-language-server, pyrefly, pyright, python-language-server, python-lsp-server, r-languageserver, sql-language-server, texlab, typescript-language-server, unified-language-server, vscode-css-languageserver-bin, vscode-html-languageserver-bin, vscode-json-languageserver-bin, yaml-language-server
+[W 2026-01-21 14:06:12.249 ServerApp] 404 GET /api/contents/agent.ipynb?content=0&hash=0&1768989972242 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.03ms referer=http://localhost:8888/lab/tree/lab/agent.ipynb
+[W 2026-01-21 14:06:12.250 ServerApp] 404 GET /api/contents/agent.ipynb?content=0&hash=0&1768989972242 (127.0.0.1): No such file or directory: agent.ipynb
+[I 2026-01-21 14:06:12.280 LabApp] Build is up to date
+[W 2026-01-21 14:06:12.638 ServerApp] Notebook lab/agent.ipynb is not trusted
+[I 2026-01-21 14:06:12.819 ServerApp] Kernel started: 71b7d776-7087-4fb8-982c-11af2996e864
+[I 2026-01-21 14:06:13.437 ServerApp] Connecting to kernel 71b7d776-7087-4fb8-982c-11af2996e864.
+[W 2026-01-21 14:06:13.438 ServerApp] The websocket_ping_timeout (90000) cannot be longer than the websocket_ping_interval (30000).
+    Setting websocket_ping_timeout=30000
+[I 2026-01-21 14:06:13.462 ServerApp] Connecting to kernel 71b7d776-7087-4fb8-982c-11af2996e864.
+[I 2026-01-21 14:06:13.481 ServerApp] Connecting to kernel 71b7d776-7087-4fb8-982c-11af2996e864.
+[I 2026-01-21 14:08:13.797 ServerApp] Saving file at /lab/agent.ipynb
+[W 2026-01-21 14:08:13.797 ServerApp] Notebook lab/agent.ipynb is not trusted
+[I 2026-01-21 14:32:58.833 ServerApp] Creating new notebook in /lab
+[I 2026-01-21 14:32:59.032 ServerApp] Kernel started: e9377ed4-e6f5-4999-af73-a104641ebffb
+[I 2026-01-21 14:32:59.530 ServerApp] Connecting to kernel e9377ed4-e6f5-4999-af73-a104641ebffb.
+[I 2026-01-21 14:33:47.489 ServerApp] Saving file at /lab/agent.ipynb
+[W 2026-01-21 14:33:47.489 ServerApp] Notebook lab/agent.ipynb is not trusted
+[W 2026-01-21 14:34:11.954 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.97ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:34:11.954 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:34:11.954 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:34:11.961 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.04ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:34:11.962 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:34:11.962 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991651949', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:34:11.963 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651949 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.80ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:34:11.963 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:34:11.964 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651949 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651949', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:34:11.965 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651950 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.93ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:34:11.966 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:34:11.966 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651950 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991651950', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 14:35:07.719 ServerApp] Saving file at /lab/seia.ipynb
+[W 2026-01-21 14:36:13.511 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773507 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.78ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:13.511 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:36:13.511 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773507 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773507', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:13.513 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773508 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.83ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:13.513 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:36:13.513 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773508 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991773508', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:13.514 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.92ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:13.514 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:36:13.514 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:13.515 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508 (0f2f103406fe4522898403908108e0af@127.0.0.1) 3.10ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:13.516 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:36:13.516 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991773508', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.549 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.88ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.549 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:36:27.549 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.550 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 2.07ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.551 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:36:27.551 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.552 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.68ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.552 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:36:27.552 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.554 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_dependencies.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.97ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.554 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_dependencies.py', via 404 Error
+[E 2026-01-21 14:36:27.554 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_dependencies.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_dependencies.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_dependencies.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.555 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.90ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.555 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:36:27.555 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:36:27.556 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 3.03ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:36:27.557 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:36:27.557 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768991787546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 14:37:08.470 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 14:37:57.880 ServerApp] New terminal with automatic name: 1
+[I 2026-01-21 14:39:08.528 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 14:41:09.463 ServerApp] Saving file at /lab/seia.ipynb
+[W 2026-01-21 14:41:13.025 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073020 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.13ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:41:13.025 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 14:41:13.025 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073020 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073020', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:41:13.027 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073021 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.60ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:41:13.027 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 14:41:13.027 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073021 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768992073021', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 14:43:10.477 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 14:47:11.466 ServerApp] Saving file at /lab/seia.ipynb
+[W 2026-01-21 14:48:35.550 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.08ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:48:35.550 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:48:35.550 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:48:35.552 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.62ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:48:35.552 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 14:48:35.552 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768992515546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:48:35.553 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515546 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.74ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:48:35.553 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:48:35.553 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515546 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515546', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:48:35.554 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.57ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:48:35.554 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:48:35.554 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 14:48:35.556 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.89ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 14:48:35.556 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py', via 404 Error
+[E 2026-01-21 14:48:35.556 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py?content=0&hash=0&1768992515547', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/spreadsheet/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 14:49:11.511 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 14:51:12.470 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 14:57:33.157 ServerApp] Kernel restarted: e9377ed4-e6f5-4999-af73-a104641ebffb
+[I 2026-01-21 14:57:33.163 ServerApp] Starting buffering for e9377ed4-e6f5-4999-af73-a104641ebffb:7d7d7042-2557-4439-8987-5d8b32f2e425
+[I 2026-01-21 14:57:33.472 ServerApp] Connecting to kernel e9377ed4-e6f5-4999-af73-a104641ebffb.
+[I 2026-01-21 14:57:33.472 ServerApp] Restoring connection for e9377ed4-e6f5-4999-af73-a104641ebffb:7d7d7042-2557-4439-8987-5d8b32f2e425
+[I 2026-01-21 14:59:15.477 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 15:01:16.497 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 15:09:20.816 ServerApp] Saving file at /lab/seia.ipynb
+[W 2026-01-21 15:11:50.740 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768993910736 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.74ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:11:50.740 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 15:11:50.741 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768993910736 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768993910736', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:11:50.743 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768993910736 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.68ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:11:50.743 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 15:11:50.743 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768993910736 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768993910736', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:11:50.745 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768993910736 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.59ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:11:50.745 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py', via 404 Error
+[E 2026-01-21 15:11:50.745 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768993910736 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768993910736', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:11:50.746 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768993910736 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.47ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:11:50.747 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py', via 404 Error
+[E 2026-01-21 15:11:50.747 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768993910736 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768993910736', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 15:13:22.490 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 15:25:27.495 ServerApp] Saving file at /lab/seia.ipynb
+[W 2026-01-21 15:26:15.657 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768994775653 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.98ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:26:15.657 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 15:26:15.657 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768994775653 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768994775653', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:26:15.659 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768994775654 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.87ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:26:15.659 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 15:26:15.659 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768994775654 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768994775654', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:26:15.660 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768994775654 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.88ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:26:15.661 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py', via 404 Error
+[E 2026-01-21 15:26:15.661 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768994775654 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768994775654', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:26:15.663 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768994775654 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.07ms referer=http://localhost:8888/lab/tree/lab/seia.ipynb
+[I 2026-01-21 15:26:15.664 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py', via 404 Error
+[E 2026-01-21 15:26:15.664 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768994775654 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768994775654', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 15:27:27.550 ServerApp] Saving file at /lab/seia.ipynb
+[I 2026-01-21 15:38:55.042 ServerApp] Creating new directory in /lab
+[W 2026-01-21 15:39:13.838 ServerApp] delete /lab/Untitled Folder
+[I 2026-01-21 15:39:17.249 ServerApp] Creating new notebook in /lab
+[I 2026-01-21 15:39:17.503 ServerApp] Kernel started: fd43625b-325e-4f2d-b530-d6bd1487eac3
+[I 2026-01-21 15:39:18.122 ServerApp] Connecting to kernel fd43625b-325e-4f2d-b530-d6bd1487eac3.
+[W 2026-01-21 15:40:24.874 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624870 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.92ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:40:24.875 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 15:40:24.875 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624870 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624870', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:40:24.876 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.70ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:40:24.876 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 15:40:24.876 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:40:24.878 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.92ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:40:24.878 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py', via 404 Error
+[E 2026-01-21 15:40:24.878 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/csv/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:40:24.880 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.94ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:40:24.880 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 15:40:24.881 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768995624871', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:40:24.883 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871 (0f2f103406fe4522898403908108e0af@127.0.0.1) 3.34ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:40:24.883 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py', via 404 Error
+[E 2026-01-21 15:40:24.883 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/io/csv/functions.py?content=0&hash=0&1768995624871', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/io/csv/functions.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 15:41:21.231 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:43:21.273 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:45:21.471 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:47:22.492 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:51:24.503 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:57:27.485 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 15:58:43.930 ServerApp] Kernel restarted: fd43625b-325e-4f2d-b530-d6bd1487eac3
+[I 2026-01-21 15:58:43.934 ServerApp] Starting buffering for fd43625b-325e-4f2d-b530-d6bd1487eac3:cab5b078-12c1-4228-a450-ca6ad00c0465
+[I 2026-01-21 15:58:44.249 ServerApp] Connecting to kernel fd43625b-325e-4f2d-b530-d6bd1487eac3.
+[I 2026-01-21 15:58:44.249 ServerApp] Restoring connection for fd43625b-325e-4f2d-b530-d6bd1487eac3:cab5b078-12c1-4228-a450-ca6ad00c0465
+[W 2026-01-21 15:58:53.032 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.26ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:58:53.032 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py', via 404 Error
+[E 2026-01-21 15:58:53.033 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:58:53.035 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.75ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:58:53.035 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py', via 404 Error
+[E 2026-01-21 15:58:53.035 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733028', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:58:53.037 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.07ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:58:53.037 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py', via 404 Error
+[E 2026-01-21 15:58:53.037 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:58:53.038 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029 (0f2f103406fe4522898403908108e0af@127.0.0.1) 2.27ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:58:53.038 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py', via 404 Error
+[E 2026-01-21 15:58:53.038 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py?content=0&hash=0&1768996733029', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/pandas/io/parsers/readers.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:58:53.039 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/common.py?content=0&hash=0&1768996733029 (0f2f103406fe4522898403908108e0af@127.0.0.1) 3.31ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:58:53.040 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/pandas/io/common.py', via 404 Error
+[E 2026-01-21 15:58:53.040 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/pandas/io/common.py?content=0&hash=0&1768996733029 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/pandas/io/common.py?content=0&hash=0&1768996733029', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/pandas/io/common.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 15:59:26.372 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996766369 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.93ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 15:59:26.372 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 15:59:26.372 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996766369 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996766369', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 15:59:27.533 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 16:01:28.467 ServerApp] Saving file at /lab/seia_v2.ipynb
+[W 2026-01-21 16:02:21.791 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996941788 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.69ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:02:21.791 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 16:02:21.791 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996941788 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996941788', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:02:21.792 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996941788 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.60ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:02:21.793 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 16:02:21.793 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996941788 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996941788', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:02:21.794 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996941788 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.81ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:02:21.794 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py', via 404 Error
+[E 2026-01-21 16:02:21.794 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996941788 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996941788', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:02:21.795 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996941788 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.60ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:02:21.795 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py', via 404 Error
+[E 2026-01-21 16:02:21.795 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996941788 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996941788', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:03:06.735 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996986732 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.79ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:03:06.735 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py', via 404 Error
+[E 2026-01-21 16:03:06.735 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996986732 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/dataframe/frame.py?content=0&hash=0&1768996986732', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/dataframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:03:06.737 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996986732 (0f2f103406fe4522898403908108e0af@127.0.0.1) 0.79ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:03:06.737 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py', via 404 Error
+[E 2026-01-21 16:03:06.737 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996986732 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py?content=0&hash=0&1768996986732', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/_utils/deprecation.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:03:06.738 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996986732 (0f2f103406fe4522898403908108e0af@127.0.0.1) 1.75ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:03:06.738 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py', via 404 Error
+[E 2026-01-21 16:03:06.738 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996986732 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py?content=0&hash=0&1768996986732', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/opt_flags.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[W 2026-01-21 16:03:06.739 ServerApp] 404 GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996986732 (0f2f103406fe4522898403908108e0af@127.0.0.1) 2.57ms referer=http://localhost:8888/lab/tree/lab/seia_v2.ipynb
+[I 2026-01-21 16:03:06.739 ServerApp] Refusing to serve hidden file or directory '/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py', via 404 Error
+[E 2026-01-21 16:03:06.739 ServerApp] Uncaught exception GET /api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996986732 (127.0.0.1)
+    HTTPServerRequest(protocol='http', host='localhost:8888', method='GET', uri='/api/contents/.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py?content=0&hash=0&1768996986732', version='HTTP/1.1', remote_ip='127.0.0.1')
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 156, in get
+        model = await ensure_async(
+                ^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_core/utils/__init__.py", line 214, in ensure_async
+        result = await obj
+                 ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 928, in get
+        model = await self._file_model(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 829, in _file_model
+        model = self._base_model(path)
+                ^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/filemanager.py", line 237, in _base_model
+        raise web.HTTPError(404, four_o_four)
+    tornado.web.HTTPError: HTTP 404: Not Found (file or directory does not exist: '.venv/lib/python3.12/site-packages/polars/lazyframe/frame.py')
+    
+    During handling of the above exception, another exception occurred:
+    
+    Traceback (most recent call last):
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 1848, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 182, in get
+        await self._finish_error(
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/jupyter_server/services/contents/handlers.py", line 114, in _finish_error
+        self.write(message)
+      File "/home/raceychan/myprojects/pyprojects/aceai/.venv/lib/python3.12/site-packages/tornado/web.py", line 964, in write
+        raise RuntimeError("Cannot write() after finish()")
+    RuntimeError: Cannot write() after finish()
+[I 2026-01-21 16:03:29.471 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 16:05:29.523 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 16:07:30.475 ServerApp] Saving file at /lab/seia_v2.ipynb
+[I 2026-01-21 16:12:13.699 ServerApp] Starting buffering for e9377ed4-e6f5-4999-af73-a104641ebffb:7d7d7042-2557-4439-8987-5d8b32f2e425
+[I 2026-01-21 16:12:13.700 ServerApp] Starting buffering for fd43625b-325e-4f2d-b530-d6bd1487eac3:cab5b078-12c1-4228-a450-ca6ad00c0465
+[I 2026-01-21 16:12:13.701 ServerApp] Starting buffering for 71b7d776-7087-4fb8-982c-11af2996e864:f1912676-13c2-4f05-b4b9-4bd5c3963d9d

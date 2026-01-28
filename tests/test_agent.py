@@ -13,7 +13,7 @@ def test_build_agent_base() -> None:
         executor=None,  # type: ignore
     )
     assert agent.system_message.content[0]["data"] == "You are a helpful assistant."
-    assert agent.default_model == "gpt-4"
+    assert agent._default_model == "gpt-4"
     assert agent.max_steps == 5
     assert hasattr(agent, "run")
 

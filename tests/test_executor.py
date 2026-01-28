@@ -6,7 +6,7 @@ from ididi import Graph, use
 from msgspec import Struct
 
 from aceai.errors import AceAIRuntimeError
-from aceai.agent.executor import LoggingToolExecutor, ToolExecutor
+from aceai.agent.executor import LoggingToolExecutor, RunState, ToolExecutor
 from aceai.llm.models import LLMToolCall
 from aceai.tools import tool
 from aceai.tools._tool_sig import Annotated, spec
@@ -107,7 +107,7 @@ async def test_tool_executor_executes_tool_with_dep_graph(graph: Graph) -> None:
         call_id="call-123",
     )
 
-    encoded_result = await executor.execute_tool(call)
+    encoded_result = await executor.execute_tool(call, run_state=RunState())
 
     assert encoded_result == '"primary:7"'
 
@@ -123,7 +123,7 @@ async def test_tool_executor_awaits_async_tool_results(graph: Graph) -> None:
         call_id="call-async",
     )
 
-    result = await executor.execute_tool(call)
+    result = await executor.execute_tool(call, run_state=RunState())
 
     assert result == "3"
 
@@ -146,7 +146,7 @@ async def test_logging_tool_executor_logs_successful_calls(graph: Graph) -> None
         call_id="req-success",
     )
 
-    result = await executor.execute_tool(call)
+    result = await executor.execute_tool(call, run_state=RunState())
 
     assert result == "3"
     assert logger.info_messages == [
@@ -177,7 +177,7 @@ async def test_logging_tool_executor_logs_and_reraises_failures(graph: Graph) ->
     )
 
     with pytest.raises(AceAIRuntimeError, match="expected failure"):
-        await executor.execute_tool(call)
+        await executor.execute_tool(call, run_state=RunState())
 
     assert logger.info_messages == [
         'Tool unreliable_tool starting (call_id=req-fail) with {"value":1}'
@@ -193,7 +193,7 @@ async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
 
     call = LLMToolCall(name=client_tool.name, arguments="{}", call_id="req-httpx")
 
-    result = await executor.execute_tool(call)
+    result = await executor.execute_tool(call, run_state=RunState())
 
     assert result == '"AsyncClient"'
 
@@ -217,7 +217,7 @@ async def test_tool_executor_encodes_struct_return(graph: Graph) -> None:
         call_id="req-struct",
     )
 
-    encoded = await executor.execute_tool(call)
+    encoded = await executor.execute_tool(call, run_state=RunState())
 
     assert encoded == '{"value":5}'
 
@@ -233,3 +233,31 @@ async def test_tool_executor_exposes_tool_specs(graph: Graph) -> None:
     assert first is second
     schema_names = {spec.name for spec in first}
     assert echo_tool.name in schema_names
+
+
+@pytest.mark.anyio
+async def test_tool_executor_enforces_max_calls_per_run(graph: Graph) -> None:
+    executed: list[int] = []
+
+    def tick() -> int:
+        executed.append(1)
+        return len(executed)
+
+    tick_tool = tool(max_calls_per_run=1)(tick)
+    executor = ToolExecutor(graph, [tick_tool])
+    run_state = RunState()
+
+    first = await executor.execute_tool(
+        LLMToolCall(name=tick_tool.name, arguments="{}", call_id="call-1"),
+        run_state=run_state,
+    )
+    second = await executor.execute_tool(
+        LLMToolCall(name=tick_tool.name, arguments="{}", call_id="call-2"),
+        run_state=run_state,
+    )
+
+    assert first == "1"
+    assert second == (
+        "the tool tick exceeds its max calls in this run, do not call it again"
+    )
+    assert executed == [1]

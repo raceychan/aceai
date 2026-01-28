@@ -6,8 +6,8 @@ from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, set_span_in_context
 
 from ..errors import AceAIConfigurationError, AceAIRuntimeError
-from ..llm import ILLMService, LLMMessage, LLMResponse
-from ..llm.models import LLMRequestMeta, LLMToolCall
+from ..llm import ILLMService, LLMResponse
+from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall
 from ..models import AgentStep, ToolExecutionResult
 from .context_manager import ContextManager
 from .events import (
@@ -20,7 +20,7 @@ from .events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
-from .executor import ToolExecutor
+from .executor import RunState, ToolExecutor
 
 
 class ToolExecutionFailure(AceAIRuntimeError):
@@ -48,44 +48,55 @@ class AgentBase:
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
-        self.default_model = default_model
-        self.llm_service = llm_service
-        self._ctx_mgr = ContextManager(prompt)
+        self._default_model = default_model
+        self._llm_service = llm_service
+        self._prompt = prompt
+        self._ctx_mgr: ContextManager = ContextManager(prompt)
         self._executor = executor
         self._max_steps = max_steps
         self._tracer = tracer or trace.get_tracer("aceai.agent")
 
     @property
+    def default_model(self) -> str:
+        return self._default_model
+
+    @property
+    def llm_service(self) -> ILLMService:
+        return self._llm_service
+
+    @property
     def max_steps(self) -> int:
         return self._max_steps
-
-    def add_instruction(self, instruction: str) -> None:
-        if not instruction:
-            raise ValueError(f"Empty Instruction")
-        self._ctx_mgr.add_instruction(instruction)
 
     @property
     def system_message(self) -> LLMMessage:
         return self._ctx_mgr.system_message
 
+    def add_instruction(self, instruction: str) -> None:
+        """Add an instruction into the agent's context manager."""
+        if instruction == "":
+            raise ValueError("Empty Instruction")
+        self._ctx_mgr.add_instruction(instruction)
+
     async def _call_llm(
         self,
         request_meta: LLMRequestMeta,
+        messages: list[LLMMessage],
         event_builder: AgentEventBuilder,
         step_context: Context,
     ):
         executor = self._executor
 
         if executor:
-            stream = self.llm_service.stream(
-                messages=self._ctx_mgr.context,
+            stream = self._llm_service.stream(
+                messages=messages,
                 tools=executor.select_tools(),
                 metadata=request_meta,
                 trace_ctx=step_context,
             )
         else:
-            stream = self.llm_service.stream(
-                messages=self._ctx_mgr.context,
+            stream = self._llm_service.stream(
+                messages=messages,
                 metadata=request_meta,
                 trace_ctx=step_context,
             )
@@ -128,6 +139,7 @@ class AgentBase:
         current_step: AgentStep,
         event_builder: AgentEventBuilder,
         trace_ctx: Context,
+        run_state: RunState,
     ):
         executor = self._executor
 
@@ -138,7 +150,11 @@ class AgentBase:
                     "executor must be provided when tool calls are enabled"
                 )
             try:
-                tool_output = await executor.execute_tool(call, trace_ctx=trace_ctx)
+                tool_output = await executor.execute_tool(
+                    call,
+                    run_state=run_state,
+                    trace_ctx=trace_ctx,
+                )
             except Exception as exc:
                 raise ToolExecutionFailure(tool_call=call, error=exc) from exc
 
@@ -154,6 +170,7 @@ class AgentBase:
         *,
         event_builder: AgentEventBuilder,
         trace_ctx: Context,
+        run_state: RunState,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
         step_span = self._tracer.start_span(
@@ -169,7 +186,12 @@ class AgentBase:
 
         try:
             yield event_builder.llm_started()
-            llm_gen = self._call_llm(request_meta, event_builder, step_context)
+            llm_gen = self._call_llm(
+                request_meta,
+                messages=self._ctx_mgr.context,
+                event_builder=event_builder,
+                step_context=step_context,
+            )
             try:
                 async for event in llm_gen:
                     if not isinstance(event, AgentStep):
@@ -189,7 +211,10 @@ class AgentBase:
                         return
                     self._ctx_mgr.add_tool_call(current_step.llm_response)
                     tool_gen = self._make_toolcalls(
-                        current_step, event_builder, step_context
+                        current_step,
+                        event_builder,
+                        step_context,
+                        run_state,
                     )
                     try:
                         async for tool_event in tool_gen:
@@ -266,10 +291,10 @@ class AgentBase:
             },
         )
         run_context = set_span_in_context(run_span, trace_ctx or Context())
-        self._ctx_mgr.reset_context()
-        self._ctx_mgr.init_context(question)
+        self._ctx_mgr.init_context([LLMMessage.build(role="user", content=question)])
 
         steps: list[AgentStep] = []
+        run_state = RunState()
         error_msg: str | None = None
         try:
             for _ in range(self._max_steps):
@@ -281,6 +306,7 @@ class AgentBase:
                 step_gen = self._run_step(
                     event_builder=event_builder,
                     trace_ctx=run_context,
+                    run_state=run_state,
                     **request_meta,
                 )
                 try:

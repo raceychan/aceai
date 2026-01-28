@@ -1,5 +1,36 @@
 # Changelog
 
+## AceAI v0.1.9
+
+### Features
+
+1. support "self"  arg in tool
+
+```python
+
+@tool
+def off_load_context(self: AgentBase, )
+```
+
+2. support tool tag for grouping tools
+3. support max tool usage per run 
+4. tool registry & dynamic tool description
+
+## AceAI v0.1.8
+
+### Highlights
+- Release automation now infers the target version from the current `version/<x.y.z>` branch when `--version` is omitted, and `make release` no longer forces a placeholder `VERSION`.
+- Agent surface simplified: `BufferedStreamingAgent` export removed, streaming deltas remain unbuffered and no longer hydrate `reasoning_log` by default.
+- Agent instruction handling now deduplicates added instructions while keeping `system_message` in sync.
+
+### Tooling
+- `scripts/release.py` adds branch-based version parsing with validation and keeps `--version` optional; `make release` conditionally forwards the flag and avoids fake defaults.
+- Added regression coverage for release version inference from branch names.
+
+### Breaking
+- `aceai.agent.BufferedStreamingAgent` is gone; importers must use `AgentBase`.
+- `AgentBase.instructions` attribute was removed; consumers should rely on `add_instruction` + `system_message`.
+
 ## AceAI v0.1.7
 
 ### Highlights

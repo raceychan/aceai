@@ -1,5 +1,5 @@
 from typing import Any
 
-from .base import Tool
+from .tool import Tool
 
 BUILTIN_TOOLS: list[Tool[Any, Any]] = []

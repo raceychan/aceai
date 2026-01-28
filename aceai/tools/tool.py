@@ -2,7 +2,7 @@ from inspect import iscoroutinefunction, signature
 from typing import Annotated as Annotated
 from typing import Any, Callable, Protocol, TypedDict, Unpack, overload
 
-from msgspec import Struct
+from msgspec import Struct, field
 from msgspec.json import Decoder
 from msgspec.json import encode as msg_encode
 from msgspec.structs import asdict as msg_asdict
@@ -43,39 +43,53 @@ class IToolMeta(TypedDict, total=False):
     """
     Human-readable description of the tool.
     """
+    max_calls_per_run: int
+    """
+    Maximum number of times this tool may be executed during a single agent run.
+    """
     record_in_history: bool
     """
     Whether to record tool calls and outputs in the agent's history.
     """
+    tags: list[str]
 
 
 class ToolMeta(Struct):
     "Every meta field should be optional."
 
-    description: Maybe[str] = MISSING
+    description: str = ""
+    max_calls_per_run: Maybe[int] = MISSING
     record_in_history: Maybe[bool] = MISSING
+    tags: list[str] = field(default_factory=list[str])
 
 
 class Tool[**P, R]:
     def __init__(
         self,
         name: str,
-        description: str,
         signature: ToolSignature,
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
-        record_in_history: Maybe[bool],
+        metadata: ToolMeta,
         spec_cls: type[IToolSpec] = OpenAIToolSpec,
     ):
         self.name = name
-        self.description = description
         self.signature = signature
         self.func = func
         self._tool_spec_cache: dict[type[object], IToolSpec] = {}
         self._decoder = decoder
-        self._record_in_history = record_in_history
+        self._meta = metadata
         self._spec_cls = spec_cls
         self._is_async = iscoroutinefunction(func)
+
+    @property
+    def metadata(self) -> ToolMeta:
+        """Metadata associated with the tool."""
+        return self._meta
+
+    @property
+    def description(self) -> str:
+        return self._meta.description
 
     @property
     def is_async(self) -> bool:
@@ -109,7 +123,7 @@ class Tool[**P, R]:
         spec = target_cls(
             signature=self.signature,
             name=self.name,
-            description=self.description,
+            description=self._meta.description,
         )
         self._tool_spec_cache[target_cls] = spec
         return spec
@@ -128,24 +142,25 @@ class Tool[**P, R]:
     def from_func(
         cls,
         func: Callable[P, R],
-        meta: ToolMeta,
+        meta: Maybe[ToolMeta] = MISSING,
         spec_cls: type[IToolSpec] = OpenAIToolSpec,
     ) -> "Tool[P, R]":
         """Construct a Tool from a callable using its annotated signature."""
         func_sig = signature(func)
         tool_signature = ToolSignature.from_signature(func_sig)
         decoder = Decoder(type=tool_signature.virtual_struct, strict=False)
-        if is_present(meta.description):
-            description = meta.description
-        else:
-            description = func.__doc__ or ""
+
+        if not is_present(meta):
+            meta = ToolMeta(description=func.__doc__ or "")
+        elif meta.description == "":
+            meta.description = func.__doc__ or ""
+
         return cls(
             name=func.__name__,
-            description=description,
             signature=tool_signature,
             func=func,
             decoder=decoder.decode,
-            record_in_history=meta.record_in_history,
+            metadata=meta,
             spec_cls=spec_cls,
         )
 
@@ -170,14 +185,12 @@ def tool[**P, R](
     spec_cls: type[IToolSpec] = OpenAIToolSpec,
     **tool_meta: Unpack[IToolMeta],
 ) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
-    if is_present(func):
-        return Tool[P, R].from_func(
-            func=func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
-        )
+    if is_present(func):  # without any config
+        return Tool[P, R].from_func(func=func, spec_cls=spec_cls)
 
-    def wrapper(inner_func: Callable[P, R]) -> Tool[P, R]:
-        return Tool[P, R].from_func(
-            func=inner_func, meta=ToolMeta(**tool_meta), spec_cls=spec_cls
-        )
+    set_meta = ToolMeta(**tool_meta)
+
+    def wrapper(f: Callable[P, R]) -> Tool[P, R]:
+        return Tool[P, R].from_func(func=f, meta=set_meta, spec_cls=spec_cls)
 
     return wrapper

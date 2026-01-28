@@ -12,3 +12,4 @@ wheels/
 
 # Jupyter artifacts
 .ipynb_checkpoints/
+lab/
