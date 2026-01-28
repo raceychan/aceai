@@ -16,7 +16,25 @@ class RunState(Struct, kw_only=True):
     tool_call_counts: dict[str, int] = field(default_factory=dict[str, int])
 
 
-class ToolExecutor:
+class IExecutor:
+    def select_tools(
+        self, include: set[str] | None = None, exclude: set[str] | None = None
+    ) -> list[IToolSpec]:
+        "select tools by names, good for dynamic tool selection"
+        raise NotImplementedError
+
+    async def execute_tool(
+        self,
+        tool_call: LLMToolCall,
+        *,
+        run_state: RunState,
+        trace_ctx: Context | None = None,
+    ) -> str:
+        "execute a tool call and return the result as string"
+        raise NotImplementedError
+
+
+class ToolExecutor(IExecutor):
     def __init__(
         self,
         graph: Graph,
@@ -158,3 +176,4 @@ class LoggingToolExecutor(ToolExecutor):
             f"Tool {tool_call.name} finished in {duration:.2f}s, result: {result}",
         )
         return result
+

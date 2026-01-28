@@ -20,7 +20,7 @@ from .events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
-from .executor import RunState, ToolExecutor
+from .executor import RunState, IExecutor
 
 
 class ToolExecutionFailure(AceAIRuntimeError):
@@ -43,7 +43,7 @@ class AgentBase:
         default_model: str,
         llm_service: ILLMService,
         max_steps: int = 5,
-        executor: ToolExecutor | None = None,
+        executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
     ):
         if max_steps < 1:
