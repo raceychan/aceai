@@ -1,3 +1,5 @@
+import pytest
+
 from aceai.agent.tui import cli
 
 
@@ -14,46 +16,25 @@ class StubRecorder:
         self.saved = saved
 
 
-def test_cli_question_runs_single_question_tui(monkeypatch) -> None:
+def test_cli_rejects_direct_question_without_creating_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
-    agent = StubAgent()
 
     def build_default_agent(*, api_key, model):
         calls.append(("build", (api_key, model)))
-        return agent
-
-    def run_agent_tui(received_agent, question, **kwargs):
-        calls.append(("single", (received_agent, question, kwargs)))
+        return StubAgent()
 
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
     monkeypatch.setattr(
         cli,
         "create_session_context",
-        lambda *, resume_session_id: (object(), StubMetadata(), [], []),
+        lambda *, resume_session_id: calls.append(("session", resume_session_id)),
     )
-    recorder = StubRecorder()
-    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
-    monkeypatch.setattr(cli, "run_agent_tui", run_agent_tui)
 
-    cli.main(["hello", "world"])
+    with pytest.raises(ValueError, match="only accepts no arguments"):
+        cli.main(["hello", "world"])
 
-    assert calls == [
-        ("build", ("key", "gpt-5.5")),
-        (
-            "single",
-            (
-                agent,
-                "hello world",
-                {
-                    "initial_events": [],
-                    "initial_history": [],
-                    "session_recorder": recorder,
-                    "session_id": "session-1",
-                },
-            ),
-        ),
-    ]
+    assert calls == []
 
 
 def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
@@ -128,12 +109,12 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_configured_tui", run_configured_tui)
 
-    cli.main(["hello"])
+    cli.main([])
 
     assert calls[0][0] == "configured"
     payload = calls[0][1]
     assert payload[1] is None
-    assert payload[2] == "hello"
+    assert payload[2] == ""
     assert payload[3] == "gpt-5.5"
     assert payload[4] == {
         "initial_events": ["event"],
@@ -201,6 +182,72 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
     ]
 
 
+def test_cli_resume_without_session_id_loads_latest_updated_session(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    class StubStore:
+        def list_sessions(self):
+            class LatestMetadata:
+                session_id = "latest-session"
+
+            return [LatestMetadata()]
+
+    def build_default_agent(*, api_key, model):
+        calls.append(("build", (api_key, model)))
+        return agent
+
+    def create_session_context(*, resume_session_id):
+        calls.append(("session", resume_session_id))
+        return object(), StubMetadata(), ["restored"], ["history"]
+
+    def run_interactive_tui(received_agent, **kwargs):
+        calls.append(("interactive", (received_agent, kwargs)))
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "create_session_context", create_session_context)
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main(["resume"])
+
+    assert calls == [
+        ("session", "latest-session"),
+        ("build", ("key", "gpt-5.5")),
+        (
+            "interactive",
+            (
+                agent,
+                {
+                    "initial_events": ["restored"],
+                    "initial_history": ["history"],
+                    "session_recorder": recorder,
+                    "session_id": "session-1",
+                },
+            ),
+        ),
+    ]
+
+
+def test_cli_resume_rejects_extra_question(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setattr(
+        cli,
+        "create_session_context",
+        lambda *, resume_session_id: calls.append(("session", resume_session_id)),
+    )
+
+    with pytest.raises(ValueError, match="aceai resume requires a session_id"):
+        cli.main(["resume", "session-1", "hello"])
+
+    assert calls == []
+
+
 def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys) -> None:
     agent = StubAgent()
     recorder = StubRecorder(saved=True)
@@ -238,3 +285,16 @@ def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
 
     captured = capsys.readouterr()
     assert captured.out == "# AceAI session session-1\n\n## user\nhello\n"
+
+
+def test_cli_cost_prints_total_session_cost(monkeypatch, capsys) -> None:
+    class StubStore:
+        def total_cost_usd(self):
+            return 0.012345
+
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    cli.main(["cost"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "$0.0123\n"

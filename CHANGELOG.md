@@ -1,5 +1,22 @@
 # Changelog
 
+## AceAI v0.2.3
+
+### Features
+
+- `tui`: Add token usage and estimated cost tracking to live runs, restored sessions, the status bar, and session browsing.
+- `cli`: Add `aceai cost` for the total estimated cost across saved sessions, and allow `aceai resume` to reopen the latest updated session when no session id is provided.
+
+### Improvements
+
+- `sessions`: Persist assistant usage and cost metadata with compact session messages so restored transcripts keep their accounting context.
+- `openai`: Capture cached input token usage from OpenAI Responses usage details.
+- `tui`: Keep restored transcript events out of the execution timeline and improve stream rendering coverage for restored sessions and long content.
+
+### Breaking Changes
+
+- `cli`: Remove direct one-shot question execution from `aceai <question>`; launch `aceai` and submit the question inside the TUI instead.
+
 ## AceAI v0.2.0
 
 ### Features

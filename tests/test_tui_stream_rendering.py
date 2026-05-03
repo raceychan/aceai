@@ -1,5 +1,6 @@
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.table import Table
 from rich.text import Text
 
 from aceai.core.events import AgentEventBuilder
@@ -7,7 +8,12 @@ from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolExecutionResult
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
-from aceai.agent.tui.widgets.stream import _render_events
+from aceai.agent.tui.state import reduce_events
+from aceai.agent.tui.widgets.stream import (
+    StreamWidget,
+    _chat_panel_width,
+    _render_events,
+)
 
 
 def test_consecutive_assistant_deltas_render_as_one_block() -> None:
@@ -49,16 +55,103 @@ def test_main_stream_renders_question_before_answer() -> None:
     assert len(renderables) == 2
     question = renderables[0]
     answer = renderables[1]
-    assert isinstance(question, Panel)
+    assert isinstance(question, Table)
     assert isinstance(answer, Panel)
-    assert question.title == "you"
-    assert answer.title == "assistant"
-    question_renderable = question.renderable
+    question_panel = question.columns[1]._cells[0]
+    assert isinstance(question_panel, Panel)
+    assert question_panel.title is None
+    assert answer.title is None
+    assert not answer.expand
+    question_renderable = question_panel.renderable
     answer_renderable = answer.renderable
     assert isinstance(question_renderable, Text)
     assert isinstance(answer_renderable, Markdown)
     assert question_renderable.plain == "How do I search?"
     assert answer_renderable.markup == "Use rg."
+
+
+def test_user_messages_render_right_aligned() -> None:
+    renderables = _render_events([user_message_event("Where am I?")])
+
+    message = renderables[0]
+    assert isinstance(message, Table)
+    assert message.expand
+    assert len(message.columns) == 2
+    assert message.columns[0].ratio == 1
+    panel = message.columns[1]._cells[0]
+    assert isinstance(panel, Panel)
+    assert not panel.expand
+    assert panel.title is None
+
+
+def test_stream_writes_user_message_rows_expanded() -> None:
+    stream = StreamWidget()
+    writes: list[tuple[object, bool]] = []
+
+    def fake_write(
+        content: object,
+        *,
+        expand: bool = False,
+        **kwargs: object,
+    ) -> StreamWidget:
+        writes.append((content, expand))
+        return stream
+
+    stream.write = fake_write
+    stream.clear = lambda: None
+    stream.call_after_refresh = lambda *args, **kwargs: None
+
+    stream.set_state(reduce_events([user_message_event("Where am I?")]))
+
+    assert len(writes) == 1
+    content, expand = writes[0]
+    assert isinstance(content, Table)
+    assert expand
+
+
+def test_stream_writes_assistant_messages_with_capped_width() -> None:
+    stream = StreamWidget()
+    writes: list[tuple[object, int | None]] = []
+
+    def fake_write(
+        content: object,
+        *,
+        width: int | None = None,
+        **kwargs: object,
+    ) -> StreamWidget:
+        writes.append((content, width))
+        return stream
+
+    stream.write = fake_write
+    stream.clear = lambda: None
+    stream.call_after_refresh = lambda *args, **kwargs: None
+
+    event = adapt_agent_event(
+        AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
+            text_delta="x" * 300
+        )
+    )
+    stream.set_state(reduce_events([event]))
+
+    assert len(writes) == 1
+    content, width = writes[0]
+    assert isinstance(content, Panel)
+    assert width == 100
+
+
+def test_short_assistant_messages_keep_natural_width() -> None:
+    panel = _render_events(
+        [
+            adapt_agent_event(
+                AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
+                    text_delta="Use rg."
+                )
+            )
+        ]
+    )[0]
+
+    assert isinstance(panel, Panel)
+    assert _chat_panel_width(panel, 120) == 11
 
 
 def test_assistant_markdown_renders_as_markdown() -> None:
@@ -73,6 +166,8 @@ def test_assistant_markdown_renders_as_markdown() -> None:
 
     panel = renderables[0]
     assert isinstance(panel, Panel)
+    assert not panel.expand
+    assert panel.title is None
     panel_renderable = panel.renderable
     assert isinstance(panel_renderable, Markdown)
     assert panel_renderable.markup == "## Steps\n\n- Use `rg`\n- Run tests"

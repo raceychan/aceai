@@ -13,8 +13,9 @@ from sqlalchemy.engine import RowMapping
 
 from aceai.core.models import ToolExecutionResult
 from aceai.core.helpers.string import uuid_str
-from aceai.llm.models import LLMMessage, LLMToolCall
+from aceai.llm.models import LLMMessage, LLMToolCall, LLMUsage
 
+from .tui.cost import TUICostEstimate
 from .tui.events import TUIEvent, user_message_event
 
 SessionMessageKind = Literal["user", "assistant", "tool", "error"]
@@ -37,6 +38,19 @@ class SessionMessage(Struct, frozen=True, kw_only=True):
     tool_arguments: str = ""
     tool_output: str = ""
     status: str = ""
+    usage_input_tokens: int | None = None
+    usage_cached_input_tokens: int | None = None
+    usage_output_tokens: int | None = None
+    usage_total_tokens: int | None = None
+    cost_model: str | None = None
+    cost_input_usd: float | None = None
+    cost_cached_input_usd: float | None = None
+    cost_output_usd: float | None = None
+    cost_total_usd: float | None = None
+    cost_input_usd_per_million: float | None = None
+    cost_cached_input_usd_per_million: float | None = None
+    cost_output_usd_per_million: float | None = None
+    cost_pricing_source: str | None = None
 
 
 class _ToolBuffer(Struct, kw_only=True):
@@ -169,6 +183,14 @@ class SessionStore:
         messages = self.load_messages(session_id)
         return messages_to_export_text(metadata, messages)
 
+    def total_cost_usd(self) -> float:
+        total = 0.0
+        for session in self.list_sessions():
+            for message in self.load_messages(session.session_id):
+                if message.cost_total_usd is not None:
+                    total += message.cost_total_usd
+        return total
+
     def _init_db(self) -> None:
         _metadata.create_all(self.engine)
 
@@ -213,23 +235,19 @@ class SessionRecorder:
         if event.kind == "tool_output":
             self._tool_for(event).output += event.content
             return
+        if event.kind == "llm_completed":
+            if self._assistant_buffer != "":
+                self.flush_assistant(event.usage, event.cost)
+            elif event.content != "":
+                self._append_assistant_message(event.content, event.usage, event.cost)
+            return
 
-        flushed_assistant = self._assistant_buffer != ""
         self.flush_assistant()
         if event.kind == "user_message":
             self.store.append_message(
                 self.session_id,
                 SessionMessage(
                     kind="user",
-                    content=event.content,
-                    created_at=_utc_now().isoformat(),
-                ),
-            )
-        elif event.kind == "llm_completed" and event.content != "" and not flushed_assistant:
-            self.store.append_message(
-                self.session_id,
-                SessionMessage(
-                    kind="assistant",
                     content=event.content,
                     created_at=_utc_now().isoformat(),
                 ),
@@ -247,18 +265,53 @@ class SessionRecorder:
                 ),
             )
 
-    def flush_assistant(self) -> None:
+    def flush_assistant(
+        self,
+        usage: LLMUsage | None = None,
+        cost: TUICostEstimate | None = None,
+    ) -> None:
         if self._assistant_buffer == "":
             return
+        self._append_assistant_message(self._assistant_buffer, usage, cost)
+        self._assistant_buffer = ""
+
+    def _append_assistant_message(
+        self,
+        content: str,
+        usage: LLMUsage | None,
+        cost: TUICostEstimate | None,
+    ) -> None:
         self.store.append_message(
             self.session_id,
             SessionMessage(
                 kind="assistant",
-                content=self._assistant_buffer,
+                content=content,
                 created_at=_utc_now().isoformat(),
+                usage_input_tokens=None if usage is None else usage.input_tokens,
+                usage_cached_input_tokens=(
+                    None if usage is None else usage.cached_input_tokens
+                ),
+                usage_output_tokens=None if usage is None else usage.output_tokens,
+                usage_total_tokens=None if usage is None else usage.total_tokens,
+                cost_model=None if cost is None else cost.model,
+                cost_input_usd=None if cost is None else cost.input_cost_usd,
+                cost_cached_input_usd=(
+                    None if cost is None else cost.cached_input_cost_usd
+                ),
+                cost_output_usd=None if cost is None else cost.output_cost_usd,
+                cost_total_usd=None if cost is None else cost.total_cost_usd,
+                cost_input_usd_per_million=(
+                    None if cost is None else cost.input_usd_per_million
+                ),
+                cost_cached_input_usd_per_million=(
+                    None if cost is None else cost.cached_input_usd_per_million
+                ),
+                cost_output_usd_per_million=(
+                    None if cost is None else cost.output_usd_per_million
+                ),
+                cost_pricing_source=None if cost is None else cost.pricing_source,
             ),
         )
-        self._assistant_buffer = ""
 
     def finalize(self) -> bool:
         if self._finalized:
@@ -322,6 +375,8 @@ def messages_to_tui_events(messages: list[SessionMessage]) -> list[TUIEvent]:
         if message.kind == "user":
             events.append(user_message_event(message.content))
         elif message.kind == "assistant":
+            usage = _message_usage(message)
+            cost = _message_cost(message)
             events.append(
                 TUIEvent(
                     kind="assistant_delta",
@@ -329,6 +384,8 @@ def messages_to_tui_events(messages: list[SessionMessage]) -> list[TUIEvent]:
                     step_id=uuid_str(),
                     title="assistant",
                     content=message.content,
+                    usage=usage,
+                    cost=cost,
                     raw_event=None,
                 )
             )
@@ -374,6 +431,47 @@ def messages_to_tui_events(messages: list[SessionMessage]) -> list[TUIEvent]:
     return events
 
 
+def _message_usage(message: SessionMessage) -> LLMUsage | None:
+    if (
+        message.usage_input_tokens is None
+        and message.usage_output_tokens is None
+        and message.usage_total_tokens is None
+    ):
+        return None
+    return LLMUsage(
+        input_tokens=message.usage_input_tokens,
+        cached_input_tokens=message.usage_cached_input_tokens,
+        output_tokens=message.usage_output_tokens,
+        total_tokens=message.usage_total_tokens,
+    )
+
+
+def _message_cost(message: SessionMessage) -> TUICostEstimate | None:
+    if (
+        message.cost_model is None
+        or message.cost_input_usd is None
+        or message.cost_cached_input_usd is None
+        or message.cost_output_usd is None
+        or message.cost_total_usd is None
+        or message.cost_input_usd_per_million is None
+        or message.cost_cached_input_usd_per_million is None
+        or message.cost_output_usd_per_million is None
+        or message.cost_pricing_source is None
+    ):
+        return None
+    return TUICostEstimate(
+        model=message.cost_model,
+        input_cost_usd=message.cost_input_usd,
+        cached_input_cost_usd=message.cost_cached_input_usd,
+        output_cost_usd=message.cost_output_usd,
+        total_cost_usd=message.cost_total_usd,
+        input_usd_per_million=message.cost_input_usd_per_million,
+        cached_input_usd_per_million=message.cost_cached_input_usd_per_million,
+        output_usd_per_million=message.cost_output_usd_per_million,
+        pricing_source=message.cost_pricing_source,
+    )
+
+
 def messages_to_llm_history(messages: list[SessionMessage]) -> list[LLMMessage]:
     history: list[LLMMessage] = []
     for message in messages:
@@ -410,6 +508,21 @@ def _message_to_json(message: SessionMessage) -> dict[str, Any]:
         "tool_arguments": message.tool_arguments,
         "tool_output": message.tool_output,
         "status": message.status,
+        "usage_input_tokens": message.usage_input_tokens,
+        "usage_cached_input_tokens": message.usage_cached_input_tokens,
+        "usage_output_tokens": message.usage_output_tokens,
+        "usage_total_tokens": message.usage_total_tokens,
+        "cost_model": message.cost_model,
+        "cost_input_usd": message.cost_input_usd,
+        "cost_cached_input_usd": message.cost_cached_input_usd,
+        "cost_output_usd": message.cost_output_usd,
+        "cost_total_usd": message.cost_total_usd,
+        "cost_input_usd_per_million": message.cost_input_usd_per_million,
+        "cost_cached_input_usd_per_million": (
+            message.cost_cached_input_usd_per_million
+        ),
+        "cost_output_usd_per_million": message.cost_output_usd_per_million,
+        "cost_pricing_source": message.cost_pricing_source,
     }
 
 
@@ -426,6 +539,21 @@ def _message_from_json(payload: dict[str, Any]) -> SessionMessage:
         tool_arguments=payload["tool_arguments"],
         tool_output=payload["tool_output"],
         status=payload["status"],
+        usage_input_tokens=payload.get("usage_input_tokens"),
+        usage_cached_input_tokens=payload.get("usage_cached_input_tokens"),
+        usage_output_tokens=payload.get("usage_output_tokens"),
+        usage_total_tokens=payload.get("usage_total_tokens"),
+        cost_model=payload.get("cost_model"),
+        cost_input_usd=payload.get("cost_input_usd"),
+        cost_cached_input_usd=payload.get("cost_cached_input_usd"),
+        cost_output_usd=payload.get("cost_output_usd"),
+        cost_total_usd=payload.get("cost_total_usd"),
+        cost_input_usd_per_million=payload.get("cost_input_usd_per_million"),
+        cost_cached_input_usd_per_million=payload.get(
+            "cost_cached_input_usd_per_million"
+        ),
+        cost_output_usd_per_million=payload.get("cost_output_usd_per_million"),
+        cost_pricing_source=payload.get("cost_pricing_source"),
     )
 
 

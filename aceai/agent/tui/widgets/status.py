@@ -2,7 +2,8 @@
 
 from textual.widgets import Static
 
-from aceai.agent.tui.state import TUIRunStatus
+from aceai.agent.tui.cost import format_usd
+from aceai.agent.tui.state import TUIRunStatus, TUIUsageState
 
 
 class StatusBarWidget(Static):
@@ -21,7 +22,33 @@ class StatusBarWidget(Static):
         super().__init__("", id=id)
         self.current_text = ""
 
-    def set_status(self, *, model: str | None, status: TUIRunStatus) -> None:
+    def set_status(
+        self,
+        *,
+        model: str | None,
+        status: TUIRunStatus,
+        usage: TUIUsageState | None = None,
+    ) -> None:
         model_text = model if model is not None else "unconfigured"
-        self.current_text = f"model: {model_text}   status: {status}"
+        usage_text = _usage_text(usage or TUIUsageState())
+        self.current_text = f"model: {model_text}   status: {status}   {usage_text}"
         self.update(self.current_text)
+
+
+def _usage_text(usage: TUIUsageState) -> str:
+    context = _format_tokens(usage.current_context_tokens)
+    cached = _format_tokens(usage.session_cached_input_tokens)
+    session = _format_tokens(usage.session_total_tokens)
+    input_tokens = _format_tokens(usage.session_input_tokens)
+    output_tokens = _format_tokens(usage.session_output_tokens)
+    cost = format_usd(usage.session_cost_usd)
+    return (
+        f"ctx: {context}   session: {session} "
+        f"({input_tokens} in / {cached} cached / {output_tokens} out)   cost: {cost}"
+    )
+
+
+def _format_tokens(value: int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:,}"

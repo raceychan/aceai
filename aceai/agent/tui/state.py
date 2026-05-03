@@ -5,7 +5,9 @@ from typing import Literal
 from msgspec import field
 
 from aceai.llm.interface import Record
+from aceai.llm.models import LLMUsage
 
+from .cost import TUICostEstimate
 from .events import TUIEvent
 
 TUIRunStatus = Literal["idle", "running", "completed", "failed"]
@@ -31,6 +33,17 @@ class TUIStepState(Record, kw_only=True):
     tools: list[TUIToolState] = field(default_factory=list[TUIToolState])
 
 
+class TUIUsageState(Record, kw_only=True):
+    current_context_tokens: int | None = None
+    current_cached_input_tokens: int | None = None
+    session_input_tokens: int | None = None
+    session_cached_input_tokens: int | None = None
+    session_output_tokens: int | None = None
+    session_total_tokens: int | None = None
+    current_cost_usd: float | None = None
+    session_cost_usd: float | None = None
+
+
 class TUIRunState(Record, kw_only=True):
     status: TUIRunStatus = "idle"
     steps: list[TUIStepState] = field(default_factory=list[TUIStepState])
@@ -38,6 +51,7 @@ class TUIRunState(Record, kw_only=True):
     selected_event_id: str | None = None
     final_answer: str = ""
     error: str | None = None
+    usage: TUIUsageState = field(default_factory=TUIUsageState)
 
 
 def initial_state() -> TUIRunState:
@@ -61,7 +75,64 @@ def apply_tui_event(state: TUIRunState, event: TUIEvent) -> TUIRunState:
         selected_event_id=event.event_id,
         final_answer=event.content if event.kind == "run_completed" else state.final_answer,
         error=event.error if event.kind == "run_failed" else state.error,
+        usage=_apply_usage_event(state.usage, event),
     )
+
+
+def _apply_usage_event(usage_state: TUIUsageState, event: TUIEvent) -> TUIUsageState:
+    if event.usage is None:
+        return usage_state
+    usage = event.usage
+    input_tokens = _token_count(usage.input_tokens)
+    output_tokens = _token_count(usage.output_tokens)
+    cached_input_tokens = _token_count(usage.cached_input_tokens)
+    total_tokens = _token_count(usage.total_tokens)
+    if total_tokens == 0:
+        total_tokens = input_tokens + output_tokens
+    return TUIUsageState(
+        current_context_tokens=usage.input_tokens,
+        current_cached_input_tokens=usage.cached_input_tokens,
+        session_input_tokens=_add_tokens(
+            usage_state.session_input_tokens,
+            input_tokens,
+        ),
+        session_cached_input_tokens=_add_tokens(
+            usage_state.session_cached_input_tokens,
+            cached_input_tokens,
+        ),
+        session_output_tokens=_add_tokens(
+            usage_state.session_output_tokens,
+            output_tokens,
+        ),
+        session_total_tokens=_add_tokens(
+            usage_state.session_total_tokens,
+            total_tokens,
+        ),
+        current_cost_usd=None if event.cost is None else event.cost.total_cost_usd,
+        session_cost_usd=_add_cost(usage_state.session_cost_usd, event.cost),
+    )
+
+
+def _token_count(value: int | None) -> int:
+    if value is None:
+        return 0
+    return value
+
+
+def _add_tokens(total: int | None, increment: int) -> int | None:
+    if total is None and increment == 0:
+        return None
+    if total is None:
+        return increment
+    return total + increment
+
+
+def _add_cost(total: float | None, cost: TUICostEstimate | None) -> float | None:
+    if cost is None:
+        return total
+    if total is None:
+        return cost.total_cost_usd
+    return total + cost.total_cost_usd
 
 
 def _apply_step_event(
@@ -69,6 +140,8 @@ def _apply_step_event(
     event: TUIEvent,
 ) -> list[TUIStepState]:
     if event.kind in ("user_message", "session_notice"):
+        return steps
+    if event.raw_event is None and event.step_index == -1:
         return steps
 
     target = _find_step(steps, event.step_id)
@@ -165,6 +238,10 @@ def _update_tool(tool_state: TUIToolState, event: TUIEvent) -> TUIToolState:
 
 
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
+    if _is_restored_transcript_event(event):
+        return status
+    if event.kind in ("user_message", "session_notice"):
+        return status
     if event.kind == "step_started":
         return "running"
     if event.kind == "run_completed":
@@ -174,6 +251,10 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if status == "idle":
         return "running"
     return status
+
+
+def _is_restored_transcript_event(event: TUIEvent) -> bool:
+    return event.raw_event is None and event.step_index == -1
 
 
 def _next_step_status(status: TUIStepStatus, event: TUIEvent) -> TUIStepStatus:

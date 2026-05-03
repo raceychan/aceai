@@ -475,6 +475,7 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
         ],
         usage=NamespaceWithDump(
             input_tokens=1,
+            input_tokens_details=NamespaceWithDump(cached_tokens=1),
             output_tokens=2,
             total_tokens=3,
             output_tokens_details=None,
@@ -489,6 +490,7 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
     assert llm_response.tool_calls[0].name == "lookup"
     assert llm_response.usage is not None
     assert llm_response.usage.input_tokens == 1
+    assert llm_response.usage.cached_input_tokens == 1
     image_segment = next(seg for seg in llm_response.segments if seg.type == "image")
     assert image_segment.media is not None
     assert image_segment.media.data is not None

@@ -22,9 +22,10 @@ from aceai.core.events import (
     ToolStartedEvent,
 )
 from aceai.core.helpers.string import uuid_str
-from aceai.llm.interface import Record
-from aceai.llm.models import LLMSegment, LLMToolCall, LLMToolCallDelta
+from aceai.llm.interface import Record, is_set
+from aceai.llm.models import LLMUsage, LLMSegment, LLMToolCall, LLMToolCallDelta
 from aceai.core.models import ToolExecutionResult
+from .cost import TUICostEstimate, estimate_usage_cost
 
 TUIEventKind = Literal[
     "user_message",
@@ -63,6 +64,8 @@ class TUIEvent(Record, kw_only=True):
     tool_call_delta: LLMToolCallDelta | None = None
     tool_result: ToolExecutionResult | None = None
     segment: LLMSegment | None = None
+    usage: LLMUsage | None = None
+    cost: TUICostEstimate | None = None
     error: str | None = None
 
 
@@ -141,12 +144,19 @@ def adapt_agent_event(event: AgentEvent) -> TUIEvent:
             raw_event=event,
         )
     if isinstance(event, LLMCompletedEvent):
+        response = event.step.llm_response
+        usage: LLMUsage | None = None
+        if is_set(response.usage):
+            usage = response.usage
+        cost = estimate_usage_cost(response.model, usage)
         return TUIEvent(
             kind="llm_completed",
             step_index=event.step_index,
             step_id=event.step_id,
             title="llm completed",
-            content=event.step.llm_response.text,
+            content=response.text,
+            usage=usage,
+            cost=cost,
             raw_event=event,
         )
     if isinstance(event, ToolStartedEvent):

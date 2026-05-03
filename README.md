@@ -15,12 +15,6 @@ the TUI directly:
 aceai
 ```
 
-You can also run a single question immediately:
-
-```bash
-aceai "Explain this repository"
-```
-
 Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
 If no API key is available, the TUI asks for provider settings and lets you
 choose whether to persist them to `~/.aceai/config.yaml`.
@@ -53,7 +47,6 @@ If you just want to use AceAI as an app, do not import anything; run the CLI:
 
 ```bash
 aceai
-aceai "Explain this repository"
 ```
 
 ## Why another framework?
