@@ -200,3 +200,24 @@ def test_session_messages_restore_user_assistant_llm_history_only(tmp_path) -> N
         LLMMessage.build(role="user", content="hello"),
         LLMMessage.build(role="assistant", content="answer"),
     ]
+
+
+def test_session_store_exports_readable_text(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    recorder.record(user_message_event("hello"))
+    recorder.record(
+        adapt_agent_event(
+            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
+                text_delta="answer"
+            )
+        )
+    )
+    recorder.flush_assistant()
+
+    text = store.export_text(metadata.session_id)
+
+    assert text.startswith(f"# AceAI session {metadata.session_id}\n")
+    assert "## user\nhello\n" in text
+    assert "## assistant\nanswer\n" in text

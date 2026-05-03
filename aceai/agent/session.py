@@ -154,6 +154,11 @@ class SessionStore:
     def load_tui_events(self, session_id: str) -> list[TUIEvent]:
         return messages_to_tui_events(self.load_messages(session_id))
 
+    def export_text(self, session_id: str) -> str:
+        metadata = self.get_session(session_id)
+        messages = self.load_messages(session_id)
+        return messages_to_export_text(metadata, messages)
+
     def _init_db(self) -> None:
         _metadata.create_all(self.engine)
 
@@ -353,6 +358,22 @@ def messages_to_llm_history(messages: list[SessionMessage]) -> list[LLMMessage]:
     return history
 
 
+def messages_to_export_text(
+    metadata: SessionMetadata, messages: list[SessionMessage]
+) -> str:
+    lines = [
+        f"# AceAI session {metadata.session_id}",
+        f"title: {metadata.title}",
+        f"created_at: {metadata.created_at.isoformat()}",
+        f"updated_at: {metadata.updated_at.isoformat()}",
+        "",
+    ]
+    for message in messages:
+        lines.extend(_message_to_export_lines(message))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _message_to_json(message: SessionMessage) -> dict[str, Any]:
     return {
         "kind": message.kind,
@@ -380,6 +401,25 @@ def _message_from_json(payload: dict[str, Any]) -> SessionMessage:
         tool_output=payload["tool_output"],
         status=payload["status"],
     )
+
+
+def _message_to_export_lines(message: SessionMessage) -> list[str]:
+    if message.kind == "user":
+        return ["## user", message.content]
+    if message.kind == "assistant":
+        return ["## assistant", message.content]
+    if message.kind == "tool":
+        name = message.tool_name or "tool"
+        lines = [f"## tool: {name} ({message.status})"]
+        if message.tool_arguments != "":
+            lines.extend(["arguments:", message.tool_arguments])
+        if message.tool_output != "":
+            lines.extend(["output:", message.tool_output])
+        return lines
+    if message.kind == "error":
+        status = message.status or "failed"
+        return [f"## error ({status})", message.content]
+    raise ValueError("Unsupported session message kind")
 
 
 def _tool_content(event: TUIEvent, output: str) -> str:

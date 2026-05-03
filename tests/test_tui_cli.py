@@ -190,3 +190,17 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
             ),
         ),
     ]
+
+
+def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
+    class StubStore:
+        def export_text(self, session_id):
+            assert session_id == "session-1"
+            return "# AceAI session session-1\n\n## user\nhello\n"
+
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    cli.main(["export", "session-1"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "# AceAI session session-1\n\n## user\nhello\n"

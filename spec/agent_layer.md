@@ -29,6 +29,7 @@ Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下
 - 不要把 streaming event 原样持久化。`assistant_delta`、`tool_call_delta`、`tool_output` 这类高频事件必须在写入前合并，否则一次回答会产生大量无意义存储。
 - 恢复会话时，session 文件转换回足够驱动 TUI 展示的 compact `TUIEvent`，而不是重放 provider raw events。
 - CLI 默认进入时创建新 session；`aceai resume <session_id>` 从 SQLite 找到 session，再读取对应 JSONL 文件恢复可见会话历史。
+- CLI 支持 `aceai export <session_id>` 导出真实可读 transcript 文本。调试历史问题时优先使用这个命令，不要手动 `cat`/`nl` JSONL。
 - TUI header 显示 `AceAI {session_id}`，让用户知道当前会话 id。
 - 退出或切换 session 前，当前 session name 会更新为 `{首个用户问题前 40 字} - YYYY-MM-DD HH:MM:SS`。
 - TUI 内部支持 `/sessions` 查看 session 列表，支持 `/resume <session_id>` 切换 session。

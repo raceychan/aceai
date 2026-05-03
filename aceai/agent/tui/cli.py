@@ -101,6 +101,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     question_parts = list(args.question)
+    if question_parts and question_parts[0] == "export":
+        if len(question_parts) != 2:
+            raise ValueError("aceai export requires a session_id")
+        print(SessionStore().export_text(question_parts[1]), end="")
+        return
     resume_session_id: str | None = None
     if question_parts and question_parts[0] == "resume":
         if len(question_parts) < 2:
