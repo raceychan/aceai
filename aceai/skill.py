@@ -1,11 +1,14 @@
 import re
+from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from msgspec import Struct
+from numpy import isin
 import yaml
 
 from aceai.errors import AceAIConfigurationError
+from aceai.tools import Annotated, spec, tool
 
 
 class SkillLoadingError(AceAIConfigurationError):
@@ -28,12 +31,48 @@ class SkillMeta(Struct, frozen=True, kw_only=True):
     name: str
     description: str
 
+    @classmethod
+    def from_frontmatter(cls, frontmatter: str) -> "SkillMeta":
+        fields = yaml.safe_load(frontmatter)
+        if not isinstance(fields, dict):
+            raise SkillMetaError("Skill frontmatter must be a mapping")
+        fields = cast(dict[str, Any], fields)
+        for k, v in fields.items():
+            if not isinstance(v, str):
+                raise SkillMetaError(f"Skill frontmatter field {k!r} must be a string")
+            if v == "":
+                raise SkillMetaError(f"Skill frontmatter field {k!r} cannot be empty")
+        return cls(name=fields["name"], description=fields["description"])
+
+
+class SkillListItem(Struct, frozen=True, kw_only=True):
+    name: str
+    description: str
+    location: str
+
+
+class SkillsListResult(Struct, frozen=True, kw_only=True):
+    skills: list[SkillListItem]
+    hint: str
+
+
+class SkillViewResult(Struct, frozen=True, kw_only=True):
+    name: str
+    content: str
+    location: str
+    skill_dir: str
+    references_dir: str
+    scripts_dir: str
+    assets_dir: str
+
 
 class Skill:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.skill_file = path / "SKILL.md"
-        self._metadata: SkillMeta | None = None
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
+        self.skill_file = self.path / "SKILL.md"
+        frontmatter, instruction = self.split_skill_file()
+        self._metadata: SkillMeta  = SkillMeta.from_frontmatter(frontmatter)
+        self._instruction = instruction
 
     @property
     def name(self) -> str:
@@ -57,21 +96,14 @@ class Skill:
 
     @property
     def metadata(self) -> SkillMeta:
-        if self._metadata is None:
-            self._metadata = self.load_metadata()
         return self._metadata
 
-    def load_metadata(self) -> SkillMeta:
-        frontmatter, _body = self.split_skill_file()
-        fields = self.parse_frontmatter(frontmatter)
-        return SkillMeta(
-            name=fields["name"],
-            description=fields["description"],
-        )
 
-    def read_instructions(self) -> str:
-        _frontmatter, body = self.split_skill_file()
-        return body
+    def read_file(self, file_path: str) -> str:
+        target = (self.path / file_path).resolve()
+        skill_root = self.path.resolve()
+        target.relative_to(skill_root)
+        return target.read_text(encoding="utf-8")
 
     def split_skill_file(self) -> tuple[str, str]:
         text = self.skill_file.read_text(encoding="utf-8")
@@ -86,37 +118,19 @@ class Skill:
             )
         return parts[1], parts[2]
 
-    def parse_frontmatter(self, frontmatter: str) -> dict[str, str]:
-        fields = yaml.safe_load(frontmatter)
-        if fields is None:
-            raise SkillMetaError("Skill frontmatter cannot be empty")
-        if not isinstance(fields, dict):
-            raise SkillMetaError("Skill frontmatter must be a mapping")
 
-        if "name" not in fields:
-            raise SkillMetaError("Skill frontmatter must define 'name'")
-        if "description" not in fields:
-            raise SkillMetaError("Skill frontmatter must define 'description'")
-        return {
-            "name": self.require_string_field(fields, "name"),
-            "description": self.require_string_field(fields, "description"),
-        }
-
-    def require_string_field(self, fields: dict[Any, Any], key: str) -> str:
-        value = fields[key]
-        if not isinstance(value, str):
-            raise SkillMetaError(f"Skill frontmatter field {key!r} must be a string")
-        if value == "":
-            raise SkillMetaError(f"Skill frontmatter field {key!r} cannot be empty")
-        return value
 
 
 class SkillLoader:
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
 
     def load_skills(self) -> "SkillRegistry":
         registry = SkillRegistry()
+        if not self.path.exists():
+            return registry
+        if not self.path.is_dir():
+            raise SkillLoadingError(f"Skill path {self.path} must be a directory")
         for child in sorted(self.path.iterdir()):
             if not child.is_dir():
                 continue
@@ -167,3 +181,73 @@ class SkillRegistry:
 
     def resolve_mentions(self, text: str) -> list[Skill]:
         return [self.get(name) for name in self.parse_skill_mentions(text)]
+
+
+def format_skills_for_prompt(registry: SkillRegistry) -> str:
+    skills = registry.get_skills()
+    if not skills:
+        return ""
+
+    lines = [
+        "",
+        "",
+        "The following skills provide specialized instructions for specific tasks.",
+        "Use the skill_view tool to load a skill's full instructions when the task matches its description.",
+        "When a skill references relative paths, resolve them against that skill directory.",
+        "",
+        "<available_skills>",
+    ]
+    for skill in skills:
+        lines.append("  <skill>")
+        lines.append(f"    <name>{escape(skill.name)}</name>")
+        lines.append(f"    <description>{escape(skill.description)}</description>")
+        lines.append(f"    <location>{escape(str(skill.skill_file))}</location>")
+        lines.append("  </skill>")
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
+
+def create_skill_tools(registry: SkillRegistry):
+    @tool
+    def skills_list() -> SkillsListResult:
+        """List available skills. Use skill_view(name) to load full instructions."""
+        return SkillsListResult(
+            skills=[
+                SkillListItem(
+                    name=skill.name,
+                    description=skill.description,
+                    location=str(skill.skill_file),
+                )
+                for skill in registry.get_skills()
+            ],
+            hint="Use skill_view(name) to load a skill's full instructions.",
+        )
+
+    @tool
+    def skill_view(
+        name: Annotated[str, spec(description="Skill name to load")],
+        file_path: Annotated[
+            str,
+            spec(
+                description=(
+                    "Optional file path within the skill directory, such as "
+                    "references/api.md, scripts/helper.py, or assets/template.json"
+                )
+            ),
+        ] = "",
+    ) -> SkillViewResult:
+        """Load full skill instructions, or a supporting file inside the skill."""
+        skill = registry.get(name)
+        content = skill.read_file(file_path) if file_path else skill.read_instructions()
+        return SkillViewResult(
+            name=skill.name,
+            content=content,
+            location=str(
+                skill.skill_file if file_path == "" else skill.path / file_path
+            ),
+            skill_dir=str(skill.path),
+            references_dir=str(skill.references_dir),
+            scripts_dir=str(skill.scripts_dir),
+            assets_dir=str(skill.assets_dir),
+        )
+
