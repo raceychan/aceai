@@ -52,7 +52,7 @@ class AgentBase:
         max_steps: int = 5,
         executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
-        skill_path: str | Path | Literal["auto"] = "auto",
+        skill_path: str | Path | Literal["auto", "disable"] = "auto",
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
     ):
         if max_steps < 1:
@@ -101,7 +101,7 @@ class AgentBase:
     def _load_skill_registry(
         self,
         *,
-        skill_path: str | Path | Literal["auto"],
+        skill_path: str | Path | Literal["auto", "disable"],
         skill_loader_factory: Callable[[str], SkillLoader],
     ) -> SkillRegistry:
         registry = SkillRegistry()
@@ -110,11 +110,13 @@ class AgentBase:
         return registry
 
     def _resolve_skill_paths(
-        self, skill_path: str | Path | Literal["auto"]
+        self, skill_path: str | Path | Literal["auto", "disable"]
     ) -> list[Path]:
         global_skills = Path.home() / ".aceai" / "skills"
         if skill_path == "auto":
             return [global_skills, Path.cwd() / ".agent" / "skills"]
+        if skill_path == "disable":
+            return []
         return [global_skills, Path(skill_path).expanduser()]
 
     async def _call_llm(

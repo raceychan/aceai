@@ -99,6 +99,31 @@ def test_agent_base_auto_loads_global_and_project_skills(
     assert "<name>review</name>" in system_text
 
 
+def test_agent_base_disable_skill_path_skips_all_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    write_skill(home / ".aceai" / "skills", "global", "Global skill.", "# Global")
+    write_skill(cwd / ".agent" / "skills", "project", "Project skill.", "# Project")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(cwd)
+
+    executor = ToolExecutor(Graph(), [])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4",
+        llm_service=None,  # type: ignore[arg-type]
+        executor=executor,
+        skill_path="disable",
+    )
+
+    assert agent.skill_registry.skills == {}
+    assert agent.system_message.content[0]["data"] == "Prompt"
+    assert "skills_list" not in executor.tools
+    assert "skill_view" not in executor.tools
+
+
 def test_agent_base_explicit_skill_path_skips_project_auto_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

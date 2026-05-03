@@ -55,7 +55,7 @@ def build_agent(api_key: str):
     )
 ```
 
-Plug your own loop/UI into `AgentBase`. See `demo.py` for a multi-tool async workflow.
+Plug your own loop/UI into `AgentBase`. See `examples/logistics_agent_demo.py` for a multi-tool async workflow.
 
 ## Concepts: workflow / agent / hybrid
 
@@ -118,7 +118,7 @@ An agent is a workflow where the *LLM* owns the control flow: at each step it de
 
 In AceAI, building an agent is wiring three pieces:
 - `LLMService`: talks to a concrete LLM provider (complete/stream/complete_json).
-- `ToolExecutor`: strictly decodes tool args, resolves DI, runs tools, and encodes returns back to strings.
+- `ToolExecutor`: strictly decodes explicit tool args, resolves DI, runs the tools you pass in, and encodes returns back to strings.
 - `AgentBase`: runs the multi-step loop, maintains message history, orchestrates tool calls, and emits events.
 
 Example: a minimal agent (one `add` tool).
@@ -203,6 +203,8 @@ agent = AgentBase(
     skill_path="auto",
 )
 ```
+
+Set `skill_path="disable"` to turn skill loading off completely. This skips both global and project skills and does not register `skills_list` or `skill_view`.
 
 When `skill_path="auto"`, AceAI scans:
 
@@ -290,6 +292,8 @@ def search_text(
 ```
 
 The Python default still applies for direct calls, but an OpenAI tool call must include `path`. If a parameter has a default that the model should use when the user does not specify a value, say that in the parameter description.
+
+AceAI does not ship filesystem or shell tools by default. If your agent should read files, edit files, search text, or run commands, define those tools in the calling application and pass them explicitly to `ToolExecutor`. This keeps OS permissions, path policy, sandboxing, and audit rules in the application boundary rather than the framework.
 
 ### Strict decoding & auto JSON encoding
 msgspec Struct validation enforces input types; return values are auto JSON-encoded (works for Struct/dict/primitive). LLM tool arguments are decoded into the right shapes, and outputs are encoded back to strings.
@@ -469,7 +473,7 @@ An agent run completes when the model returns a step with **no tool calls**; tha
 - **Tracing**: AceAI emits OpenTelemetry spans; configure `TracerProvider`/exporter natively (no AceAI wrapper), then pass a `tracer=...` into `LLMService`/`ToolExecutor`/`AgentBase`.
 
 - **Failure policy**: fail fast; no implicit retries for tools. LLM retries are up to you.
-- **OpenAI dependency**: only needed if you use the OpenAI provider or `demo.py`; importing that provider without the SDK will raise a missing dependency error.
+- **OpenAI dependency**: only needed if you use the OpenAI provider or `examples/logistics_agent_demo.py`; importing that provider without the SDK will raise a missing dependency error.
 
 ## Extensibility
 
@@ -626,4 +630,4 @@ def hello(name: Annotated[str, spec(description="Name")]) -> str:
 # implement that in generate_schema() here without touching the rest of the agent stack.
 ```
 
-See `demo.py` for a full multi-tool agent and `agent.ipynb` for an end-to-end notebook walkthrough.
+See `examples/logistics_agent_demo.py` for a full multi-tool agent and `agent.ipynb` for an end-to-end notebook walkthrough.

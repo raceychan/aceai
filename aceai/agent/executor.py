@@ -9,7 +9,7 @@ from opentelemetry.trace import SpanKind
 from aceai.interface import is_present
 from aceai.llm.models import LLMToolCall
 from aceai.tracing import get_trace_ctx
-from aceai.tools import BUILTIN_TOOLS, IToolSpec, Tool
+from aceai.tools import IToolSpec, Tool
 
 
 class RunState(Struct, kw_only=True):
@@ -41,7 +41,7 @@ class ToolExecutor(IExecutor):
         tracer: trace.Tracer | None = None,
     ):
         self.graph = graph
-        self.tools = {tool.name: tool for tool in (tools + BUILTIN_TOOLS)}
+        self.tools = {tool.name: tool for tool in tools}
         self._all_tools: list[IToolSpec] = []
         self._tracer = tracer or trace.get_tracer("aceai.executor")
 

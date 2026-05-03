@@ -149,6 +149,7 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
         executor=executor,
         max_steps=2,
         tracer=agent_tracer,
+        skill_path="disable",
     )
 
     events = [event async for event in agent.run("question")]
@@ -175,8 +176,7 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
         assert llm_span.parent is not None
         assert llm_span.parent.span_id in step_ids
         tool_names = set(llm_span.attributes["llm.tool_names"])
-        assert {"lookup_order", "get_sku_weight"}.issubset(tool_names)
-        assert "read_text_file" in tool_names
+        assert tool_names == {"lookup_order", "get_sku_weight"}
 
     first_step_span = next(
         step_span

@@ -9,7 +9,7 @@ cov:
 	uv run pytest --cov=aceai --cov-report=term-missing
 
 demo:
-	uv run python demo.py
+	uv run python examples/logistics_agent_demo.py
 
 
 VERSION ?=

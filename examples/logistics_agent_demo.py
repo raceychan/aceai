@@ -18,7 +18,7 @@ from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
 from aceai.errors import AceAIValidationError
 from aceai.agent.executor import ToolExecutor
 from aceai.llm.openai import OpenAI
-from term_ui import run_agent_with_terminal_ui
+from terminal_ui import run_agent_with_terminal_ui
 
 WAREHOUSE_ORDERS = {
     "ORD-200": {
