@@ -27,85 +27,34 @@ choose whether to persist them to `~/.aceai/config.yaml`.
 
 ## Architecture layers
 
-AceAI is kept in one package for development speed, but the code is organized
-as three layers with one-way dependencies:
+AceAI has three layers. Start from the lowest layer that gives you what you
+need:
 
 ```text
-                 user entrypoints
-                       |
-                       v
-+--------------------------------------------------+
-| aceai.agent                                      |
-| Product layer                                    |
-| CLI, TUI, web entrypoints, built-in agents,      |
-| built-in skills, default product configuration   |
-+--------------------------------------------------+
-                       |
-                       v
-+--------------------------------------------------+
-| aceai.core                                       |
-| Framework layer                                  |
-| AgentBase, agent events, ToolExecutor, tools,    |
-| tool registry, skill loading, runtime state      |
-+--------------------------------------------------+
-                       |
-                       v
-+--------------------------------------------------+
-| aceai.llm                                        |
-| SDK layer                                        |
-| LLM messages, provider contracts, LLMService,    |
-| streaming events, provider adapters such as      |
-| OpenAI                                           |
-+--------------------------------------------------+
+aceai.agent  app layer      run AceAI as a ready-made app
+aceai.core   agent layer    build your own tool-using agents
+aceai.llm    LLM layer      call LLM providers directly
 ```
 
-The dependency rule is:
+If you only need provider-neutral LLM calls, use `aceai.llm`:
 
-```text
-aceai.agent -> aceai.core -> aceai.llm
+```python
+from aceai.llm import LLMMessage, LLMService
+from aceai.llm.openai import OpenAI
 ```
 
-The reverse direction is not allowed. The SDK layer does not import tools,
-agents, skills, or TUI code. The framework layer does not import the product
-layer. This keeps the lower layers reusable even while everything ships in one
-repository.
+If you want to build your own agent with tools, use the core APIs:
 
-Shared infrastructure follows the same downward dependency rule: put it in the
-lowest layer that needs it, then let upper layers import from there.
-
-```text
-tracing context
-  used by aceai.llm and aceai.core
-  lives in aceai.llm.tracing
-
-small agent/product helpers
-  used by aceai.core and aceai.agent
-  live in aceai.core.helpers
+```python
+from aceai import AgentBase, ToolExecutor, spec, tool
 ```
 
-This avoids a separate horizontal "common" layer and keeps the visible package
-shape aligned with the product/framework/SDK split.
+If you just want to use AceAI as an app, do not import anything; run the CLI:
 
-Use the layer that matches the amount of abstraction you want:
-
-```text
-Need a ready terminal experience
-  -> run the product layer
-     aceai
-     aceai "Explain this repository"
-
-Need an agent framework with tools and skills
-  -> import the framework layer
-     from aceai import AgentBase, ToolExecutor, tool, spec
-
-Need only provider-neutral LLM calls
-  -> import the SDK layer
-     from aceai.llm import LLMService, LLMMessage
-     from aceai.llm.openai import OpenAI
+```bash
+aceai
+aceai "Explain this repository"
 ```
-
-`aceai.agent` is an internal product namespace. Prefer using it through command
-line and app entrypoints rather than importing it as a stable Python API.
 
 ## Why another framework?
 - Precise tool calls: force `typing.Annotated` + structured schemas; no broad “magic” unions.
