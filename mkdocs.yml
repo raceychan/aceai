@@ -58,5 +58,6 @@ nav:
   - Introduction: introduction.md
   - Features: features.md
   - Tutorial: tutorial.md
+  - Terminal UI: tui.md
   - Performance: performance.md
   - FAQ: FAQ.md

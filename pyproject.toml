@@ -7,8 +7,11 @@ requires-python = ">=3.12"
 dependencies = [
     "ididi>=1.8.4",
     "msgspec>=0.20.0",
+    "openai>=2.9.0",
     "opentelemetry-api>=1.39.1",
     "pyyaml>=6.0.3",
+    "rich>=14.2.0",
+    "textual>=8.2.5",
     "typing-extensions>=4.15.0",
 ]
 authors = [{ name = "raceychan", email = "raceychan@gmail.com" }]
@@ -18,6 +21,9 @@ otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.39.1",
     "opentelemetry-sdk>=1.39.1",
 ]
+
+[project.scripts]
+aceai = "aceai.tui.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -31,7 +37,6 @@ packages = ["aceai"]
 
 [dependency-groups]
 dev = [
-    "openai>=2.9.0",
     "dotenv>=0.9.9",
     "hatch>=1.16.1",
     "httpx>=0.28.1",
@@ -43,7 +48,6 @@ dev = [
     "pytest-cov>=7.0.0",
     "twine>=5.0.0",
     "pyright>=1.1.407",
-    "rich>=14.2.0",
     "langfuse>=3.11.2,<4",
     "pandas>=2.3.3",
     "np>=1.0.2",

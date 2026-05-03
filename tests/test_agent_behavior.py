@@ -7,7 +7,9 @@ from aceai.agent.events import (
     AgentEvent,
     LLMMediaEvent,
     LLMOutputDeltaEvent,
+    LLMReasoningEvent,
     LLMStartedEvent,
+    LLMToolCallDeltaEvent,
     RunCompletedEvent,
     RunFailedEvent,
     ToolFailedEvent,
@@ -422,7 +424,7 @@ async def test_stream_error_bubbles_without_run_failed_event() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_skips_function_call_argument_deltas() -> None:
+async def test_agent_emits_function_call_argument_deltas() -> None:
     stream = [
         LLMStreamEvent(
             event_type="response.function_call_arguments.delta",
@@ -449,7 +451,13 @@ async def test_agent_skips_function_call_argument_deltas() -> None:
     )
 
     events = await collect_events(agent, "Question?")
+    tool_deltas = [
+        event for event in events if isinstance(event, LLMToolCallDeltaEvent)
+    ]
 
+    assert len(tool_deltas) == 1
+    assert tool_deltas[0].tool_call_delta.id == "tool-1"
+    assert tool_deltas[0].text_delta == '{"a":'
     assert isinstance(events[-1], RunCompletedEvent)
     assert events[-1].final_answer == "hello world"
 
@@ -529,7 +537,11 @@ async def test_reasoning_segments_do_not_populate_reasoning_log() -> None:
 
     events = await collect_events(agent, "Question?")
     final_event = events[-1]
+    reasoning_events = [
+        event for event in events if isinstance(event, LLMReasoningEvent)
+    ]
 
+    assert [event.segment.content for event in reasoning_events] == ["first", "second"]
     assert isinstance(final_event, RunCompletedEvent)
     assert final_event.step.reasoning_log == ""
     assert final_event.step.reasoning_log_truncated is False

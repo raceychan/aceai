@@ -3,8 +3,27 @@
 An engineering-first agent framework: tools-first, explicit signatures, early failures, and OTLP-friendly tracing.
 
 ## Requirements & install
-- Python 3.12+; `openai` SDK only if you use the OpenAI provider.
+- Python 3.12+.
 - Install: `uv add aceai`
+
+## Terminal UI
+
+Installing AceAI exposes an `aceai` command. Set `OPENAI_API_KEY`, then launch
+the TUI directly:
+
+```bash
+aceai
+```
+
+You can also run a single question immediately:
+
+```bash
+aceai "Explain this repository"
+```
+
+Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
+If no API key is available, the TUI asks for provider settings and lets you
+choose whether to persist them to `~/.aceai/config.yaml`.
 
 ## Why another framework?
 - Precise tool calls: force `typing.Annotated` + structured schemas; no broad “magic” unions.

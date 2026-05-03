@@ -3,14 +3,16 @@
 from typing import ClassVar, Literal
 
 from aceai.interface import Record
-from aceai.llm.models import LLMSegment, LLMToolCall
+from aceai.llm.models import LLMSegment, LLMToolCall, LLMToolCallDelta
 
 from ..models import AgentStep, ToolExecutionResult
 
 AgentEventType = Literal[
     "agent.llm.started",
     "agent.llm.output_text.delta",
+    "agent.llm.tool_call.delta",
     "agent.llm.media",
+    "agent.llm.reasoning",
     "agent.llm.completed",
     "agent.tool.started",
     "agent.tool.output",
@@ -48,9 +50,20 @@ class LLMOutputDeltaEvent(AgentLifecycleEvent):
     text_delta: str
 
 
+class LLMToolCallDeltaEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.llm.tool_call.delta"
+    tool_call_delta: LLMToolCallDelta
+    text_delta: str
+
+
 class LLMMediaEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.llm.media"
     segments: list[LLMSegment]
+
+
+class LLMReasoningEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.llm.reasoning"
+    segment: LLMSegment
 
 
 class LLMCompletedEvent(AgentLifecycleEvent):
@@ -109,7 +122,9 @@ class RunFailedEvent(AgentLifecycleEvent):
 type AgentEvent = (
     LLMStartedEvent
     | LLMOutputDeltaEvent
+    | LLMToolCallDeltaEvent
     | LLMMediaEvent
+    | LLMReasoningEvent
     | LLMCompletedEvent
     | ToolStartedEvent
     | ToolOutputEvent
@@ -141,11 +156,28 @@ class AgentEventBuilder:
             text_delta=text_delta,
         )
 
+    def llm_tool_call_delta(
+        self, *, tool_call_delta: LLMToolCallDelta
+    ) -> LLMToolCallDeltaEvent:
+        return LLMToolCallDeltaEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            tool_call_delta=tool_call_delta,
+            text_delta=tool_call_delta.arguments_delta,
+        )
+
     def llm_media(self, *, segments: list[LLMSegment]) -> LLMMediaEvent:
         return LLMMediaEvent(
             step_index=self.step_index,
             step_id=self.step_id,
             segments=segments,
+        )
+
+    def llm_reasoning(self, *, segment: LLMSegment) -> LLMReasoningEvent:
+        return LLMReasoningEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            segment=segment,
         )
 
     def llm_completed(self, *, step: AgentStep) -> LLMCompletedEvent:

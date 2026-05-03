@@ -8,7 +8,7 @@ from opentelemetry.trace import SpanKind, set_span_in_context
 
 from ..errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm import ILLMService, LLMResponse
-from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall
+from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall, LLMToolCallDelta
 from ..models import AgentStep, ToolExecutionResult
 from ..skill import (
     SkillLoader,
@@ -149,7 +149,11 @@ class AgentBase:
                     case "response.media":
                         yield event_builder.llm_media(segments=stream_event.segments)
                     case "response.function_call_arguments.delta":
-                        pass  # ignore
+                        tool_call_delta = stream_event.tool_call_delta
+                        if isinstance(tool_call_delta, LLMToolCallDelta):
+                            yield event_builder.llm_tool_call_delta(
+                                tool_call_delta=tool_call_delta,
+                            )
                     case "response.error":
                         if isinstance(stream_event.error, str):
                             raise AceAIRuntimeError(stream_event.error)
@@ -160,6 +164,9 @@ class AgentBase:
                             raise AceAIRuntimeError(
                                 "LLM stream completed without a response payload"
                             )
+                        for segment in response.segments:
+                            if segment.type == "reasoning":
+                                yield event_builder.llm_reasoning(segment=segment)
                         yield AgentStep(
                             step_id=event_builder.step_id,
                             llm_response=response,
