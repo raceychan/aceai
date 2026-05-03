@@ -1,13 +1,13 @@
 import pytest
 from ididi import Graph
 
-from aceai.agent.base import AgentBase
-from aceai.agent.executor import RunState, ToolExecutor
+from aceai.core.base import AgentBase
+from aceai.core.executor import RunState, ToolExecutor
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMStreamEvent, LLMToolCall
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
-from aceai.tools.registry import ToolRegistry
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
+from aceai.core.tools.registry import ToolRegistry
 
 
 class StubLLMService:

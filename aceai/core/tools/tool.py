@@ -1,26 +1,16 @@
 from inspect import iscoroutinefunction, signature
 from typing import Annotated as Annotated
-from typing import Any, Callable, Protocol, TypedDict, Unpack, overload, runtime_checkable
+from typing import Any, Callable, TypedDict, Unpack, overload
 
 from msgspec import Struct, field
 from msgspec.json import Decoder
 from msgspec.json import encode as msg_encode
 from msgspec.structs import asdict as msg_asdict
 
-from aceai.interface import MISSING, Maybe, is_present
+from aceai.llm.interface import MISSING, Maybe, is_present
+from aceai.llm.tool_spec import IToolSpec
 
 from ._tool_sig import ToolSignature
-
-
-@runtime_checkable
-class IToolSpec(Protocol):
-    name: str
-
-    def __init__(
-        self, *, signature: ToolSignature, name: str, description: str
-    ) -> None: ...
-
-    def generate_schema(self) -> dict[str, Any]: ...
 
 
 class OpenAIToolSpec:

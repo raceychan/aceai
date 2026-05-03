@@ -7,7 +7,7 @@ from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from aceai.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
+from aceai.llm.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
 
 from .models import (
     LLMInput,

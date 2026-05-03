@@ -1,11 +1,11 @@
 import pytest
 
-from aceai.agent.events import AgentEventBuilder
-from aceai.tui.app import AceAITUI
-from aceai.tui.demo import static_demo_events
-from aceai.tui.events import adapt_agent_event, user_message_event
-from aceai.tui.state import initial_state, reduce_events
-from aceai.tui.widgets import DetailWidget, StreamWidget, TimelineWidget
+from aceai.core.events import AgentEventBuilder
+from aceai.agent.tui.app import AceAITUI
+from aceai.agent.tui.demo import static_demo_events
+from aceai.agent.tui.events import adapt_agent_event, user_message_event
+from aceai.agent.tui.state import initial_state, reduce_events
+from aceai.agent.tui.widgets import DetailWidget, StreamWidget, TimelineWidget
 
 
 def test_reduce_events_tracks_run_completion() -> None:

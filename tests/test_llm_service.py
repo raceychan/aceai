@@ -3,7 +3,7 @@ from msgspec import DecodeError, Struct
 from openai import OpenAIError
 from types import SimpleNamespace
 
-from aceai.errors import (
+from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIRuntimeError,
     AceAIValidationError,

@@ -1,4 +1,4 @@
-from aceai.tui.config import AceAITUIConfig, load_config, save_config
+from aceai.agent.tui.config import AceAITUIConfig, load_config, save_config
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:

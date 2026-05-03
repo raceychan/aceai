@@ -9,7 +9,7 @@ from pathlib import Path
 from git import GitCommandError, Repo
 from packaging.version import InvalidVersion, Version
 
-from aceai.errors import AceAIValidationError
+from aceai.llm.errors import AceAIValidationError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = PROJECT_ROOT / "aceai" / "__init__.py"

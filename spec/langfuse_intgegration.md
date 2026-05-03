@@ -1,7 +1,7 @@
 ## Langfuse 集成方案
 
 ### 背景
-- 当前的调用链由 `AgentBase` (aceai/agent.py) 负责 Reasoning Loop，`LLMService` (aceai/llm/service.py) 统一调度 provider，`ToolExecutor` (aceai/executor.py) 执行函数工具。除了一层可选的 `LoggingToolExecutor`，目前没有统一的可观察性设施，无法记录对话级 trace、LLM 代价、工具时延或错误。
+- 当前的调用链由 `AgentBase` (aceai/core.py) 负责 Reasoning Loop，`LLMService` (aceai/llm/service.py) 统一调度 provider，`ToolExecutor` (aceai/executor.py) 执行函数工具。除了一层可选的 `LoggingToolExecutor`，目前没有统一的可观察性设施，无法记录对话级 trace、LLM 代价、工具时延或错误。
 - 现有依赖较少（核心在 `openai`、`msgspec`、`ididi`），因此引入 Langfuse 时需要保持“可选依赖 + 低侵入”的设计，避免破坏纯净的核心 API。
 
 ### Langfuse 集成目标
@@ -12,7 +12,7 @@
 5. **安全治理**：允许通过配置裁剪 message/参数，以避免在 Langfuse 中泄露敏感内容。
 
 ### 代码扫描要点
-- `aceai/agent.py`：`AgentBase.handle` 是会话入口，循环体中串联了 LLM -> Tool -> LLM，可在这里注入 trace 生命周期管理（开始、更新状态、结束）。
+- `aceai/core.py`：`AgentBase.handle` 是会话入口，循环体中串联了 LLM -> Tool -> LLM，可在这里注入 trace 生命周期管理（开始、更新状态、结束）。
 - `aceai/llm/service.py`：所有 LLM 请求（包括 `complete_json`）都走这层，是记录 Langfuse generation 的最佳位置；`stream` 需要对 text/tool delta 做聚合以便最终写入实体。
 - `aceai/executor.py`：`ToolExecutor/LoggingToolExecutor` 执行工具并计算耗时，可在这里扩展一个 `InstrumentedToolExecutor` 或给现有类加可选的 telemetry hook。
 - `aceai/llm/openai.py`：provider 适配层；一般不需要直接改动，只需从 `LLMService` 传入 metadata（model、usage）给 Langfuse。

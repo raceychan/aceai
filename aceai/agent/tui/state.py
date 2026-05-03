@@ -4,7 +4,7 @@ from typing import Literal
 
 from msgspec import field
 
-from aceai.interface import Record
+from aceai.llm.interface import Record
 
 from .events import TUIEvent
 

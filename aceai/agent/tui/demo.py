@@ -1,8 +1,8 @@
 """Static event fixtures for the read-only TUI prototype."""
 
-from aceai.agent.events import AgentEvent, AgentEventBuilder
+from aceai.core.events import AgentEvent, AgentEventBuilder
 from aceai.llm.models import LLMResponse, LLMSegment, LLMToolCall, LLMToolCallDelta
-from aceai.models import AgentStep, ToolExecutionResult
+from aceai.core.models import AgentStep, ToolExecutionResult
 
 from .events import TUIEvent, adapt_agent_event
 

@@ -6,9 +6,9 @@ from rich.syntax import Syntax
 from rich.text import Text
 from textual.widgets import RichLog
 
-from aceai.tui.events import TUIEvent, TUIEventKind
-from aceai.tui.state import TUIRunState
-from aceai.tui.theme import EVENT_LABELS, EVENT_STYLES
+from aceai.agent.tui.events import TUIEvent, TUIEventKind
+from aceai.agent.tui.state import TUIRunState
+from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
 
 class StreamWidget(RichLog):

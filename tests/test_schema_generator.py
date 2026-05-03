@@ -1,5 +1,5 @@
-from aceai.interface import Record
-from aceai.tools.schema_generator import (
+from aceai.llm.interface import Record
+from aceai.core.tools.schema_generator import (
     MSGSPEC_REF_PREFIX,
     _default_schema_hook,
     _expand,

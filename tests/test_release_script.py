@@ -9,7 +9,7 @@ from git import Repo
 def test_read_current_version_does_not_exec_module(tmp_path: Path) -> None:
     version_file = tmp_path / "__init__.py"
     version_file.write_text(
-        '__version__ = "1.2.3"\n\nfrom .agent import AgentBase as AgentBase\n'
+        '__version__ = "1.2.3"\n\nfrom .core import AgentBase as AgentBase\n'
     )
     original_version_file = release.VERSION_FILE
     release.VERSION_FILE = version_file
@@ -21,7 +21,7 @@ def test_read_current_version_does_not_exec_module(tmp_path: Path) -> None:
 
 def test_read_current_version_requires_version_assignment(tmp_path: Path) -> None:
     version_file = tmp_path / "__init__.py"
-    version_file.write_text('from .agent import AgentBase as AgentBase\n')
+    version_file.write_text('from .core import AgentBase as AgentBase\n')
     original_version_file = release.VERSION_FILE
     release.VERSION_FILE = version_file
     try:

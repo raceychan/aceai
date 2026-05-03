@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from ididi import Graph
 
-from aceai.agent import AgentBase, ToolExecutor
+from aceai.core import AgentBase, ToolExecutor
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMMessage, LLMStreamEvent, LLMToolCall
 

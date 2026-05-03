@@ -1,4 +1,4 @@
-from aceai.agent.events import ToolCompletedEvent
+from aceai.core.events import ToolCompletedEvent
 from aceai.llm.models import (
     LLMMessage,
     LLMResponse,

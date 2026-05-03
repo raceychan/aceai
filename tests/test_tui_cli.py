@@ -1,4 +1,4 @@
-from aceai.tui import cli
+from aceai.agent.tui import cli
 
 
 class StubAgent:

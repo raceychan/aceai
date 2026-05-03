@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from aceai.errors import AceAIImplementationError
+from aceai.llm.errors import AceAIImplementationError
 from aceai.llm.models import (
     LLMInput,
     LLMMessage,

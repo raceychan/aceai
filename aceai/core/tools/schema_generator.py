@@ -4,7 +4,7 @@ from typing import Any, Callable, cast
 
 from msgspec.json import schema_components
 
-from aceai.interface import MISSING, JsonSchema, Maybe, is_json_compatible, is_present
+from aceai.llm.interface import MISSING, JsonSchema, Maybe, is_json_compatible, is_present
 
 SchemaHook = Callable[[type], dict[str, Any] | None] | None
 RegularTypes = type | UnionType | GenericAlias

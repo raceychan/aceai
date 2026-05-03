@@ -5,7 +5,7 @@ Every tool parameter must use `typing.Annotated` with `spec(...)`. Missing annot
 
 ```python
 from typing import Annotated
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 
 @tool
@@ -19,7 +19,7 @@ AceAI uses msgspec for tool argument decoding and return encoding. If the model 
 ```python
 from msgspec import Struct, field
 from typing import Annotated
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 
 class User(Struct):
@@ -39,7 +39,7 @@ Mark dependencies with `ididi.use(...)` and the executor resolves them before in
 ```python
 from typing import Annotated
 from ididi import use
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 
 class Repo:

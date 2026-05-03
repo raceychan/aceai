@@ -31,7 +31,7 @@ The installed package exposes an `aceai` command:
 
 ```toml
 [project.scripts]
-aceai = "aceai.tui.cli:main"
+aceai = "aceai.agent.tui.cli:main"
 ```
 
 `aceai` launches the terminal UI after installation. It uses `OPENAI_API_KEY`
@@ -118,7 +118,7 @@ Use redundant signals so the UI does not rely on color alone.
    final reasoning segment visibility. This is implemented.
 
 3. TUI event adapter:
-   Add `aceai/tui/events.py` to convert `AgentEvent` records into stable TUI
+   Add `aceai/agent/tui/events.py` to convert `AgentEvent` records into stable TUI
    records with raw event details attached. This is implemented.
 
 4. Read-only prototype:
@@ -126,17 +126,17 @@ Use redundant signals so the UI does not rely on color alone.
    timeline, stream, and detail panes. A static prototype is available through:
 
    ```bash
-   python -m aceai.tui
+   python -m aceai.agent.tui
    ```
 
 5. Live agent runner:
-   Add `aceai/tui/runner.py` to bridge `AgentBase.run()` into the Textual app,
+   Add `aceai/agent/tui/runner.py` to bridge `AgentBase.run()` into the Textual app,
    then wire cancellation and command handling. The live runner bridge is
-   available as `aceai.tui.runner.run_agent_tui`.
+   available as `aceai.agent.tui.runner.run_agent_tui`.
 
 6. Interactive input:
    Use the bottom input bar to submit a question with Enter. The interactive
-   runner is available as `aceai.tui.runner.run_interactive_tui`.
+   runner is available as `aceai.agent.tui.runner.run_interactive_tui`.
 
    The installed command starts the interactive TUI:
 

@@ -7,7 +7,7 @@
 - Preserve existing observability semantics (events, messages) while accepting that completion order becomes non-deterministic once concurrency is enabled.
 
 ## Goals
-- Dispatch every `LLMToolCall` discovered in `aceai/agent.py:67-112` as an independent async task and allow overlap across I/O-bound tools.
+- Dispatch every `LLMToolCall` discovered in `aceai/core.py:67-112` as an independent async task and allow overlap across I/O-bound tools.
 - Emit `agent.tool.*` events that reflect actual execution timing without blocking later calls behind earlier ones.
 - Preserve `LLMToolUseMessage` plumbing so each completed tool feeds its output back to the language model regardless of finish order.
 - Surface all tool failures that occur in a batch and ensure a `ToolExecutionFailure` is raised after event emission.

@@ -20,7 +20,7 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
-from aceai.errors import (
+from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIRuntimeError,
     AceAIValidationError,
@@ -35,8 +35,8 @@ from aceai.llm.models import (
     LLMToolUseMessage,
 )
 from aceai.llm.openai import OpenAI, OpenAIPayload
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
 
 
 class NamespaceWithDump(SimpleNamespace):

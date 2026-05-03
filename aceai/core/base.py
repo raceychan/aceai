@@ -6,16 +6,16 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, set_span_in_context
 
-from ..errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm import ILLMService, LLMResponse
+from ..llm.errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall, LLMToolCallDelta
-from ..models import AgentStep, ToolExecutionResult
-from ..skill import (
+from .models import AgentStep, ToolExecutionResult
+from .skills import (
     SkillLoader,
     SkillRegistry,
     format_skills_for_prompt,
 )
-from ..tracing import get_trace_ctx, set_trace_ctx
+from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
 from .context_manager import ContextManager
 from .events import (
     AgentEvent,
@@ -70,7 +70,7 @@ class AgentBase:
         if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
             executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
-        self._tracer = tracer or trace.get_tracer("aceai.agent")
+        self._tracer = tracer or trace.get_tracer("aceai.core")
 
     @property
     def default_model(self) -> str:

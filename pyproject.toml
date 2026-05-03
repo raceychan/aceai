@@ -23,7 +23,7 @@ otel = [
 ]
 
 [project.scripts]
-aceai = "aceai.tui.cli:main"
+aceai = "aceai.agent.tui.cli:main"
 
 [build-system]
 requires = ["hatchling"]

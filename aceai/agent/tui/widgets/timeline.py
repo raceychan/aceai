@@ -4,7 +4,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.containers import ScrollableContainer
 
-from aceai.tui.state import TUIRunState, TUIStepState, TUIToolState
+from aceai.agent.tui.state import TUIRunState, TUIStepState, TUIToolState
 
 
 class TimelineWidget(ScrollableContainer):

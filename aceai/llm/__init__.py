@@ -6,3 +6,10 @@ from .models import LLMProviderBase as LLMProviderBase
 from .models import LLMRequestMeta as LLMRequestMeta
 from .service import ILLMService as ILLMService
 from .service import LLMService as LLMService
+from .errors import AceAIConfigurationError as AceAIConfigurationError
+from .errors import AceAIError as AceAIError
+from .errors import AceAIImplementationError as AceAIImplementationError
+from .errors import AceAIRuntimeError as AceAIRuntimeError
+from .errors import AceAIValidationError as AceAIValidationError
+from .errors import LLMProviderError as LLMProviderError
+from .errors import UnannotatedToolParamError as UnannotatedToolParamError

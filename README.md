@@ -25,6 +25,88 @@ Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
 If no API key is available, the TUI asks for provider settings and lets you
 choose whether to persist them to `~/.aceai/config.yaml`.
 
+## Architecture layers
+
+AceAI is kept in one package for development speed, but the code is organized
+as three layers with one-way dependencies:
+
+```text
+                 user entrypoints
+                       |
+                       v
++--------------------------------------------------+
+| aceai.agent                                      |
+| Product layer                                    |
+| CLI, TUI, web entrypoints, built-in agents,      |
+| built-in skills, default product configuration   |
++--------------------------------------------------+
+                       |
+                       v
++--------------------------------------------------+
+| aceai.core                                       |
+| Framework layer                                  |
+| AgentBase, agent events, ToolExecutor, tools,    |
+| tool registry, skill loading, runtime state      |
++--------------------------------------------------+
+                       |
+                       v
++--------------------------------------------------+
+| aceai.llm                                        |
+| SDK layer                                        |
+| LLM messages, provider contracts, LLMService,    |
+| streaming events, provider adapters such as      |
+| OpenAI                                           |
++--------------------------------------------------+
+```
+
+The dependency rule is:
+
+```text
+aceai.agent -> aceai.core -> aceai.llm
+```
+
+The reverse direction is not allowed. The SDK layer does not import tools,
+agents, skills, or TUI code. The framework layer does not import the product
+layer. This keeps the lower layers reusable even while everything ships in one
+repository.
+
+Shared infrastructure follows the same downward dependency rule: put it in the
+lowest layer that needs it, then let upper layers import from there.
+
+```text
+tracing context
+  used by aceai.llm and aceai.core
+  lives in aceai.llm.tracing
+
+small agent/product helpers
+  used by aceai.core and aceai.agent
+  live in aceai.core.helpers
+```
+
+This avoids a separate horizontal "common" layer and keeps the visible package
+shape aligned with the product/framework/SDK split.
+
+Use the layer that matches the amount of abstraction you want:
+
+```text
+Need a ready terminal experience
+  -> run the product layer
+     aceai
+     aceai "Explain this repository"
+
+Need an agent framework with tools and skills
+  -> import the framework layer
+     from aceai import AgentBase, ToolExecutor, tool, spec
+
+Need only provider-neutral LLM calls
+  -> import the SDK layer
+     from aceai.llm import LLMService, LLMMessage
+     from aceai.llm.openai import OpenAI
+```
+
+`aceai.agent` is an internal product namespace. Prefer using it through command
+line and app entrypoints rather than importing it as a stable Python API.
+
 ## Why another framework?
 - Precise tool calls: force `typing.Annotated` + structured schemas; no broad “magic” unions.
 - Engineer-friendly: dependency injection, strict msgspec decoding, surface errors instead of hiding them.
@@ -257,7 +339,7 @@ A simple approach is to subclass `AgentBase`, add helper methods that call `LLMS
 ```python
 from msgspec import Struct
 
-from aceai.agent import AgentBase
+from aceai.core import AgentBase
 from aceai.llm import LLMMessage
 
 
@@ -290,7 +372,7 @@ Tutorial: annotate every tool parameter with a concrete type and `spec` metadata
 
 ```python
 from typing import Annotated
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 @tool
 def greet(name: Annotated[str, spec(description="Person to greet")]) -> str:
@@ -320,7 +402,7 @@ msgspec Struct validation enforces input types; return values are auto JSON-enco
 ```python
 from msgspec import Struct, field
 from typing import Annotated
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 class User(Struct):
     id: int
@@ -342,7 +424,7 @@ Mark dependencies with `ididi.use(...)`; the executor resolves them before invoc
 ```python
 from typing import Annotated
 from ididi import use
-from aceai.tools import tool, spec
+from aceai import tool, spec
 
 
 class AsyncConnection:
@@ -571,7 +653,7 @@ Then inject it exactly like the built-in OpenAI adapter:
 
 ```python
 from aceai import AgentBase, Graph, LLMService
-from aceai.agent import ToolExecutor
+from aceai.core import ToolExecutor
 
 
 provider = MyProvider(client=MyVendorClient(api_key="..."), default_model="vendor-large")
@@ -592,7 +674,7 @@ For agent/tool support, the provider also needs to map vendor tool calls into `L
 In real products, the core reasoning loop is rarely the whole story: you often need to inject request metadata (tenant/user ids, model selection), enforce guardrails, integrate with your UI/event system, or standardize defaults across calls. Subclassing `AgentBase` lets you wrap those concerns around the existing streaming + tool-execution loop without re-implementing it; `AgentBase` already owns message assembly, step bookkeeping, and calling into `LLMService` and the `ToolExecutor`, so delegating to `super()` keeps the behavior consistent while you add your glue. This is usually the best place to customize because it keeps product policy at the boundary and leaves your tools/providers reusable and easy to test.
 
 ```python
-from aceai.agent import AgentBase
+from aceai.core import AgentBase
 from aceai.llm.models import LLMRequestMeta
 from typing import Unpack
 
@@ -608,7 +690,7 @@ Tool calls are a natural choke point for governance: you may want to enforce an 
 
 ```python
 from aceai.executor import ToolExecutor
-from aceai.errors import AceAIValidationError
+from aceai.llm.errors import AceAIValidationError
 
 class AuditedExecutor(ToolExecutor):
     async def execute_tool(self, tool_call):
@@ -625,7 +707,7 @@ When integrating a new provider, the mismatch is often the *schema envelope* rat
 
 ```python
 from typing import Annotated
-from aceai.tools import tool, IToolSpec, spec
+from aceai import tool, IToolSpec, spec
 
 class MyProviderToolSpec(IToolSpec):
     def __init__(self, *, signature, name, description):

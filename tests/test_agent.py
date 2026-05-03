@@ -3,9 +3,9 @@ from pathlib import Path
 from ididi import Graph
 import pytest
 
-from aceai.agent.executor import RunState, ToolExecutor
-from aceai.agent.base import AgentBase, ToolExecutionFailure
-from aceai.errors import AceAIConfigurationError
+from aceai.core.executor import RunState, ToolExecutor
+from aceai.core.base import AgentBase, ToolExecutionFailure
+from aceai.llm.errors import AceAIConfigurationError
 from aceai.llm.models import LLMToolCall
 
 

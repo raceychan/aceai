@@ -1,4 +1,4 @@
-from aceai.agent.events import (
+from aceai.core.events import (
     AgentEventBuilder,
     LLMCompletedEvent,
     LLMMediaEvent,
@@ -12,8 +12,8 @@ from aceai.llm.models import (
     LLMToolCall,
     LLMToolCallDelta,
 )
-from aceai.models import AgentStep, ToolExecutionResult
-from aceai.tui.events import adapt_agent_event
+from aceai.core.models import AgentStep, ToolExecutionResult
+from aceai.agent.tui.events import adapt_agent_event
 
 
 def test_adapt_text_delta_event() -> None:

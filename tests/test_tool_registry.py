@@ -1,9 +1,9 @@
 import sys
 from uuid import uuid4
 
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
-from aceai.tools.registry import ToolRegistry
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
+from aceai.core.tools.registry import ToolRegistry
 
 
 def test_tool_registry_groups_tools_by_tag() -> None:
@@ -56,8 +56,8 @@ def test_tool_registry_register_module_supports_lazy_import(
     module_path.write_text(
         "\n".join(
             [
-                "from aceai.tools import tool",
-                "from aceai.tools._tool_sig import Annotated, spec",
+                "from aceai.core.tools import tool",
+                "from aceai.core.tools._tool_sig import Annotated, spec",
                 "",
                 '@tool(tags=[\"math\"])',
                 "def add(a: Annotated[int, spec(description=\"a\")], b: Annotated[int, spec(description=\"b\")]) -> int:",
@@ -91,8 +91,8 @@ def test_tool_registry_register_module_loads_immediately_for_str_path(
     module_path.write_text(
         "\n".join(
             [
-                "from aceai.tools import tool",
-                "from aceai.tools._tool_sig import Annotated, spec",
+                "from aceai.core.tools import tool",
+                "from aceai.core.tools._tool_sig import Annotated, spec",
                 "",
                 '@tool(tags=["math"])',
                 "def add(a: Annotated[int, spec(description=\"a\")], b: Annotated[int, spec(description=\"b\")]) -> int:",
@@ -127,8 +127,8 @@ def test_tool_registry_register_module_accepts_module_name_string(
     module_path.write_text(
         "\n".join(
             [
-                "from aceai.tools import tool",
-                "from aceai.tools._tool_sig import Annotated, spec",
+                "from aceai.core.tools import tool",
+                "from aceai.core.tools._tool_sig import Annotated, spec",
                 "",
                 '@tool(tags=["math"])',
                 "def add(a: Annotated[int, spec(description=\"a\")], b: Annotated[int, spec(description=\"b\")]) -> int:",

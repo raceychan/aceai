@@ -7,9 +7,9 @@ from ididi import DependentNode, NodeMeta, is_provided
 from ididi.utils.typing_utils import flatten_annotated
 from msgspec import Meta, Struct, defstruct
 
-from aceai.errors import AceAIConfigurationError, UnannotatedToolParamError
-from aceai.interface import MISSING, JsonSchema, Maybe, is_present
-from aceai.tools.schema_generator import inline_schema
+from aceai.llm.errors import AceAIConfigurationError, UnannotatedToolParamError
+from aceai.llm.interface import MISSING, JsonSchema, Maybe, is_present
+from aceai.core.tools.schema_generator import inline_schema
 
 
 class ParamConstraint(TypedDict, total=False):

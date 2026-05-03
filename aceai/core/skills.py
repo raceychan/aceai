@@ -6,8 +6,8 @@ from typing import Any, cast
 from msgspec import Struct
 import yaml
 
-from aceai.errors import AceAIConfigurationError
-from aceai.tools import Annotated, spec, tool
+from aceai.llm.errors import AceAIConfigurationError
+from aceai.core.tools import Annotated, spec, tool
 
 
 class SkillLoadingError(AceAIConfigurationError):

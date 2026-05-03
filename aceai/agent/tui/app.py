@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Footer, Header
 
-from aceai.agent.events import AgentEvent
+from aceai.core.events import AgentEvent
 
 from .events import TUIEvent
 from .events import adapt_agent_event

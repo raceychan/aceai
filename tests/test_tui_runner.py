@@ -1,10 +1,10 @@
 import pytest
 
-from aceai.agent.base import AgentBase
+from aceai.core.base import AgentBase
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMStreamEvent
-from aceai.tui.runner import AceAIInteractiveTUI, AceAILiveTUI
-from aceai.tui.widgets import CommandInput
+from aceai.agent.tui.runner import AceAIInteractiveTUI, AceAILiveTUI
+from aceai.agent.tui.widgets import CommandInput
 from textual.widgets import Input
 
 

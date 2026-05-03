@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from aceai.errors import AceAIConfigurationError
-from aceai.skill import (
+from aceai.llm.errors import AceAIConfigurationError
+from aceai.core.skills import (
     DuplicateSkillError,
     Skill,
     SkillFileFormatError,

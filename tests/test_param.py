@@ -4,10 +4,10 @@ import pytest
 
 from ididi import use
 
-from aceai.errors import AceAIConfigurationError, UnannotatedToolParamError
-from aceai.interface import Record
-from aceai.tools import tool
-from aceai.tools._tool_sig import (
+from aceai.llm.errors import AceAIConfigurationError, UnannotatedToolParamError
+from aceai.llm.interface import Record
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import (
     Annotated,
     ToolParam,
     ToolSignature,
@@ -15,7 +15,7 @@ from aceai.tools._tool_sig import (
     get_param_spec,
     spec,
 )
-from aceai.tools.schema_generator import MSGSPEC_REF_PREFIX, inline_schema
+from aceai.core.tools.schema_generator import MSGSPEC_REF_PREFIX, inline_schema
 
 
 def add(

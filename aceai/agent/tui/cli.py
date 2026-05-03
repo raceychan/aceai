@@ -6,7 +6,7 @@ from typing import Sequence
 
 from openai import AsyncOpenAI
 
-from aceai.agent import AgentBase
+from aceai.core import AgentBase
 from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.service import LLMService
 

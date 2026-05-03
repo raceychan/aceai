@@ -5,11 +5,11 @@ import pytest
 from ididi import Graph, use
 from msgspec import Struct
 
-from aceai.errors import AceAIRuntimeError
-from aceai.agent.executor import LoggingToolExecutor, RunState, ToolExecutor
+from aceai.llm.errors import AceAIRuntimeError
+from aceai.core.executor import LoggingToolExecutor, RunState, ToolExecutor
 from aceai.llm.models import LLMToolCall
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
 
 
 class FakeLogger:

@@ -2,9 +2,9 @@ import pytest
 from ididi import use
 from msgspec import DecodeError, ValidationError
 
-from aceai.errors import UnannotatedToolParamError
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
+from aceai.llm.errors import UnannotatedToolParamError
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
 
 
 def multiply(

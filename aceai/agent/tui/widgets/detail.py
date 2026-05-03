@@ -4,8 +4,8 @@ from rich.pretty import Pretty
 from rich.table import Table
 from textual.containers import ScrollableContainer
 
-from aceai.tui.events import TUIEvent
-from aceai.tui.state import TUIRunState
+from aceai.agent.tui.events import TUIEvent
+from aceai.agent.tui.state import TUIRunState
 
 
 class DetailWidget(ScrollableContainer):

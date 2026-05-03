@@ -6,10 +6,10 @@ from msgspec import Struct, field
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-from aceai.interface import is_present
+from aceai.llm.interface import is_present
 from aceai.llm.models import LLMToolCall
-from aceai.tracing import get_trace_ctx
-from aceai.tools import IToolSpec, Tool
+from aceai.llm.tracing import get_trace_ctx
+from aceai.core.tools import IToolSpec, Tool
 
 
 class RunState(Struct, kw_only=True):

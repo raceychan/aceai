@@ -1,7 +1,7 @@
 """Minimal helper showing how to launch a live agent in the AceAI TUI."""
 
 from aceai import AgentBase
-from aceai.tui.runner import run_agent_tui, run_interactive_tui
+from aceai.agent.tui.runner import run_agent_tui, run_interactive_tui
 
 
 def run_live_agent_tui(agent: AgentBase, question: str) -> None:

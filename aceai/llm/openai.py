@@ -35,14 +35,13 @@ from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
-from aceai.errors import (
+from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIRuntimeError,
     AceAIValidationError,
 )
-from aceai.interface import UNSET, StrDict, Unset, is_set
-from aceai.tools import IToolSpec
-from aceai.tracing import get_trace_ctx
+from aceai.llm.interface import UNSET, StrDict, Unset, is_set
+from aceai.llm.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
@@ -68,6 +67,7 @@ from .models import (
     LLMToolUseMessage,
     LLMUsage,
 )
+from .tool_spec import IToolSpec
 
 
 OpenAIModel = Literal[

@@ -5,7 +5,7 @@ from typing import Literal
 
 import yaml
 
-from aceai.interface import Record
+from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
 ProviderName = Literal["openai"]

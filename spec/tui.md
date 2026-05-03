@@ -36,7 +36,7 @@ logs or infer state from printed text.
 AceAI already has the right foundation:
 
 - `AgentBase.run()` returns an async stream of `AgentEvent` records.
-- `aceai/agent/events.py` defines explicit lifecycle events for LLM, tool, step,
+- `aceai/core/events.py` defines explicit lifecycle events for LLM, tool, step,
   and run boundaries.
 - `aceai/llm/models.py` defines provider-agnostic `LLMStreamEvent` and
   structured `LLMSegment` records.
@@ -84,7 +84,7 @@ The installed package should expose an `aceai` command:
 
 ```toml
 [project.scripts]
-aceai = "aceai.tui.cli:main"
+aceai = "aceai.agent.tui.cli:main"
 ```
 
 The CLI uses the default OpenAI-backed agent:
@@ -265,7 +265,7 @@ Long values should be collapsed by default with a clear expansion affordance.
 ## Proposed Package Structure
 
 ```text
-aceai/tui/
+aceai/agent/tui/
   __init__.py
   __main__.py
   app.py
@@ -294,7 +294,7 @@ Responsibilities:
 
 ### Phase 1: Event Completeness
 
-1. Add `LLMToolCallDeltaEvent` to `aceai/agent/events.py`.
+1. Add `LLMToolCallDeltaEvent` to `aceai/core/events.py`.
 2. Add `AgentEventBuilder.tool_call_delta()`.
 3. Change `AgentBase._call_llm()` so
    `response.function_call_arguments.delta` emits the new agent event.
@@ -307,7 +307,7 @@ deltas are invisible.
 
 ### Phase 2: Reasoning Event Exposure
 
-1. Add `LLMReasoningEvent` to `aceai/agent/events.py`.
+1. Add `LLMReasoningEvent` to `aceai/core/events.py`.
 2. During `response.completed`, inspect `LLMResponse.segments` and emit one
    reasoning event for each `LLMSegment(type="reasoning")`.
 3. Keep `LLMCompletedEvent` as the final step snapshot event.
@@ -319,7 +319,7 @@ event type without changing the TUI.
 
 ### Phase 3: TUI Event Adapter
 
-1. Add `aceai/tui/events.py`.
+1. Add `aceai/agent/tui/events.py`.
 2. Convert every supported `AgentEvent` into a single TUI record shape with
    concrete fields.
 3. Keep raw `AgentEvent` attached for detail-pane inspection.
@@ -343,12 +343,12 @@ This phase does not need a real LLM.
 Current prototype entry point:
 
 ```bash
-python -m aceai.tui
+python -m aceai.agent.tui
 ```
 
 ### Phase 5: Live Agent Runner
 
-1. Add `aceai/tui/runner.py` to run an `AgentBase` and post events into the app.
+1. Add `aceai/agent/tui/runner.py` to run an `AgentBase` and post events into the app.
 2. Add cancellation handling for `Ctrl+C` and `/quit`.
 3. Add an example that starts a real agent with the TUI.
 4. Preserve `examples/terminal_ui.py` as the lightweight non-interactive Rich
@@ -358,7 +358,7 @@ python -m aceai.tui
 Current live runner API:
 
 ```python
-from aceai.tui.runner import run_agent_tui, run_interactive_tui
+from aceai.agent.tui.runner import run_agent_tui, run_interactive_tui
 
 run_agent_tui(agent, "Question?")
 run_interactive_tui(agent)
@@ -461,7 +461,7 @@ The first implementation PR should be narrow:
 
 1. Add missing agent events for tool-call deltas and reasoning segments.
 2. Add tests for the new event emissions.
-3. Add the `aceai/tui/events.py` adapter and tests.
+3. Add the `aceai/agent/tui/events.py` adapter and tests.
 4. Add this document to the public docs navigation.
 
 The Textual UI itself can land in a second PR after the event contract is stable.

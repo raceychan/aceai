@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 from ididi import Graph
 from openai import AsyncOpenAI
 
-from aceai.agent import AgentBase, ToolExecutor
-from aceai.agent.events import RunCompletedEvent, ToolCompletedEvent
+from aceai.core import AgentBase, ToolExecutor
+from aceai.core.events import RunCompletedEvent, ToolCompletedEvent
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMMessage, LLMStreamEvent, LLMToolCall
 from aceai.llm.openai import OpenAI

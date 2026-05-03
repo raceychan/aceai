@@ -2,7 +2,7 @@ import math
 
 from msgspec import Struct, to_builtins
 
-from aceai.interface import MISSING, UNSET, is_json_compatible, is_present, is_set
+from aceai.llm.interface import MISSING, UNSET, is_json_compatible, is_present, is_set
 
 
 def test_is_json_compatible_accepts_scalar_types() -> None:
@@ -37,7 +37,7 @@ def test_is_json_compatible_handles_nested_lists_and_dicts(monkeypatch) -> None:
         {"meta": {"name": "entry"}},
     ]
     checker = is_json_compatible.__wrapped__
-    monkeypatch.setattr("aceai.interface.is_json_compatible", checker)
+    monkeypatch.setattr("aceai.llm.interface.is_json_compatible", checker)
     assert checker(nested)
     assert not checker({"invalid": object()})
 

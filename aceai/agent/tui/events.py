@@ -4,7 +4,7 @@ from typing import Literal
 
 from msgspec import field
 
-from aceai.agent.events import (
+from aceai.core.events import (
     AgentEvent,
     LLMCompletedEvent,
     LLMOutputDeltaEvent,
@@ -21,10 +21,10 @@ from aceai.agent.events import (
     ToolOutputEvent,
     ToolStartedEvent,
 )
-from aceai.helpers.string import uuid_str
-from aceai.interface import Record
+from aceai.core.helpers.string import uuid_str
+from aceai.llm.interface import Record
 from aceai.llm.models import LLMSegment, LLMToolCall, LLMToolCallDelta
-from aceai.models import ToolExecutionResult
+from aceai.core.models import ToolExecutionResult
 
 TUIEventKind = Literal[
     "user_message",

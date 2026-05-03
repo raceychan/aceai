@@ -1,7 +1,7 @@
 from rich.console import Console
 
 from aceai import AgentBase
-from aceai.agent.events import (
+from aceai.core.events import (
     AgentEvent,
     LLMCompletedEvent,
     LLMOutputDeltaEvent,

@@ -48,7 +48,7 @@ class AgentResponse(Record):
 
 ## 下一步
 
-1. 在 `aceai/llm/models.py` 或 `aceai/agent.py` 定义上述 record。
+1. 在 `aceai/llm/models.py` 或 `aceai/core.py` 定义上述 record。
 2. 改造 `AgentBase.run` 使其直接 yield 事件，并移除历史 `handle`/`stream` 语义。
 3. 选一个 agent/client 更新调用方式，验证实战体验，再回写文档。
 

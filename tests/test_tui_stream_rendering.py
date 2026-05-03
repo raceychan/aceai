@@ -1,11 +1,11 @@
 from rich.panel import Panel
 from rich.text import Text
 
-from aceai.agent.events import AgentEventBuilder
+from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import LLMResponse
-from aceai.models import AgentStep
-from aceai.tui.events import adapt_agent_event, user_message_event
-from aceai.tui.widgets.stream import _render_events
+from aceai.core.models import AgentStep
+from aceai.agent.tui.events import adapt_agent_event, user_message_event
+from aceai.agent.tui.widgets.stream import _render_events
 
 
 def test_consecutive_assistant_deltas_render_as_one_block() -> None:

@@ -7,9 +7,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from aceai.agent.base import AgentBase
-from aceai.agent.events import RunCompletedEvent
-from aceai.agent.executor import ToolExecutor
+from aceai.core.base import AgentBase
+from aceai.core.events import RunCompletedEvent
+from aceai.core.executor import ToolExecutor
 from aceai.llm.models import (
     LLMInput,
     LLMMessage,
@@ -20,9 +20,9 @@ from aceai.llm.models import (
     LLMToolCall,
 )
 from aceai.llm.service import LLMService
-from aceai.tracing import get_trace_ctx
-from aceai.tools import tool
-from aceai.tools._tool_sig import Annotated, spec
+from aceai.llm.tracing import get_trace_ctx
+from aceai.core.tools import tool
+from aceai.core.tools._tool_sig import Annotated, spec
 
 
 class StreamingProvider(LLMProviderBase):
@@ -111,7 +111,7 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
     exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
-    agent_tracer = tracer_provider.get_tracer("aceai.agent")
+    agent_tracer = tracer_provider.get_tracer("aceai.core")
     provider_tracer = tracer_provider.get_tracer("aceai.llm.provider")
     executor_tracer = tracer_provider.get_tracer("aceai.executor")
 
@@ -205,7 +205,7 @@ async def test_agent_run_can_be_closed_early_without_context_detach_errors(
         [make_stream(delta="ok", response=response)],
         tracer=tracer_provider.get_tracer("aceai.llm.provider"),
     )
-    tracer = tracer_provider.get_tracer("aceai.agent")
+    tracer = tracer_provider.get_tracer("aceai.core")
     service = LLMService([provider], timeout_seconds=1.0)
     agent = AgentBase(
         prompt="Prompt",

@@ -1,9 +1,9 @@
 import pytest
 
-from aceai.agent.base import AgentBase, ToolExecutionFailure
-from aceai.errors import AceAIRuntimeError
-from aceai.agent.executor import RunState
-from aceai.agent.events import (
+from aceai.core.base import AgentBase, ToolExecutionFailure
+from aceai.llm.errors import AceAIRuntimeError
+from aceai.core.executor import RunState
+from aceai.core.events import (
     AgentEvent,
     LLMMediaEvent,
     LLMOutputDeltaEvent,

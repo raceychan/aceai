@@ -3,9 +3,9 @@ from typing import Literal
 
 from msgspec import field
 
-from aceai.helpers.string import uuid_str
-from aceai.helpers.time import utc_now
-from aceai.interface import Record, StrDict
+from aceai.core.helpers.string import uuid_str
+from aceai.core.helpers.time import utc_now
+from aceai.llm.interface import Record, StrDict
 from aceai.llm.models import LLMCitationRef, LLMResponse, LLMToolCall
 
 

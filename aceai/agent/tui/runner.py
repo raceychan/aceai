@@ -6,7 +6,7 @@ from opentelemetry.context import Context
 from textual.widgets import Input
 from textual.worker import Worker
 
-from aceai.agent import AgentBase
+from aceai.core import AgentBase
 from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
 

@@ -7,9 +7,9 @@ from msgspec import UNSET, field
 from msgspec.structs import asdict
 from typing_extensions import Required, Self
 
-from aceai.errors import AceAIImplementationError
-from aceai.interface import MessageRole, Record, StrDict, Struct, Unset
-from aceai.tools import IToolSpec
+from aceai.llm.errors import AceAIImplementationError
+from aceai.llm.interface import MessageRole, Record, StrDict, Struct, Unset
+from .tool_spec import IToolSpec
 
 
 class LLMMessagePart(TypedDict, total=False):
