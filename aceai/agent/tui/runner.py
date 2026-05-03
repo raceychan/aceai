@@ -83,10 +83,10 @@ class AceAIInteractiveTUI(AceAITUI):
         )
 
     async def _stream_agent_events(self, question: str) -> None:
-        stream = self._agent.run(
+        stream = self._agent.resume(
             question,
+            self._llm_history,
             trace_ctx=self._trace_ctx,
-            history=self._llm_history,
             **self._request_meta,
         )
         try:
@@ -206,10 +206,10 @@ class AceAIConfiguredTUI(AceAITUI):
     async def _stream_agent_events(self, question: str) -> None:
         if self._agent is None:
             raise RuntimeError("AceAI agent is not configured")
-        stream = self._agent.run(
+        stream = self._agent.resume(
             question,
+            self._llm_history,
             trace_ctx=self._trace_ctx,
-            history=self._llm_history,
             **self._request_meta,
         )
         try:

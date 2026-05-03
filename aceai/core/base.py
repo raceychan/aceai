@@ -319,10 +319,43 @@ class AgentBase:
         self,
         question: str,
         trace_ctx: Context | None = None,
-        history: list[LLMMessage] | None = None,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
         """Yield AgentEvent entries as the agent reasons."""
+        messages = [LLMMessage.build(role="user", content=question)]
+        async for event in self._run_with_messages(
+            question,
+            messages=messages,
+            trace_ctx=trace_ctx,
+            **request_meta,
+        ):
+            yield event
+
+    async def resume(
+        self,
+        question: str,
+        history: list[LLMMessage],
+        trace_ctx: Context | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Yield AgentEvent entries with existing conversation history."""
+        messages = list(history) + [LLMMessage.build(role="user", content=question)]
+        async for event in self._run_with_messages(
+            question,
+            messages=messages,
+            trace_ctx=trace_ctx,
+            **request_meta,
+        ):
+            yield event
+
+    async def _run_with_messages(
+        self,
+        question: str,
+        *,
+        messages: list[LLMMessage],
+        trace_ctx: Context | None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AsyncGenerator[AgentEvent, None]:
         run_span = self._tracer.start_span(
             "agent.run",
             kind=SpanKind.INTERNAL,
@@ -338,10 +371,7 @@ class AgentBase:
         )
         run_context = set_span_in_context(run_span, trace_ctx or Context())
         set_trace_ctx(run_context)
-        history_messages = list(history or [])
-        self._ctx_mgr.init_context(
-            history_messages + [LLMMessage.build(role="user", content=question)]
-        )
+        self._ctx_mgr.init_context(messages)
 
         steps: list[AgentStep] = []
         run_state = RunState()

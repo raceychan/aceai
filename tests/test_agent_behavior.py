@@ -186,7 +186,7 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_run_includes_restored_history_before_current_question() -> None:
+async def test_agent_resume_includes_restored_history_before_current_question() -> None:
     streams = [
         make_stream(
             response=LLMResponse(text="answer"),
@@ -203,9 +203,9 @@ async def test_agent_run_includes_restored_history_before_current_question() -> 
 
     events = [
         event
-        async for event in agent.run(
+        async for event in agent.resume(
             "current",
-            history=[
+            [
                 LLMMessage.build(role="user", content="first"),
                 LLMMessage.build(role="assistant", content="second"),
             ],
