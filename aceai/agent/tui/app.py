@@ -6,8 +6,11 @@ from textual.widgets import Footer, Header
 
 from aceai.core.events import AgentEvent
 
+from aceai.agent.session import SessionRecorder
+
 from .events import TUIEvent
 from .events import adapt_agent_event
+from .events import session_notice_event
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
 from .widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
 
@@ -57,10 +60,19 @@ class AceAITUI(App[None]):
         ("d", "toggle_detail", "Raw Log"),
     ]
 
-    def __init__(self, events: list[TUIEvent] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[TUIEvent] | None = None,
+        *,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
+    ) -> None:
         super().__init__()
         self._events = list(events or [])
         self._state: TUIRunState = initial_state()
+        self._session_recorder = session_recorder
+        self._session_id = session_id
+        self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -78,8 +90,41 @@ class AceAITUI(App[None]):
         self._state = reduce_events(events)
         self._refresh_widgets()
 
+    def show_sessions(self) -> None:
+        if self._session_recorder is None:
+            self.append_event(session_notice_event("No session store is configured."))
+            return
+        sessions = self._session_recorder.store.list_sessions()
+        if not sessions:
+            self.append_event(session_notice_event("No sessions found."))
+            return
+        lines = ["Sessions:"]
+        for session in sessions:
+            marker = "*" if session.session_id == self._session_id else "-"
+            lines.append(
+                f"{marker} {session.session_id}  {session.title}  {session.updated_at}"
+            )
+        lines.append("")
+        lines.append("Use /resume <session_id> to switch sessions.")
+        self.append_event(session_notice_event("\n".join(lines)))
+
+    def switch_session(self, session_id: str) -> None:
+        if self._session_recorder is None:
+            self.append_event(session_notice_event("No session store is configured."))
+            return
+        self._session_recorder.finalize()
+        store = self._session_recorder.store
+        metadata = store.get_session(session_id)
+        self._session_recorder = SessionRecorder(store, metadata.session_id)
+        self._session_id = metadata.session_id
+        self.title = f"AceAI {metadata.session_id}"
+        self.load_events(store.load_tui_events(metadata.session_id))
+        self.append_event(session_notice_event(f"Resumed session {metadata.session_id}"))
+
     def append_event(self, event: TUIEvent) -> None:
         self._state = apply_tui_event(self._state, event)
+        if self._session_recorder is not None:
+            self._session_recorder.record(event)
         self._refresh_widgets()
 
     def append_agent_event(self, event: AgentEvent) -> None:
@@ -107,6 +152,10 @@ class AceAITUI(App[None]):
         self.query_one(TimelineWidget).set_state(self._state)
         self.query_one(StreamWidget).set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
+
+    def on_unmount(self) -> None:
+        if self._session_recorder is not None:
+            self._session_recorder.finalize()
 
 
 def run_static_tui(events: list[TUIEvent]) -> None:

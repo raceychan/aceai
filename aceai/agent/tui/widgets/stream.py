@@ -249,7 +249,7 @@ def _render_text_block(
 def _render_event(event: TUIEvent) -> RenderableType | None:
     label = EVENT_LABELS[event.kind]
     style = EVENT_STYLES[event.kind]
-    if event.kind == "user_message":
+    if event.kind in ("user_message", "session_notice"):
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "tool_call_delta":
         return None

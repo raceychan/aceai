@@ -10,8 +10,6 @@ dependencies = [
     "openai>=2.9.0",
     "opentelemetry-api>=1.39.1",
     "pyyaml>=6.0.3",
-    "rich>=14.2.0",
-    "textual>=8.2.5",
     "typing-extensions>=4.15.0",
 ]
 authors = [{ name = "raceychan", email = "raceychan@gmail.com" }]
@@ -20,6 +18,11 @@ authors = [{ name = "raceychan", email = "raceychan@gmail.com" }]
 otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.39.1",
     "opentelemetry-sdk>=1.39.1",
+]
+tui = [
+    "rich>=14.2.0",
+    "sqlalchemy>=2.0",
+    "textual>=8.2.5",
 ]
 
 [project.scripts]
@@ -58,6 +61,9 @@ dev = [
     "pyarrow>=23.0.0",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",
+    "rich>=14.2.0",
+    "textual>=8.2.5",
+    "sqlalchemy>=2.0",
 ]
 
 [tool.pytest.ini_options]

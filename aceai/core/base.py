@@ -319,6 +319,7 @@ class AgentBase:
         self,
         question: str,
         trace_ctx: Context | None = None,
+        history: list[LLMMessage] | None = None,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
         """Yield AgentEvent entries as the agent reasons."""
@@ -337,7 +338,10 @@ class AgentBase:
         )
         run_context = set_span_in_context(run_span, trace_ctx or Context())
         set_trace_ctx(run_context)
-        self._ctx_mgr.init_context([LLMMessage.build(role="user", content=question)])
+        history_messages = list(history or [])
+        self._ctx_mgr.init_context(
+            history_messages + [LLMMessage.build(role="user", content=question)]
+        )
 
         steps: list[AgentStep] = []
         run_state = RunState()

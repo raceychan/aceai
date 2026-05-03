@@ -1,11 +1,12 @@
 import pytest
 
+from aceai.agent.session import SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
 from aceai.agent.tui.state import initial_state, reduce_events
-from aceai.agent.tui.widgets import DetailWidget, StreamWidget, TimelineWidget
+from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -55,6 +56,15 @@ def test_reduce_events_does_not_add_user_questions_to_timeline() -> None:
     assert state.events[0].kind == "user_message"
 
 
+def test_reduce_events_does_not_add_session_notices_to_timeline() -> None:
+    from aceai.agent.tui.events import session_notice_event
+
+    state = reduce_events([session_notice_event("Sessions")])
+
+    assert state.steps == []
+    assert state.events[0].kind == "session_notice"
+
+
 def test_initial_state_is_idle() -> None:
     state = initial_state()
 
@@ -98,3 +108,60 @@ async def test_stream_scrolls_to_latest_content() -> None:
 
         assert stream.max_scroll_y > 0
         assert stream.scroll_y == stream.max_scroll_y
+
+
+@pytest.mark.anyio
+async def test_escape_exits_input_mode_and_returns_focus_to_stream() -> None:
+    app = AceAITUI([])
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        stream = app.query_one(StreamWidget)
+        command_input.focus()
+
+        assert command_input.has_focus
+
+        await pilot.press("escape")
+
+        assert not command_input.has_focus
+        assert stream.has_focus
+
+
+@pytest.mark.anyio
+async def test_tui_header_uses_session_id(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        assert app.title == f"AceAI {metadata.session_id}"
+
+
+@pytest.mark.anyio
+async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    SessionRecorder(store, first.session_id).record(user_message_event("first question"))
+    SessionRecorder(store, second.session_id).record(user_message_event("second question"))
+    app = AceAITUI(
+        store.load_tui_events(first.session_id),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test():
+        app.show_sessions()
+
+        assert app._state.events[-1].kind == "session_notice"
+        assert first.session_id in app._state.events[-1].content
+        assert second.session_id in app._state.events[-1].content
+
+        app.switch_session(second.session_id)
+
+        assert app.title == f"AceAI {second.session_id}"
+        assert app._state.events[0].content == "second question"

@@ -19,6 +19,20 @@ AceAI 不只有一个“agent”概念，代码需要按层次理解：
 - `aceai/agent/tui` 是展示层。主对话流应该像 Codex/Claude Code 一样显示简洁的 tool activity；参数、结果、raw event 等细节放在 detail/raw view。
 - 跨层改动必须有明确理由。比如一个 TUI 问题优先改渲染/状态，不要顺手改 `AgentBase`；一个 app tool 需求优先放 `aceai/agent/features`，不要塞进 `aceai/core/tools`。
 
+## Agent App Session 存储
+
+Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下沉到 `aceai/core`。
+
+- SQLite 只保存 session 索引和元数据，例如 `session_id`、创建/更新时间、标题、消息文件路径。查询必须通过 SQLAlchemy Core query builder，不写手拼 SQL 字符串。
+- Session metadata 使用正确的数据类型：`created_at`、`updated_at` 在 Python 侧是 `datetime`，数据库列是 datetime 类型，方便后续排序和过滤。
+- 文件保存 compact transcript，当前使用 JSONL，一行是一条合并后的用户、assistant、tool 或 error 消息。
+- 不要把 streaming event 原样持久化。`assistant_delta`、`tool_call_delta`、`tool_output` 这类高频事件必须在写入前合并，否则一次回答会产生大量无意义存储。
+- 恢复会话时，session 文件转换回足够驱动 TUI 展示的 compact `TUIEvent`，而不是重放 provider raw events。
+- CLI 默认进入时创建新 session；`aceai resume <session_id>` 从 SQLite 找到 session，再读取对应 JSONL 文件恢复可见会话历史。
+- TUI header 显示 `AceAI {session_id}`，让用户知道当前会话 id。
+- 退出或切换 session 前，当前 session name 会更新为 `{首个用户问题前 40 字} - YYYY-MM-DD HH:MM:SS`。
+- TUI 内部支持 `/sessions` 查看 session 列表，支持 `/resume <session_id>` 切换 session。
+
 # Agent 层响应结构探索
 
 ## 目标

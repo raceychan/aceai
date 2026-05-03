@@ -68,7 +68,7 @@ def _apply_step_event(
     steps: list[TUIStepState],
     event: TUIEvent,
 ) -> list[TUIStepState]:
-    if event.kind == "user_message":
+    if event.kind in ("user_message", "session_notice"):
         return steps
 
     target = _find_step(steps, event.step_id)

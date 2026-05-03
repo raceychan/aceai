@@ -18,6 +18,7 @@ from aceai.core.events import (
 from aceai.llm import LLMResponse
 from aceai.llm.models import (
     LLMGeneratedMedia,
+    LLMMessage,
     LLMSegment,
     LLMStreamEvent,
     LLMToolCall,
@@ -182,6 +183,46 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
     assert isinstance(events[-1], RunCompletedEvent)
     assert events[-1].final_answer == "  hello world  "
     assert len(llm_service.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_run_includes_restored_history_before_current_question() -> None:
+    streams = [
+        make_stream(
+            response=LLMResponse(text="answer"),
+            deltas=["answer"],
+        )
+    ]
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+    )
+
+    events = [
+        event
+        async for event in agent.run(
+            "current",
+            history=[
+                LLMMessage.build(role="user", content="first"),
+                LLMMessage.build(role="assistant", content="second"),
+            ],
+        )
+    ]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    messages = llm_service.calls[0]["messages"]
+    assert [message.role for message in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert messages[1].content[0]["data"] == "first"
+    assert messages[2].content[0]["data"] == "second"
+    assert messages[3].content[0]["data"] == "current"
 
 
 @pytest.mark.anyio

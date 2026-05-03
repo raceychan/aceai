@@ -6,13 +6,16 @@ from opentelemetry.context import Context
 from textual.widgets import Input
 from textual.worker import Worker
 
+from aceai.agent.session import SessionRecorder, messages_to_llm_history
 from aceai.core import AgentBase
+from aceai.core.events import RunCompletedEvent
+from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
 from .config import AceAITUIConfig
-from .events import user_message_event
+from .events import TUIEvent, user_message_event
 from .setup import ProviderSetupScreen
 from .widgets import CommandInput
 
@@ -26,13 +29,22 @@ class AceAIInteractiveTUI(AceAITUI):
         self,
         agent: AgentBase,
         *,
+        initial_events: list[TUIEvent] | None = None,
+        initial_history: list[LLMMessage] | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
-        super().__init__(events=[])
+        super().__init__(
+            events=initial_events or [],
+            session_recorder=session_recorder,
+            session_id=session_id,
+        )
         self._agent = agent
         self._trace_ctx = trace_ctx
         self._request_meta = request_meta or {}
+        self._llm_history = list(initial_history or [])
         self._active_worker: Worker[None] | None = None
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -44,6 +56,14 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         if question == "/clear":
             self.load_events([])
+            event.input.value = ""
+            return
+        if question == "/sessions":
+            self.show_sessions()
+            event.input.value = ""
+            return
+        if question.startswith("/resume "):
+            self.switch_session(question.removeprefix("/resume "))
             event.input.value = ""
             return
         if question == "":
@@ -66,13 +86,31 @@ class AceAIInteractiveTUI(AceAITUI):
         stream = self._agent.run(
             question,
             trace_ctx=self._trace_ctx,
+            history=self._llm_history,
             **self._request_meta,
         )
         try:
             async for event in stream:
                 self.append_agent_event(event)
+                if isinstance(event, RunCompletedEvent):
+                    self._append_history_turn(question, event.final_answer)
         finally:
             await stream.aclose()
+
+    def switch_session(self, session_id: str) -> None:
+        super().switch_session(session_id)
+        self._reload_llm_history()
+
+    def _append_history_turn(self, question: str, answer: str) -> None:
+        self._llm_history.append(LLMMessage.build(role="user", content=question))
+        self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def _reload_llm_history(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            self._llm_history = []
+            return
+        messages = self._session_recorder.store.load_messages(self._session_id)
+        self._llm_history = messages_to_llm_history(messages)
 
 
 class AceAIConfiguredTUI(AceAITUI):
@@ -85,16 +123,25 @@ class AceAIConfiguredTUI(AceAITUI):
         initial_config: AceAITUIConfig | None,
         initial_question: str,
         default_model: OpenAIModel,
+        initial_events: list[TUIEvent] | None = None,
+        initial_history: list[LLMMessage] | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
-        super().__init__(events=[])
+        super().__init__(
+            events=initial_events or [],
+            session_recorder=session_recorder,
+            session_id=session_id,
+        )
         self._agent_factory = agent_factory
         self._initial_config = initial_config
         self._initial_question = initial_question
         self._default_model: OpenAIModel = default_model
         self._trace_ctx = trace_ctx
         self._request_meta = request_meta or {}
+        self._llm_history = list(initial_history or [])
         self._agent: AgentBase | None = None
         self._active_worker: Worker[None] | None = None
 
@@ -129,6 +176,14 @@ class AceAIConfiguredTUI(AceAITUI):
             self.load_events([])
             event.input.value = ""
             return
+        if question == "/sessions":
+            self.show_sessions()
+            event.input.value = ""
+            return
+        if question.startswith("/resume "):
+            self.switch_session(question.removeprefix("/resume "))
+            event.input.value = ""
+            return
         if question == "":
             return
         self.start_run(question)
@@ -154,13 +209,31 @@ class AceAIConfiguredTUI(AceAITUI):
         stream = self._agent.run(
             question,
             trace_ctx=self._trace_ctx,
+            history=self._llm_history,
             **self._request_meta,
         )
         try:
             async for event in stream:
                 self.append_agent_event(event)
+                if isinstance(event, RunCompletedEvent):
+                    self._append_history_turn(question, event.final_answer)
         finally:
             await stream.aclose()
+
+    def switch_session(self, session_id: str) -> None:
+        super().switch_session(session_id)
+        self._reload_llm_history()
+
+    def _append_history_turn(self, question: str, answer: str) -> None:
+        self._llm_history.append(LLMMessage.build(role="user", content=question))
+        self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def _reload_llm_history(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            self._llm_history = []
+            return
+        messages = self._session_recorder.store.load_messages(self._session_id)
+        self._llm_history = messages_to_llm_history(messages)
 
 
 class AceAILiveTUI(AceAIInteractiveTUI):
@@ -171,11 +244,19 @@ class AceAILiveTUI(AceAIInteractiveTUI):
         agent: AgentBase,
         question: str,
         *,
+        initial_events: list[TUIEvent] | None = None,
+        initial_history: list[LLMMessage] | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
         super().__init__(
             agent,
+            initial_events=initial_events,
+            initial_history=initial_history,
+            session_recorder=session_recorder,
+            session_id=session_id,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
         )
@@ -189,11 +270,19 @@ class AceAILiveTUI(AceAIInteractiveTUI):
 def run_interactive_tui(
     agent: AgentBase,
     *,
+    initial_events: list[TUIEvent] | None = None,
+    initial_history: list[LLMMessage] | None = None,
+    session_recorder: SessionRecorder | None = None,
+    session_id: str | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
     AceAIInteractiveTUI(
         agent,
+        initial_events=initial_events,
+        initial_history=initial_history,
+        session_recorder=session_recorder,
+        session_id=session_id,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()
@@ -205,6 +294,10 @@ def run_configured_tui(
     initial_config: AceAITUIConfig | None,
     initial_question: str,
     default_model: OpenAIModel,
+    initial_events: list[TUIEvent] | None = None,
+    initial_history: list[LLMMessage] | None = None,
+    session_recorder: SessionRecorder | None = None,
+    session_id: str | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
@@ -213,6 +306,10 @@ def run_configured_tui(
         initial_config=initial_config,
         initial_question=initial_question,
         default_model=default_model,
+        initial_events=initial_events,
+        initial_history=initial_history,
+        session_recorder=session_recorder,
+        session_id=session_id,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()
@@ -222,12 +319,20 @@ def run_agent_tui(
     agent: AgentBase,
     question: str,
     *,
+    initial_events: list[TUIEvent] | None = None,
+    initial_history: list[LLMMessage] | None = None,
+    session_recorder: SessionRecorder | None = None,
+    session_id: str | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
     AceAILiveTUI(
         agent,
         question,
+        initial_events=initial_events,
+        initial_history=initial_history,
+        session_recorder=session_recorder,
+        session_id=session_id,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()

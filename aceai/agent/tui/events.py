@@ -28,6 +28,7 @@ from aceai.core.models import ToolExecutionResult
 
 TUIEventKind = Literal[
     "user_message",
+    "session_notice",
     "run_completed",
     "run_failed",
     "step_completed",
@@ -74,6 +75,17 @@ def user_message_event(question: str) -> TUIEvent:
         step_id=uuid_str(),
         title="you",
         content=question,
+        raw_event=None,
+    )
+
+
+def session_notice_event(content: str) -> TUIEvent:
+    return TUIEvent(
+        kind="session_notice",
+        step_index=-1,
+        step_id=uuid_str(),
+        title="session",
+        content=content,
         raw_event=None,
     )
 
