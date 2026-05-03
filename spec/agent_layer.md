@@ -1,3 +1,24 @@
+# AceAI 分层与 Agent 层职责
+
+## 分层契约
+
+AceAI 不只有一个“agent”概念，代码需要按层次理解：
+
+| 层 | 路径 | 作用 | 不应该做什么 |
+| --- | --- | --- | --- |
+| LLM/provider 层 | `aceai/llm` | 把 OpenAI 等模型供应商适配成 AceAI 自己的 request/response/stream/tool spec 契约 | 不放 app 工具、不关心 TUI、不写用户工作流 |
+| Core/framework 层 | `aceai/core` | 给开发者搭 agent 的框架原语：`AgentBase`、事件、context、tool 协议、executor、skills、tracing | 不塞文件/shell/browser/search 这类产品默认工具 |
+| Agent app 层 | `aceai/agent` | 给最终用户直接运行的 AceAI app：主 agent、默认工具包、内置 app skills、产品化 preset | 不改 provider 细节，不把 app 假设下沉到 core |
+| TUI 层 | `aceai/agent/tui` | 终端 UI，把结构化事件渲染成用户可读界面 | 不执行工具、不推断 provider 语义、不把 raw JSON 默认铺满主页面 |
+| Docs/spec 层 | `docs`、`spec` | 记录架构、迁移计划、用户文档和后续约束 | 不让关键设计只存在聊天记录里 |
+
+核心原则：
+
+- `aceai/core` 是框架，不是产品。这里的 built-in 能力要克制，偏协议、结构、调度、观测和扩展点。
+- `aceai/agent` 已经是 app。这里可以放真实好用、opinionated 的工具和技能，例如 filesystem、shell、search、browser、memory、artifact 等 capability。
+- `aceai/agent/tui` 是展示层。主对话流应该像 Codex/Claude Code 一样显示简洁的 tool activity；参数、结果、raw event 等细节放在 detail/raw view。
+- 跨层改动必须有明确理由。比如一个 TUI 问题优先改渲染/状态，不要顺手改 `AgentBase`；一个 app tool 需求优先放 `aceai/agent/features`，不要塞进 `aceai/core/tools`。
+
 # Agent 层响应结构探索
 
 ## 目标

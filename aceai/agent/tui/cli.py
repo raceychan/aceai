@@ -4,16 +4,13 @@ import argparse
 import os
 from typing import Sequence
 
-from openai import AsyncOpenAI
-
+from aceai.agent.ace_agent import build_ace_agent
 from aceai.core import AgentBase
-from aceai.llm.openai import OpenAI, OpenAIModel
-from aceai.llm.service import LLMService
+from aceai.llm.openai import OpenAIModel
 
 from .config import AceAITUIConfig, load_config
 from .runner import run_agent_tui, run_configured_tui, run_interactive_tui
 
-DEFAULT_SYSTEM_PROMPT = "You are AceAI, a concise and helpful terminal assistant."
 OPENAI_MODELS: tuple[OpenAIModel, ...] = (
     "gpt-4o",
     "gpt-4o-mini",
@@ -26,17 +23,7 @@ OPENAI_MODELS: tuple[OpenAIModel, ...] = (
 
 
 def build_default_agent(*, api_key: str, model: OpenAIModel) -> AgentBase:
-    provider = OpenAI(
-        client=AsyncOpenAI(api_key=api_key),
-        default_meta={"model": model},
-    )
-    llm_service = LLMService([provider], timeout_seconds=120.0)
-    return AgentBase(
-        prompt=DEFAULT_SYSTEM_PROMPT,
-        default_model=model,
-        llm_service=llm_service,
-        executor=None,
-    )
+    return build_ace_agent(api_key=api_key, model=model)
 
 
 def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:

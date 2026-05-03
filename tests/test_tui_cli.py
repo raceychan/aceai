@@ -81,3 +81,19 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
     assert payload[1] is None
     assert payload[2] == "hello"
     assert payload[3] == "gpt-5.1"
+
+
+def test_build_default_agent_uses_main_ace_agent(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+    agent = StubAgent()
+
+    def build_ace_agent(*, api_key, model):
+        calls.append((api_key, model))
+        return agent
+
+    monkeypatch.setattr(cli, "build_ace_agent", build_ace_agent)
+
+    result = cli.build_default_agent(api_key="key", model="gpt-5.1")
+
+    assert result is agent
+    assert calls == [("key", "gpt-5.1")]
