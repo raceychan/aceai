@@ -473,6 +473,98 @@ An agent run completes when the model returns a step with **no tool calls**; tha
 
 ## Extensibility
 
+### Custom LLM provider
+AceAI is provider-agnostic above the adapter boundary. To support another LLM vendor, implement `LLMProviderBase`, translate AceAI's provider-neutral request/response models to that vendor's SDK, then inject the provider into `LLMService`.
+
+The provider contract is deliberately small:
+
+- `complete(request: LLMInput) -> LLMResponse`: one-shot completion.
+- `stream(request: LLMInput) -> AsyncGenerator[LLMStreamEvent, None]`: streaming text/tool/media events.
+- `modality -> LLMProviderModality`: declare supported input/output modalities.
+- `stt(...) -> str`: speech-to-text. If your provider does not support it, implement the method and raise `NotImplementedError`.
+
+Minimal skeleton:
+
+```python
+from collections.abc import AsyncGenerator
+from typing import BinaryIO
+
+from aceai.llm import LLMInput, LLMProviderBase, LLMResponse
+from aceai.llm.models import LLMProviderModality, LLMStreamEvent
+
+
+class MyProvider(LLMProviderBase):
+    def __init__(self, client: MyVendorClient, *, default_model: str) -> None:
+        self.client = client
+        self.default_model = default_model
+
+    @property
+    def modality(self) -> LLMProviderModality:
+        return LLMProviderModality(text_in=True, image_in=False, image_out=False)
+
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        # Translate request["messages"], request.get("tools"), and request.get("metadata")
+        # into your vendor's payload shape.
+        result = await self.client.complete(
+            model=request.get("metadata", {}).get("model", self.default_model),
+            messages=request["messages"],
+        )
+        return LLMResponse(
+            id=result.id,
+            model=result.model,
+            text=result.text,
+        )
+
+    async def stream(
+        self,
+        request: LLMInput,
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
+        async for chunk in self.client.stream(
+            model=request.get("metadata", {}).get("model", self.default_model),
+            messages=request["messages"],
+        ):
+            yield LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta=chunk.text,
+            )
+
+        yield LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(text=""),
+        )
+
+    async def stt(
+        self,
+        filename: str,
+        file: BinaryIO,
+        *,
+        model: str,
+        prompt: str | None = None,
+    ) -> str:
+        raise NotImplementedError
+```
+
+Then inject it exactly like the built-in OpenAI adapter:
+
+```python
+from aceai import AgentBase, Graph, LLMService
+from aceai.agent import ToolExecutor
+
+
+provider = MyProvider(client=MyVendorClient(api_key="..."), default_model="vendor-large")
+llm = LLMService(providers=[provider], timeout_seconds=60)
+executor = ToolExecutor(graph=Graph(), tools=[])
+
+agent = AgentBase(
+    prompt="You are a helpful assistant.",
+    default_model="vendor-large",
+    llm_service=llm,
+    executor=executor,
+)
+```
+
+For agent/tool support, the provider also needs to map vendor tool calls into `LLMToolCall` and return them on `LLMResponse.tool_calls`. If your vendor expects a different tool schema envelope, implement a provider-specific `IToolSpec` renderer and attach it with `@tool(spec_cls=...)`; see the custom tool spec section below.
+
 ### Custom agent (subclass `AgentBase`)
 In real products, the core reasoning loop is rarely the whole story: you often need to inject request metadata (tenant/user ids, model selection), enforce guardrails, integrate with your UI/event system, or standardize defaults across calls. Subclassing `AgentBase` lets you wrap those concerns around the existing streaming + tool-execution loop without re-implementing it; `AgentBase` already owns message assembly, step bookkeeping, and calling into `LLMService` and the `ToolExecutor`, so delegating to `super()` keeps the behavior consistent while you add your glue. This is usually the best place to customize because it keeps product policy at the boundary and leaves your tools/providers reusable and easy to test.
 

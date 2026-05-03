@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 
+# Runtime logs and local process output
+nohup.out
+*.log
+
 # Virtual environments
 .venv
 .env
@@ -15,8 +19,8 @@ wheels/
 .ipynb_checkpoints/
 lab/
 
-# Local plugin cache
-.cache/plugin/social/
+# Local caches
+.cache/
 
 # Local agent skills
 .agent/skills/aceai-release/
