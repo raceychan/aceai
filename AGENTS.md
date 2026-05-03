@@ -2,6 +2,7 @@
 
 - Always run tests via `uv run pytest` so execution uses the project-managed Python 3.12 environment.
 - When inspecting a saved AceAI session, use `uv run aceai export <session_id>` first. Do not start by reading the underlying JSONL or SQLite storage unless the export output is insufficient for the task.
+- For AceAI release work, always read and follow `.agent/skills/aceai-release/SKILL.md` first. Do not use `make release` as the release workflow entrypoint, and do not publish to PyPI from local `twine`; PyPI publication must happen from the tag-triggered GitHub Actions workflow.
 
 ### Architecture Layers
 

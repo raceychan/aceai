@@ -578,6 +578,7 @@ class OpenAI(LLMProviderBase):
         if usage:
             usage_block = LLMUsage(
                 input_tokens=usage.input_tokens,
+                cached_input_tokens=_cached_input_tokens(usage),
                 output_tokens=usage.output_tokens,
                 total_tokens=usage.total_tokens,
             )
@@ -786,3 +787,15 @@ class OpenAI(LLMProviderBase):
     def _media_from_base64(self, payload: str) -> LLMGeneratedMedia:
         data = base64.b64decode(payload)
         return LLMGeneratedMedia(type="image", mime_type="image/png", data=data)
+
+
+def _cached_input_tokens(usage: Any) -> int | None:
+    details = getattr(usage, "input_tokens_details", None)
+    if details is None:
+        return None
+    cached_tokens = getattr(details, "cached_tokens", None)
+    if cached_tokens is None:
+        return None
+    if type(cached_tokens) is not int:
+        raise TypeError("OpenAI cached input token usage must be int")
+    return cached_tokens

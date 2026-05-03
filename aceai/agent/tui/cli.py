@@ -21,8 +21,9 @@ from .config import (
     SUPPORTED_OPENAI_MODELS,
     load_config,
 )
+from .cost import format_usd
 from .events import TUIEvent
-from .runner import run_agent_tui, run_configured_tui, run_interactive_tui
+from .runner import run_configured_tui, run_interactive_tui
 
 OPENAI_MODELS: tuple[OpenAIModel, ...] = SUPPORTED_OPENAI_MODELS
 
@@ -80,15 +81,22 @@ def create_session_context(
     )
 
 
+def latest_session_id(store: SessionStore) -> str:
+    sessions = store.list_sessions()
+    if not sessions:
+        raise ValueError("aceai resume found no sessions")
+    return sessions[0].session_id
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="aceai",
         description="Launch the AceAI terminal UI.",
     )
     parser.add_argument(
-        "question",
+        "command",
         nargs="*",
-        help="Optional question to run immediately. Omit for interactive mode.",
+        help="Optional command: resume <session_id>, export <session_id>, or cost.",
     )
     parser.add_argument(
         "--model",
@@ -97,23 +105,34 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="OpenAI model for the default AceAI CLI agent.",
     )
     args = parser.parse_args(argv)
-    question_parts = list(args.question)
-    if question_parts and question_parts[0] == "export":
-        if len(question_parts) != 2:
+    command_parts = list(args.command)
+    if command_parts and command_parts[0] == "export":
+        if len(command_parts) != 2:
             raise ValueError("aceai export requires a session_id")
-        print(SessionStore().export_text(question_parts[1]), end="")
+        print(SessionStore().export_text(command_parts[1]), end="")
+        return
+    if command_parts and command_parts[0] == "cost":
+        if len(command_parts) != 1:
+            raise ValueError("aceai cost does not accept arguments")
+        print(format_usd(SessionStore().total_cost_usd()))
         return
     resume_session_id: str | None = None
-    if question_parts and question_parts[0] == "resume":
-        if len(question_parts) < 2:
+    if command_parts and command_parts[0] == "resume":
+        if len(command_parts) > 2:
             raise ValueError("aceai resume requires a session_id")
-        resume_session_id = question_parts[1]
-        question_parts = question_parts[2:]
+        if len(command_parts) == 2:
+            resume_session_id = command_parts[1]
+        else:
+            resume_session_id = latest_session_id(SessionStore())
+    elif command_parts:
+        raise ValueError(
+            "aceai only accepts no arguments, resume <session_id>, "
+            "export <session_id>, or cost"
+        )
     selected_model = resolve_model(
         args.model or os.environ.get("ACEAI_MODEL", DEFAULT_OPENAI_MODEL)
     )
     config = resolve_initial_config(selected_model)
-    question = " ".join(question_parts)
     store, metadata, initial_events, initial_history = create_session_context(
         resume_session_id=resume_session_id,
     )
@@ -122,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         run_configured_tui(
             build_agent_from_config,
             initial_config=None,
-            initial_question=question,
+            initial_question="",
             default_model=selected_model,
             initial_events=initial_events,
             initial_history=initial_history,
@@ -133,22 +152,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             print(f"Session saved: {metadata.session_id}")
         return
     agent = build_agent_from_config(config)
-    if question == "":
-        run_interactive_tui(
-            agent,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=recorder,
-            session_id=metadata.session_id,
-        )
-    else:
-        run_agent_tui(
-            agent,
-            question,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=recorder,
-            session_id=metadata.session_id,
-        )
+    run_interactive_tui(
+        agent,
+        initial_events=initial_events,
+        initial_history=initial_history,
+        session_recorder=recorder,
+        session_id=metadata.session_id,
+    )
     if recorder.saved:
         print(f"Session saved: {metadata.session_id}")

@@ -91,7 +91,6 @@ The CLI uses the default OpenAI-backed agent:
 
 ```bash
 OPENAI_API_KEY=... aceai
-OPENAI_API_KEY=... aceai "Summarize this project"
 ACEAI_MODEL=gpt-4o-mini OPENAI_API_KEY=... aceai
 ```
 

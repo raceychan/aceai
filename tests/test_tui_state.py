@@ -2,12 +2,14 @@ import pytest
 
 from aceai.agent.session import SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
+from aceai.core.models import AgentStep
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
 from aceai.agent.tui.state import initial_state, reduce_events
 from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
-from textual.widgets import DataTable, Static
+from aceai.llm.models import LLMResponse, LLMUsage
+from textual.widgets import DataTable, Footer, Static
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -66,12 +68,121 @@ def test_reduce_events_does_not_add_session_notices_to_timeline() -> None:
     assert state.events[0].kind == "session_notice"
 
 
+def test_reduce_events_does_not_add_restored_transcript_to_timeline() -> None:
+    from aceai.agent.session import SessionMessage, messages_to_tui_events
+
+    created_at = "2026-05-04T00:00:00+00:00"
+    events = messages_to_tui_events(
+        [
+            SessionMessage(kind="user", content="question", created_at=created_at),
+            SessionMessage(kind="assistant", content="answer", created_at=created_at),
+            SessionMessage(
+                kind="tool",
+                content="",
+                created_at=created_at,
+                tool_name="read_text_file",
+                tool_call_id="call-1",
+                tool_arguments='{"path":"README.md"}',
+                tool_output="contents",
+                status="completed",
+            ),
+        ]
+    )
+
+    state = reduce_events(events)
+
+    assert state.steps == []
+    assert state.status == "idle"
+
+
 def test_initial_state_is_idle() -> None:
     state = initial_state()
 
     assert state.status == "idle"
     assert state.steps == []
     assert state.events == []
+
+
+def test_reduce_events_tracks_usage_totals() -> None:
+    first = AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+        step=AgentStep(
+            llm_response=LLMResponse(
+                text="first",
+                usage=LLMUsage(
+                    input_tokens=100,
+                    cached_input_tokens=40,
+                    output_tokens=20,
+                    total_tokens=120,
+                ),
+            )
+        )
+    )
+    second = AgentEventBuilder(step_index=1, step_id="step-2").llm_completed(
+        step=AgentStep(
+            llm_response=LLMResponse(
+                text="second",
+                usage=LLMUsage(input_tokens=150, output_tokens=30, total_tokens=180),
+            )
+        )
+    )
+
+    state = reduce_events([adapt_agent_event(first), adapt_agent_event(second)])
+
+    assert state.usage.current_context_tokens == 150
+    assert state.usage.session_input_tokens == 250
+    assert state.usage.session_cached_input_tokens == 40
+    assert state.usage.session_output_tokens == 50
+    assert state.usage.session_total_tokens == 300
+
+
+def test_reduce_events_tracks_cost_totals() -> None:
+    first = AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+        step=AgentStep(
+            llm_response=LLMResponse(
+                text="first",
+                model="gpt-5.5",
+                usage=LLMUsage(
+                    input_tokens=1_000,
+                    cached_input_tokens=600,
+                    output_tokens=100,
+                    total_tokens=1_100,
+                ),
+            )
+        )
+    )
+    second = AgentEventBuilder(step_index=1, step_id="step-2").llm_completed(
+        step=AgentStep(
+            llm_response=LLMResponse(
+                text="second",
+                model="gpt-5.4-mini",
+                usage=LLMUsage(input_tokens=1_000, output_tokens=100, total_tokens=1_100),
+            )
+        )
+    )
+
+    state = reduce_events([adapt_agent_event(first), adapt_agent_event(second)])
+
+    assert state.usage.current_cost_usd is not None
+    assert state.usage.session_cost_usd is not None
+    assert round(state.usage.current_cost_usd, 6) == 0.0012
+    assert round(state.usage.session_cost_usd, 6) == 0.0065
+
+
+def test_reduce_events_keeps_missing_usage_unknown() -> None:
+    state = reduce_events(
+        [
+            adapt_agent_event(
+                AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+                    step=AgentStep(llm_response=LLMResponse(text="answer"))
+                )
+            )
+        ]
+    )
+
+    assert state.usage.current_context_tokens is None
+    assert state.usage.session_input_tokens is None
+    assert state.usage.session_output_tokens is None
+    assert state.usage.session_total_tokens is None
 
 
 @pytest.mark.anyio
@@ -112,6 +223,30 @@ async def test_stream_scrolls_to_latest_content() -> None:
 
 
 @pytest.mark.anyio
+async def test_stream_does_not_show_horizontal_scrollbar() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        adapt_agent_event(
+            builder.llm_text_delta(
+                text_delta=(
+                    "This is a long assistant response that should wrap inside "
+                    "the stream instead of creating a horizontal scrollbar. "
+                    * 8
+                )
+            )
+        )
+    ]
+    app = AceAITUI(events)
+
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause(0.1)
+        stream = app.query_one(StreamWidget)
+
+        assert not stream.show_horizontal_scrollbar
+        assert stream.max_scroll_x == 0
+
+
+@pytest.mark.anyio
 async def test_escape_exits_input_mode_and_returns_focus_to_stream() -> None:
     app = AceAITUI([])
 
@@ -126,6 +261,35 @@ async def test_escape_exits_input_mode_and_returns_focus_to_stream() -> None:
 
         assert not command_input.has_focus
         assert stream.has_focus
+
+
+@pytest.mark.anyio
+async def test_enter_from_main_view_focuses_input() -> None:
+    app = AceAITUI([])
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        stream = app.query_one(StreamWidget)
+        stream.focus()
+        await pilot.pause()
+
+        assert stream.has_focus
+
+        await pilot.press("enter")
+
+        assert command_input.has_focus
+
+
+@pytest.mark.anyio
+async def test_input_sits_above_footer_without_overlap() -> None:
+    app = AceAITUI([])
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause(0.1)
+        command_input = app.query_one(CommandInput)
+        footer = app.query_one(Footer)
+
+        assert command_input.region.y + command_input.region.height <= footer.region.y
 
 
 @pytest.mark.anyio
@@ -159,6 +323,7 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
         app.show_sessions()
 
         assert app._state.events[-1].kind == "session_notice"
+        assert "Total cost: $0.000000" in app._state.events[-1].content
         assert first.session_id in app._state.events[-1].content
         assert second.session_id in app._state.events[-1].content
 
@@ -197,6 +362,8 @@ async def test_session_selector_uses_table_columns(tmp_path) -> None:
         assert table.row_count == 2
         assert table.ordered_rows[table.cursor_row].key.value == first.session_id
         assert table.get_row_at(table.cursor_row)[1] == "first question"
+        status = app.screen.query_one("#session-status", Static)
+        assert "Total cost: $0.000000" in str(status.render())
 
 
 @pytest.mark.anyio

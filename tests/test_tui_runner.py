@@ -3,6 +3,7 @@ import pytest
 from aceai.core.base import AgentBase
 from aceai.agent.session import SessionRecorder, SessionStore
 from aceai.llm import LLMResponse
+from aceai.llm.models import LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import user_message_event
 from aceai.agent.tui.runner import AceAIInteractiveTUI, AceAILiveTUI
@@ -239,6 +240,45 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         app.switch_model("gpt-5.5")
 
         assert "model: gpt-5.5" in status.current_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_status_bar_shows_usage() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text="answer",
+                    model="gpt-5.5",
+                    usage=LLMUsage(
+                        input_tokens=1_200,
+                        cached_input_tokens=200,
+                        output_tokens=300,
+                        total_tokens=1_500,
+                    ),
+                ),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "What now?"))
+        await pilot.pause(0.1)
+
+        status = app.query_one(StatusBarWidget)
+        assert "ctx: 1,200" in status.current_text
+        assert "session: 1,500" in status.current_text
+        assert "200 cached" in status.current_text
+        assert "cost: $0.0141" in status.current_text
 
 
 @pytest.mark.anyio

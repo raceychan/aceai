@@ -8,6 +8,7 @@ from aceai.core.events import (
 from aceai.llm.models import (
     LLMGeneratedMedia,
     LLMResponse,
+    LLMUsage,
     LLMSegment,
     LLMToolCall,
     LLMToolCallDelta,
@@ -45,6 +46,27 @@ def test_adapt_llm_completed_event() -> None:
 
     assert tui_event.kind == "llm_completed"
     assert tui_event.content == "intermediate"
+
+
+def test_adapt_llm_completed_event_includes_usage_and_cost() -> None:
+    usage = LLMUsage(
+        input_tokens=10,
+        cached_input_tokens=6,
+        output_tokens=4,
+        total_tokens=14,
+    )
+    step = AgentStep(
+        llm_response=LLMResponse(text="done", model="gpt-5.5", usage=usage)
+    )
+    event = LLMCompletedEvent(step_index=0, step_id="step-1", step=step)
+
+    tui_event = adapt_agent_event(event)
+
+    assert tui_event.usage is usage
+    assert tui_event.cost is not None
+    assert tui_event.cost.model == "gpt-5.5"
+    assert round(tui_event.cost.total_cost_usd, 6) == 0.000143
+    assert round(tui_event.cost.cached_input_cost_usd, 6) == 0.000003
 
 
 def test_adapt_tool_call_delta_event() -> None:

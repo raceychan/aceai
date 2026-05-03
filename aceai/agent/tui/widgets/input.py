@@ -12,7 +12,6 @@ class CommandInput(Input):
 
     DEFAULT_CSS = """
     CommandInput {
-        dock: bottom;
         height: 3;
         background: #3b4252;
         color: #eceff4;

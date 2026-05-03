@@ -2,12 +2,14 @@
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.events import Key
 from textual.widgets import Footer, Header
 
 from aceai.core.events import AgentEvent
 
 from aceai.agent.session import SessionRecorder
 
+from .cost import format_usd
 from .events import TUIEvent
 from .events import adapt_agent_event
 from .events import session_notice_event
@@ -99,6 +101,15 @@ class AceAITUI(App[None]):
     def on_mount(self) -> None:
         self.load_events(self._events)
 
+    def on_key(self, event: Key) -> None:
+        if event.key != "enter":
+            return
+        command_input = self.query_one(CommandInput)
+        if command_input.has_focus:
+            return
+        command_input.focus()
+        event.stop()
+
     def load_events(self, events: list[TUIEvent]) -> None:
         self._state = reduce_events(events)
         self._refresh_widgets()
@@ -111,7 +122,8 @@ class AceAITUI(App[None]):
         if not sessions:
             self.append_event(session_notice_event("No sessions found."))
             return
-        lines = ["Sessions:"]
+        total_cost = self._session_recorder.store.total_cost_usd()
+        lines = [f"Total cost: {format_usd(total_cost)}", "", "Sessions:"]
         for session in sessions:
             marker = "*" if session.session_id == self._session_id else "-"
             lines.append(
@@ -172,6 +184,7 @@ class AceAITUI(App[None]):
             self.query_one(StatusBarWidget).set_status(
                 model=self._status_model,
                 status=self._state.status,
+                usage=self._state.usage,
             )
 
     def action_toggle_detail(self) -> None:
@@ -207,6 +220,7 @@ class AceAITUI(App[None]):
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
             status=self._state.status,
+            usage=self._state.usage,
         )
 
     def on_unmount(self) -> None:

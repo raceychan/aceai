@@ -1,15 +1,21 @@
 """Main event stream pane for the read-only TUI prototype."""
 
 from msgspec import Struct
+from rich.cells import cell_len
 from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
+from textual.events import Resize
 from textual.widgets import RichLog
 
 from aceai.agent.tui.events import TUIEvent, TUIEventKind
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
+
+DEFAULT_CHAT_PANEL_WIDTH = 100
+CHAT_PANEL_WIDTH_RATIO = 0.86
 
 
 class StreamWidget(RichLog):
@@ -24,6 +30,7 @@ class StreamWidget(RichLog):
         width: 1fr;
         height: 1fr;
         overflow-y: auto;
+        overflow-x: hidden;
     }
     """
 
@@ -33,7 +40,7 @@ class StreamWidget(RichLog):
         *,
         id: str | None = None,
     ) -> None:
-        super().__init__(id=id, wrap=True, auto_scroll=True)
+        super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
 
     def set_state(self, state: TUIRunState) -> None:
@@ -43,8 +50,27 @@ class StreamWidget(RichLog):
             self.write(Text("No events yet", style="#d8dee9"))
         else:
             for renderable in _render_events(self._state.events):
-                self.write(renderable)
+                self._write_stream_renderable(renderable)
         self.call_after_refresh(self.scroll_end, animate=False)
+
+    def on_resize(self, event: Resize) -> None:
+        if self._state.events:
+            self.set_state(self._state)
+
+    def _write_stream_renderable(self, renderable: RenderableType) -> None:
+        if isinstance(renderable, Table):
+            self.write(renderable, expand=True)
+            return
+        if _is_chat_panel(renderable):
+            self.write(
+                renderable,
+                width=_chat_panel_width(
+                    renderable,
+                    _available_stream_width(self),
+                ),
+            )
+            return
+        self.write(renderable)
 
 
 class _ToolBlockState(Struct, kw_only=True):
@@ -249,15 +275,17 @@ def _render_text_block(
         body = Text(content, style=style)
     return Panel(
         body,
-        title=label,
         border_style=style,
+        expand=False,
     )
 
 
 def _render_event(event: TUIEvent) -> RenderableType | None:
     label = EVENT_LABELS[event.kind]
     style = EVENT_STYLES[event.kind]
-    if event.kind in ("user_message", "session_notice"):
+    if event.kind == "user_message":
+        return _render_user_message(event.content, label=label, event_kind=event.kind)
+    if event.kind == "session_notice":
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "tool_call_delta":
         return None
@@ -309,3 +337,61 @@ def _tool_title(label: str, event: TUIEvent) -> str:
     if event.tool_call_id is not None:
         return f"{label}: {event.tool_call_id}"
     return label
+
+
+def _render_user_message(
+    content: str,
+    *,
+    label: str,
+    event_kind: TUIEventKind,
+) -> Table:
+    style = EVENT_STYLES[event_kind]
+    row = Table.grid(expand=True)
+    row.add_column(ratio=1)
+    row.add_column()
+    row.add_row(
+        "",
+        Panel(
+            Text(content, style=style),
+            border_style=style,
+            expand=False,
+        ),
+    )
+    return row
+
+
+def _is_chat_panel(renderable: RenderableType) -> bool:
+    return isinstance(renderable, Panel) and renderable.title is None
+
+
+def _chat_panel_width(panel: Panel, available_width: int) -> int:
+    if available_width <= 0:
+        return min(_natural_panel_width(panel), DEFAULT_CHAT_PANEL_WIDTH)
+    max_width = max(24, min(available_width, int(available_width * CHAT_PANEL_WIDTH_RATIO)))
+    return min(_natural_panel_width(panel), max_width)
+
+
+def _available_stream_width(stream: StreamWidget) -> int:
+    widths = (
+        stream.scrollable_content_region.width,
+        stream.content_size.width,
+        stream.size.width,
+    )
+    for width in widths:
+        if width > 0:
+            return width
+    return 0
+
+
+def _natural_panel_width(panel: Panel) -> int:
+    body = panel.renderable
+    if isinstance(body, Text):
+        content = body.plain
+    elif isinstance(body, Markdown):
+        content = body.markup
+    else:
+        return 80
+    widest_line = 1
+    for line in content.splitlines():
+        widest_line = max(widest_line, cell_len(line))
+    return widest_line + 4

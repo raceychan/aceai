@@ -307,6 +307,9 @@ class LLMUsage(Record):
     input_tokens: int | None = None
     """Optional because some providers never report prompt token usage."""
 
+    cached_input_tokens: int | None = None
+    """Input tokens reported by the provider as prompt-cache hits."""
+
     output_tokens: int | None = None
     """Optional when providers omit completion-side accounting."""
 

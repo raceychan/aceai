@@ -14,6 +14,7 @@ from aceai.llm.openai import OpenAIModel
 
 from .config import AceAITUIConfig, OPENAI_MODEL_OPTIONS, SUPPORTED_OPENAI_MODELS
 from .config import save_config
+from .cost import format_usd
 from .session_display import session_display_title
 
 
@@ -271,7 +272,11 @@ class SessionSelectScreen(ModalScreen[str]):
                 )
             table.move_cursor(row=_session_row_index(self._sessions, value))
             yield table
-            yield Static("Press d to delete the highlighted session.", id="session-status")
+            yield Static(
+                f"Total cost: {format_usd(self._store.total_cost_usd())}. "
+                "Press d to delete the highlighted session.",
+                id="session-status",
+            )
             with Horizontal(id="session-actions"):
                 yield Button("Resume", variant="primary", id="resume")
                 yield Button("Cancel", id="cancel")

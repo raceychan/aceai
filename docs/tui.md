@@ -144,12 +144,6 @@ Use redundant signals so the UI does not rely on color alone.
    aceai
    ```
 
-   A single question can also be provided directly:
-
-   ```bash
-   aceai "Explain this repository"
-   ```
-
    If no `OPENAI_API_KEY` is set, the TUI asks for provider settings before the
    first run. Persisting those settings is opt-in.
 

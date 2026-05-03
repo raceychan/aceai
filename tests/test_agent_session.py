@@ -4,7 +4,13 @@ from aceai.agent.session import SessionRecorder, SessionStore, messages_to_llm_h
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
-from aceai.llm.models import LLMMessage, LLMResponse, LLMToolCall, LLMToolCallDelta
+from aceai.llm.models import (
+    LLMMessage,
+    LLMResponse,
+    LLMToolCall,
+    LLMToolCallDelta,
+    LLMUsage,
+)
 
 
 def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
@@ -116,6 +122,92 @@ def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
 
     assert [message.kind for message in messages] == ["user", "assistant"]
     assert messages[1].content == "hello"
+
+
+def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    usage = LLMUsage(
+        input_tokens=12,
+        cached_input_tokens=8,
+        output_tokens=5,
+        total_tokens=17,
+    )
+
+    recorder.record(
+        adapt_agent_event(
+            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+                step=AgentStep(
+                    llm_response=LLMResponse(
+                        text="answer",
+                        model="gpt-5.5",
+                        usage=usage,
+                    )
+                )
+            )
+        )
+    )
+
+    messages = store.load_messages(metadata.session_id)
+    events = store.load_tui_events(metadata.session_id)
+
+    assert messages[0].usage_input_tokens == 12
+    assert messages[0].usage_cached_input_tokens == 8
+    assert messages[0].usage_output_tokens == 5
+    assert messages[0].usage_total_tokens == 17
+    assert messages[0].cost_model == "gpt-5.5"
+    assert messages[0].cost_total_usd is not None
+    assert messages[0].cost_cached_input_usd is not None
+    assert round(messages[0].cost_cached_input_usd, 6) == 0.000004
+    assert round(messages[0].cost_total_usd, 6) == 0.000174
+    assert events[0].usage == usage
+    assert events[0].cost is not None
+    assert round(events[0].cost.total_cost_usd, 6) == 0.000174
+
+
+def test_session_store_sums_total_cost_across_sessions(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+
+    SessionRecorder(store, first.session_id).record(
+        adapt_agent_event(
+            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+                step=AgentStep(
+                    llm_response=LLMResponse(
+                        text="first",
+                        model="gpt-5.5",
+                        usage=LLMUsage(
+                            input_tokens=1_000,
+                            cached_input_tokens=600,
+                            output_tokens=100,
+                            total_tokens=1_100,
+                        ),
+                    )
+                )
+            )
+        )
+    )
+    SessionRecorder(store, second.session_id).record(
+        adapt_agent_event(
+            AgentEventBuilder(step_index=0, step_id="step-2").llm_completed(
+                step=AgentStep(
+                    llm_response=LLMResponse(
+                        text="second",
+                        model="gpt-5.4-mini",
+                        usage=LLMUsage(
+                            input_tokens=1_000,
+                            output_tokens=100,
+                            total_tokens=1_100,
+                        ),
+                    )
+                )
+            )
+        )
+    )
+
+    assert round(store.total_cost_usd(), 6) == 0.0065
 
 
 def test_session_recorder_saves_non_streaming_llm_completion(tmp_path) -> None:
