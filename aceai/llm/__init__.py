@@ -1,4 +1,5 @@
 from .models import LLMMessagePart as LLMMessagePart
+from .models import LLMHostedToolSpec as LLMHostedToolSpec
 from .models import LLMInput as LLMInput
 from .models import LLMResponse as LLMResponse
 from .models import LLMMessage as LLMMessage

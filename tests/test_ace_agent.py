@@ -21,12 +21,14 @@ def test_build_ace_agent_wires_app_tools_and_builtin_skills(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
-    agent = build_ace_agent(api_key="test-key", model="gpt-5.1")
+    agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
 
-    assert agent.default_model == "gpt-5.1"
+    assert agent.default_model == "gpt-5.5"
     assert agent.max_steps == 8
     assert ACE_AGENT_SKILLS_DIR.exists()
     assert isinstance(agent._executor, ToolExecutor)
+    assert agent._hosted_tools[0].provider_name == "openai"
+    assert agent._hosted_tools[0].native_name == "web_search"
     assert set(agent._executor.tools) >= {
         "list_directory",
         "read_text_file",

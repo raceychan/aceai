@@ -9,6 +9,11 @@ class StubMetadata:
     session_id = "session-1"
 
 
+class StubRecorder:
+    def __init__(self, *, saved: bool = True) -> None:
+        self.saved = saved
+
+
 def test_cli_question_runs_single_question_tui(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
@@ -27,13 +32,14 @@ def test_cli_question_runs_single_question_tui(monkeypatch) -> None:
         "create_session_context",
         lambda *, resume_session_id: (object(), StubMetadata(), [], []),
     )
-    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: "recorder")
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_agent_tui", run_agent_tui)
 
     cli.main(["hello", "world"])
 
     assert calls == [
-        ("build", ("key", "gpt-5.1")),
+        ("build", ("key", "gpt-5.5")),
         (
             "single",
             (
@@ -42,7 +48,7 @@ def test_cli_question_runs_single_question_tui(monkeypatch) -> None:
                 {
                     "initial_events": [],
                     "initial_history": [],
-                    "session_recorder": "recorder",
+                    "session_recorder": recorder,
                     "session_id": "session-1",
                 },
             ),
@@ -69,7 +75,8 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
         "create_session_context",
         lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
     )
-    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: "recorder")
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main([])
@@ -83,7 +90,7 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
                 {
                     "initial_events": ["event"],
                     "initial_history": ["history"],
-                    "session_recorder": "recorder",
+                    "session_recorder": recorder,
                     "session_id": "session-1",
                 },
             ),
@@ -117,7 +124,8 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
         "create_session_context",
         lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
     )
-    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: "recorder")
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_configured_tui", run_configured_tui)
 
     cli.main(["hello"])
@@ -126,11 +134,11 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
     payload = calls[0][1]
     assert payload[1] is None
     assert payload[2] == "hello"
-    assert payload[3] == "gpt-5.1"
+    assert payload[3] == "gpt-5.5"
     assert payload[4] == {
         "initial_events": ["event"],
         "initial_history": ["history"],
-        "session_recorder": "recorder",
+        "session_recorder": recorder,
         "session_id": "session-1",
     }
 
@@ -145,10 +153,10 @@ def test_build_default_agent_uses_main_ace_agent(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "build_ace_agent", build_ace_agent)
 
-    result = cli.build_default_agent(api_key="key", model="gpt-5.1")
+    result = cli.build_default_agent(api_key="key", model="gpt-5.5")
 
     assert result is agent
-    assert calls == [("key", "gpt-5.1")]
+    assert calls == [("key", "gpt-5.5")]
 
 
 def test_cli_resume_loads_existing_session(monkeypatch) -> None:
@@ -169,14 +177,15 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
     monkeypatch.setattr(cli, "create_session_context", create_session_context)
-    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: "recorder")
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main(["resume", "session-1"])
 
     assert calls == [
         ("session", "session-1"),
-        ("build", ("key", "gpt-5.1")),
+        ("build", ("key", "gpt-5.5")),
         (
             "interactive",
             (
@@ -184,12 +193,37 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
                 {
                     "initial_events": ["restored"],
                     "initial_history": ["history"],
-                    "session_recorder": "recorder",
+                    "session_recorder": recorder,
                     "session_id": "session-1",
                 },
             ),
         ),
     ]
+
+
+def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys) -> None:
+    agent = StubAgent()
+    recorder = StubRecorder(saved=True)
+
+    def run_interactive_tui(received_agent, **kwargs):
+        assert received_agent is agent
+        assert kwargs["session_recorder"] is recorder
+        recorder.saved = False
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setattr(cli, "build_default_agent", lambda *, api_key, model: agent)
+    monkeypatch.setattr(
+        cli,
+        "create_session_context",
+        lambda *, resume_session_id: (object(), StubMetadata(), [], []),
+    )
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main([])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
 
 
 def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:

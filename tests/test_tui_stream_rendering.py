@@ -1,4 +1,5 @@
 from rich.panel import Panel
+from rich.markdown import Markdown
 from rich.text import Text
 
 from aceai.core.events import AgentEventBuilder
@@ -22,8 +23,8 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     panel = renderables[0]
     assert isinstance(panel, Panel)
     panel_renderable = panel.renderable
-    assert isinstance(panel_renderable, Text)
-    assert panel_renderable.plain == "Hi!"
+    assert isinstance(panel_renderable, Markdown)
+    assert panel_renderable.markup == "Hi!"
 
 
 def test_main_stream_renders_question_before_answer() -> None:
@@ -55,9 +56,26 @@ def test_main_stream_renders_question_before_answer() -> None:
     question_renderable = question.renderable
     answer_renderable = answer.renderable
     assert isinstance(question_renderable, Text)
-    assert isinstance(answer_renderable, Text)
+    assert isinstance(answer_renderable, Markdown)
     assert question_renderable.plain == "How do I search?"
-    assert answer_renderable.plain == "Use rg."
+    assert answer_renderable.markup == "Use rg."
+
+
+def test_assistant_markdown_renders_as_markdown() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        adapt_agent_event(
+            builder.llm_text_delta(text_delta="## Steps\n\n- Use `rg`\n- Run tests")
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    panel = renderables[0]
+    assert isinstance(panel, Panel)
+    panel_renderable = panel.renderable
+    assert isinstance(panel_renderable, Markdown)
+    assert panel_renderable.markup == "## Steps\n\n- Use `rg`\n- Run tests"
 
 
 def test_main_stream_omits_lifecycle_events() -> None:

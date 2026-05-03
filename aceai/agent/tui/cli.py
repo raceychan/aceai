@@ -15,19 +15,16 @@ from aceai.core import AgentBase
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 
-from .config import AceAITUIConfig, load_config
+from .config import (
+    AceAITUIConfig,
+    DEFAULT_OPENAI_MODEL,
+    SUPPORTED_OPENAI_MODELS,
+    load_config,
+)
 from .events import TUIEvent
 from .runner import run_agent_tui, run_configured_tui, run_interactive_tui
 
-OPENAI_MODELS: tuple[OpenAIModel, ...] = (
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-5o",
-    "gpt-5o-mini",
-    "gpt-5.1",
-    "o3-large",
-    "o4-mini",
-)
+OPENAI_MODELS: tuple[OpenAIModel, ...] = SUPPORTED_OPENAI_MODELS
 
 
 def build_default_agent(*, api_key: str, model: OpenAIModel) -> AgentBase:
@@ -112,7 +109,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ValueError("aceai resume requires a session_id")
         resume_session_id = question_parts[1]
         question_parts = question_parts[2:]
-    selected_model = resolve_model(args.model or os.environ.get("ACEAI_MODEL", "gpt-5.1"))
+    selected_model = resolve_model(
+        args.model or os.environ.get("ACEAI_MODEL", DEFAULT_OPENAI_MODEL)
+    )
     config = resolve_initial_config(selected_model)
     question = " ".join(question_parts)
     store, metadata, initial_events, initial_history = create_session_context(
@@ -130,7 +129,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             session_recorder=recorder,
             session_id=metadata.session_id,
         )
-        print(f"Session saved: {metadata.session_id}")
+        if recorder.saved:
+            print(f"Session saved: {metadata.session_id}")
         return
     agent = build_agent_from_config(config)
     if question == "":
@@ -150,4 +150,5 @@ def main(argv: Sequence[str] | None = None) -> None:
             session_recorder=recorder,
             session_id=metadata.session_id,
         )
-    print(f"Session saved: {metadata.session_id}")
+    if recorder.saved:
+        print(f"Session saved: {metadata.session_id}")

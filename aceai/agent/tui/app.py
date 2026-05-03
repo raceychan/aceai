@@ -11,8 +11,16 @@ from aceai.agent.session import SessionRecorder
 from .events import TUIEvent
 from .events import adapt_agent_event
 from .events import session_notice_event
+from .session_display import session_display_title
+from .setup import SessionSelectScreen
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
-from .widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
+from .widgets import (
+    CommandInput,
+    DetailWidget,
+    StatusBarWidget,
+    StreamWidget,
+    TimelineWidget,
+)
 
 
 class AceAITUI(App[None]):
@@ -58,18 +66,22 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("e", "toggle_events", "Events"),
         ("d", "toggle_detail", "Raw Log"),
+        ("m", "model_switcher", "Model"),
+        ("s", "session_switcher", "Sessions"),
     ]
 
     def __init__(
         self,
         events: list[TUIEvent] | None = None,
         *,
+        model: str | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
     ) -> None:
         super().__init__()
         self._events = list(events or [])
         self._state: TUIRunState = initial_state()
+        self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
         self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
@@ -80,6 +92,7 @@ class AceAITUI(App[None]):
             yield TimelineWidget(id="timeline", classes="collapsed")
             yield StreamWidget(id="stream")
             yield DetailWidget(id="detail", classes="collapsed")
+        yield StatusBarWidget(id="status")
         yield CommandInput(id="input")
         yield Footer()
 
@@ -102,11 +115,34 @@ class AceAITUI(App[None]):
         for session in sessions:
             marker = "*" if session.session_id == self._session_id else "-"
             lines.append(
-                f"{marker} {session.session_id}  {session.title}  {session.updated_at}"
+                f"{marker} {session.session_id}  "
+                f"{session_display_title(session.title)}  {session.updated_at}"
             )
         lines.append("")
         lines.append("Use /resume <session_id> to switch sessions.")
         self.append_event(session_notice_event("\n".join(lines)))
+
+    def open_session_selector(self) -> None:
+        if self._session_recorder is None:
+            self.append_event(session_notice_event("No session store is configured."))
+            return
+        sessions = self._session_recorder.store.list_sessions()
+        if not sessions:
+            self.append_event(session_notice_event("No sessions found."))
+            return
+        self.push_screen(
+            SessionSelectScreen(
+                store=self._session_recorder.store,
+                sessions=sessions,
+                current_session_id=self._session_id,
+            ),
+            self._handle_session_selection,
+        )
+
+    def _handle_session_selection(self, session_id: str | None) -> None:
+        if session_id is None:
+            return
+        self.switch_session(session_id)
 
     def switch_session(self, session_id: str) -> None:
         if self._session_recorder is None:
@@ -130,6 +166,14 @@ class AceAITUI(App[None]):
     def append_agent_event(self, event: AgentEvent) -> None:
         self.append_event(adapt_agent_event(event))
 
+    def set_status_model(self, model: str | None) -> None:
+        self._status_model = model
+        if self.is_mounted:
+            self.query_one(StatusBarWidget).set_status(
+                model=self._status_model,
+                status=self._state.status,
+            )
+
     def action_toggle_detail(self) -> None:
         detail = self.query_one(DetailWidget)
         if detail.has_class("collapsed"):
@@ -148,10 +192,22 @@ class AceAITUI(App[None]):
             timeline.add_class("collapsed")
             self.query_one(StreamWidget).focus()
 
+    def action_model_switcher(self) -> None:
+        self.append_event(
+            session_notice_event("Model selection is only available in live TUI runs.")
+        )
+
+    def action_session_switcher(self) -> None:
+        self.open_session_selector()
+
     def _refresh_widgets(self) -> None:
         self.query_one(TimelineWidget).set_state(self._state)
         self.query_one(StreamWidget).set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
+        self.query_one(StatusBarWidget).set_status(
+            model=self._status_model,
+            status=self._state.status,
+        )
 
     def on_unmount(self) -> None:
         if self._session_recorder is not None:

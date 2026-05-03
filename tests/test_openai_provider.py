@@ -27,6 +27,7 @@ from aceai.llm.errors import (
 )
 from aceai.llm import LLMMessage
 from aceai.llm.models import (
+    LLMHostedToolSpec,
     LLMMessagePart,
     LLMResponseFormat,
     LLMStreamEvent,
@@ -178,6 +179,49 @@ def test_build_base_response_kwargs_maps_request_fields(
     assert params["tool_choice"] == "auto"
 
 
+def test_build_base_response_kwargs_maps_provider_hosted_tool() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+        native_config={"search_context_size": "medium"},
+    )
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "You are helpful.")]
+            ),
+            "tools": [hosted_tool],
+            "metadata": {"model": "gpt-5.5"},
+        }
+    )
+
+    params = payload.build_response_kwargs()
+
+    assert payload.tool_names == ["openai:web_search"]
+    assert params["tools"] == [
+        {"type": "web_search", "search_context_size": "medium"}
+    ]
+
+
+def test_build_base_response_kwargs_rejects_other_provider_hosted_tool() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="anthropic",
+        native_name="web_search_20250305",
+    )
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "You are helpful.")]
+            ),
+            "tools": [hosted_tool],
+            "metadata": {"model": "gpt-5.5"},
+        }
+    )
+
+    with pytest.raises(AceAIConfigurationError):
+        payload.build_response_kwargs()
+
+
 def test_modality_reports_image_support(openai_provider: OpenAI) -> None:
     modality = openai_provider.modality
     assert modality.image_in is True
@@ -227,7 +271,7 @@ def test_build_base_response_kwargs_accepts_reasoning_for_supported_model(
         {
             "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
             "metadata": {
-                "model": "gpt-5o",
+                "model": "gpt-5.4",
                 "reasoning": {"summary": "auto"},
             },
         }
@@ -245,14 +289,14 @@ def test_build_base_response_kwargs_skips_temperature_for_gpt5(
         {
             "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
             "temperature": 0.2,
-            "metadata": {"model": "gpt-5o-mini"},
+            "metadata": {"model": "gpt-5.4-mini"},
         }
     )
 
     params = payload.build_response_kwargs()
 
     assert "temperature" not in params
-    assert params["model"] == "gpt-5o-mini"
+    assert params["model"] == "gpt-5.4-mini"
 
 
 def test_build_base_response_kwargs_rejects_reasoning_for_unsupported_model(
@@ -275,8 +319,8 @@ def test_build_base_response_kwargs_rejects_reasoning_for_unsupported_model(
 def test_supports_reasoning_summary(openai_provider: OpenAI) -> None:
     payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
     assert payload._supports_reasoning_summary("o4-mini") is True
-    assert payload._supports_reasoning_summary("o3-large") is True
-    assert payload._supports_reasoning_summary("gpt-5o") is True
+    assert payload._supports_reasoning_summary("o3") is True
+    assert payload._supports_reasoning_summary("gpt-5.4") is True
     assert payload._supports_reasoning_summary("gpt-4o") is False
 
 

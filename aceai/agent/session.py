@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from msgspec import Struct
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import insert as sql_insert
 from sqlalchemy import select as sql_select
 from sqlalchemy import update as sql_update
@@ -115,6 +116,16 @@ class SessionStore:
                 .values(title=title, updated_at=_utc_now())
             )
 
+    def delete_session(self, session_id: str) -> None:
+        metadata = self.get_session(session_id)
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_delete(_sessions_table).where(
+                    _sessions_table.c.session_id == session_id
+                )
+            )
+        Path(metadata.path).unlink()
+
     def finalize_session_title(self, session_id: str) -> str:
         messages = self.load_messages(session_id)
         title_source = "Empty session"
@@ -122,9 +133,8 @@ class SessionStore:
             if message.kind == "user" and message.content != "":
                 title_source = message.content[:40]
                 break
-        title = f"{title_source} - {_local_second()}"
-        self.update_session_title(session_id, title)
-        return title
+        self.update_session_title(session_id, title_source)
+        return title_source
 
     def append_message(self, session_id: str, message: SessionMessage) -> None:
         metadata = self.get_session(session_id)
@@ -178,6 +188,12 @@ class SessionRecorder:
         self.session_id = session_id
         self._assistant_buffer = ""
         self._tools: dict[str, _ToolBuffer] = {}
+        self._finalized = False
+        self._saved = True
+
+    @property
+    def saved(self) -> bool:
+        return self._saved
 
     def record(self, event: TUIEvent) -> None:
         if event.kind == "session_notice":
@@ -244,9 +260,19 @@ class SessionRecorder:
         )
         self._assistant_buffer = ""
 
-    def finalize(self) -> None:
+    def finalize(self) -> bool:
+        if self._finalized:
+            return self._saved
         self.flush_assistant()
+        if not self.store.load_messages(self.session_id):
+            self.store.delete_session(self.session_id)
+            self._saved = False
+            self._finalized = True
+            return self._saved
         self.store.finalize_session_title(self.session_id)
+        self._saved = True
+        self._finalized = True
+        return self._saved
 
     def _record_tool(self, event: TUIEvent) -> None:
         tool_buffer = self._tool_for(event)
@@ -441,7 +467,3 @@ def _tool_content(event: TUIEvent, output: str) -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _local_second() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

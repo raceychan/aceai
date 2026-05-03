@@ -277,7 +277,7 @@ async def main():
             fetch_weather_window,
         ],
         openai_api_key=api_key,
-        model="gpt-5.1",
+        model="gpt-5.5",
         tracer=tracer,
     )
 

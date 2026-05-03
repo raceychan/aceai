@@ -18,6 +18,7 @@ from aceai.core.events import (
 from aceai.llm import LLMResponse
 from aceai.llm.models import (
     LLMGeneratedMedia,
+    LLMHostedToolSpec,
     LLMMessage,
     LLMSegment,
     LLMStreamEvent,
@@ -183,6 +184,32 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
     assert isinstance(events[-1], RunCompletedEvent)
     assert events[-1].final_answer == "  hello world  "
     assert len(llm_service.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_passes_hosted_tools_without_local_executor() -> None:
+    streams = [
+        make_stream(
+            response=LLMResponse(text="searched"),
+            deltas=["searched"],
+        )
+    ]
+    llm_service = StubLLMService(streams)
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-5.5",
+        llm_service=llm_service,
+        hosted_tools=[hosted_tool],
+    )
+
+    events = await collect_events(agent, "What changed today?")
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert llm_service.calls[0]["tools"] == [hosted_tool]
 
 
 @pytest.mark.anyio

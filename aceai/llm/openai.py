@@ -45,6 +45,7 @@ from aceai.llm.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
+    LLMHostedToolSpec,
     LLMImageSegmentMeta,
     LLMInput,
     LLMMessage,
@@ -64,6 +65,7 @@ from .models import (
     LLMToolCallDelta,
     LLMToolCallMessage,
     LLMToolCallSegmentMeta,
+    LLMToolSpec,
     LLMToolUseMessage,
     LLMUsage,
 )
@@ -71,12 +73,19 @@ from .tool_spec import IToolSpec
 
 
 OpenAIModel = Literal[
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.2",
+    "gpt-5.2-pro",
     "gpt-4o",
     "gpt-4o-mini",
-    "gpt-5o",
-    "gpt-5o-mini",
     "gpt-5.1",
-    "o3-large",
+    "o3",
+    "o3-mini",
     "o4-mini",
 ]
 
@@ -94,7 +103,7 @@ class OpenAIPayload(Struct, kw_only=True):
     top_k: Unset[int] = UNSET
     max_tokens: Unset[int] = UNSET
     stop: Unset[list[str]] = UNSET
-    tools: Unset[list[IToolSpec]] = UNSET
+    tools: Unset[list[LLMToolSpec]] = UNSET
     tool_choice: Unset[Literal["auto", "none"] | str] = UNSET
     response_format: Unset[LLMResponseFormat] = UNSET
     stream: Unset[bool] = UNSET
@@ -138,10 +147,14 @@ class OpenAIPayload(Struct, kw_only=True):
         if "tools" in llm_input:
             tools = llm_input["tools"]
             if not isinstance(tools, list):
-                raise TypeError("OpenAIPayload.tools must be list[IToolSpec]")
+                raise TypeError("OpenAIPayload.tools must be list[LLMToolSpec]")
             for tool in tools:
-                if not isinstance(tool, IToolSpec):
-                    raise TypeError("OpenAIPayload.tools must be IToolSpec instances")
+                if not isinstance(tool, IToolSpec) and not isinstance(
+                    tool, LLMHostedToolSpec
+                ):
+                    raise TypeError(
+                        "OpenAIPayload.tools must be IToolSpec or LLMHostedToolSpec instances"
+                    )
             payload["tools"] = tools
         if "tool_choice" in llm_input:
             tool_choice = llm_input["tool_choice"]
@@ -186,13 +199,21 @@ class OpenAIPayload(Struct, kw_only=True):
     @property
     def tool_names(self) -> list[str]:
         if is_set(self.tools):
-            return [tool.name for tool in self.tools]
+            names: list[str] = []
+            for tool in self.tools:
+                if isinstance(tool, IToolSpec):
+                    names.append(tool.name)
+                elif isinstance(tool, LLMHostedToolSpec):
+                    names.append(f"{tool.provider_name}:{tool.native_name}")
+            return names
         return []
 
     def asdict(self) -> StrDict:
         def _enc_hook(obj: object) -> object:
             if isinstance(obj, IToolSpec):
                 return obj.generate_schema()
+            if isinstance(obj, LLMHostedToolSpec):
+                return obj.asdict()
             raise TypeError(
                 f"Encoding objects of type {type(obj).__name__} is unsupported"
             )
@@ -363,9 +384,15 @@ class OpenAIPayload(Struct, kw_only=True):
                     f"Unsupported OpenAI response format type: {response_format.type}"
                 )
 
-    def _format_tool(self, tool: IToolSpec) -> FunctionToolParam:
-        schema = tool.generate_schema()
-        return cast(FunctionToolParam, schema)
+    def _format_tool(self, tool: LLMToolSpec) -> dict[str, Any]:
+        if isinstance(tool, IToolSpec):
+            schema = tool.generate_schema()
+            return cast(FunctionToolParam, schema)
+        if tool.provider_name != "openai":
+            raise AceAIConfigurationError(
+                f"OpenAI cannot serialize hosted tool for provider {tool.provider_name}"
+            )
+        return {"type": tool.native_name, **tool.native_config}
 
     def _supports_reasoning_summary(self, model_name: str) -> bool:
         name = model_name.lower()

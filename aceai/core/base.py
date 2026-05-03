@@ -8,7 +8,14 @@ from opentelemetry.trace import SpanKind, set_span_in_context
 
 from ..llm import ILLMService, LLMResponse
 from ..llm.errors import AceAIConfigurationError, AceAIRuntimeError
-from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall, LLMToolCallDelta
+from ..llm.models import (
+    LLMHostedToolSpec,
+    LLMMessage,
+    LLMRequestMeta,
+    LLMToolCall,
+    LLMToolCallDelta,
+    LLMToolSpec,
+)
 from .models import AgentStep, ToolExecutionResult
 from .skills import (
     SkillLoader,
@@ -54,6 +61,7 @@ class AgentBase:
         tracer: trace.Tracer | None = None,
         skill_path: str | Path | Literal["auto", "disable"] = "auto",
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
@@ -67,6 +75,7 @@ class AgentBase:
         self._prompt = prompt
         self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
         self._executor = executor
+        self._hosted_tools = hosted_tools if hosted_tools is not None else []
         if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
             executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
@@ -127,10 +136,15 @@ class AgentBase:
     ):
         executor = self._executor
 
+        tools: list[LLMToolSpec] = []
         if executor:
+            tools.extend(executor.select_tools())
+        tools.extend(self._hosted_tools)
+
+        if tools:
             stream = self._llm_service.stream(
                 messages=messages,
-                tools=executor.select_tools(),
+                tools=tools,
                 metadata=request_meta,
             )
         else:

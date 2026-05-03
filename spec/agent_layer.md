@@ -34,6 +34,18 @@ Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下
 - 退出或切换 session 前，当前 session name 会更新为 `{首个用户问题前 40 字} - YYYY-MM-DD HH:MM:SS`。
 - TUI 内部支持 `/sessions` 查看 session 列表，支持 `/resume <session_id>` 切换 session。
 
+## Provider-hosted tools
+
+Provider-hosted tools are model/provider capabilities that execute outside AceAI's
+`ToolExecutor`. Examples include OpenAI hosted web search, Anthropic server tools,
+and Gemini Google Search grounding.
+
+- `aceai/llm` owns the neutral transport shape: `LLMHostedToolSpec(provider_name, native_name, native_config)`.
+- `aceai/core.AgentBase` may pass hosted tools through alongside local `IToolSpec` tools, but it must not execute them or infer provider-specific behavior.
+- Provider adapters own native serialization. For example, the OpenAI adapter maps `LLMHostedToolSpec(provider_name="openai", native_name="web_search")` to the Responses API hosted tool payload.
+- `aceai/agent` owns product defaults and convenience choices, such as enabling OpenAI web search for the default app agent.
+- Do not encode a cross-provider hosted-tool enum in core. Tool names and capabilities are provider-native and may be versioned or incompatible across vendors.
+
 # Agent 层响应结构探索
 
 ## 目标

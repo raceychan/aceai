@@ -7,6 +7,7 @@ from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
 from aceai.agent.tui.state import initial_state, reduce_events
 from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
+from textual.widgets import DataTable, Static
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -165,3 +166,82 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
         assert app.title == f"AceAI {second.session_id}"
         assert app._state.events[0].content == "second question"
+
+
+@pytest.mark.anyio
+async def test_session_selector_uses_table_columns(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    store.update_session_title(first.session_id, "first question - 2026-05-04 12:13:14")
+    store.update_session_title(second.session_id, "second question")
+    app = AceAITUI(
+        store.load_tui_events(first.session_id),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        app.open_session_selector()
+        await pilot.pause(0.1)
+
+        table = app.screen.query_one("#session-table", DataTable)
+
+        assert [column.label.plain for column in table.ordered_columns] == [
+            "Current",
+            "Title",
+            "Updated",
+            "Created",
+            "Session ID",
+        ]
+        assert table.row_count == 2
+        assert table.ordered_rows[table.cursor_row].key.value == first.session_id
+        assert table.get_row_at(table.cursor_row)[1] == "first question"
+
+
+@pytest.mark.anyio
+async def test_session_selector_deletes_highlighted_session_after_confirmation(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    store.update_session_title(first.session_id, "first question")
+    store.update_session_title(second.session_id, "second question")
+    app = AceAITUI(
+        store.load_tui_events(first.session_id),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        app.open_session_selector()
+        await pilot.pause(0.1)
+
+        table = app.screen.query_one("#session-table", DataTable)
+        second_row = _table_row_index(table, second.session_id)
+        table.move_cursor(row=second_row)
+
+        await pilot.press("d")
+        await pilot.pause(0.1)
+
+        message = app.screen.query_one("#delete-session-message", Static)
+        assert second.session_id in str(message.content)
+
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        table = app.screen.query_one("#session-table", DataTable)
+        assert second.session_id not in [
+            row.key.value for row in table.ordered_rows
+        ]
+        assert [session.session_id for session in store.list_sessions()] == [
+            first.session_id
+        ]
+
+
+def _table_row_index(table: DataTable, session_id: str) -> int:
+    for index, row in enumerate(table.ordered_rows):
+        if row.key.value == session_id:
+            return index
+    raise ValueError(session_id)

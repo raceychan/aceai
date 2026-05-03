@@ -1,6 +1,7 @@
 ## Notes for Codex Agents
 
 - Always run tests via `uv run pytest` so execution uses the project-managed Python 3.12 environment.
+- When inspecting a saved AceAI session, use `uv run aceai export <session_id>` first. Do not start by reading the underlying JSONL or SQLite storage unless the export output is insufficient for the task.
 
 ### Architecture Layers
 

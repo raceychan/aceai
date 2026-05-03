@@ -92,6 +92,22 @@ class LLMToolCallDelta(Record):
     """Slice of JSON arguments appended to the buffered payload."""
 
 
+class LLMHostedToolSpec(Record, kw_only=True):
+    """Provider-native tool executed by the model provider, not AceAI."""
+
+    provider_name: str
+    """Provider adapter that knows how to serialize this native tool."""
+
+    native_name: str
+    """Provider-native tool selector, such as OpenAI's `web_search`."""
+
+    native_config: StrDict = field(default_factory=dict[str, object])
+    """Provider-native configuration passed through by that adapter."""
+
+
+type LLMToolSpec = IToolSpec | LLMHostedToolSpec
+
+
 class LLMMessage(Struct, kw_only=True):
     """Typed chat message that backs `LLMInput.messages`."""
 
@@ -269,8 +285,8 @@ class LLMInput(TypedDict, total=False):
     stop: list[str]
     """Optional stop-sequence list when the caller needs early termination."""
 
-    tools: list[IToolSpec]
-    """Optional tool registry; omit when the task is pure text completion."""
+    tools: list[LLMToolSpec]
+    """Optional local or provider-hosted tools for the model."""
 
     tool_choice: Literal["auto", "none"] | str
     """Optional override when the caller must pin or disable tool usage."""

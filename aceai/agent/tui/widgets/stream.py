@@ -2,6 +2,7 @@
 
 from msgspec import Struct
 from rich.console import RenderableType
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from textual.widgets import RichLog
@@ -138,6 +139,7 @@ def _flush_assistant_buffer(
             "assistant",
             assistant_buffer,
             event_kind="assistant_delta",
+            markdown=True,
         )
     )
     assistant_step_ids.add(assistant_buffer_step_id)
@@ -237,10 +239,16 @@ def _render_text_block(
     content: str,
     *,
     event_kind: TUIEventKind,
+    markdown: bool = False,
 ) -> Panel:
     style = EVENT_STYLES[event_kind]
+    body: RenderableType
+    if markdown:
+        body = Markdown(content, style=style)
+    else:
+        body = Text(content, style=style)
     return Panel(
-        Text(content, style=style),
+        body,
         title=label,
         border_style=style,
     )
@@ -254,7 +262,12 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind == "tool_call_delta":
         return None
     if event.kind == "assistant_delta":
-        return _render_text_block(label, event.content, event_kind=event.kind)
+        return _render_text_block(
+            label,
+            event.content,
+            event_kind=event.kind,
+            markdown=True,
+        )
     if event.kind in ("thinking_delta", "reasoning_summary"):
         return Panel(
             Text(event.content, style=style),
@@ -279,7 +292,12 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind == "llm_completed":
         if event.content == "":
             return None
-        return _render_text_block("assistant", event.content, event_kind="assistant_delta")
+        return _render_text_block(
+            "assistant",
+            event.content,
+            event_kind="assistant_delta",
+            markdown=True,
+        )
     if event.kind in ("step_started", "step_completed", "run_completed"):
         return None
     return Text(f"{label}: {event.content}", style=style)

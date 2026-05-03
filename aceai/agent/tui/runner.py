@@ -1,6 +1,6 @@
 """Live runner that bridges AgentBase events into the Textual app."""
 
-from typing import Callable
+from typing import Callable, cast
 
 from opentelemetry.context import Context
 from textual.widgets import Input
@@ -14,12 +14,32 @@ from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
-from .config import AceAITUIConfig
-from .events import TUIEvent, user_message_event
-from .setup import ProviderSetupScreen
+from .config import AceAITUIConfig, OPENAI_MODEL_OPTIONS, SUPPORTED_OPENAI_MODELS
+from .events import TUIEvent, session_notice_event, user_message_event
+from .setup import ModelSelectScreen, ProviderSetupScreen
 from .widgets import CommandInput
 
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
+
+
+def _as_openai_model(model: str) -> OpenAIModel:
+    if model not in SUPPORTED_OPENAI_MODELS:
+        raise ValueError("Unsupported OpenAI model")
+    return cast(OpenAIModel, model)
+
+
+def _model_options_text() -> str:
+    model_names = ", ".join(option[1] for option in OPENAI_MODEL_OPTIONS)
+    return f"Available models: {model_names}"
+
+
+def _model_from_request_meta(
+    request_meta: LLMRequestMeta,
+    default_model: str,
+) -> OpenAIModel:
+    if "model" in request_meta:
+        return _as_openai_model(request_meta["model"])
+    return _as_openai_model(default_model)
 
 
 class AceAIInteractiveTUI(AceAITUI):
@@ -36,14 +56,20 @@ class AceAIInteractiveTUI(AceAITUI):
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
+        self._request_meta: LLMRequestMeta = dict(request_meta or {})
+        self._selected_model = _model_from_request_meta(
+            self._request_meta,
+            agent.default_model,
+        )
+        self._request_meta["model"] = self._selected_model
         super().__init__(
             events=initial_events or [],
+            model=self._selected_model,
             session_recorder=session_recorder,
             session_id=session_id,
         )
         self._agent = agent
         self._trace_ctx = trace_ctx
-        self._request_meta = request_meta or {}
         self._llm_history = list(initial_history or [])
         self._active_worker: Worker[None] | None = None
 
@@ -59,11 +85,19 @@ class AceAIInteractiveTUI(AceAITUI):
             event.input.value = ""
             return
         if question == "/sessions":
-            self.show_sessions()
+            self.open_session_selector()
             event.input.value = ""
             return
         if question.startswith("/resume "):
             self.switch_session(question.removeprefix("/resume "))
+            event.input.value = ""
+            return
+        if question == "/model":
+            self.open_model_selector()
+            event.input.value = ""
+            return
+        if question.startswith("/model "):
+            self.switch_model(question.removeprefix("/model "))
             event.input.value = ""
             return
         if question == "":
@@ -87,7 +121,7 @@ class AceAIInteractiveTUI(AceAITUI):
             question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
-            **self._request_meta,
+            **self._request_meta_for_run(),
         )
         try:
             async for event in stream:
@@ -104,6 +138,46 @@ class AceAIInteractiveTUI(AceAITUI):
     def _append_history_turn(self, question: str, answer: str) -> None:
         self._llm_history.append(LLMMessage.build(role="user", content=question))
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def show_model(self) -> None:
+        self.append_event(
+            session_notice_event(
+                f"Current model: {self._selected_model}\n{_model_options_text()}"
+            )
+        )
+
+    def action_model_switcher(self) -> None:
+        self.open_model_selector()
+
+    def open_model_selector(self) -> None:
+        self.push_screen(
+            ModelSelectScreen(current_model=self._selected_model),
+            self._handle_model_selection,
+        )
+
+    def _handle_model_selection(self, model: OpenAIModel | None) -> None:
+        if model is None:
+            return
+        self.switch_model(model)
+
+    def switch_model(self, model: str) -> None:
+        if self._active_worker is not None and self._active_worker.is_running:
+            self.append_event(
+                session_notice_event("Model changes apply after the current run finishes.")
+            )
+            return
+        if model not in SUPPORTED_OPENAI_MODELS:
+            self.append_event(session_notice_event(_model_options_text()))
+            return
+        self._selected_model = cast(OpenAIModel, model)
+        self._request_meta["model"] = self._selected_model
+        self.set_status_model(self._selected_model)
+        self.append_event(session_notice_event(f"Switched model to {self._selected_model}"))
+
+    def _request_meta_for_run(self) -> LLMRequestMeta:
+        request_meta: LLMRequestMeta = dict(self._request_meta)
+        request_meta["model"] = self._selected_model
+        return request_meta
 
     def _reload_llm_history(self) -> None:
         if self._session_recorder is None or self._session_id is None:
@@ -130,8 +204,16 @@ class AceAIConfiguredTUI(AceAITUI):
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
+        self._request_meta: LLMRequestMeta = dict(request_meta or {})
+        initial_model = (
+            initial_config.model
+            if initial_config is not None
+            else _model_from_request_meta(self._request_meta, default_model)
+        )
+        self._request_meta["model"] = initial_model
         super().__init__(
             events=initial_events or [],
+            model=initial_model,
             session_recorder=session_recorder,
             session_id=session_id,
         )
@@ -140,7 +222,7 @@ class AceAIConfiguredTUI(AceAITUI):
         self._initial_question = initial_question
         self._default_model: OpenAIModel = default_model
         self._trace_ctx = trace_ctx
-        self._request_meta = request_meta or {}
+        self._selected_model: OpenAIModel = initial_model
         self._llm_history = list(initial_history or [])
         self._agent: AgentBase | None = None
         self._active_worker: Worker[None] | None = None
@@ -162,6 +244,9 @@ class AceAIConfiguredTUI(AceAITUI):
 
     def apply_config(self, config: AceAITUIConfig) -> None:
         self._agent = self._agent_factory(config)
+        self._selected_model = config.model
+        self._request_meta["model"] = self._selected_model
+        self.set_status_model(self._selected_model)
         if self._initial_question != "":
             self.start_run(self._initial_question)
 
@@ -177,11 +262,19 @@ class AceAIConfiguredTUI(AceAITUI):
             event.input.value = ""
             return
         if question == "/sessions":
-            self.show_sessions()
+            self.open_session_selector()
             event.input.value = ""
             return
         if question.startswith("/resume "):
             self.switch_session(question.removeprefix("/resume "))
+            event.input.value = ""
+            return
+        if question == "/model":
+            self.open_model_selector()
+            event.input.value = ""
+            return
+        if question.startswith("/model "):
+            self.switch_model(question.removeprefix("/model "))
             event.input.value = ""
             return
         if question == "":
@@ -210,7 +303,7 @@ class AceAIConfiguredTUI(AceAITUI):
             question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
-            **self._request_meta,
+            **self._request_meta_for_run(),
         )
         try:
             async for event in stream:
@@ -227,6 +320,46 @@ class AceAIConfiguredTUI(AceAITUI):
     def _append_history_turn(self, question: str, answer: str) -> None:
         self._llm_history.append(LLMMessage.build(role="user", content=question))
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def show_model(self) -> None:
+        self.append_event(
+            session_notice_event(
+                f"Current model: {self._selected_model}\n{_model_options_text()}"
+            )
+        )
+
+    def action_model_switcher(self) -> None:
+        self.open_model_selector()
+
+    def open_model_selector(self) -> None:
+        self.push_screen(
+            ModelSelectScreen(current_model=self._selected_model),
+            self._handle_model_selection,
+        )
+
+    def _handle_model_selection(self, model: OpenAIModel | None) -> None:
+        if model is None:
+            return
+        self.switch_model(model)
+
+    def switch_model(self, model: str) -> None:
+        if self._active_worker is not None and self._active_worker.is_running:
+            self.append_event(
+                session_notice_event("Model changes apply after the current run finishes.")
+            )
+            return
+        if model not in SUPPORTED_OPENAI_MODELS:
+            self.append_event(session_notice_event(_model_options_text()))
+            return
+        self._selected_model = cast(OpenAIModel, model)
+        self._request_meta["model"] = self._selected_model
+        self.set_status_model(self._selected_model)
+        self.append_event(session_notice_event(f"Switched model to {self._selected_model}"))
+
+    def _request_meta_for_run(self) -> LLMRequestMeta:
+        request_meta: LLMRequestMeta = dict(self._request_meta)
+        request_meta["model"] = self._selected_model
+        return request_meta
 
     def _reload_llm_history(self) -> None:
         if self._session_recorder is None or self._session_id is None:

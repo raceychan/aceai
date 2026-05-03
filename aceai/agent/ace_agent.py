@@ -4,6 +4,7 @@ from ididi import Graph
 from openai import AsyncOpenAI
 
 from aceai.core import AgentBase, ToolExecutor
+from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.service import LLMService
 
@@ -13,22 +14,37 @@ from .features import default_agent_tools
 ACE_AGENT_SYSTEM_PROMPT = """
 You are AceAI, a concise and capable agent app.
 
-You can inspect files, edit files, search code, run shell commands, and use skills
-when they match the user's task. Prefer concrete action over abstract advice.
+You can inspect files, edit files, search code, run shell commands, search the
+web when current external information is needed, and use skills when they match
+the user's task. Prefer concrete action over abstract advice.
 When working in a repository, inspect the real files before changing behavior and
 run the repository's tests after meaningful code changes.
 """
 
 ACE_AGENT_SKILLS_DIR = Path(__file__).parent / "features" / "skills"
+ACE_AGENT_HOSTED_TOOLS = [
+    LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+]
 
 
-def build_ace_agent(*, api_key: str, model: OpenAIModel) -> AgentBase:
+def build_ace_agent(
+    *,
+    api_key: str,
+    model: OpenAIModel,
+    hosted_tools: list[LLMHostedToolSpec] | None = None,
+) -> AgentBase:
     provider = OpenAI(
         client=AsyncOpenAI(api_key=api_key),
         default_meta={"model": model},
     )
     llm_service = LLMService([provider], timeout_seconds=120.0)
     executor = ToolExecutor(Graph(), default_agent_tools())
+    selected_hosted_tools = (
+        ACE_AGENT_HOSTED_TOOLS if hosted_tools is None else hosted_tools
+    )
     return AgentBase(
         prompt=ACE_AGENT_SYSTEM_PROMPT,
         default_model=model,
@@ -36,5 +52,5 @@ def build_ace_agent(*, api_key: str, model: OpenAIModel) -> AgentBase:
         executor=executor,
         skill_path=ACE_AGENT_SKILLS_DIR,
         max_steps=8,
+        hosted_tools=selected_hosted_tools,
     )
-

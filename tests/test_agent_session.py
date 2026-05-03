@@ -35,20 +35,53 @@ def test_session_store_lists_sessions_by_recent_update(tmp_path) -> None:
     ]
 
 
-def test_session_store_finalize_uses_first_question_and_second_level_date(
-    tmp_path, monkeypatch
-) -> None:
+def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    path = tmp_path / "files" / f"{metadata.session_id}.jsonl"
+
+    store.delete_session(metadata.session_id)
+
+    assert store.list_sessions() == []
+    assert not path.exists()
+
+
+def test_session_store_finalize_uses_first_question_as_title(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
     recorder.record(user_message_event("What files are here?"))
 
-    monkeypatch.setattr("aceai.agent.session._local_second", lambda: "2026-05-04 12:13:14")
-
     title = store.finalize_session_title(metadata.session_id)
 
-    assert title == "What files are here? - 2026-05-04 12:13:14"
+    assert title == "What files are here?"
     assert store.get_session(metadata.session_id).title == title
+
+
+def test_session_recorder_finalize_deletes_empty_session(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+
+    saved = recorder.finalize()
+
+    assert saved is False
+    assert recorder.saved is False
+    assert store.list_sessions() == []
+    assert not (tmp_path / "files" / f"{metadata.session_id}.jsonl").exists()
+
+
+def test_session_recorder_finalize_keeps_non_empty_session(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    recorder.record(user_message_event("hello"))
+
+    saved = recorder.finalize()
+
+    assert saved is True
+    assert recorder.saved is True
+    assert store.get_session(metadata.session_id).title == "hello"
 
 
 def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
