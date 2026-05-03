@@ -1,6 +1,6 @@
 # Release Message Format
 
-Use this format for AceAI release PR bodies, release summaries, and tag notes when the user asks for structured release messaging.
+Use this format for AceAI release PR bodies, GitHub Release notes, release summaries, and tag notes when the user asks for structured release messaging.
 
 ## PR Title
 
@@ -153,4 +153,30 @@ Highlights:
 Verification:
 - uv run pytest -v
 - uv build
+```
+
+## GitHub Release Notes Template
+
+Use the same category rules as the PR body. Keep the GitHub Release user-facing and omit branch mechanics unless they matter for operators.
+
+```markdown
+## Summary
+- One sentence describing the release theme.
+
+## Features
+- `scope`: User-visible new capability.
+
+## Improvements
+- `scope`: Reliability, docs, CI, packaging, performance, or developer-experience improvement.
+
+## Fixes
+- `scope`: Broken condition and corrected behavior.
+
+## Breaking Changes
+- None.
+
+## Verification
+- `uv run pytest -v`
+- `uv build`
+- GitHub Actions `<tag>` CI and PyPI publish succeeded.
 ```

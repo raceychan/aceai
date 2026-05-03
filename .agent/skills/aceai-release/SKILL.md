@@ -44,12 +44,20 @@ This repository publishes to PyPI from GitHub Actions when a pushed tag starts w
    - Create an annotated tag: `git tag -a v<x.y.z> -m "Release version <x.y.z>"`.
    - Push the tag: `git push origin v<x.y.z>`.
 
-7. Verify publication.
+7. Create the GitHub Release.
+   - Create the release after the tag is pushed and the tag-triggered CI starts.
+   - Use `gh release create v<x.y.z> --title "AceAI v<x.y.z>" --notes "<release notes>"`.
+   - Base release notes on the PR body and `CHANGELOG.md`.
+   - Include `Summary`, grouped change categories, `Breaking Changes`, and `Verification`.
+   - If the release already exists, update it instead of creating a duplicate.
+
+8. Verify publication.
    - Watch the tag-triggered CI publish job.
    - Confirm PyPI shows the expected version.
    - Confirm the package can be installed when appropriate.
+   - Confirm the GitHub Release exists and points at `v<x.y.z>`.
 
-8. Prepare next cycle.
+9. Prepare next cycle.
    - Create `version/<next>` from `master` if the project wants a persistent release branch.
    - Default next-version selection:
      - Before `1.0.0`, bump patch: `0.2.0` -> `0.2.1`.
