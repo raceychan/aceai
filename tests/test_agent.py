@@ -27,12 +27,16 @@ def write_skill(root: Path, name: str, description: str, body: str) -> Path:
     return skill_dir
 
 
-def test_build_agent_base() -> None:
+def test_build_agent_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent = AgentBase(
         prompt="You are a helpful assistant.",
         default_model="gpt-4",
         llm_service=None,  # type: ignore
         executor=None,  # type: ignore
+        skill_path=tmp_path / "empty-skills",
     )
     assert agent.system_message.content[0]["data"] == "You are a helpful assistant."
     assert agent._default_model == "gpt-4"
@@ -40,24 +44,32 @@ def test_build_agent_base() -> None:
     assert hasattr(agent, "run")
 
 
-def test_agent_base_add_instruction_updates_system_message() -> None:
+def test_agent_base_add_instruction_updates_system_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent = AgentBase(
         prompt="Initial",
         default_model="gpt-4",
         llm_service=None,  # type: ignore[arg-type]
         executor=None,  # type: ignore[arg-type]
+        skill_path=tmp_path / "empty-skills",
     )
     agent.add_instruction(" + More")
     agent.add_instruction(" + More")
     assert agent.system_message.content[0]["data"] == "Initial + More"
 
 
-def test_agent_base_add_instruction_rejects_empty_string() -> None:
+def test_agent_base_add_instruction_rejects_empty_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent = AgentBase(
         prompt="Initial",
         default_model="gpt-4",
         llm_service=None,  # type: ignore[arg-type]
         executor=None,  # type: ignore[arg-type]
+        skill_path=tmp_path / "empty-skills",
     )
     with pytest.raises(ValueError, match="Empty Instruction"):
         agent.add_instruction("")

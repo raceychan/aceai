@@ -9,8 +9,11 @@ wheels/
 # Virtual environments
 .venv
 .env
-tests/e2e/e2e.env
+*.env
 
 # Jupyter artifacts
 .ipynb_checkpoints/
 lab/
+
+# Local plugin cache
+.cache/plugin/social/
