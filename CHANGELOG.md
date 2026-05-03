@@ -1,5 +1,29 @@
 # Changelog
 
+## AceAI v0.2.0
+
+### Features
+
+- `skills`: Add filesystem skill discovery and loading through `Skill`, `SkillLoader`, and `SkillRegistry`, including support for `SKILL.md` frontmatter and bundled `references/`, `scripts/`, and `assets/` resources.
+- `agent`: Register `skills_list` and `skill_view` tools on `ToolExecutor` so agents can discover matching skills and progressively load full instructions or supporting files during a run.
+- `tools`: Expand built-in tooling and schemas used by skill-aware agent workflows.
+
+### Improvements
+
+- `skills-e2e`: Add deep progressive-disclosure e2e coverage based on a mature skill pattern, including multi-step loading of entry instructions, references, scripts, and assets.
+- `docs-ci`: Restrict GitHub Pages deployment to `master`, allowing `version/**` branches to build docs without attempting protected Pages deployments.
+- `release`: Add an `aceai-release` project skill documenting the release sequence, PR message format, category rules, tag timing, and PyPI publishing checks.
+- `repo hygiene`: Ignore local plugin cache files and remove `.cache/plugin/social` from git tracking.
+
+### Fixes
+
+- `skills`: Validate malformed skill frontmatter and duplicate skill names with explicit configuration errors.
+- `agent`: Keep skill tools scoped to tool-enabled agents and preserve existing executor behavior when no skills are configured.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.1.9
 
 ### Features

@@ -45,6 +45,11 @@ class ToolExecutor(IExecutor):
         self._all_tools: list[IToolSpec] = []
         self._tracer = tracer or trace.get_tracer("aceai.executor")
 
+    def register_tools(self, *tools: Tool[Any, Any]) -> None:
+        for tool in tools:
+            self.tools[tool.name] = tool
+        self._all_tools = []
+
     def select_tools(
         self, include: set[str] | None = None, exclude: set[str] | None = None
     ) -> list[IToolSpec]:

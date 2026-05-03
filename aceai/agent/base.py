@@ -1,4 +1,5 @@
-from typing import AsyncGenerator, Unpack
+from pathlib import Path
+from typing import AsyncGenerator, Callable, Literal, Unpack
 from uuid import uuid4
 
 from opentelemetry import trace
@@ -9,6 +10,11 @@ from ..errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm import ILLMService, LLMResponse
 from ..llm.models import LLMMessage, LLMRequestMeta, LLMToolCall
 from ..models import AgentStep, ToolExecutionResult
+from ..skill import (
+    SkillLoader,
+    SkillRegistry,
+    format_skills_for_prompt,
+)
 from ..tracing import get_trace_ctx, set_trace_ctx
 from .context_manager import ContextManager
 from .events import (
@@ -21,7 +27,7 @@ from .events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
-from .executor import RunState, IExecutor
+from .executor import RunState, IExecutor, ToolExecutor
 
 
 class ToolExecutionFailure(AceAIRuntimeError):
@@ -46,14 +52,23 @@ class AgentBase:
         max_steps: int = 5,
         executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
+        skill_path: str | Path | Literal["auto"] = "auto",
+        skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
     ):
         if max_steps < 1:
             raise AceAIConfigurationError("max_steps must be at least 1")
+        self._skill_registry = self._load_skill_registry(
+            skill_path=skill_path,
+            skill_loader_factory=skill_loader_factory,
+        )
+        skill_prompt = format_skills_for_prompt(self._skill_registry)
         self._default_model = default_model
         self._llm_service = llm_service
         self._prompt = prompt
-        self._ctx_mgr: ContextManager = ContextManager(prompt)
+        self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
         self._executor = executor
+        if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
+            executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
         self._tracer = tracer or trace.get_tracer("aceai.agent")
 
@@ -70,6 +85,10 @@ class AgentBase:
         return self._max_steps
 
     @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
     def system_message(self) -> LLMMessage:
         return self._ctx_mgr.system_message
 
@@ -78,6 +97,25 @@ class AgentBase:
         if instruction == "":
             raise ValueError("Empty Instruction")
         self._ctx_mgr.add_instruction(instruction)
+
+    def _load_skill_registry(
+        self,
+        *,
+        skill_path: str | Path | Literal["auto"],
+        skill_loader_factory: Callable[[str], SkillLoader],
+    ) -> SkillRegistry:
+        registry = SkillRegistry()
+        for path in self._resolve_skill_paths(skill_path):
+            registry.register(*skill_loader_factory(str(path)).load_skills().get_skills())
+        return registry
+
+    def _resolve_skill_paths(
+        self, skill_path: str | Path | Literal["auto"]
+    ) -> list[Path]:
+        global_skills = Path.home() / ".aceai" / "skills"
+        if skill_path == "auto":
+            return [global_skills, Path.cwd() / ".agent" / "skills"]
+        return [global_skills, Path(skill_path).expanduser()]
 
     async def _call_llm(
         self,

@@ -174,10 +174,9 @@ async def test_agent_spans_are_parented_under_single_trace(graph: Graph) -> None
     for llm_span in llm_spans:
         assert llm_span.parent is not None
         assert llm_span.parent.span_id in step_ids
-        assert set(llm_span.attributes["llm.tool_names"]) == {
-            "lookup_order",
-            "get_sku_weight",
-        }
+        tool_names = set(llm_span.attributes["llm.tool_names"])
+        assert {"lookup_order", "get_sku_weight"}.issubset(tool_names)
+        assert "read_text_file" in tool_names
 
     first_step_span = next(
         step_span

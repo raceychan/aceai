@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -13,6 +13,7 @@ dependencies = [
     { name = "ididi" },
     { name = "msgspec" },
     { name = "opentelemetry-api" },
+    { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
 
@@ -56,6 +57,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = ">=1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.39.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
 ]
 provides-extras = ["otel"]

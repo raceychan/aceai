@@ -162,6 +162,72 @@ def build_agent(api_key: str) -> AgentBase:
     )
 ```
 
+### Skills
+A skill is a filesystem package of specialized instructions. Use skills for workflows that are too large or too situational to keep in the base system prompt: release playbooks, document editing rules, browser-debugging recipes, project-specific coding conventions, and similar reusable knowledge.
+
+Each skill lives in its own directory and must include a `SKILL.md` file with YAML frontmatter:
+
+```text
+skills/
+  release/
+    SKILL.md
+    references/
+      checklist.md
+    scripts/
+      prepare_release.py
+    assets/
+      template.json
+```
+
+```markdown
+---
+name: release
+description: Use for release preparation, changelog checks, version bumps, and release PRs.
+---
+
+# Release workflow
+
+Follow the release checklist in `references/checklist.md` when the user asks to prepare a release.
+```
+
+AceAI loads only skill metadata at agent startup. The full instruction body and supporting files are loaded later through tools, so large skill packages do not all enter the context window up front.
+
+`AgentBase` accepts:
+
+```python
+agent = AgentBase(
+    prompt="You are a release assistant.",
+    default_model="gpt-4o-mini",
+    llm_service=llm,
+    executor=executor,
+    skill_path="auto",
+)
+```
+
+When `skill_path="auto"`, AceAI scans:
+
+- `~/.aceai/skills`
+- `.agent/skills` under the current working directory
+
+When `skill_path` is a path, AceAI scans:
+
+- `~/.aceai/skills`
+- the provided path
+
+For every loaded skill, AceAI injects a compact `<available_skills>` block into the system prompt and registers two skill tools on `ToolExecutor`:
+
+- `skills_list`: list known skills and their metadata.
+- `skill_view`: load a skill's full instructions, or load a supporting file inside that skill directory.
+
+The expected flow is progressive disclosure:
+
+1. The model sees skill names and descriptions.
+2. If a task matches a skill, the model calls `skill_view(name=...)`.
+3. AceAI reads the skill instructions from disk and returns them as a tool result.
+4. The next model step uses those instructions to answer or continue calling tools.
+
+Users can also mention a skill explicitly with `$skill_name`; the mention is visible to the model and should make selection unambiguous.
+
 ### Hybrid
 The most common production shape is hybrid: keep the deterministic parts as a workflow (call `LLMService` directly; `complete_json` is great for strict I/O), and delegate open-ended reasoning + tool use to `AgentBase`.
 
@@ -211,6 +277,19 @@ def greet(name: Annotated[str, spec(description="Person to greet")]) -> str:
 
 # If you write: def bad(x: int): ...  -> tool(bad) will raise due to missing Annotated/spec.
 ```
+
+Provider schemas can be stricter than Python call signatures. The OpenAI provider emits strict tool schemas, so every declared parameter is listed as required in the provider-facing schema even when the Python function has a default value:
+
+```python
+@tool
+def search_text(
+    query: Annotated[str, spec(description="Literal text to search for")],
+    path: Annotated[str, spec(description='Directory tree or file to search. Use "." unless the user specifies another path.')] = ".",
+) -> list[str]:
+    ...
+```
+
+The Python default still applies for direct calls, but an OpenAI tool call must include `path`. If a parameter has a default that the model should use when the user does not specify a value, say that in the parameter description.
 
 ### Strict decoding & auto JSON encoding
 msgspec Struct validation enforces input types; return values are auto JSON-encoded (works for Struct/dict/primitive). LLM tool arguments are decoded into the right shapes, and outputs are encoded back to strings.
