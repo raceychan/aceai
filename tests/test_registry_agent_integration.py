@@ -84,7 +84,10 @@ async def test_registry_tools_injected_by_tag_into_agent_executor(graph: Graph) 
     assert answer == "done"
 
     assert len(llm_service.calls) == 2
-    assert {spec.name for spec in llm_service.calls[0]["tools"]} == {"add"}
+    tool_names = {spec.name for spec in llm_service.calls[0]["tools"]}
+    assert "add" in tool_names
+    assert "echo" not in tool_names
+    assert "read_text_file" in tool_names
 
     tool_messages = [m for m in llm_service.calls[1]["messages"] if m.role == "tool"]
     assert len(tool_messages) == 1

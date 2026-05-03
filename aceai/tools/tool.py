@@ -32,11 +32,14 @@ class OpenAIToolSpec:
         self.description = description
 
     def generate_schema(self) -> dict[str, Any]:
+        parameters = self.signature.generate_params_schema()
+        properties = parameters["properties"]
+        parameters["required"] = list(properties.keys())
         return {
             "type": "function",
             "name": self.name,
             "description": self.description,
-            "parameters": self.signature.generate_params_schema(),
+            "parameters": parameters,
             "strict": True,
         }
 

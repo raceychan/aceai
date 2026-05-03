@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from msgspec import Struct
-from numpy import isin
 import yaml
 
 from aceai.errors import AceAIConfigurationError
@@ -37,6 +36,10 @@ class SkillMeta(Struct, frozen=True, kw_only=True):
         if not isinstance(fields, dict):
             raise SkillMetaError("Skill frontmatter must be a mapping")
         fields = cast(dict[str, Any], fields)
+        if "name" not in fields:
+            raise SkillMetaError("Skill frontmatter must define 'name'")
+        if "description" not in fields:
+            raise SkillMetaError("Skill frontmatter must define 'description'")
         for k, v in fields.items():
             if not isinstance(v, str):
                 raise SkillMetaError(f"Skill frontmatter field {k!r} must be a string")
@@ -98,6 +101,12 @@ class Skill:
     def metadata(self) -> SkillMeta:
         return self._metadata
 
+    @property
+    def instruction(self) -> str:
+        return self._instruction
+
+    def read_instructions(self) -> str:
+        return self._instruction
 
     def read_file(self, file_path: str) -> str:
         target = (self.path / file_path).resolve()
@@ -117,9 +126,6 @@ class Skill:
                 f"Skill file {self.skill_file} must contain closing frontmatter"
             )
         return parts[1], parts[2]
-
-
-
 
 class SkillLoader:
     def __init__(self, path: str | Path) -> None:
@@ -182,6 +188,54 @@ class SkillRegistry:
     def resolve_mentions(self, text: str) -> list[Skill]:
         return [self.get(name) for name in self.parse_skill_mentions(text)]
 
+    def as_tools(self):
+        @tool
+        def skills_list() -> SkillsListResult:
+            """List available skills. Use skill_view(name) to load full instructions."""
+            return SkillsListResult(
+                skills=[
+                    SkillListItem(
+                        name=skill.name,
+                        description=skill.description,
+                        location=str(skill.skill_file),
+                    )
+                    for skill in self.get_skills()
+                ],
+                hint="Use skill_view(name) to load a skill's full instructions.",
+            )
+
+        @tool
+        def skill_view(
+            name: Annotated[str, spec(description="Skill name to load")],
+            file_path: Annotated[
+                str,
+                spec(
+                    description=(
+                        "Optional file path within the skill directory, such as "
+                        "references/api.md, scripts/helper.py, or assets/template.json"
+                    )
+                ),
+            ] = "",
+        ) -> SkillViewResult:
+            """Load full skill instructions, or a supporting file inside the skill."""
+            skill = self.get(name)
+            content = (
+                skill.read_file(file_path) if file_path else skill.read_instructions()
+            )
+            return SkillViewResult(
+                name=skill.name,
+                content=content,
+                location=str(
+                    skill.skill_file if file_path == "" else skill.path / file_path
+                ),
+                skill_dir=str(skill.path),
+                references_dir=str(skill.references_dir),
+                scripts_dir=str(skill.scripts_dir),
+                assets_dir=str(skill.assets_dir),
+            )
+
+        return [skills_list, skill_view]
+
 
 def format_skills_for_prompt(registry: SkillRegistry) -> str:
     skills = registry.get_skills()
@@ -205,49 +259,3 @@ def format_skills_for_prompt(registry: SkillRegistry) -> str:
         lines.append("  </skill>")
     lines.append("</available_skills>")
     return "\n".join(lines)
-
-
-def create_skill_tools(registry: SkillRegistry):
-    @tool
-    def skills_list() -> SkillsListResult:
-        """List available skills. Use skill_view(name) to load full instructions."""
-        return SkillsListResult(
-            skills=[
-                SkillListItem(
-                    name=skill.name,
-                    description=skill.description,
-                    location=str(skill.skill_file),
-                )
-                for skill in registry.get_skills()
-            ],
-            hint="Use skill_view(name) to load a skill's full instructions.",
-        )
-
-    @tool
-    def skill_view(
-        name: Annotated[str, spec(description="Skill name to load")],
-        file_path: Annotated[
-            str,
-            spec(
-                description=(
-                    "Optional file path within the skill directory, such as "
-                    "references/api.md, scripts/helper.py, or assets/template.json"
-                )
-            ),
-        ] = "",
-    ) -> SkillViewResult:
-        """Load full skill instructions, or a supporting file inside the skill."""
-        skill = registry.get(name)
-        content = skill.read_file(file_path) if file_path else skill.read_instructions()
-        return SkillViewResult(
-            name=skill.name,
-            content=content,
-            location=str(
-                skill.skill_file if file_path == "" else skill.path / file_path
-            ),
-            skill_dir=str(skill.path),
-            references_dir=str(skill.references_dir),
-            scripts_dir=str(skill.scripts_dir),
-            assets_dir=str(skill.assets_dir),
-        )
-

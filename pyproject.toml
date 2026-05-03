@@ -57,4 +57,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-markers = ["debug: marks tests intended for focused debugging runs"]
+addopts = "--ignore=tests/e2e"
+markers = [
+    "debug: marks tests intended for focused debugging runs",
+    "e2e: marks end-to-end tests that should be run explicitly",
+    "live_llm: marks end-to-end tests that call a real LLM provider",
+]

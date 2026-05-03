@@ -13,7 +13,6 @@ from ..models import AgentStep, ToolExecutionResult
 from ..skill import (
     SkillLoader,
     SkillRegistry,
-    create_skill_tools,
     format_skills_for_prompt,
 )
 from ..tracing import get_trace_ctx, set_trace_ctx
@@ -69,7 +68,7 @@ class AgentBase:
         self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
         self._executor = executor
         if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
-            executor.register_tools(*create_skill_tools(self._skill_registry))
+            executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
         self._tracer = tracer or trace.get_tracer("aceai.agent")
 
