@@ -12,6 +12,7 @@ from aceai.core.events import (
     LLMToolCallDeltaEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    StepCompletedEvent,
     ToolFailedEvent,
     ToolStartedEvent,
 )
@@ -318,6 +319,10 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     tool_events = [event for event in events if isinstance(event, ToolStartedEvent)]
     assert tool_events
     assert tool_events[0].tool_name == "lookup"
+    completed_steps = [
+        event for event in events if isinstance(event, StepCompletedEvent)
+    ]
+    assert [event.step_index for event in completed_steps] == [0, 1]
 
 
 @pytest.mark.anyio

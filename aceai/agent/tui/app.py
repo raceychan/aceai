@@ -15,7 +15,7 @@ from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
-from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
+from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, select_event
 from .widgets import (
     CommandInput,
     DetailWidget,
@@ -166,9 +166,15 @@ class AceAITUI(App[None]):
         if self._session_recorder is None:
             self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
-        self._session_recorder.finalize()
+        if session_id == self._session_id:
+            return
         store = self._session_recorder.store
-        metadata = store.get_session(session_id)
+        try:
+            metadata = store.get_session(session_id)
+        except KeyError:
+            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            return
+        self._session_recorder.finalize()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
@@ -230,6 +236,15 @@ class AceAITUI(App[None]):
 
     def action_session_switcher(self) -> None:
         self.open_session_selector()
+
+    def on_timeline_widget_event_selected(
+        self,
+        event: TimelineWidget.EventSelected,
+    ) -> None:
+        self._state = select_event(self._state, event.event_id)
+        self.query_one(DetailWidget).remove_class("collapsed")
+        self.query_one(DetailWidget).set_state(self._state)
+        event.stop()
 
     def _refresh_widgets(self) -> None:
         self.query_one(TimelineWidget).set_state(self._state)

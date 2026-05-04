@@ -1,3 +1,5 @@
+from io import StringIO
+
 import pytest
 
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
@@ -9,9 +11,10 @@ from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.state import initial_state, reduce_events
+from aceai.agent.tui.state import initial_state, reduce_events, select_event
 from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
 from aceai.llm.models import LLMResponse, LLMUsage
+from rich.console import Console
 from textual.widgets import DataTable, Footer, Static
 
 
@@ -120,6 +123,23 @@ def test_initial_state_is_idle() -> None:
     assert state.events == []
 
 
+def test_select_event_updates_selected_event_id() -> None:
+    events = static_demo_events()
+    state = reduce_events(events)
+    tool_event = _first_event(events, "tool_completed")
+
+    selected = select_event(state, tool_event.event_id)
+
+    assert selected.selected_event_id == tool_event.event_id
+
+
+def test_select_event_rejects_unknown_event_id() -> None:
+    state = reduce_events(static_demo_events())
+
+    with pytest.raises(ValueError, match="selected event does not exist"):
+        select_event(state, "missing-event")
+
+
 def test_reduce_events_tracks_usage_totals() -> None:
     first = AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
         step=AgentStep(
@@ -217,6 +237,52 @@ async def test_static_tui_loads_fixture_events() -> None:
         assert detail.can_focus
         assert timeline.has_class("collapsed")
         assert detail.has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_timeline_selection_opens_tool_result_detail() -> None:
+    events = static_demo_events()
+    tool_event = _first_event(events, "tool_completed")
+    app = AceAITUI(events)
+
+    async with app.run_test() as pilot:
+        timeline = app.query_one(TimelineWidget)
+        timeline.post_message(TimelineWidget.EventSelected(tool_event.event_id))
+        await pilot.pause()
+
+        detail = app.query_one(DetailWidget)
+
+        assert app._state.selected_event_id == tool_event.event_id
+        assert not detail.has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_timeline_accepts_step_and_tool_rows_for_same_event() -> None:
+    app = AceAITUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        timeline = app.query_one(TimelineWidget)
+        timeline.set_state(app._state)
+        await pilot.pause()
+
+        assert timeline.option_count > 0
+
+
+@pytest.mark.anyio
+async def test_detail_renders_tool_arguments_and_output() -> None:
+    events = static_demo_events()
+    tool_event = _first_event(events, "tool_completed")
+    app = AceAITUI(events)
+
+    async with app.run_test():
+        app._state = select_event(app._state, tool_event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert '{"query":"aceai tui"}' in rendered
+        assert '{"matches":["spec/tui.md","docs/tui.md"]}' in rendered
 
 
 @pytest.mark.anyio
@@ -403,6 +469,42 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_switching_to_current_session_is_noop_for_empty_session(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    current = store.create_session()
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, current.session_id),
+        session_id=current.session_id,
+    )
+
+    async with app.run_test():
+        app.switch_session(current.session_id)
+
+        assert app._session_id == current.session_id
+        assert store.get_session(current.session_id).session_id == current.session_id
+
+
+@pytest.mark.anyio
+async def test_tui_switching_to_missing_session_keeps_current_session(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    current = store.create_session()
+    _record_user_message(store, current.session_id, "current question")
+    app = AceAITUI(
+        event_log_to_tui_events(store.load_event_log(current.session_id)),
+        session_recorder=SessionRecorder(store, current.session_id),
+        session_id=current.session_id,
+    )
+
+    async with app.run_test():
+        app.switch_session("missing-session")
+
+        assert app._session_id == current.session_id
+        assert app._state.events[-1].kind == "session_notice"
+        assert app._state.events[-1].content == "Session not found: missing-session"
+
+
+@pytest.mark.anyio
 async def test_session_selector_uses_table_columns(tmp_path) -> None:
     store = SessionStore(tmp_path)
     first = store.create_session()
@@ -481,6 +583,19 @@ def _table_row_index(table: DataTable, session_id: str) -> int:
         if row.key.value == session_id:
             return index
     raise ValueError(session_id)
+
+
+def _first_event(events: list[TUIEvent], kind: str) -> TUIEvent:
+    for event in events:
+        if event.kind == kind:
+            return event
+    raise ValueError(kind)
+
+
+def _render_to_text(renderable) -> str:
+    console = Console(file=StringIO(), record=True, width=120)
+    console.print(renderable)
+    return console.export_text()
 
 
 def _record_user_message(store: SessionStore, session_id: str, content: str) -> None:

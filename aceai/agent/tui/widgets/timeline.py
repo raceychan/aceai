@@ -1,14 +1,20 @@
 """Timeline pane for the read-only TUI prototype."""
 
-from rich.table import Table
 from rich.text import Text
-from textual.containers import ScrollableContainer
+from textual.message import Message
+from textual.widgets import OptionList
+from textual.widgets.option_list import Option
 
 from aceai.agent.tui.state import TUIRunState, TUIStepState, TUIToolState
 
 
-class TimelineWidget(ScrollableContainer):
+class TimelineWidget(OptionList):
     """Render a compact step and tool timeline."""
+
+    class EventSelected(Message):
+        def __init__(self, event_id: str) -> None:
+            self.event_id = event_id
+            super().__init__()
 
     DEFAULT_CSS = """
     TimelineWidget {
@@ -29,25 +35,62 @@ class TimelineWidget(ScrollableContainer):
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
-        super().__init__(id=id, classes=classes, can_focus=True)
+        super().__init__(id=id, classes=classes)
         self._state = state or TUIRunState()
+        self._option_event_ids: dict[str, str] = {}
 
     def set_state(self, state: TUIRunState) -> None:
         self._state = state
-        self.refresh()
+        options = _timeline_options(state)
+        self._option_event_ids = options.event_ids
+        self.set_options(options.items)
         self.call_after_refresh(self.scroll_end, animate=False)
 
-    def render(self) -> Table:
-        table = Table.grid(expand=True)
-        table.add_column(ratio=1)
-        table.add_row(Text("timeline", style="bold #eceff4"))
-        for step in self._state.steps:
-            table.add_row(_step_text(step))
-            for tool_state in step.tools:
-                table.add_row(_tool_text(tool_state))
-        if not self._state.steps:
-            table.add_row(Text("No events yet", style="#d8dee9"))
-        return table
+    def on_option_list_option_selected(
+        self,
+        event: OptionList.OptionSelected,
+    ) -> None:
+        if event.option_id is None:
+            raise ValueError("timeline option must include an event id")
+        self.post_message(self.EventSelected(self._option_event_ids[event.option_id]))
+
+
+class _TimelineOptions:
+    def __init__(self, items: list[Option], event_ids: dict[str, str]) -> None:
+        self.items = items
+        self.event_ids = event_ids
+
+
+def _timeline_options(state: TUIRunState) -> _TimelineOptions:
+    options: list[Option] = [Option(Text("timeline", style="bold #eceff4"), disabled=True)]
+    event_ids: dict[str, str] = {}
+    for step in state.steps:
+        step_option_id = _row_option_id("step", len(event_ids))
+        options.append(Option(_step_text(step), id=step_option_id))
+        event_ids[step_option_id] = _step_event_id(step)
+        for tool_state in step.tools:
+            tool_option_id = _row_option_id("tool", len(event_ids))
+            options.append(Option(_tool_text(tool_state), id=tool_option_id))
+            event_ids[tool_option_id] = _tool_event_id(tool_state)
+    if not state.steps:
+        options.append(Option(Text("No events yet", style="#d8dee9"), disabled=True))
+    return _TimelineOptions(options, event_ids)
+
+
+def _row_option_id(kind: str, index: int) -> str:
+    return f"{kind}-{index}"
+
+
+def _step_event_id(step: TUIStepState) -> str:
+    if not step.events:
+        raise ValueError("timeline step must include events")
+    return step.events[-1].event_id
+
+
+def _tool_event_id(tool_state: TUIToolState) -> str:
+    if not tool_state.events:
+        raise ValueError("timeline tool must include events")
+    return tool_state.events[-1].event_id
 
 
 def _step_text(step: TUIStepState) -> Text:

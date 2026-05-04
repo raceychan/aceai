@@ -65,6 +65,21 @@ def reduce_events(events: list[TUIEvent]) -> TUIRunState:
     return state
 
 
+def select_event(state: TUIRunState, event_id: str) -> TUIRunState:
+    for event in state.events:
+        if event.event_id == event_id:
+            return TUIRunState(
+                status=state.status,
+                steps=state.steps,
+                events=state.events,
+                selected_event_id=event_id,
+                final_answer=state.final_answer,
+                error=state.error,
+                usage=state.usage,
+            )
+    raise ValueError("selected event does not exist")
+
+
 def apply_tui_event(state: TUIRunState, event: TUIEvent) -> TUIRunState:
     steps = _apply_step_event(state.steps, event)
     status = _next_run_status(state.status, event)

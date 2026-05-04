@@ -297,6 +297,7 @@ class AgentBase:
                             yield tool_event
                     finally:
                         await tool_gen.aclose()
+                    yield event_builder.step_completed(step=current_step)
             finally:
                 await llm_gen.aclose()
 

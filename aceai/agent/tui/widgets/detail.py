@@ -2,6 +2,7 @@
 
 from rich.pretty import Pretty
 from rich.table import Table
+from rich.text import Text
 from textual.containers import ScrollableContainer
 
 from aceai.agent.tui.events import TUIEvent
@@ -53,6 +54,12 @@ class DetailWidget(ScrollableContainer):
             table.add_row("tool", event.tool_name)
         if event.tool_call_id is not None:
             table.add_row("call_id", event.tool_call_id)
+        if event.tool_call is not None:
+            table.add_row("arguments", Text(event.tool_call.arguments))
+        if event.tool_result is not None:
+            table.add_row("output", Text(event.tool_result.output))
+        elif event.content != "":
+            table.add_row("content", Text(event.content))
         if event.error is not None:
             table.add_row("error", event.error)
         raw = None if event.raw_event is None else event.raw_event.asdict()
