@@ -19,7 +19,7 @@ class StubRecorder:
 def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
     monkeypatch.setattr(cli, "SessionRecorder", None)
     monkeypatch.setattr(cli, "SessionStore", None)
-    monkeypatch.setattr(cli, "messages_to_llm_history", None)
+    monkeypatch.setattr(cli, "event_log_to_tui_events", None)
     monkeypatch.setattr(cli, "run_configured_tui", None)
     monkeypatch.setattr(cli, "run_interactive_tui", None)
 

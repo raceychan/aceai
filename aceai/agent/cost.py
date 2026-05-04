@@ -1,5 +1,9 @@
 """Estimated token cost helpers for AceAI agent sessions."""
 
+from typing import Any
+
+from typing_extensions import Self
+
 from aceai.agent.provider_catalog import (
     ModelTokenPrice,
     price_for_model,
@@ -23,6 +27,20 @@ class CostEstimate(Record, kw_only=True):
     cached_input_usd_per_million: float
     output_usd_per_million: float
     pricing_source: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> Self:
+        return cls(
+            model=payload["model"],
+            input_cost_usd=payload["input_cost_usd"],
+            cached_input_cost_usd=payload["cached_input_cost_usd"],
+            output_cost_usd=payload["output_cost_usd"],
+            total_cost_usd=payload["total_cost_usd"],
+            input_usd_per_million=payload["input_usd_per_million"],
+            cached_input_usd_per_million=payload["cached_input_usd_per_million"],
+            output_usd_per_million=payload["output_usd_per_million"],
+            pricing_source=payload["pricing_source"],
+        )
 
 
 def estimate_usage_cost(

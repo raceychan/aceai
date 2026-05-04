@@ -23,7 +23,6 @@ from .config import (
     AceAITUIConfig,
     load_config,
 )
-from .session_adapter import session_messages_to_tui_events
 from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
@@ -37,7 +36,7 @@ TUI_EXTRA_INSTALL_HINT = (
 
 SessionRecorder = None
 SessionStore = None
-messages_to_llm_history = None
+event_log_to_tui_events = None
 run_configured_tui = None
 run_interactive_tui = None
 
@@ -53,13 +52,14 @@ class SessionStoreLike(Protocol):
 def require_tui_extra() -> None:
     global SessionRecorder
     global SessionStore
-    global messages_to_llm_history
+    global event_log_to_tui_events
     global run_configured_tui
     global run_interactive_tui
     if SessionStore is not None:
         return
     try:
         session_module = importlib.import_module("aceai.agent.session")
+        replay_module = importlib.import_module("aceai.agent.tui.session_replay")
         runner_module = importlib.import_module("aceai.agent.tui.runner")
     except ModuleNotFoundError as exc:
         if exc.name in TUI_EXTRA_MODULES:
@@ -67,7 +67,7 @@ def require_tui_extra() -> None:
         raise
     SessionRecorder = session_module.SessionRecorder
     SessionStore = session_module.SessionStore
-    messages_to_llm_history = session_module.messages_to_llm_history
+    event_log_to_tui_events = replay_module.event_log_to_tui_events
     run_configured_tui = runner_module.run_configured_tui
     run_interactive_tui = runner_module.run_interactive_tui
 
@@ -149,12 +149,12 @@ def create_session_context(
         metadata = store.create_session()
         return store, metadata, [], []
     metadata = store.get_session(resume_session_id)
-    messages = store.load_messages(resume_session_id)
+    event_log = store.load_event_log(resume_session_id)
     return (
         store,
         metadata,
-        session_messages_to_tui_events(messages),
-        messages_to_llm_history(messages),
+        event_log_to_tui_events(event_log),
+        event_log.replay_llm_history(),
     )
 
 

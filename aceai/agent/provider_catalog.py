@@ -4,6 +4,7 @@ from functools import cache
 from importlib import resources
 
 import yaml
+from typing_extensions import Self
 
 from aceai.llm.interface import Record
 
@@ -17,11 +18,46 @@ class ModelTokenPrice(Record, kw_only=True):
     cached_input_usd_per_million: float
     output_usd_per_million: float
 
+    @classmethod
+    def from_raw(cls, model_id: str, raw: object) -> Self:
+        if type(raw) is not dict:
+            raise TypeError("Provider catalog pricing must be a mapping")
+        input_price = raw["input_usd_per_million"]
+        cached_input_price = raw["cached_input_usd_per_million"]
+        output_price = raw["output_usd_per_million"]
+        if type(input_price) is not float:
+            raise TypeError("Provider catalog input_usd_per_million must be float")
+        if type(cached_input_price) is not float:
+            raise TypeError("Provider catalog cached_input_usd_per_million must be float")
+        if type(output_price) is not float:
+            raise TypeError("Provider catalog output_usd_per_million must be float")
+        return cls(
+            model=model_id,
+            input_usd_per_million=input_price,
+            cached_input_usd_per_million=cached_input_price,
+            output_usd_per_million=output_price,
+        )
+
 
 class ModelCatalogEntry(Record, kw_only=True):
     id: str
     label: str
     pricing: ModelTokenPrice | None = None
+
+    @classmethod
+    def from_raw(cls, raw: object) -> Self:
+        if type(raw) is not dict:
+            raise TypeError("Provider catalog model must be a mapping")
+        model_id = raw["id"]
+        label = raw["label"]
+        if type(model_id) is not str:
+            raise TypeError("Provider catalog model id must be str")
+        if type(label) is not str:
+            raise TypeError("Provider catalog model label must be str")
+        pricing = None
+        if "pricing" in raw:
+            pricing = ModelTokenPrice.from_raw(model_id, raw["pricing"])
+        return cls(id=model_id, label=label, pricing=pricing)
 
 
 class ProviderCatalogEntry(Record, kw_only=True):
@@ -32,10 +68,63 @@ class ProviderCatalogEntry(Record, kw_only=True):
     stale_default_models: tuple[str, ...]
     models: tuple[ModelCatalogEntry, ...]
 
+    @classmethod
+    def from_raw(cls, raw: object) -> Self:
+        if type(raw) is not dict:
+            raise TypeError("Provider catalog provider must be a mapping")
+        name = raw["name"]
+        label = raw["label"]
+        api_key_env_value = raw["api_key_env"]
+        default_model_value = raw["default_model"]
+        stale_default_model_values = raw["stale_default_models"]
+        models = raw["models"]
+        if type(name) is not str:
+            raise TypeError("Provider catalog provider name must be str")
+        if type(label) is not str:
+            raise TypeError("Provider catalog provider label must be str")
+        if type(api_key_env_value) is not str:
+            raise TypeError("Provider catalog api_key_env must be str")
+        if type(default_model_value) is not str:
+            raise TypeError("Provider catalog default_model must be str")
+        if type(stale_default_model_values) is not list:
+            raise TypeError("Provider catalog stale_default_models must be a list")
+        if type(models) is not list:
+            raise TypeError("Provider catalog models must be a list")
+        parsed_stale_models = tuple(
+            _require_str(model, "Provider catalog stale model must be str")
+            for model in stale_default_model_values
+        )
+        parsed_models = tuple(ModelCatalogEntry.from_raw(model) for model in models)
+        return cls(
+            name=name,
+            label=label,
+            api_key_env=api_key_env_value,
+            default_model=default_model_value,
+            stale_default_models=parsed_stale_models,
+            models=parsed_models,
+        )
+
 
 class ProviderCatalog(Record, kw_only=True):
     providers: tuple[ProviderCatalogEntry, ...]
     pricing_source: str
+
+    @classmethod
+    def from_raw(cls, raw: object) -> Self:
+        if type(raw) is not dict:
+            raise TypeError("Provider catalog must be a mapping")
+        providers = raw["providers"]
+        pricing_source_value = raw["pricing_source"]
+        if type(providers) is not list:
+            raise TypeError("Provider catalog providers must be a list")
+        if type(pricing_source_value) is not str:
+            raise TypeError("Provider catalog pricing_source must be str")
+        return cls(
+            providers=tuple(
+                ProviderCatalogEntry.from_raw(provider) for provider in providers
+            ),
+            pricing_source=pricing_source_value,
+        )
 
 
 @cache
@@ -44,7 +133,7 @@ def load_provider_catalog() -> ProviderCatalog:
         encoding="utf-8"
     )
     raw = yaml.safe_load(text)
-    return _parse_provider_catalog(raw)
+    return ProviderCatalog.from_raw(raw)
 
 
 def supported_provider_names() -> tuple[str, ...]:
@@ -114,92 +203,6 @@ def price_for_model_any_provider(model: str) -> ModelTokenPrice | None:
 
 def pricing_source() -> str:
     return load_provider_catalog().pricing_source
-
-
-def _parse_provider_catalog(raw: object) -> ProviderCatalog:
-    if type(raw) is not dict:
-        raise TypeError("Provider catalog must be a mapping")
-    providers = raw["providers"]
-    pricing_source_value = raw["pricing_source"]
-    if type(providers) is not list:
-        raise TypeError("Provider catalog providers must be a list")
-    if type(pricing_source_value) is not str:
-        raise TypeError("Provider catalog pricing_source must be str")
-    return ProviderCatalog(
-        providers=tuple(_parse_provider(provider) for provider in providers),
-        pricing_source=pricing_source_value,
-    )
-
-
-def _parse_provider(raw: object) -> ProviderCatalogEntry:
-    if type(raw) is not dict:
-        raise TypeError("Provider catalog provider must be a mapping")
-    name = raw["name"]
-    label = raw["label"]
-    api_key_env_value = raw["api_key_env"]
-    default_model_value = raw["default_model"]
-    stale_default_model_values = raw["stale_default_models"]
-    models = raw["models"]
-    if type(name) is not str:
-        raise TypeError("Provider catalog provider name must be str")
-    if type(label) is not str:
-        raise TypeError("Provider catalog provider label must be str")
-    if type(api_key_env_value) is not str:
-        raise TypeError("Provider catalog api_key_env must be str")
-    if type(default_model_value) is not str:
-        raise TypeError("Provider catalog default_model must be str")
-    if type(stale_default_model_values) is not list:
-        raise TypeError("Provider catalog stale_default_models must be a list")
-    if type(models) is not list:
-        raise TypeError("Provider catalog models must be a list")
-    parsed_stale_models = tuple(
-        _require_str(model, "Provider catalog stale model must be str")
-        for model in stale_default_model_values
-    )
-    parsed_models = tuple(_parse_model(model) for model in models)
-    return ProviderCatalogEntry(
-        name=name,
-        label=label,
-        api_key_env=api_key_env_value,
-        default_model=default_model_value,
-        stale_default_models=parsed_stale_models,
-        models=parsed_models,
-    )
-
-
-def _parse_model(raw: object) -> ModelCatalogEntry:
-    if type(raw) is not dict:
-        raise TypeError("Provider catalog model must be a mapping")
-    model_id = raw["id"]
-    label = raw["label"]
-    if type(model_id) is not str:
-        raise TypeError("Provider catalog model id must be str")
-    if type(label) is not str:
-        raise TypeError("Provider catalog model label must be str")
-    pricing = None
-    if "pricing" in raw:
-        pricing = _parse_pricing(model_id, raw["pricing"])
-    return ModelCatalogEntry(id=model_id, label=label, pricing=pricing)
-
-
-def _parse_pricing(model_id: str, raw: object) -> ModelTokenPrice:
-    if type(raw) is not dict:
-        raise TypeError("Provider catalog pricing must be a mapping")
-    input_price = raw["input_usd_per_million"]
-    cached_input_price = raw["cached_input_usd_per_million"]
-    output_price = raw["output_usd_per_million"]
-    if type(input_price) is not float:
-        raise TypeError("Provider catalog input_usd_per_million must be float")
-    if type(cached_input_price) is not float:
-        raise TypeError("Provider catalog cached_input_usd_per_million must be float")
-    if type(output_price) is not float:
-        raise TypeError("Provider catalog output_usd_per_million must be float")
-    return ModelTokenPrice(
-        model=model_id,
-        input_usd_per_million=input_price,
-        cached_input_usd_per_million=cached_input_price,
-        output_usd_per_million=output_price,
-    )
 
 
 def _require_str(value: object, message: str) -> str:

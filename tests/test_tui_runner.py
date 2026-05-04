@@ -5,9 +5,9 @@ from aceai.agent.session import SessionRecorder, SessionStore
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMUsage
 from aceai.llm.models import LLMStreamEvent
-from aceai.agent.tui.events import user_message_event
-from aceai.agent.tui.session_adapter import session_messages_to_tui_events
+from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
+from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
@@ -560,10 +560,10 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     first = store.create_session()
     second = store.create_session()
     SessionRecorder(store, first.session_id).record(
-        tui_event_to_session_event(user_message_event("first"))
+        tui_event_to_session_event(TUIEvent.user_message("first"))
     )
     SessionRecorder(store, second.session_id).record(
-        tui_event_to_session_event(user_message_event("second"))
+        tui_event_to_session_event(TUIEvent.user_message("second"))
     )
     llm_service = StubLLMService([])
     agent = AgentBase(
@@ -574,9 +574,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     )
     app = AceAIInteractiveTUI(
         agent,
-        initial_events=session_messages_to_tui_events(
-            store.load_messages(first.session_id)
-        ),
+        initial_events=event_log_to_tui_events(store.load_event_log(first.session_id)),
         initial_history=[],
         session_recorder=SessionRecorder(store, first.session_id),
         session_id=first.session_id,

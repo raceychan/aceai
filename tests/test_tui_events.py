@@ -15,14 +15,14 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import AgentStep, ToolExecutionResult
-from aceai.agent.tui.events import adapt_agent_event
+from aceai.agent.tui.events import TUIEvent
 
 
 def test_adapt_text_delta_event() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     event = builder.llm_text_delta(text_delta="hello")
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "assistant_delta"
     assert tui_event.title == "assistant"
@@ -33,7 +33,7 @@ def test_adapt_text_delta_event() -> None:
 def test_adapt_step_started_event() -> None:
     event = LLMStartedEvent(step_index=0, step_id="step-1")
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "step_started"
     assert tui_event.title == "step started"
@@ -43,7 +43,7 @@ def test_adapt_llm_completed_event() -> None:
     step = AgentStep(llm_response=LLMResponse(text="intermediate"))
     event = LLMCompletedEvent(step_index=0, step_id="step-1", step=step)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "llm_completed"
     assert tui_event.content == "intermediate"
@@ -61,7 +61,7 @@ def test_adapt_llm_completed_event_includes_usage_and_cost() -> None:
     )
     event = LLMCompletedEvent(step_index=0, step_id="step-1", step=step)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.usage is usage
     assert tui_event.cost is not None
@@ -75,7 +75,7 @@ def test_adapt_tool_call_delta_event() -> None:
     delta = LLMToolCallDelta(id="call-1", arguments_delta='{"q":')
     event = builder.llm_tool_call_delta(tool_call_delta=delta)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "tool_call_delta"
     assert tui_event.content == '{"q":'
@@ -88,7 +88,7 @@ def test_adapt_reasoning_event() -> None:
     segment = LLMSegment(type="reasoning", content="checked the facts")
     event = builder.llm_reasoning(segment=segment)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "reasoning_summary"
     assert tui_event.content == "checked the facts"
@@ -109,7 +109,7 @@ def test_adapt_streaming_reasoning_delta_event() -> None:
     )
     event = builder.llm_reasoning(segment=segment)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "thinking_delta"
     assert tui_event.title == "reasoning"
@@ -121,7 +121,7 @@ def test_adapt_tool_completed_event() -> None:
     result = ToolExecutionResult(call=call, output='{"ok":true}')
     event = builder.tool_completed(tool_call=call, tool_result=result)
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "tool_completed"
     assert tui_event.tool_name == "lookup"
@@ -135,7 +135,7 @@ def test_adapt_tool_output_event() -> None:
     call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
     event = builder.tool_output(tool_call=call, text_delta="partial")
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "tool_output"
     assert tui_event.tool_name == "lookup"
@@ -150,7 +150,7 @@ def test_adapt_run_completed_event() -> None:
         final_answer="done",
     )
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "run_completed"
     assert tui_event.content == "done"
@@ -161,7 +161,7 @@ def test_adapt_media_event_uses_first_segment() -> None:
     segment = LLMSegment(type="image", content="", media=media)
     event = LLMMediaEvent(step_index=0, step_id="step-1", segments=[segment])
 
-    tui_event = adapt_agent_event(event)
+    tui_event = TUIEvent.from_agent_event(event)
 
     assert tui_event.kind == "media"
     assert tui_event.segment is segment

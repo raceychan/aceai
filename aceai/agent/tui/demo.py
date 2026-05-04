@@ -4,7 +4,7 @@ from aceai.core.events import AgentEvent, AgentEventBuilder
 from aceai.llm.models import LLMResponse, LLMSegment, LLMToolCall, LLMToolCallDelta
 from aceai.core.models import AgentStep, ToolExecutionResult
 
-from .events import TUIEvent, adapt_agent_event
+from .events import TUIEvent
 
 
 def static_demo_events() -> list[TUIEvent]:
@@ -50,5 +50,4 @@ def static_demo_events() -> list[TUIEvent]:
             final_answer="Static TUI prototype is ready to inspect.",
         ),
     ]
-    return [adapt_agent_event(event) for event in agent_events]
-
+    return [TUIEvent.from_agent_event(event) for event in agent_events]

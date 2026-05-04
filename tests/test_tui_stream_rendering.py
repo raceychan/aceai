@@ -13,7 +13,7 @@ from aceai.llm.models import (
 )
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolExecutionResult
-from aceai.agent.tui.events import adapt_agent_event, user_message_event
+from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.state import reduce_events
 from aceai.agent.tui.widgets.stream import (
     StreamWidget,
@@ -25,8 +25,8 @@ from aceai.agent.tui.widgets.stream import (
 def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(builder.llm_text_delta(text_delta="Hi")),
-        adapt_agent_event(builder.llm_text_delta(text_delta="!")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="Hi")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="!")),
     ]
 
     renderables = _render_events(events)
@@ -42,13 +42,13 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
 def test_main_stream_renders_question_before_answer() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        user_message_event("How do I search?"),
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(builder.llm_text_delta(text_delta="Use rg.")),
-        adapt_agent_event(
+        TUIEvent.user_message("How do I search?"),
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="Use rg.")),
+        TUIEvent.from_agent_event(
             builder.step_completed(step=AgentStep(llm_response=LLMResponse(text="Use rg.")))
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.run_completed(
                 step=AgentStep(llm_response=LLMResponse(text="Use rg.")),
                 final_answer="Use rg.",
@@ -77,7 +77,7 @@ def test_main_stream_renders_question_before_answer() -> None:
 
 
 def test_user_messages_render_right_aligned() -> None:
-    renderables = _render_events([user_message_event("Where am I?")])
+    renderables = _render_events([TUIEvent.user_message("Where am I?")])
 
     message = renderables[0]
     assert isinstance(message, Table)
@@ -107,7 +107,7 @@ def test_stream_writes_user_message_rows_expanded() -> None:
     stream.clear = lambda: None
     stream.call_after_refresh = lambda *args, **kwargs: None
 
-    stream.set_state(reduce_events([user_message_event("Where am I?")]))
+    stream.set_state(reduce_events([TUIEvent.user_message("Where am I?")]))
 
     assert len(writes) == 1
     content, expand = writes[0]
@@ -132,7 +132,7 @@ def test_stream_writes_assistant_messages_with_capped_width() -> None:
     stream.clear = lambda: None
     stream.call_after_refresh = lambda *args, **kwargs: None
 
-    event = adapt_agent_event(
+    event = TUIEvent.from_agent_event(
         AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
             text_delta="x" * 300
         )
@@ -148,7 +148,7 @@ def test_stream_writes_assistant_messages_with_capped_width() -> None:
 def test_short_assistant_messages_keep_natural_width() -> None:
     panel = _render_events(
         [
-            adapt_agent_event(
+            TUIEvent.from_agent_event(
                 AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
                     text_delta="Use rg."
                 )
@@ -163,7 +163,7 @@ def test_short_assistant_messages_keep_natural_width() -> None:
 def test_assistant_markdown_renders_as_markdown() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_text_delta(text_delta="## Steps\n\n- Use `rg`\n- Run tests")
         ),
     ]
@@ -182,13 +182,13 @@ def test_assistant_markdown_renders_as_markdown() -> None:
 def test_reasoning_summary_renders_before_completed_answer() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(
             builder.llm_reasoning(
                 segment=LLMSegment(type="reasoning", content="think first")
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_completed(
                 step=AgentStep(llm_response=LLMResponse(text="answer"))
             )
@@ -212,7 +212,7 @@ def test_reasoning_summary_renders_before_completed_answer() -> None:
 def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_reasoning(
                 segment=LLMSegment(
                     type="reasoning",
@@ -226,7 +226,7 @@ def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
                 )
             )
         ),
-        adapt_agent_event(builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
     ]
 
     renderables = _render_events(events)
@@ -250,9 +250,9 @@ def test_main_stream_omits_lifecycle_events() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     step = AgentStep(llm_response=LLMResponse(text="done"))
     events = [
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(builder.step_completed(step=step)),
-        adapt_agent_event(builder.run_completed(step=step, final_answer="done")),
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(builder.step_completed(step=step)),
+        TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")),
     ]
 
     renderables = _render_events(events)
@@ -272,7 +272,7 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
         output='{"path":"binary_search.py","bytes_written":9}',
     )
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -280,7 +280,7 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
                 )
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -288,8 +288,8 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
                 )
             )
         ),
-        adapt_agent_event(builder.tool_started(tool_call=call)),
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
     ]
 
     renderables = _render_events(events)
@@ -306,7 +306,7 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
 def test_unknown_in_progress_tool_call_deltas_do_not_render() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -314,7 +314,7 @@ def test_unknown_in_progress_tool_call_deltas_do_not_render() -> None:
                 )
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -346,8 +346,8 @@ def test_directory_tool_result_summarizes_entry_count_without_details() -> None:
         ),
     )
     events = [
-        adapt_agent_event(builder.tool_started(tool_call=call)),
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
     ]
 
     renderables = _render_events(events)

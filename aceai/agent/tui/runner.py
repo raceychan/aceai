@@ -8,7 +8,7 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
-from aceai.agent.session import SessionRecorder, messages_to_llm_history
+from aceai.agent.session import SessionRecorder
 from aceai.core import AgentBase
 from aceai.core.events import RunCompletedEvent
 from aceai.llm.models import LLMMessage
@@ -17,7 +17,7 @@ from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
 from .config import AceAITUIConfig
-from .events import TUIEvent, session_notice_event, user_message_event
+from .events import TUIEvent
 from .setup import ModelSelection, ModelSelectScreen, ProviderSetupScreen
 from .widgets import CommandInput
 
@@ -113,7 +113,7 @@ class AceAIInteractiveTUI(AceAITUI):
     def start_run(self, question: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
-        self.append_event(user_message_event(question))
+        self.append_event(TUIEvent.user_message(question))
         self._active_worker = self.run_worker(
             self._stream_agent_events(question),
             name="aceai-agent",
@@ -146,7 +146,7 @@ class AceAIInteractiveTUI(AceAITUI):
 
     def show_model(self) -> None:
         self.append_event(
-            session_notice_event(
+            TUIEvent.session_notice(
                 f"Current model: {self._selected_model}\n{_model_options_text(self._provider_name)}"
             )
         )
@@ -172,7 +172,7 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         if selection.provider != self._provider_name:
             self.append_event(
-                session_notice_event(
+                TUIEvent.session_notice(
                     "Provider changes are only available in the configured AceAI app."
                 )
             )
@@ -182,18 +182,18 @@ class AceAIInteractiveTUI(AceAITUI):
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self.append_event(
-                session_notice_event("Model changes apply after the current run finishes.")
+                TUIEvent.session_notice("Model changes apply after the current run finishes.")
             )
             return
         if model not in supported_models(self._provider_name):
             self.append_event(
-                session_notice_event(_model_options_text(self._provider_name))
+                TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         self.set_status_model(self._selected_model)
-        self.append_event(session_notice_event(f"Switched model to {self._selected_model}"))
+        self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta: LLMRequestMeta = dict(self._request_meta)
@@ -204,8 +204,8 @@ class AceAIInteractiveTUI(AceAITUI):
         if self._session_recorder is None or self._session_id is None:
             self._llm_history = []
             return
-        messages = self._session_recorder.store.load_messages(self._session_id)
-        self._llm_history = messages_to_llm_history(messages)
+        event_log = self._session_recorder.store.load_event_log(self._session_id)
+        self._llm_history = event_log.replay_llm_history()
 
 
 class AceAIConfiguredTUI(AceAITUI):
@@ -317,7 +317,7 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
-        self.append_event(user_message_event(question))
+        self.append_event(TUIEvent.user_message(question))
         self._active_worker = self.run_worker(
             self._stream_agent_events(question),
             name="aceai-agent",
@@ -352,7 +352,7 @@ class AceAIConfiguredTUI(AceAITUI):
 
     def show_model(self) -> None:
         self.append_event(
-            session_notice_event(
+            TUIEvent.session_notice(
                 f"Current model: {self._selected_model}\n{_model_options_text(self._provider_name)}"
             )
         )
@@ -395,7 +395,7 @@ class AceAIConfiguredTUI(AceAITUI):
                     )
                 )
                 self.append_event(
-                    session_notice_event(
+                    TUIEvent.session_notice(
                         f"Updated provider credentials and switched model to {selection.model}"
                     )
                 )
@@ -409,7 +409,7 @@ class AceAIConfiguredTUI(AceAITUI):
                 api_key = os.environ[env_name]
         if api_key == "":
             self.append_event(
-                session_notice_event(
+                TUIEvent.session_notice(
                     f"API key required for provider {selection.provider}."
                 )
             )
@@ -427,7 +427,7 @@ class AceAIConfiguredTUI(AceAITUI):
             )
         )
         self.append_event(
-            session_notice_event(
+            TUIEvent.session_notice(
                 f"Switched provider to {selection.provider} and model to {selection.model}"
             )
         )
@@ -435,18 +435,18 @@ class AceAIConfiguredTUI(AceAITUI):
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self.append_event(
-                session_notice_event("Model changes apply after the current run finishes.")
+                TUIEvent.session_notice("Model changes apply after the current run finishes.")
             )
             return
         if model not in supported_models(self._provider_name):
             self.append_event(
-                session_notice_event(_model_options_text(self._provider_name))
+                TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         self.set_status_model(self._selected_model)
-        self.append_event(session_notice_event(f"Switched model to {self._selected_model}"))
+        self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta: LLMRequestMeta = dict(self._request_meta)
@@ -457,8 +457,8 @@ class AceAIConfiguredTUI(AceAITUI):
         if self._session_recorder is None or self._session_id is None:
             self._llm_history = []
             return
-        messages = self._session_recorder.store.load_messages(self._session_id)
-        self._llm_history = messages_to_llm_history(messages)
+        event_log = self._session_recorder.store.load_event_log(self._session_id)
+        self._llm_history = event_log.replay_llm_history()
 
 
 class AceAILiveTUI(AceAIInteractiveTUI):

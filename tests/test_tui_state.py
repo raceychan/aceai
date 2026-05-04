@@ -1,14 +1,14 @@
 import pytest
 
-from aceai.agent.session import SessionRecorder, SessionStore
+from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
 from aceai.agent.tui.demo import static_demo_events
-from aceai.agent.tui.events import adapt_agent_event, user_message_event
-from aceai.agent.tui.session_adapter import session_messages_to_tui_events
+from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
+from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import initial_state, reduce_events
 from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
 from aceai.llm.models import LLMResponse, LLMUsage
@@ -42,10 +42,10 @@ def test_reduce_events_tracks_step_and_tool_state() -> None:
 
 def test_reduce_events_assigns_global_step_numbers() -> None:
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             AgentEventBuilder(step_index=0, step_id="run-1-step-1").llm_started()
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             AgentEventBuilder(step_index=0, step_id="run-2-step-1").llm_started()
         ),
     ]
@@ -56,40 +56,38 @@ def test_reduce_events_assigns_global_step_numbers() -> None:
 
 
 def test_reduce_events_does_not_add_user_questions_to_timeline() -> None:
-    state = reduce_events([user_message_event("What changed?")])
+    state = reduce_events([TUIEvent.user_message("What changed?")])
 
     assert state.steps == []
     assert state.events[0].kind == "user_message"
 
 
 def test_reduce_events_does_not_add_session_notices_to_timeline() -> None:
-    from aceai.agent.tui.events import session_notice_event
-
-    state = reduce_events([session_notice_event("Sessions")])
+    state = reduce_events([TUIEvent.session_notice("Sessions")])
 
     assert state.steps == []
     assert state.events[0].kind == "session_notice"
 
 
 def test_reduce_events_does_not_add_restored_transcript_to_timeline() -> None:
-    from aceai.agent.session import SessionMessage
-
-    created_at = "2026-05-04T00:00:00+00:00"
-    events = session_messages_to_tui_events(
-        [
-            SessionMessage(kind="user", content="question", created_at=created_at),
-            SessionMessage(kind="assistant", content="answer", created_at=created_at),
-            SessionMessage(
-                kind="tool",
-                content="",
-                created_at=created_at,
-                tool_name="read_text_file",
-                tool_call_id="call-1",
-                tool_arguments='{"path":"README.md"}',
-                tool_output="contents",
-                status="completed",
-            ),
-        ]
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(kind="user_message", payload={"content": "question"}),
+                SessionEvent(kind="assistant_message", payload={"content": "answer"}),
+                SessionEvent(
+                    kind="tool_result",
+                    payload={
+                        "content": "",
+                        "tool_name": "read_text_file",
+                        "tool_call_id": "call-1",
+                        "tool_arguments": '{"path":"README.md"}',
+                        "output": "contents",
+                        "status": "completed",
+                    },
+                ),
+            ]
+        )
     )
 
     state = reduce_events(events)
@@ -101,8 +99,8 @@ def test_reduce_events_does_not_add_restored_transcript_to_timeline() -> None:
 def test_reduce_events_coalesces_consecutive_assistant_deltas() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(builder.llm_text_delta(text_delta="hello ")),
-        adapt_agent_event(builder.llm_text_delta(text_delta="world")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")),
     ]
 
     state = reduce_events(events)
@@ -145,7 +143,7 @@ def test_reduce_events_tracks_usage_totals() -> None:
         )
     )
 
-    state = reduce_events([adapt_agent_event(first), adapt_agent_event(second)])
+    state = reduce_events([TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)])
 
     assert state.usage.current_context_tokens == 150
     assert state.usage.session_input_tokens == 250
@@ -179,7 +177,7 @@ def test_reduce_events_tracks_cost_totals() -> None:
         )
     )
 
-    state = reduce_events([adapt_agent_event(first), adapt_agent_event(second)])
+    state = reduce_events([TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)])
 
     assert state.usage.current_cost_usd is not None
     assert state.usage.session_cost_usd is not None
@@ -190,7 +188,7 @@ def test_reduce_events_tracks_cost_totals() -> None:
 def test_reduce_events_keeps_missing_usage_unknown() -> None:
     state = reduce_events(
         [
-            adapt_agent_event(
+            TUIEvent.from_agent_event(
                 AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
                     step=AgentStep(llm_response=LLMResponse(text="answer"))
                 )
@@ -233,14 +231,14 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(adapt_agent_event(builder.llm_text_delta(text_delta="hello ")))
-        app.append_event(adapt_agent_event(builder.llm_text_delta(text_delta="world")))
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")))
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")))
 
         assert refreshes == []
         assert app._state.events == []
 
         app.append_event(
-            adapt_agent_event(
+            TUIEvent.from_agent_event(
                 builder.llm_text_delta(text_delta="x" * STREAM_DELTA_REFRESH_CHARS)
             )
         )
@@ -265,8 +263,8 @@ async def test_tui_flushes_pending_stream_delta_on_completion() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(adapt_agent_event(builder.llm_text_delta(text_delta="done")))
-        app.append_event(adapt_agent_event(builder.run_completed(step=step, final_answer="done")))
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="done")))
+        app.append_event(TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")))
 
         assert refreshes == [2]
 
@@ -274,10 +272,10 @@ async def test_tui_flushes_pending_stream_delta_on_completion() -> None:
 @pytest.mark.anyio
 async def test_stream_scrolls_to_latest_content() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
-    events = [user_message_event("Show me many lines")]
+    events = [TUIEvent.user_message("Show me many lines")]
     for line_number in range(80):
         events.append(
-            adapt_agent_event(
+            TUIEvent.from_agent_event(
                 builder.llm_text_delta(text_delta=f"line {line_number}\n")
             )
         )
@@ -295,7 +293,7 @@ async def test_stream_scrolls_to_latest_content() -> None:
 async def test_stream_does_not_show_horizontal_scrollbar() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_text_delta(
                 text_delta=(
                     "This is a long assistant response that should wrap inside "
@@ -385,7 +383,7 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
     _record_user_message(store, first.session_id, "first question")
     _record_user_message(store, second.session_id, "second question")
     app = AceAITUI(
-        session_messages_to_tui_events(store.load_messages(first.session_id)),
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
         session_recorder=SessionRecorder(store, first.session_id),
         session_id=first.session_id,
     )
@@ -412,7 +410,7 @@ async def test_session_selector_uses_table_columns(tmp_path) -> None:
     store.update_session_title(first.session_id, "first question - 2026-05-04 12:13:14")
     store.update_session_title(second.session_id, "second question")
     app = AceAITUI(
-        session_messages_to_tui_events(store.load_messages(first.session_id)),
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
         session_recorder=SessionRecorder(store, first.session_id),
         session_id=first.session_id,
     )
@@ -447,7 +445,7 @@ async def test_session_selector_deletes_highlighted_session_after_confirmation(
     store.update_session_title(first.session_id, "first question")
     store.update_session_title(second.session_id, "second question")
     app = AceAITUI(
-        session_messages_to_tui_events(store.load_messages(first.session_id)),
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
         session_recorder=SessionRecorder(store, first.session_id),
         session_id=first.session_id,
     )
@@ -487,5 +485,5 @@ def _table_row_index(table: DataTable, session_id: str) -> int:
 
 def _record_user_message(store: SessionStore, session_id: str, content: str) -> None:
     SessionRecorder(store, session_id).record(
-        tui_event_to_session_event(user_message_event(content))
+        tui_event_to_session_event(TUIEvent.user_message(content))
     )

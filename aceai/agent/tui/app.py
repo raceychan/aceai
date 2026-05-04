@@ -11,11 +11,9 @@ from aceai.agent.session import SessionRecorder
 
 from aceai.agent.cost import format_usd
 from .events import TUIEvent
-from .events import adapt_agent_event
-from .events import session_notice_event
-from .session_adapter import session_messages_to_tui_events
 from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
+from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
 from .widgets import (
@@ -124,11 +122,11 @@ class AceAITUI(App[None]):
 
     def show_sessions(self) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
         sessions = self._session_recorder.store.list_sessions()
         if not sessions:
-            self.append_event(session_notice_event("No sessions found."))
+            self.append_event(TUIEvent.session_notice("No sessions found."))
             return
         total_cost = self._session_recorder.store.total_cost_usd()
         lines = [f"Total cost: {format_usd(total_cost)}", "", "Sessions:"]
@@ -140,15 +138,15 @@ class AceAITUI(App[None]):
             )
         lines.append("")
         lines.append("Use /resume <session_id> to switch sessions.")
-        self.append_event(session_notice_event("\n".join(lines)))
+        self.append_event(TUIEvent.session_notice("\n".join(lines)))
 
     def open_session_selector(self) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
         sessions = self._session_recorder.store.list_sessions()
         if not sessions:
-            self.append_event(session_notice_event("No sessions found."))
+            self.append_event(TUIEvent.session_notice("No sessions found."))
             return
         self.push_screen(
             SessionSelectScreen(
@@ -166,7 +164,7 @@ class AceAITUI(App[None]):
 
     def switch_session(self, session_id: str) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
         self._session_recorder.finalize()
         store = self._session_recorder.store
@@ -174,10 +172,9 @@ class AceAITUI(App[None]):
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
-        self.load_events(
-            session_messages_to_tui_events(store.load_messages(metadata.session_id))
-        )
-        self.append_event(session_notice_event(f"Resumed session {metadata.session_id}"))
+        event_log = store.load_event_log(metadata.session_id)
+        self.load_events(event_log_to_tui_events(event_log))
+        self.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
 
     def append_event(self, event: TUIEvent) -> None:
         if self._should_buffer_stream_delta(event):
@@ -192,7 +189,7 @@ class AceAITUI(App[None]):
             self._session_recorder.record(tui_event_to_session_event(event))
 
     def append_agent_event(self, event: AgentEvent) -> None:
-        self.append_event(adapt_agent_event(event))
+        self.append_event(TUIEvent.from_agent_event(event))
 
     def set_status_model(self, model: str | None) -> None:
         self._status_model = model
@@ -228,7 +225,7 @@ class AceAITUI(App[None]):
 
     def action_model_switcher(self) -> None:
         self.append_event(
-            session_notice_event("Model selection is only available in live TUI runs.")
+            TUIEvent.session_notice("Model selection is only available in live TUI runs.")
         )
 
     def action_session_switcher(self) -> None:
@@ -300,6 +297,7 @@ def _merge_pending_stream_delta(previous: TUIEvent | None, event: TUIEvent) -> T
         tool_name=previous.tool_name,
         tool_call_id=previous.tool_call_id,
         tool_call=previous.tool_call,
+        tool_calls=previous.tool_calls,
         tool_call_delta=previous.tool_call_delta,
         tool_result=previous.tool_result,
         segment=event.segment,

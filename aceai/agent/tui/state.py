@@ -112,6 +112,7 @@ def _merge_stream_delta(previous: TUIEvent, event: TUIEvent) -> TUIEvent:
         tool_name=previous.tool_name,
         tool_call_id=previous.tool_call_id,
         tool_call=previous.tool_call,
+        tool_calls=previous.tool_calls,
         tool_call_delta=previous.tool_call_delta,
         tool_result=previous.tool_result,
         segment=event.segment,
