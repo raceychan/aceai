@@ -1,7 +1,7 @@
 """Live runner that bridges AgentBase events into the Textual app."""
 
 import os
-from typing import Callable, cast
+from typing import AsyncGenerator, Callable, cast
 
 from opentelemetry.context import Context
 from textual.widgets import Input
@@ -9,8 +9,8 @@ from textual.worker import Worker
 
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
-from aceai.core import AgentBase
-from aceai.core.events import RunCompletedEvent
+from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
+from aceai.core.events import AgentEvent, RunCompletedEvent, RunSuspendedEvent
 from aceai.core.executor import ToolExecutor
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
@@ -21,6 +21,7 @@ from .config import AceAITUIConfig
 from .events import TUIEvent
 from .metadata import MetadataSection
 from .setup import ModelSelection, ModelSelectScreen, ProviderSetupScreen
+from .widgets import ApprovalWidget
 from .widgets import CommandInput
 
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
@@ -47,7 +48,43 @@ def _model_from_request_meta(
     return _as_model(provider_name, default_model)
 
 
-class AceAIInteractiveTUI(AceAITUI):
+class _RuntimeStreamMixin:
+    _active_runtime: AgentRuntime | None
+
+    async def _stream_active_runtime(self) -> None:
+        runtime = self._current_runtime()
+        await self._consume_runtime_stream(runtime, runtime.execute())
+
+    async def _stream_approval_decision(
+        self,
+        decision: ToolApprovalDecision,
+    ) -> None:
+        runtime = self._current_runtime()
+        await self._consume_runtime_stream(runtime, runtime.resume_approval(decision))
+
+    async def _consume_runtime_stream(
+        self,
+        runtime: AgentRuntime,
+        stream: AsyncGenerator[AgentEvent, None],
+    ) -> None:
+        try:
+            async for event in stream:
+                self.append_agent_event(event)
+                if isinstance(event, RunCompletedEvent):
+                    self._finish_runtime_turn(runtime, event.final_answer)
+                elif isinstance(event, RunSuspendedEvent):
+                    self.show_pending_approval()
+        finally:
+            await stream.aclose()
+
+    def _current_runtime(self) -> AgentRuntime:
+        runtime = self._active_runtime
+        if runtime is None:
+            raise RuntimeError("AceAI runtime is not active")
+        return runtime
+
+
+class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     """Textual app that runs an AgentBase from submitted questions."""
 
     def __init__(
@@ -80,6 +117,7 @@ class AceAIInteractiveTUI(AceAITUI):
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
         self._active_worker: Worker[None] | None = None
+        self._active_runtime: AgentRuntime | None = None
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if not isinstance(event.input, CommandInput):
@@ -120,28 +158,77 @@ class AceAIInteractiveTUI(AceAITUI):
     def start_run(self, question: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
+        if self._active_runtime is not None and self._active_runtime.status == "suspended":
+            self.append_event(
+                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
+            )
+            return
         self.append_event(TUIEvent.user_message(question))
-        self._active_worker = self.run_worker(
-            self._stream_agent_events(question),
-            name="aceai-agent",
-            description="Run AceAI agent and stream events into the TUI",
-            exit_on_error=True,
-        )
-
-    async def _stream_agent_events(self, question: str) -> None:
-        stream = self._agent.resume(
+        self._active_runtime = self._agent.create_resume_run(
             question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
         )
-        try:
-            async for event in stream:
-                self.append_agent_event(event)
-                if isinstance(event, RunCompletedEvent):
-                    self._append_history_turn(question, event.final_answer)
-        finally:
-            await stream.aclose()
+        self._active_worker = self.run_worker(
+            self._stream_active_runtime(),
+            name="aceai-agent",
+            description="Run AceAI agent and stream events into the TUI",
+            exit_on_error=True,
+        )
+
+    def approve_pending_tool(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(ToolApprovalDecision.approve(request)),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool approval",
+            exit_on_error=True,
+        )
+
+    def show_pending_approval(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.show_approval_request(request)
+
+    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
+        event.stop()
+        if event.approved:
+            self.approve_pending_tool()
+            return
+        self.reject_pending_tool("rejected by caller")
+
+    def reject_pending_tool(self, reason: str) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        if reason == "":
+            reason = "rejected by caller"
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(
+                ToolApprovalDecision.reject(request, reason=reason)
+            ),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool rejection",
+            exit_on_error=True,
+        )
+
+    def _pending_approval_request(self):
+        runtime = self._active_runtime
+        if runtime is None:
+            return None
+        pending = runtime.run_state.pending_approval
+        if pending is None:
+            return None
+        return pending.request
 
     def switch_session(self, session_id: str) -> None:
         previous_session_id = self._session_id
@@ -150,8 +237,8 @@ class AceAIInteractiveTUI(AceAITUI):
             self._restore_session_state()
         self._reload_llm_history()
 
-    def _append_history_turn(self, question: str, answer: str) -> None:
-        self._llm_history.append(LLMMessage.build(role="user", content=question))
+    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
+        self._llm_history = list(runtime.context.context[1:])
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
 
     def show_model(self) -> None:
@@ -217,6 +304,7 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         event_log = self._session_recorder.store.load_event_log(self._session_id)
         self._llm_history = event_log.replay_llm_history()
+        self._active_runtime = None
 
     def _persist_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:
@@ -254,7 +342,7 @@ class AceAIInteractiveTUI(AceAITUI):
         ]
 
 
-class AceAIConfiguredTUI(AceAITUI):
+class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     """TUI that asks for provider settings before creating the agent."""
 
     def __init__(
@@ -299,6 +387,7 @@ class AceAIConfiguredTUI(AceAITUI):
         self._llm_history = list(initial_history or [])
         self._agent: AgentBase | None = None
         self._active_worker: Worker[None] | None = None
+        self._active_runtime: AgentRuntime | None = None
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -368,30 +457,24 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
+        if self._active_runtime is not None and self._active_runtime.status == "suspended":
+            self.append_event(
+                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
+            )
+            return
         self.append_event(TUIEvent.user_message(question))
-        self._active_worker = self.run_worker(
-            self._stream_agent_events(question),
-            name="aceai-agent",
-            description="Run AceAI agent and stream events into the TUI",
-            exit_on_error=True,
-        )
-
-    async def _stream_agent_events(self, question: str) -> None:
-        if self._agent is None:
-            raise RuntimeError("AceAI agent is not configured")
-        stream = self._agent.resume(
+        self._active_runtime = self._agent.create_resume_run(
             question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
         )
-        try:
-            async for event in stream:
-                self.append_agent_event(event)
-                if isinstance(event, RunCompletedEvent):
-                    self._append_history_turn(question, event.final_answer)
-        finally:
-            await stream.aclose()
+        self._active_worker = self.run_worker(
+            self._stream_active_runtime(),
+            name="aceai-agent",
+            description="Run AceAI agent and stream events into the TUI",
+            exit_on_error=True,
+        )
 
     def switch_session(self, session_id: str) -> None:
         previous_session_id = self._session_id
@@ -400,9 +483,62 @@ class AceAIConfiguredTUI(AceAITUI):
             self._restore_session_state()
         self._reload_llm_history()
 
-    def _append_history_turn(self, question: str, answer: str) -> None:
-        self._llm_history.append(LLMMessage.build(role="user", content=question))
+    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
+        self._llm_history = list(runtime.context.context[1:])
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def approve_pending_tool(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(ToolApprovalDecision.approve(request)),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool approval",
+            exit_on_error=True,
+        )
+
+    def show_pending_approval(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.show_approval_request(request)
+
+    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
+        event.stop()
+        if event.approved:
+            self.approve_pending_tool()
+            return
+        self.reject_pending_tool("rejected by caller")
+
+    def reject_pending_tool(self, reason: str) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        if reason == "":
+            reason = "rejected by caller"
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(
+                ToolApprovalDecision.reject(request, reason=reason)
+            ),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool rejection",
+            exit_on_error=True,
+        )
+
+    def _pending_approval_request(self):
+        runtime = self._active_runtime
+        if runtime is None:
+            return None
+        pending = runtime.run_state.pending_approval
+        if pending is None:
+            return None
+        return pending.request
 
     def show_model(self) -> None:
         self.append_event(
@@ -514,6 +650,7 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         event_log = self._session_recorder.store.load_event_log(self._session_id)
         self._llm_history = event_log.replay_llm_history()
+        self._active_runtime = None
 
     def _persist_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:

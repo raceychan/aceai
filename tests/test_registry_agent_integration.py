@@ -2,7 +2,7 @@ import pytest
 from ididi import Graph
 
 from aceai.core.base import AgentBase
-from aceai.core.executor import RunState, ToolExecutor
+from aceai.core.executor import ToolExecutor
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMStreamEvent, LLMToolCall
 from aceai.core.tools import tool

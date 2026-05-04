@@ -91,6 +91,10 @@ class ContextManager:
         return self._system_message
 
     @property
+    def instructions_text(self) -> str:
+        return "".join(c for c in self._instructions if c)
+
+    @property
     def context(self) -> list[LLMMessage]:
         return self._context
 

@@ -5,7 +5,12 @@ from typing import ClassVar, Literal
 from aceai.llm.interface import Record
 from aceai.llm.models import LLMSegment, LLMToolCall, LLMToolCallDelta
 
-from .models import AgentStep, ToolExecutionResult
+from .models import (
+    AgentStep,
+    ToolApprovalDecision,
+    ToolApprovalRequest,
+    ToolExecutionResult,
+)
 
 AgentEventType = Literal[
     "agent.llm.started",
@@ -16,10 +21,13 @@ AgentEventType = Literal[
     "agent.llm.completed",
     "agent.tool.started",
     "agent.tool.output",
+    "agent.tool.approval_requested",
+    "agent.tool.approval_resolved",
     "agent.tool.completed",
     "agent.tool.failed",
     "agent.step.completed",
     "agent.step.failed",
+    "agent.run.suspended",
     "agent.run.completed",
     "agent.run.failed",
 ]
@@ -85,6 +93,17 @@ class ToolOutputEvent(ToolLifecycleEvent):
     text_delta: str
 
 
+class ToolApprovalRequestedEvent(ToolLifecycleEvent):
+    EVENT_TYPE = "agent.tool.approval_requested"
+    request: ToolApprovalRequest
+
+
+class ToolApprovalResolvedEvent(ToolLifecycleEvent):
+    EVENT_TYPE = "agent.tool.approval_resolved"
+    request: ToolApprovalRequest
+    decision: ToolApprovalDecision
+
+
 class ToolCompletedEvent(ToolLifecycleEvent):
     EVENT_TYPE = "agent.tool.completed"
     tool_result: ToolExecutionResult
@@ -105,6 +124,11 @@ class StepFailedEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.step.failed"
     step: AgentStep
     error: str
+
+
+class RunSuspendedEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.run.suspended"
+    request: ToolApprovalRequest
 
 
 class RunCompletedEvent(AgentLifecycleEvent):
@@ -128,10 +152,13 @@ type AgentEvent = (
     | LLMCompletedEvent
     | ToolStartedEvent
     | ToolOutputEvent
+    | ToolApprovalRequestedEvent
+    | ToolApprovalResolvedEvent
     | ToolCompletedEvent
     | ToolFailedEvent
     | StepCompletedEvent
     | StepFailedEvent
+    | RunSuspendedEvent
     | RunCompletedEvent
     | RunFailedEvent
 )
@@ -206,6 +233,34 @@ class AgentEventBuilder:
             text_delta=text_delta,
         )
 
+    def tool_approval_requested(
+        self,
+        *,
+        request: ToolApprovalRequest,
+    ) -> ToolApprovalRequestedEvent:
+        return ToolApprovalRequestedEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            tool_call=request.call,
+            tool_name=request.tool_name,
+            request=request,
+        )
+
+    def tool_approval_resolved(
+        self,
+        *,
+        request: ToolApprovalRequest,
+        decision: ToolApprovalDecision,
+    ) -> ToolApprovalResolvedEvent:
+        return ToolApprovalResolvedEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            tool_call=request.call,
+            tool_name=request.tool_name,
+            request=request,
+            decision=decision,
+        )
+
     def tool_completed(
         self,
         *,
@@ -249,6 +304,13 @@ class AgentEventBuilder:
             step_id=self.step_id,
             step=step,
             error=error,
+        )
+
+    def run_suspended(self, *, request: ToolApprovalRequest) -> RunSuspendedEvent:
+        return RunSuspendedEvent(
+            step_index=self.step_index,
+            step_id=self.step_id,
+            request=request,
         )
 
     def run_completed(

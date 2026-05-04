@@ -10,9 +10,9 @@ from aceai.agent.cost import CostEstimate
 
 from .events import TUIEvent
 
-TUIRunStatus = Literal["idle", "running", "completed", "failed"]
+TUIRunStatus = Literal["idle", "running", "suspended", "completed", "failed"]
 TUIStepStatus = Literal["running", "completed", "failed"]
-TUIToolStatus = Literal["pending", "running", "completed", "failed"]
+TUIToolStatus = Literal["pending", "running", "awaiting_approval", "completed", "failed"]
 
 
 class TUIToolState(Record, kw_only=True):
@@ -304,8 +304,12 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
         return "running"
     if event.kind == "run_completed":
         return "completed"
+    if event.kind == "run_suspended":
+        return "suspended"
     if event.kind == "run_failed":
         return "failed"
+    if status == "suspended" and event.kind == "tool_approval_resolved":
+        return "running"
     if status == "idle":
         return "running"
     return status
@@ -325,6 +329,10 @@ def _next_step_status(status: TUIStepStatus, event: TUIEvent) -> TUIStepStatus:
 
 def _next_tool_status(status: TUIToolStatus, event: TUIEvent) -> TUIToolStatus:
     if event.kind == "tool_started":
+        return "running"
+    if event.kind == "tool_approval_requested":
+        return "awaiting_approval"
+    if event.kind == "tool_approval_resolved":
         return "running"
     if event.kind == "tool_completed":
         return "completed"

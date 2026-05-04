@@ -100,6 +100,8 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             "tool_call_delta",
             "tool_started",
             "tool_output",
+            "tool_approval_requested",
+            "tool_approval_resolved",
             "tool_completed",
             "tool_failed",
         ):
@@ -117,7 +119,7 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
                 assistant_step_ids,
             )
             _update_tool_block(tool_blocks, event)
-            if event.kind in ("tool_completed", "tool_failed"):
+            if event.kind in ("tool_completed", "tool_failed", "tool_approval_requested"):
                 renderables.append(_render_tool_block(tool_blocks[event.tool_call_id]))
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
@@ -245,7 +247,13 @@ def _update_tool_block(
         tool_block.output += event.content
     elif event.kind in ("tool_completed", "tool_failed"):
         tool_block.output = event.content
-    if event.kind == "tool_failed":
+    if event.kind == "tool_approval_requested":
+        tool_block.status = "awaiting_approval"
+        tool_block.output = event.content
+    elif event.kind == "tool_approval_resolved":
+        tool_block.status = "running"
+        tool_block.output = event.content
+    elif event.kind == "tool_failed":
         tool_block.status = "failed"
     elif event.kind == "tool_completed":
         tool_block.status = "completed"
@@ -257,6 +265,8 @@ def _render_tool_block(tool_block: _ToolBlockState) -> Text:
         if tool_block.status == "failed"
         else "tool_completed"
         if tool_block.status == "completed"
+        else "tool_approval_requested"
+        if tool_block.status == "awaiting_approval"
         else "tool_started"
     )
     style = EVENT_STYLES[event_kind]
@@ -279,6 +289,8 @@ def _tool_summary(tool_block: _ToolBlockState) -> str:
         if summary != "":
             return f"completed - {summary}"
         return "completed"
+    if tool_block.status == "awaiting_approval":
+        return "waiting for approval"
     return "running"
 
 
@@ -364,7 +376,14 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
         return _render_assistant_block(event.content)
     if event.kind in ("thinking_delta", "reasoning_summary"):
         return _render_text_block(label, event.content, event_kind=event.kind)
-    if event.kind in ("tool_started", "tool_completed", "tool_failed", "tool_output"):
+    if event.kind in (
+        "tool_started",
+        "tool_approval_requested",
+        "tool_approval_resolved",
+        "tool_completed",
+        "tool_failed",
+        "tool_output",
+    ):
         if event.kind == "tool_started":
             return None
         title = _tool_title(label, event)

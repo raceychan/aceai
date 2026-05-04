@@ -15,8 +15,11 @@ from aceai.core.events import (
     LLMMediaEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    RunSuspendedEvent,
     StepCompletedEvent,
     StepFailedEvent,
+    ToolApprovalRequestedEvent,
+    ToolApprovalResolvedEvent,
     ToolCompletedEvent,
     ToolFailedEvent,
     ToolOutputEvent,
@@ -40,6 +43,7 @@ TUIEventKind = Literal[
     "session_notice",
     "run_completed",
     "run_failed",
+    "run_suspended",
     "step_completed",
     "step_failed",
     "step_started",
@@ -50,6 +54,8 @@ TUIEventKind = Literal[
     "tool_call_delta",
     "tool_started",
     "tool_output",
+    "tool_approval_requested",
+    "tool_approval_resolved",
     "tool_completed",
     "tool_failed",
     "media",
@@ -115,11 +121,13 @@ class TUIEvent(Record, kw_only=True):
             return cls._from_session_assistant_event(event)
         if event.kind == "tool_started":
             return cls._from_session_tool_started_event(event)
+        if event.kind in ("tool_approval_requested", "tool_approval_resolved"):
+            return cls._from_session_tool_approval_event(event)
         if event.kind == "tool_result":
             return cls._from_session_tool_result_event(event)
         if event.kind == "error":
             return cls._from_session_error_event(event)
-        if event.kind in ("run_completed", "step_completed", "step_started"):
+        if event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
             return cls._from_session_control_event(event)
         return None
 
@@ -175,6 +183,21 @@ class TUIEvent(Record, kw_only=True):
             step_index=_session_step_index(event),
             step_id=event.step_id or uuid_str(),
             title=f"tool {event.payload['tool_name']}",
+            tool_name=event.payload["tool_name"],
+            tool_call_id=event.payload["tool_call_id"],
+            tool_call=call,
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_tool_approval_event(cls, event: SessionEvent) -> Self:
+        call = _session_tool_call(event)
+        return cls(
+            kind=event.kind,
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title=f"tool {event.payload['tool_name']}",
+            content=event.payload["content"],
             tool_name=event.payload["tool_name"],
             tool_call_id=event.payload["tool_call_id"],
             tool_call=call,
@@ -304,6 +327,37 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             tool_call=event.tool_call,
             raw_event=event,
         )
+    if isinstance(event, ToolApprovalRequestedEvent):
+        content = event.request.reason
+        if event.request.policy != "":
+            content = f"{content} ({event.request.policy})"
+        return TUIEvent(
+            kind="tool_approval_requested",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title=f"tool {event.tool_name} approval",
+            content=content,
+            tool_name=event.tool_name,
+            tool_call_id=event.tool_call.call_id,
+            tool_call=event.tool_call,
+            raw_event=event,
+        )
+    if isinstance(event, ToolApprovalResolvedEvent):
+        decision_text = "approved" if event.decision.approved else "rejected"
+        content = decision_text
+        if event.decision.reason != "":
+            content = f"{decision_text}: {event.decision.reason}"
+        return TUIEvent(
+            kind="tool_approval_resolved",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title=f"tool {event.tool_name} approval resolved",
+            content=content,
+            tool_name=event.tool_name,
+            tool_call_id=event.tool_call.call_id,
+            tool_call=event.tool_call,
+            raw_event=event,
+        )
     if isinstance(event, ToolCompletedEvent):
         return TUIEvent(
             kind="tool_completed",
@@ -366,6 +420,18 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             title="run failed",
             content=event.error,
             error=event.error,
+            raw_event=event,
+        )
+    if isinstance(event, RunSuspendedEvent):
+        return TUIEvent(
+            kind="run_suspended",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title="run suspended",
+            content="waiting for approval. Choose Approve or Reject.",
+            tool_name=event.request.tool_name,
+            tool_call_id=event.request.call.call_id,
+            tool_call=event.request.call,
             raw_event=event,
         )
     raise TypeError(f"Unsupported agent event: {event.__class__.__name__}")

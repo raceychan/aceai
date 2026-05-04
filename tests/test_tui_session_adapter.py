@@ -113,6 +113,43 @@ def test_event_log_to_tui_events_restores_tool_message() -> None:
     )
 
 
+def test_event_log_to_tui_events_marks_unresolved_approval_expired() -> None:
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"python binary_search.py"}',
+        call_id="call-1",
+    )
+
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(kind="user_message", payload={"content": "run it"}),
+                SessionEvent(
+                    kind="tool_approval_requested",
+                    payload={
+                        "content": "Tool 'run_shell_command' requires approval",
+                        "tool_name": call.name,
+                        "tool_call_id": call.call_id,
+                        "tool_call": call.asdict(),
+                    },
+                ),
+                SessionEvent(kind="user_message", payload={"content": "send again"}),
+            ]
+        )
+    )
+
+    assert [event.kind for event in events] == [
+        "user_message",
+        "tool_approval_requested",
+        "session_notice",
+        "user_message",
+    ]
+    assert events[2].content == (
+        "approval expired: run_shell_command was not resolved in this run. "
+        "Ask again to create a fresh approval."
+    )
+
+
 def test_user_message_adapter_records_user_message() -> None:
     event = tui_event_to_session_event(TUIEvent.user_message("hello"))
 

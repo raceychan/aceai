@@ -38,6 +38,8 @@ class StatusBarWidget(Static):
         self.current_text = (
             f"status: {status}   model: {model_text}   ctx: {context}   cost: {cost}"
         )
+        if status == "suspended":
+            self.current_text = f"{self.current_text}   action: choose Approve or Reject"
         self.update(Align.right(Text(self.current_text)))
 
 

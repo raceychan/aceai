@@ -14,11 +14,15 @@ from ..llm.models import (
     LLMHostedToolSpec,
     LLMMessage,
     LLMRequestMeta,
-    LLMToolCall,
     LLMToolCallDelta,
     LLMToolSpec,
 )
-from .models import AgentStep, ToolExecutionResult
+from .models import (
+    AgentStep,
+    ToolApprovalDecision,
+    ToolApprovalRequest,
+    ToolExecutionResult,
+)
 from .skills import (
     SkillLoader,
     SkillRegistry,
@@ -32,129 +36,129 @@ from .events import (
     LLMCompletedEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    RunSuspendedEvent,
     StepFailedEvent,
     ToolCompletedEvent,
     ToolFailedEvent,
 )
-from .executor import RunState, IExecutor, ToolExecutionError, ToolExecutor
+from .executor import IExecutor, ToolExecutionError, ToolExecutor
+from .run_state import AgentRuntimeState, AgentRuntimeStatus, ToolInvocation
 
 
-class AgentBase:
-    """Base class for agents using an LLM provider."""
-
+class AgentRuntime:
     def __init__(
         self,
-        prompt: str = "",
         *,
-        default_model: str,
+        question: str,
+        prompt: str,
+        messages: list[LLMMessage],
         llm_service: ILLMService,
+        executor: IExecutor | None,
+        hosted_tools: list[LLMHostedToolSpec],
         max_steps: Unset[int] = UNSET,
-        executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
-        skill_path: str | Path | Literal["auto", "disable"] = "auto",
-        skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
-        hosted_tools: list[LLMHostedToolSpec] | None = None,
-    ):
-        if is_set(max_steps) and max_steps < 1:
-            raise AceAIConfigurationError("max_steps must be positive or UNSET")
-        self._skill_registry = self._load_skill_registry(
-            skill_path=skill_path,
-            skill_loader_factory=skill_loader_factory,
-        )
-        skill_prompt = format_skills_for_prompt(self._skill_registry)
-        self._default_model = default_model
-        self._llm_service = llm_service
-        self._prompt = prompt
-        self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
-        self._executor = executor
-        self._hosted_tools = hosted_tools if hosted_tools is not None else []
-        if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
-            executor.register_tools(*self._skill_registry.as_tools())
-        self._max_steps = max_steps
-        if is_set(max_steps):
-            self._max_steps_label = max_steps
-        else:
-            self._max_steps_label = "unlimited"
-        self._tracer = tracer or trace.get_tracer("aceai.core")
+        max_steps_label: str | int = "unlimited",
+        trace_ctx: Context | None = None,
+        request_meta: LLMRequestMeta,
+    ) -> None:
+        self.question = question
+        self.context = ContextManager(prompt)
+        self.context.init_context(messages)
+        self.llm_service = llm_service
+        self.executor = executor
+        self.hosted_tools = hosted_tools
+        self.max_steps = max_steps
+        self.max_steps_label = max_steps_label
+        self.tracer = tracer or trace.get_tracer("aceai.core")
+        self.trace_ctx = trace_ctx
+        self.request_meta = request_meta
+        self.steps: list[AgentStep] = []
+        self.run_state = AgentRuntimeState()
 
     @property
-    def default_model(self) -> str:
-        return self._default_model
+    def status(self) -> AgentRuntimeStatus:
+        return self.run_state.status
 
-    @property
-    def llm_service(self) -> ILLMService:
-        return self._llm_service
-
-    @property
-    def executor(self) -> IExecutor | None:
-        return self._executor
-
-    @property
-    def hosted_tools(self) -> list[LLMHostedToolSpec]:
-        return self._hosted_tools
-
-    @property
-    def max_steps(self) -> Unset[int]:
-        return self._max_steps
-
-    @property
-    def skill_registry(self) -> SkillRegistry:
-        return self._skill_registry
-
-    @property
-    def system_message(self) -> LLMMessage:
-        return self._ctx_mgr.system_message
-
-    def add_instruction(self, instruction: str) -> None:
-        """Add an instruction into the agent's context manager."""
-        if instruction == "":
-            raise ValueError("Empty Instruction")
-        self._ctx_mgr.add_instruction(instruction)
-
-    def _load_skill_registry(
-        self,
+    @classmethod
+    def from_question(
+        cls,
         *,
-        skill_path: str | Path | Literal["auto", "disable"],
-        skill_loader_factory: Callable[[str], SkillLoader],
-    ) -> SkillRegistry:
-        registry = SkillRegistry()
-        for path in self._resolve_skill_paths(skill_path):
-            registry.register(*skill_loader_factory(str(path)).load_skills().get_skills())
-        return registry
+        question: str,
+        prompt: str,
+        llm_service: ILLMService,
+        executor: IExecutor | None,
+        hosted_tools: list[LLMHostedToolSpec],
+        max_steps: Unset[int],
+        max_steps_label: str | int,
+        tracer: trace.Tracer,
+        trace_ctx: Context | None,
+        request_meta: LLMRequestMeta,
+    ) -> "AgentRuntime":
+        return cls(
+            question=question,
+            prompt=prompt,
+            messages=[LLMMessage.build(role="user", content=question)],
+            llm_service=llm_service,
+            executor=executor,
+            hosted_tools=hosted_tools,
+            max_steps=max_steps,
+            max_steps_label=max_steps_label,
+            tracer=tracer,
+            trace_ctx=trace_ctx,
+            request_meta=request_meta,
+        )
 
-    def _resolve_skill_paths(
-        self, skill_path: str | Path | Literal["auto", "disable"]
-    ) -> list[Path]:
-        global_skills = Path.home() / ".aceai" / "skills"
-        if skill_path == "auto":
-            return [global_skills, Path.cwd() / ".agent" / "skills"]
-        if skill_path == "disable":
-            return []
-        return [global_skills, Path(skill_path).expanduser()]
+    @classmethod
+    def from_history(
+        cls,
+        *,
+        question: str,
+        history: list[LLMMessage],
+        prompt: str,
+        llm_service: ILLMService,
+        executor: IExecutor | None,
+        hosted_tools: list[LLMHostedToolSpec],
+        max_steps: Unset[int],
+        max_steps_label: str | int,
+        tracer: trace.Tracer,
+        trace_ctx: Context | None,
+        request_meta: LLMRequestMeta,
+    ) -> "AgentRuntime":
+        return cls(
+            question=question,
+            prompt=prompt,
+            messages=list(history) + [LLMMessage.build(role="user", content=question)],
+            llm_service=llm_service,
+            executor=executor,
+            hosted_tools=hosted_tools,
+            max_steps=max_steps,
+            max_steps_label=max_steps_label,
+            tracer=tracer,
+            trace_ctx=trace_ctx,
+            request_meta=request_meta,
+        )
 
     async def _call_llm(
         self,
-        request_meta: LLMRequestMeta,
-        messages: list[LLMMessage],
         event_builder: AgentEventBuilder,
     ):
-        executor = self._executor
+        executor = self.executor
 
         tools: list[LLMToolSpec] = []
         if executor:
             tools.extend(executor.select_tools())
-        tools.extend(self._hosted_tools)
+        tools.extend(self.hosted_tools)
 
         if tools:
-            stream = self._llm_service.stream(
-                messages=messages,
+            stream = self.llm_service.stream(
+                messages=self.context.context,
                 tools=tools,
-                metadata=request_meta,
+                metadata=self.request_meta,
             )
         else:
-            stream = self._llm_service.stream(
-                messages=messages,
-                metadata=request_meta,
+            stream = self.llm_service.stream(
+                messages=self.context.context,
+                metadata=self.request_meta,
             )
 
         try:
@@ -207,60 +211,123 @@ class AgentBase:
         self,
         current_step: AgentStep,
         event_builder: AgentEventBuilder,
-        run_state: RunState,
+        start_index: int = 0,
     ):
-        executor = self._executor
+        executor = self.executor
+        tool_calls = current_step.llm_response.tool_calls
 
-        for call in current_step.llm_response.tool_calls:
+        if not tool_calls:
+            return
+
+        if executor is None:
+            raise AceAIConfigurationError(
+                "executor must be provided when tool calls are enabled"
+            )
+
+        for index, call in enumerate(tool_calls[start_index:], start=start_index):
+            invocation = executor.resolve_invocation(call)
             yield event_builder.tool_started(tool_call=call)
-            if executor is None:
-                raise AceAIConfigurationError(
-                    "executor must be provided when tool calls are enabled"
-                )
-            try:
-                tool_output = await executor.execute_tool(
-                    call,
-                    run_state=run_state,
-                )
-            except ToolExecutionError as exc:
-                error_msg = str(exc)
-                tool_result = ToolExecutionResult(
+            if invocation.approval_required:
+                request = ToolApprovalRequest(
                     call=call,
-                    output=f"Tool execution failed: {error_msg}",
-                    error=error_msg,
+                    tool_name=invocation.tool.name,
+                    reason=f"Tool {invocation.tool.name!r} requires approval",
+                    policy=invocation.tool.metadata.approval_policy,
                 )
-                current_step.tool_results.append(tool_result)
-                yield event_builder.tool_failed(
-                    tool_call=call,
-                    tool_result=tool_result,
-                    error=error_msg,
+                self.run_state.suspend_for_approval(
+                    step=current_step,
+                    invocation=invocation,
+                    request=request,
+                    event_builder=event_builder,
+                    tool_index=index,
                 )
-                continue
+                yield event_builder.tool_approval_requested(request=request)
+                yield event_builder.run_suspended(request=request)
+                return
+            async for event in self._execute_invocation(
+                current_step,
+                event_builder,
+                invocation,
+            ):
+                yield event
 
-            tool_result = ToolExecutionResult(call=call, output=tool_output)
+    async def _execute_invocation(
+        self,
+        current_step: AgentStep,
+        event_builder: AgentEventBuilder,
+        invocation: ToolInvocation,
+    ):
+        call = invocation.call
+        try:
+            tool_output = await self._execute_tool_invocation(invocation)
+        except ToolExecutionError as exc:
+            error_msg = str(exc)
+            tool_result = ToolExecutionResult(
+                call=call,
+                output=f"Tool execution failed: {error_msg}",
+                error=error_msg,
+            )
             current_step.tool_results.append(tool_result)
-            yield event_builder.tool_completed(
+            yield event_builder.tool_failed(
                 tool_call=call,
                 tool_result=tool_result,
+                error=error_msg,
             )
+            return
+
+        tool_result = ToolExecutionResult(call=call, output=tool_output)
+        current_step.tool_results.append(tool_result)
+        yield event_builder.tool_completed(
+            tool_call=call,
+            tool_result=tool_result,
+        )
+
+    async def _execute_tool_invocation(self, invocation: ToolInvocation) -> str:
+        executor = self.executor
+        if executor is None:
+            raise AceAIConfigurationError(
+                "executor must be provided when tool calls are enabled"
+            )
+        return await executor.execute(
+            invocation,
+            tool_state=self.run_state.tools,
+        )
+
+    async def _reject_invocation(
+        self,
+        current_step: AgentStep,
+        event_builder: AgentEventBuilder,
+        request: ToolApprovalRequest,
+        decision: ToolApprovalDecision,
+    ):
+        error_msg = decision.reason or "Tool execution rejected by caller"
+        tool_result = ToolExecutionResult(
+            call=request.call,
+            output=f"Tool execution rejected: {error_msg}",
+            error=error_msg,
+        )
+        current_step.tool_results.append(tool_result)
+        yield event_builder.tool_failed(
+            tool_call=request.call,
+            tool_result=tool_result,
+            error=error_msg,
+        )
 
     async def _run_step(
         self,
         *,
         event_builder: AgentEventBuilder,
-        run_state: RunState,
-        **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
         run_context = get_trace_ctx()
         if run_context is None:
             raise AceAIRuntimeError("trace context is not set for agent step")
-        step_span = self._tracer.start_span(
+        step_span = self.tracer.start_span(
             "agent.step",
             kind=SpanKind.INTERNAL,
             context=run_context,
             attributes={
                 "agent.step_id": event_builder.step_id,
-                "agent.max_steps": self._max_steps_label,
+                "agent.max_steps": self.max_steps_label,
             },
         )
         step_context = set_span_in_context(step_span, run_context)
@@ -268,11 +335,7 @@ class AgentBase:
 
         try:
             yield event_builder.llm_started()
-            llm_gen = self._call_llm(
-                request_meta,
-                messages=self._ctx_mgr.context,
-                event_builder=event_builder,
-            )
+            llm_gen = self._call_llm(event_builder=event_builder)
             try:
                 async for event in llm_gen:
                     if not isinstance(event, AgentStep):
@@ -290,21 +353,24 @@ class AgentBase:
                                 final_answer=final_answer,
                             )
                         return
-                    self._ctx_mgr.add_tool_call(current_step.llm_response)
+                    self.context.add_tool_call(current_step.llm_response)
                     tool_gen = self._make_toolcalls(
                         current_step,
                         event_builder,
-                        run_state,
                     )
                     try:
                         async for tool_event in tool_gen:
                             if isinstance(
                                 tool_event, ToolCompletedEvent | ToolFailedEvent
                             ):
-                                self._ctx_mgr.add_tool_use(tool_event)
+                                self.context.add_tool_use(tool_event)
                             yield tool_event
+                            if isinstance(tool_event, RunSuspendedEvent):
+                                return
                     finally:
                         await tool_gen.aclose()
+                    if self.run_state.status == "suspended":
+                        return
                     yield event_builder.step_completed(step=current_step)
             finally:
                 await llm_gen.aclose()
@@ -337,88 +403,49 @@ class AgentBase:
             error=error_msg,
         )
 
-    async def run(
-        self,
-        question: str,
-        trace_ctx: Context | None = None,
-        **request_meta: Unpack[LLMRequestMeta],
-    ) -> AsyncGenerator[AgentEvent, None]:
-        """Yield AgentEvent entries as the agent reasons."""
-        messages = [LLMMessage.build(role="user", content=question)]
-        async for event in self._run_with_messages(
-            question,
-            messages=messages,
-            trace_ctx=trace_ctx,
-            **request_meta,
-        ):
-            yield event
-
-    async def resume(
-        self,
-        question: str,
-        history: list[LLMMessage],
-        trace_ctx: Context | None = None,
-        **request_meta: Unpack[LLMRequestMeta],
-    ) -> AsyncGenerator[AgentEvent, None]:
-        """Yield AgentEvent entries with existing conversation history."""
-        messages = list(history) + [LLMMessage.build(role="user", content=question)]
-        async for event in self._run_with_messages(
-            question,
-            messages=messages,
-            trace_ctx=trace_ctx,
-            **request_meta,
-        ):
-            yield event
-
-    async def _run_with_messages(
-        self,
-        question: str,
-        *,
-        messages: list[LLMMessage],
-        trace_ctx: Context | None,
-        **request_meta: Unpack[LLMRequestMeta],
-    ) -> AsyncGenerator[AgentEvent, None]:
-        run_span = self._tracer.start_span(
+    async def execute(self) -> AsyncGenerator[AgentEvent, None]:
+        if self.run_state.pending_approval is not None:
+            raise AceAIRuntimeError(
+                "agent run is suspended; call resume_approval() with a decision"
+            )
+        self.run_state.status = "running"
+        run_span = self.tracer.start_span(
             "agent.run",
             kind=SpanKind.INTERNAL,
-            context=trace_ctx,
+            context=self.trace_ctx,
             attributes={
-                "agent.max_steps": self._max_steps_label,
-                "agent.run.input": question,
+                "agent.max_steps": self.max_steps_label,
+                "agent.run.input": self.question,
                 "agent.run.output": "",
                 "langfuse.trace.name": "aceai.run",
-                "langfuse.trace.input": question,
+                "langfuse.trace.input": self.question,
                 "langfuse.trace.output": "",
             },
         )
-        run_context = set_span_in_context(run_span, trace_ctx or Context())
+        run_context = set_span_in_context(run_span, self.trace_ctx or Context())
         set_trace_ctx(run_context)
-        self._ctx_mgr.init_context(messages)
 
-        steps: list[AgentStep] = []
-        run_state = RunState()
         error_msg: str | None = None
         try:
-            if is_set(self._max_steps):
-                step_iterator = range(self._max_steps)
+            if is_set(self.max_steps):
+                step_iterator = range(len(self.steps), self.max_steps)
             else:
-                step_iterator = count()
+                step_iterator = count(len(self.steps))
             for _ in step_iterator:
                 step_id = str(uuid4())
                 event_builder = AgentEventBuilder(
-                    step_index=len(steps),
+                    step_index=len(self.steps),
                     step_id=step_id,
                 )
                 step_gen = self._run_step(
                     event_builder=event_builder,
-                    run_state=run_state,
-                    **request_meta,
                 )
                 try:
                     async for event in step_gen:
                         if isinstance(event, LLMCompletedEvent):
-                            steps.append(event.step)
+                            self.steps.append(event.step)
                         elif isinstance(event, RunCompletedEvent):
+                            self.run_state.status = "completed"
                             run_span.set_attribute(
                                 "agent.run.output", event.final_answer
                             )
@@ -427,13 +454,17 @@ class AgentBase:
                             )
                             yield event
                             return
+                        elif isinstance(event, RunSuspendedEvent):
+                            yield event
+                            return
                         yield event
                 except Exception as exc:
-                    if not steps:
+                    self.run_state.status = "failed"
+                    if not self.steps:
                         raise
                     error_msg = str(exc)
-                    last_step = steps[-1]
-                    last_index = len(steps) - 1
+                    last_step = self.steps[-1]
+                    last_index = len(self.steps) - 1
                     for event in self._handle_failed_step(
                         last_step, last_index, exc=exc
                     ):
@@ -443,10 +474,10 @@ class AgentBase:
                     await step_gen.aclose()
             else:
                 error_msg = (
-                    f"Agent exceeded maximum steps: {self._max_steps} without answering"
+                    f"Agent exceeded maximum steps: {self.max_steps} without answering"
                 )
-                last_step = steps[-1]
-                last_index = len(steps) - 1
+                last_step = self.steps[-1]
+                last_index = len(self.steps) - 1
                 for event in self._handle_failed_step(
                     last_step, last_index, error_msg=error_msg
                 ):
@@ -459,6 +490,203 @@ class AgentBase:
             set_trace_ctx(None)
             if run_span.is_recording():
                 run_span.end()
+
+    async def resume_approval(
+        self,
+        decision: ToolApprovalDecision,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        try:
+            pending = self.run_state.resume_from_approval()
+        except ValueError as exc:
+            raise AceAIRuntimeError("agent run is not suspended for tool approval")
+        request = pending.request
+        if decision.call_id != request.call.call_id:
+            raise AceAIRuntimeError("approval decision does not match pending tool call")
+
+        yield pending.event_builder.tool_approval_resolved(
+            request=request,
+            decision=decision,
+        )
+        if decision.approved:
+            async for event in self._execute_invocation(
+                pending.step,
+                pending.event_builder,
+                pending.invocation,
+            ):
+                if isinstance(event, ToolCompletedEvent | ToolFailedEvent):
+                    self.context.add_tool_use(event)
+                yield event
+        else:
+            async for event in self._reject_invocation(
+                pending.step,
+                pending.event_builder,
+                request,
+                decision,
+            ):
+                if isinstance(event, ToolCompletedEvent | ToolFailedEvent):
+                    self.context.add_tool_use(event)
+                yield event
+
+        tool_gen = self._make_toolcalls(
+            pending.step,
+            pending.event_builder,
+            start_index=pending.tool_index + 1,
+        )
+        try:
+            async for event in tool_gen:
+                if isinstance(event, ToolCompletedEvent | ToolFailedEvent):
+                    self.context.add_tool_use(event)
+                yield event
+                if isinstance(event, RunSuspendedEvent):
+                    return
+        finally:
+            await tool_gen.aclose()
+        if self.run_state.status == "suspended":
+            return
+        yield pending.event_builder.step_completed(step=pending.step)
+        async for event in self.execute():
+            yield event
+
+
+class AgentBase:
+    """Base class for agents using an LLM provider."""
+
+    def __init__(
+        self,
+        prompt: str = "",
+        *,
+        default_model: str,
+        llm_service: ILLMService,
+        max_steps: Unset[int] = UNSET,
+        executor: IExecutor | None = None,
+        tracer: trace.Tracer | None = None,
+        skill_path: str | Path | Literal["auto", "disable"] = "auto",
+        skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        hosted_tools: list[LLMHostedToolSpec] | None = None,
+    ):
+        if is_set(max_steps) and max_steps < 1:
+            raise AceAIConfigurationError("max_steps must be positive or UNSET")
+        self._skill_registry = SkillLoader.load_registry(
+            skill_path,
+            loader_factory=skill_loader_factory,
+        )
+        skill_prompt = format_skills_for_prompt(self._skill_registry)
+        self._default_model = default_model
+        self._llm_service = llm_service
+        self._prompt = prompt
+        self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
+        self._executor = executor
+        self._hosted_tools = hosted_tools if hosted_tools is not None else []
+        if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
+            executor.register_tools(*self._skill_registry.as_tools())
+        self._max_steps = max_steps
+        if is_set(max_steps):
+            self._max_steps_label = max_steps
+        else:
+            self._max_steps_label = "unlimited"
+        self._tracer = tracer or trace.get_tracer("aceai.core")
+
+    @property
+    def default_model(self) -> str:
+        return self._default_model
+
+    @property
+    def llm_service(self) -> ILLMService:
+        return self._llm_service
+
+    @property
+    def executor(self) -> IExecutor | None:
+        return self._executor
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        return self._hosted_tools
+
+    @property
+    def max_steps(self) -> Unset[int]:
+        return self._max_steps
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def system_message(self) -> LLMMessage:
+        return self._ctx_mgr.system_message
+
+    def add_instruction(self, instruction: str) -> None:
+        """Add an instruction into the agent's context manager."""
+        if instruction == "":
+            raise ValueError("Empty Instruction")
+        self._ctx_mgr.add_instruction(instruction)
+
+    def create_run(
+        self,
+        question: str,
+        trace_ctx: Context | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AgentRuntime:
+        return AgentRuntime.from_question(
+            question=question,
+            prompt=self._ctx_mgr.instructions_text,
+            llm_service=self._llm_service,
+            executor=self._executor,
+            hosted_tools=self._hosted_tools,
+            max_steps=self._max_steps,
+            max_steps_label=self._max_steps_label,
+            tracer=self._tracer,
+            trace_ctx=trace_ctx,
+            request_meta=request_meta,
+        )
+
+    def create_resume_run(
+        self,
+        question: str,
+        history: list[LLMMessage],
+        trace_ctx: Context | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AgentRuntime:
+        return AgentRuntime.from_history(
+            question=question,
+            history=history,
+            prompt=self._ctx_mgr.instructions_text,
+            llm_service=self._llm_service,
+            executor=self._executor,
+            hosted_tools=self._hosted_tools,
+            max_steps=self._max_steps,
+            max_steps_label=self._max_steps_label,
+            tracer=self._tracer,
+            trace_ctx=trace_ctx,
+            request_meta=request_meta,
+        )
+
+    async def run(
+        self,
+        question: str,
+        trace_ctx: Context | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Yield AgentEvent entries as the agent reasons."""
+        run = self.create_run(question, trace_ctx=trace_ctx, **request_meta)
+        async for event in run.execute():
+            yield event
+
+    async def resume(
+        self,
+        question: str,
+        history: list[LLMMessage],
+        trace_ctx: Context | None = None,
+        **request_meta: Unpack[LLMRequestMeta],
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """Yield AgentEvent entries with existing conversation history."""
+        run = self.create_resume_run(
+            question,
+            history,
+            trace_ctx=trace_ctx,
+            **request_meta,
+        )
+        async for event in run.execute():
+            yield event
 
     async def ask(
         self,
