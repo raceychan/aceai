@@ -1,5 +1,7 @@
 # AceAI
 
+![AceAI hero](docs/aceai-hero.png)
+
 An engineering-first agent framework: tools-first, explicit signatures, early failures, and OTLP-friendly tracing.
 
 ## Requirements & install
@@ -20,6 +22,8 @@ If no API key is available, the TUI asks for provider settings and lets you
 choose whether to persist them to `~/.aceai/config.yaml`.
 
 ## Architecture layers
+
+![AceAI architecture](docs/aceai-architecture.png)
 
 AceAI has three layers. Start from the lowest layer that gives you what you
 need:
