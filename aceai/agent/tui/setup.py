@@ -24,7 +24,7 @@ from aceai.llm.openai import OpenAIModel
 
 from .config import AceAITUIConfig
 from .config import save_config
-from .cost import format_usd
+from aceai.agent.cost import format_usd
 from .session_display import session_display_title
 
 
@@ -78,7 +78,7 @@ def _masked_api_key(api_key: str) -> str:
 
 def _api_key_value_from_input(value: str, api_key: str) -> str:
     if value == _masked_api_key(api_key):
-        return ""
+        return api_key
     return value
 
 
@@ -413,7 +413,7 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
             yield Label("API key")
             yield Input(
                 value=_masked_api_key(self._api_key_for_provider(self._provider_name)),
-                placeholder=f"{api_key_env(self._provider_name)} or leave blank",
+                placeholder=api_key_env(self._provider_name),
                 id="api-key",
             )
             yield Static("", id="model-error")
@@ -510,7 +510,7 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
         )
         self._refresh_model_candidates()
         self.query_one("#api-key", Input).placeholder = (
-            f"{api_key_env(self._provider_name)} or leave blank"
+            api_key_env(self._provider_name)
         )
         self.query_one("#api-key", Input).value = _masked_api_key(
             self._api_key_for_provider(self._provider_name)
@@ -559,22 +559,44 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
             return
         provider = self.query_one("#provider", Input).value
         model = self.query_one("#model", Input).value
-        if provider not in supported_provider_names():
-            self.query_one("#model-error", Static).update("Unsupported provider")
-            return
-        if model not in supported_models(provider):
-            self.query_one("#model-error", Static).update("Unsupported model")
+        stored_api_key = (
+            self._api_key_for_provider(provider)
+            if provider in supported_provider_names()
+            else ""
+        )
+        api_key = _api_key_value_from_input(
+            self.query_one("#api-key", Input).value,
+            stored_api_key,
+        )
+        error = _model_selection_error(provider, model, api_key)
+        if error is not None:
+            self.query_one("#model-error", Static).update(error)
             return
         self.dismiss(
             ModelSelection(
                 provider=provider,
                 model=cast(OpenAIModel, model),
-                api_key=_api_key_value_from_input(
-                    self.query_one("#api-key", Input).value,
-                    self._api_key_for_provider(provider),
-                ),
+                api_key=api_key,
             )
         )
+
+
+def _model_selection_error(
+    provider: str,
+    model: str,
+    api_key: str,
+) -> str | None:
+    if provider == "":
+        return "Provider is required"
+    if model == "":
+        return "Model is required"
+    if api_key == "":
+        return "API key is required"
+    if provider not in supported_provider_names():
+        return "Unsupported provider"
+    if model not in supported_models(provider):
+        return "Unsupported model"
+    return None
 
 
 class SessionSelectScreen(ModalScreen[str]):

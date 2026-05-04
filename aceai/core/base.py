@@ -1,3 +1,4 @@
+from itertools import count
 from pathlib import Path
 from typing import AsyncGenerator, Callable, Literal, Unpack
 from uuid import uuid4
@@ -8,6 +9,7 @@ from opentelemetry.trace import SpanKind, set_span_in_context
 
 from ..llm import ILLMService, LLMResponse
 from ..llm.errors import AceAIConfigurationError, AceAIRuntimeError
+from ..llm.interface import UNSET, Unset, is_set
 from ..llm.models import (
     LLMHostedToolSpec,
     LLMMessage,
@@ -34,17 +36,7 @@ from .events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
-from .executor import RunState, IExecutor, ToolExecutor
-
-
-class ToolExecutionFailure(AceAIRuntimeError):
-    """Raised when a tool invocation fails during a reasoning step."""
-
-    def __init__(self, *, tool_call: LLMToolCall, error: Exception):
-        message = str(error)
-        super().__init__(message)
-        self.tool_call = tool_call
-        self.original_error = error
+from .executor import RunState, IExecutor, ToolExecutionError, ToolExecutor
 
 
 class AgentBase:
@@ -56,15 +48,15 @@ class AgentBase:
         *,
         default_model: str,
         llm_service: ILLMService,
-        max_steps: int = 5,
+        max_steps: Unset[int] = UNSET,
         executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
         skill_path: str | Path | Literal["auto", "disable"] = "auto",
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
         hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
-        if max_steps < 1:
-            raise AceAIConfigurationError("max_steps must be at least 1")
+        if is_set(max_steps) and max_steps < 1:
+            raise AceAIConfigurationError("max_steps must be positive or UNSET")
         self._skill_registry = self._load_skill_registry(
             skill_path=skill_path,
             skill_loader_factory=skill_loader_factory,
@@ -79,6 +71,10 @@ class AgentBase:
         if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
             executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
+        if is_set(max_steps):
+            self._max_steps_label = max_steps
+        else:
+            self._max_steps_label = "unlimited"
         self._tracer = tracer or trace.get_tracer("aceai.core")
 
     @property
@@ -90,7 +86,7 @@ class AgentBase:
         return self._llm_service
 
     @property
-    def max_steps(self) -> int:
+    def max_steps(self) -> Unset[int]:
         return self._max_steps
 
     @property
@@ -218,8 +214,20 @@ class AgentBase:
                     call,
                     run_state=run_state,
                 )
-            except Exception as exc:
-                raise ToolExecutionFailure(tool_call=call, error=exc) from exc
+            except ToolExecutionError as exc:
+                error_msg = str(exc)
+                tool_result = ToolExecutionResult(
+                    call=call,
+                    output=f"Tool execution failed: {error_msg}",
+                    error=error_msg,
+                )
+                current_step.tool_results.append(tool_result)
+                yield event_builder.tool_failed(
+                    tool_call=call,
+                    tool_result=tool_result,
+                    error=error_msg,
+                )
+                continue
 
             tool_result = ToolExecutionResult(call=call, output=tool_output)
             current_step.tool_results.append(tool_result)
@@ -244,7 +252,7 @@ class AgentBase:
             context=run_context,
             attributes={
                 "agent.step_id": event_builder.step_id,
-                "agent.max_steps": self._max_steps,
+                "agent.max_steps": self._max_steps_label,
             },
         )
         step_context = set_span_in_context(step_span, run_context)
@@ -282,7 +290,9 @@ class AgentBase:
                     )
                     try:
                         async for tool_event in tool_gen:
-                            if isinstance(tool_event, ToolCompletedEvent):
+                            if isinstance(
+                                tool_event, ToolCompletedEvent | ToolFailedEvent
+                            ):
                                 self._ctx_mgr.add_tool_use(tool_event)
                             yield tool_event
                     finally:
@@ -304,23 +314,6 @@ class AgentBase:
     ):
         step_id = step.step_id
         error_msg = error_msg or str(exc)
-
-        if isinstance(exc, ToolExecutionFailure):
-            tool_call = exc.tool_call
-            error_msg = str(exc.original_error)
-            failed_result = ToolExecutionResult(
-                call=tool_call,
-                error=error_msg,
-            )
-            step.tool_results.append(failed_result)
-            yield ToolFailedEvent(
-                step_index=step_index,
-                step_id=step_id,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_result=failed_result,
-                error=error_msg,
-            )
 
         yield StepFailedEvent(
             step_index=step_index,
@@ -381,7 +374,7 @@ class AgentBase:
             kind=SpanKind.INTERNAL,
             context=trace_ctx,
             attributes={
-                "agent.max_steps": self._max_steps,
+                "agent.max_steps": self._max_steps_label,
                 "agent.run.input": question,
                 "agent.run.output": "",
                 "langfuse.trace.name": "aceai.run",
@@ -397,7 +390,11 @@ class AgentBase:
         run_state = RunState()
         error_msg: str | None = None
         try:
-            for _ in range(self._max_steps):
+            if is_set(self._max_steps):
+                step_iterator = range(self._max_steps)
+            else:
+                step_iterator = count()
+            for _ in step_iterator:
                 step_id = str(uuid4())
                 event_builder = AgentEventBuilder(
                     step_index=len(steps),

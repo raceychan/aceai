@@ -6,10 +6,15 @@ from msgspec import Struct, field
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
+from aceai.llm.errors import AceAIError
 from aceai.llm.interface import is_present
 from aceai.llm.models import LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
 from aceai.core.tools import IToolSpec, Tool
+
+
+class ToolExecutionError(AceAIError):
+    """Tool failure that should be returned to the model as tool output."""
 
 
 class RunState(Struct, kw_only=True):

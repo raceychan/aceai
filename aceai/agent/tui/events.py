@@ -31,7 +31,7 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import ToolExecutionResult
-from .cost import TUICostEstimate, estimate_usage_cost
+from aceai.agent.cost import CostEstimate, estimate_usage_cost
 
 TUIEventKind = Literal[
     "user_message",
@@ -71,7 +71,7 @@ class TUIEvent(Record, kw_only=True):
     tool_result: ToolExecutionResult | None = None
     segment: LLMSegment | None = None
     usage: LLMUsage | None = None
-    cost: TUICostEstimate | None = None
+    cost: CostEstimate | None = None
     error: str | None = None
 
 

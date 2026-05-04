@@ -25,6 +25,15 @@ def test_framework_layer_does_not_import_product_layer() -> None:
     assert violations == []
 
 
+def test_session_storage_does_not_import_tui_presentation_layer() -> None:
+    violations = _find_forbidden_imports(
+        PACKAGE_ROOT / "agent" / "session.py",
+        ("aceai.agent.tui",),
+    )
+
+    assert violations == []
+
+
 def _find_forbidden_imports(path: Path, forbidden: tuple[str, ...]) -> list[str]:
     files = [path] if path.is_file() else sorted(path.rglob("*.py"))
     violations: list[str] = []

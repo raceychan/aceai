@@ -4,6 +4,7 @@ import argparse
 import importlib
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol, Sequence
 
 from aceai.agent.ace_agent import build_ace_agent
@@ -22,7 +23,8 @@ from .config import (
     AceAITUIConfig,
     load_config,
 )
-from .cost import format_usd
+from .session_adapter import session_messages_to_tui_events
+from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
 TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
@@ -151,7 +153,7 @@ def create_session_context(
     return (
         store,
         metadata,
-        store.load_tui_events(resume_session_id),
+        session_messages_to_tui_events(messages),
         messages_to_llm_history(messages),
     )
 
@@ -179,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=CLI_MODELS,
         help="Model for the default AceAI CLI agent.",
     )
+    parser.add_argument(
+        "--file",
+        default=None,
+        help="Write aceai export output to a new file instead of stdout.",
+    )
     return parser
 
 
@@ -203,7 +210,12 @@ def run_main(args: argparse.Namespace) -> None:
         if len(command_parts) != 2:
             raise ValueError("aceai export requires a session_id")
         require_tui_extra()
-        print(SessionStore().export_text(command_parts[1]), end="")
+        export_text = SessionStore().export_text(command_parts[1])
+        if args.file is not None:
+            with Path(args.file).open("x", encoding="utf-8") as stream:
+                stream.write(export_text)
+            return
+        print(export_text, end="")
         return
     if command_parts and command_parts[0] == "cost":
         if len(command_parts) != 1:

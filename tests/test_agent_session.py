@@ -1,14 +1,16 @@
 from datetime import datetime
 
-from aceai.agent.session import SessionRecorder, SessionStore, messages_to_llm_history
-from aceai.agent.tui.events import adapt_agent_event, user_message_event
-from aceai.core.events import AgentEventBuilder
-from aceai.core.models import AgentStep, ToolExecutionResult
+from aceai.agent.cost import estimate_usage_cost
+from aceai.agent.session import (
+    SessionEvent,
+    SessionRecorder,
+    SessionStore,
+    messages_to_llm_history,
+)
+from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
-    LLMResponse,
     LLMToolCall,
-    LLMToolCallDelta,
     LLMUsage,
 )
 
@@ -56,7 +58,7 @@ def test_session_store_finalize_uses_first_question_as_title(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("What files are here?"))
+    recorder.record(_user_message("What files are here?"))
 
     title = store.finalize_session_title(metadata.session_id)
 
@@ -81,7 +83,7 @@ def test_session_recorder_finalize_keeps_non_empty_session(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
+    recorder.record(_user_message("hello"))
 
     saved = recorder.finalize()
 
@@ -95,28 +97,10 @@ def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
 
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="hel"
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="lo"
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(llm_response=LLMResponse(text="hello"))
-            )
-        )
-    )
+    recorder.record(_user_message("hello"))
+    recorder.record(_assistant_delta("hel"))
+    recorder.record(_assistant_delta("lo"))
+    recorder.record(_llm_completed("hello"))
 
     messages = store.load_messages(metadata.session_id)
 
@@ -135,22 +119,9 @@ def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
         total_tokens=17,
     )
 
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="answer",
-                        model="gpt-5.5",
-                        usage=usage,
-                    )
-                )
-            )
-        )
-    )
+    recorder.record(_llm_completed("answer", model="gpt-5.5", usage=usage))
 
     messages = store.load_messages(metadata.session_id)
-    events = store.load_tui_events(metadata.session_id)
 
     assert messages[0].usage_input_tokens == 12
     assert messages[0].usage_cached_input_tokens == 8
@@ -161,9 +132,6 @@ def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
     assert messages[0].cost_cached_input_usd is not None
     assert round(messages[0].cost_cached_input_usd, 6) == 0.000004
     assert round(messages[0].cost_total_usd, 6) == 0.000174
-    assert events[0].usage == usage
-    assert events[0].cost is not None
-    assert round(events[0].cost.total_cost_usd, 6) == 0.000174
 
 
 def test_session_store_sums_total_cost_across_sessions(tmp_path) -> None:
@@ -172,38 +140,26 @@ def test_session_store_sums_total_cost_across_sessions(tmp_path) -> None:
     second = store.create_session()
 
     SessionRecorder(store, first.session_id).record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="first",
-                        model="gpt-5.5",
-                        usage=LLMUsage(
-                            input_tokens=1_000,
-                            cached_input_tokens=600,
-                            output_tokens=100,
-                            total_tokens=1_100,
-                        ),
-                    )
-                )
-            )
+        _llm_completed(
+            "first",
+            model="gpt-5.5",
+            usage=LLMUsage(
+                input_tokens=1_000,
+                cached_input_tokens=600,
+                output_tokens=100,
+                total_tokens=1_100,
+            ),
         )
     )
     SessionRecorder(store, second.session_id).record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-2").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="second",
-                        model="gpt-5.4-mini",
-                        usage=LLMUsage(
-                            input_tokens=1_000,
-                            output_tokens=100,
-                            total_tokens=1_100,
-                        ),
-                    )
-                )
-            )
+        _llm_completed(
+            "second",
+            model="gpt-5.4-mini",
+            usage=LLMUsage(
+                input_tokens=1_000,
+                output_tokens=100,
+                total_tokens=1_100,
+            ),
         )
     )
 
@@ -215,13 +171,7 @@ def test_session_recorder_saves_non_streaming_llm_completion(tmp_path) -> None:
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
 
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(llm_response=LLMResponse(text="answer"))
-            )
-        )
-    )
+    recorder.record(_llm_completed("answer"))
 
     messages = store.load_messages(metadata.session_id)
 
@@ -234,7 +184,6 @@ def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="list_directory",
         arguments='{"path":"."}',
@@ -250,30 +199,10 @@ def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
         ),
     )
 
-    recorder.record(
-        adapt_agent_event(
-            builder.llm_tool_call_delta(
-                tool_call_delta=LLMToolCallDelta(
-                    id="call-1",
-                    arguments_delta='{"path"',
-                )
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            builder.llm_tool_call_delta(
-                tool_call_delta=LLMToolCallDelta(
-                    id="call-1",
-                    arguments_delta=':"."}',
-                )
-            )
-        )
-    )
-    recorder.record(adapt_agent_event(builder.tool_started(tool_call=call)))
-    recorder.record(
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result))
-    )
+    recorder.record(_tool_call_delta("call-1", '{"path"'))
+    recorder.record(_tool_call_delta("call-1", ':"."}'))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
 
     messages = store.load_messages(metadata.session_id)
 
@@ -284,39 +213,12 @@ def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
     assert messages[0].content == "completed - 2 entries"
 
 
-def test_session_store_restores_compact_messages_as_tui_events(tmp_path) -> None:
-    store = SessionStore(tmp_path)
-    metadata = store.create_session()
-    recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
-    )
-    recorder.flush_assistant()
-
-    events = store.load_tui_events(metadata.session_id)
-
-    assert [event.kind for event in events] == ["user_message", "assistant_delta"]
-    assert events[0].content == "hello"
-    assert events[1].content == "answer"
-
-
 def test_session_messages_restore_user_assistant_llm_history_only(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
-    )
+    recorder.record(_user_message("hello"))
+    recorder.record(_assistant_delta("answer"))
     recorder.flush_assistant()
 
     history = messages_to_llm_history(store.load_messages(metadata.session_id))
@@ -331,14 +233,8 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
-    )
+    recorder.record(_user_message("hello"))
+    recorder.record(_assistant_delta("answer"))
     recorder.flush_assistant()
 
     text = store.export_text(metadata.session_id)
@@ -346,3 +242,56 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     assert text.startswith(f"# AceAI session {metadata.session_id}\n")
     assert "## user\nhello\n" in text
     assert "## assistant\nanswer\n" in text
+
+
+def _user_message(content: str) -> SessionEvent:
+    return SessionEvent(kind="user_message", content=content)
+
+
+def _assistant_delta(content: str) -> SessionEvent:
+    return SessionEvent(kind="assistant_delta", content=content)
+
+
+def _llm_completed(
+    content: str,
+    *,
+    model: str | None = None,
+    usage: LLMUsage | None = None,
+) -> SessionEvent:
+    return SessionEvent(
+        kind="llm_completed",
+        content=content,
+        usage=usage,
+        cost=estimate_usage_cost(model, usage),
+    )
+
+
+def _tool_call_delta(call_id: str, content: str) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_call_delta",
+        content=content,
+        tool_call_id=call_id,
+    )
+
+
+def _tool_started(call: LLMToolCall) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_started",
+        tool_name=call.name,
+        tool_call_id=call.call_id,
+        tool_call=call,
+    )
+
+
+def _tool_completed(
+    call: LLMToolCall,
+    result: ToolExecutionResult,
+) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_completed",
+        content=result.output,
+        tool_name=call.name,
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=result,
+    )

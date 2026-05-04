@@ -1,4 +1,4 @@
-"""Estimated token cost helpers for the AceAI TUI."""
+"""Estimated token cost helpers for AceAI agent sessions."""
 
 from aceai.agent.provider_catalog import (
     ModelTokenPrice,
@@ -13,7 +13,7 @@ from aceai.llm.models import LLMUsage
 PRICING_SOURCE = pricing_source()
 
 
-class TUICostEstimate(Record, kw_only=True):
+class CostEstimate(Record, kw_only=True):
     model: str
     input_cost_usd: float
     cached_input_cost_usd: float
@@ -30,7 +30,7 @@ def estimate_usage_cost(
     usage: LLMUsage | None,
     *,
     provider_name: str | None = None,
-) -> TUICostEstimate | None:
+) -> CostEstimate | None:
     if model is None or usage is None:
         return None
     price = _price_for_model(model, provider_name=provider_name)
@@ -45,7 +45,7 @@ def estimate_usage_cost(
         cached_input_tokens * price.cached_input_usd_per_million / 1_000_000
     )
     output_cost = output_tokens * price.output_usd_per_million / 1_000_000
-    return TUICostEstimate(
+    return CostEstimate(
         model=price.model,
         input_cost_usd=input_cost,
         cached_input_cost_usd=cached_input_cost,

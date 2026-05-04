@@ -1,5 +1,29 @@
 # Changelog
 
+## AceAI v0.2.5
+
+### Features
+
+- `cli`: Add `aceai export <session_id> --file=<path>` to write session exports to a new file without overwriting existing files.
+- `agent`: Let default Ace agents run without a fixed step cap unless callers set `max_steps`.
+
+### Improvements
+
+- `sessions`: Decouple durable session storage from TUI display events with explicit session/TUI adapters.
+- `cost`: Move usage-cost estimates out of the TUI layer so session recording and display can share the same app-layer cost model.
+- `tui`: Batch small streaming text deltas before rendering to reduce full-transcript redraw pressure for long answers.
+- `tools`: Report app tool filesystem, shell, timeout, and text-replacement failures as tool results the model can observe and recover from.
+
+### Fixes
+
+- `tui`: Preserve masked API keys when applying model/provider selection so switching no longer reports a missing key after showing one.
+- `tui`: Require provider, model, and API key before applying model-selection changes.
+
+### Breaking Changes
+
+- `sessions`: Remove the storage-layer `SessionStore.load_tui_events()` and `messages_to_tui_events()` TUI helpers; TUI callers must use `aceai.agent.tui.session_adapter`.
+- `core`: `AgentBase.max_steps` now defaults to unset/unlimited instead of `5`, and `build_ace_agent()` no longer sets an app-specific step cap.
+
 ## AceAI v0.2.4
 
 ### Features

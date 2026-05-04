@@ -2,7 +2,7 @@
 
 from textual.widgets import Static
 
-from aceai.agent.tui.cost import format_usd
+from aceai.agent.cost import format_usd
 from aceai.agent.tui.state import TUIRunStatus, TUIUsageState
 
 

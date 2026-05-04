@@ -6,12 +6,14 @@ from aceai.llm import LLMResponse
 from aceai.llm.models import LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import user_message_event
+from aceai.agent.tui.session_adapter import session_messages_to_tui_events
+from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
 from aceai.agent.tui.setup import ModelSelectScreen, ModelSelection
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Input, Static
+from textual.widgets import Button, Input, Static
 
 
 class StubExecutor:
@@ -374,6 +376,74 @@ async def test_model_selector_prefills_masked_api_key() -> None:
 
 
 @pytest.mark.anyio
+async def test_model_selector_apply_restores_masked_api_key() -> None:
+    screen = ModelSelectScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ModelSelection | None] = []
+
+        def dismiss(selection: ModelSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        _press_model_apply(screen)
+
+        assert selections == [
+            ModelSelection(
+                provider="openai",
+                model="gpt-5.5",
+                api_key="sk-test-ending",
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_model_selector_requires_provider_model_and_api_key() -> None:
+    screen = ModelSelectScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ModelSelection | None] = []
+
+        def dismiss(selection: ModelSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        provider_input = screen.query_one("#provider", Input)
+        model_input = screen.query_one("#model", Input)
+        api_key_input = screen.query_one("#api-key", Input)
+        error = screen.query_one("#model-error", Static)
+
+        provider_input.value = ""
+        _press_model_apply(screen)
+        assert selections == []
+        assert str(error.render()) == "Provider is required"
+
+        provider_input.value = "openai"
+        model_input.value = ""
+        _press_model_apply(screen)
+        assert selections == []
+        assert str(error.render()) == "Model is required"
+
+        model_input.value = "gpt-5.5"
+        api_key_input.value = ""
+        _press_model_apply(screen)
+        assert selections == []
+        assert str(error.render()) == "API key is required"
+
+
+@pytest.mark.anyio
 async def test_model_selector_selects_prefixed_model_candidate_with_tab() -> None:
     screen = ModelSelectScreen(
         provider_name="deepseek",
@@ -489,8 +559,12 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     store = SessionStore(tmp_path)
     first = store.create_session()
     second = store.create_session()
-    SessionRecorder(store, first.session_id).record(user_message_event("first"))
-    SessionRecorder(store, second.session_id).record(user_message_event("second"))
+    SessionRecorder(store, first.session_id).record(
+        tui_event_to_session_event(user_message_event("first"))
+    )
+    SessionRecorder(store, second.session_id).record(
+        tui_event_to_session_event(user_message_event("second"))
+    )
     llm_service = StubLLMService([])
     agent = AgentBase(
         prompt="Prompt",
@@ -500,7 +574,9 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     )
     app = AceAIInteractiveTUI(
         agent,
-        initial_events=store.load_tui_events(first.session_id),
+        initial_events=session_messages_to_tui_events(
+            store.load_messages(first.session_id)
+        ),
         initial_history=[],
         session_recorder=SessionRecorder(store, first.session_id),
         session_id=first.session_id,
@@ -513,3 +589,10 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         assert app.title == f"AceAI {second.session_id}"
         assert app._state.events[0].content == "second"
         assert app._llm_history[0].content[0]["data"] == "second"
+
+
+def _press_model_apply(screen: ModelSelectScreen) -> None:
+    class Pressed:
+        button = screen.query_one("#apply", Button)
+
+    screen.on_button_pressed(Pressed())

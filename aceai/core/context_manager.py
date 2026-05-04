@@ -1,4 +1,4 @@
-from aceai.core.events import ToolCompletedEvent
+from aceai.core.events import ToolCompletedEvent, ToolFailedEvent
 from aceai.llm.models import (
     LLMMessage,
     LLMResponse,
@@ -108,7 +108,7 @@ class ContextManager:
         )
         self._context.append(assistant_msg)
 
-    def add_tool_use(self, event: ToolCompletedEvent) -> None:
+    def add_tool_use(self, event: ToolCompletedEvent | ToolFailedEvent) -> None:
         call = event.tool_call
         tool_use_msg = LLMToolUseMessage.from_content(
             name=call.name,

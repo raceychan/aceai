@@ -336,6 +336,40 @@ def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
     assert captured.out == "# AceAI session session-1\n\n## user\nhello\n"
 
 
+def test_cli_export_writes_session_text_to_new_file(monkeypatch, tmp_path, capsys) -> None:
+    class StubStore:
+        def export_text(self, session_id):
+            assert session_id == "session-1"
+            return "# AceAI session session-1\n\n## user\nhello\n"
+
+    target = tmp_path / "debug.md"
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    cli.main(["export", "session-1", f"--file={target}"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert target.read_text(encoding="utf-8") == (
+        "# AceAI session session-1\n\n## user\nhello\n"
+    )
+
+
+def test_cli_export_file_fails_when_target_exists(monkeypatch, tmp_path) -> None:
+    class StubStore:
+        def export_text(self, session_id):
+            assert session_id == "session-1"
+            return "# AceAI session session-1\n"
+
+    target = tmp_path / "debug.md"
+    target.write_text("existing\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    with pytest.raises(FileExistsError):
+        cli.main(["export", "session-1", f"--file={target}"])
+
+    assert target.read_text(encoding="utf-8") == "existing\n"
+
+
 def test_cli_cost_prints_total_session_cost(monkeypatch, capsys) -> None:
     class StubStore:
         def total_cost_usd(self):

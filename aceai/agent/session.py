@@ -11,14 +11,25 @@ from sqlalchemy import select as sql_select
 from sqlalchemy import update as sql_update
 from sqlalchemy.engine import RowMapping
 
+from aceai.agent.cost import CostEstimate
 from aceai.core.models import ToolExecutionResult
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.models import LLMMessage, LLMToolCall, LLMUsage
 
-from .tui.cost import TUICostEstimate
-from .tui.events import TUIEvent, user_message_event
-
 SessionMessageKind = Literal["user", "assistant", "tool", "error"]
+SessionEventKind = Literal[
+    "session_notice",
+    "assistant_delta",
+    "tool_call_delta",
+    "tool_started",
+    "tool_output",
+    "llm_completed",
+    "user_message",
+    "tool_completed",
+    "tool_failed",
+    "run_failed",
+    "step_failed",
+]
 
 
 class SessionMetadata(Struct, frozen=True, kw_only=True):
@@ -51,6 +62,20 @@ class SessionMessage(Struct, frozen=True, kw_only=True):
     cost_cached_input_usd_per_million: float | None = None
     cost_output_usd_per_million: float | None = None
     cost_pricing_source: str | None = None
+
+
+class SessionEvent(Struct, frozen=True, kw_only=True):
+    """Data-layer event consumed by SessionRecorder."""
+
+    kind: SessionEventKind
+    content: str = ""
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_call: LLMToolCall | None = None
+    tool_result: ToolExecutionResult | None = None
+    error: str | None = None
+    usage: LLMUsage | None = None
+    cost: CostEstimate | None = None
 
 
 class _ToolBuffer(Struct, kw_only=True):
@@ -175,9 +200,6 @@ class SessionStore:
             messages.append(_message_from_json(payload))
         return messages
 
-    def load_tui_events(self, session_id: str) -> list[TUIEvent]:
-        return messages_to_tui_events(self.load_messages(session_id))
-
     def export_text(self, session_id: str) -> str:
         metadata = self.get_session(session_id)
         messages = self.load_messages(session_id)
@@ -217,7 +239,7 @@ class SessionRecorder:
     def saved(self) -> bool:
         return self._saved
 
-    def record(self, event: TUIEvent) -> None:
+    def record(self, event: SessionEvent) -> None:
         if event.kind == "session_notice":
             return
         if event.kind == "assistant_delta":
@@ -268,7 +290,7 @@ class SessionRecorder:
     def flush_assistant(
         self,
         usage: LLMUsage | None = None,
-        cost: TUICostEstimate | None = None,
+        cost: CostEstimate | None = None,
     ) -> None:
         if self._assistant_buffer == "":
             return
@@ -279,7 +301,7 @@ class SessionRecorder:
         self,
         content: str,
         usage: LLMUsage | None,
-        cost: TUICostEstimate | None,
+        cost: CostEstimate | None,
     ) -> None:
         self.store.append_message(
             self.session_id,
@@ -327,7 +349,7 @@ class SessionRecorder:
         self._finalized = True
         return self._saved
 
-    def _record_tool(self, event: TUIEvent) -> None:
+    def _record_tool(self, event: SessionEvent) -> None:
         tool_buffer = self._tool_for(event)
         if event.tool_name is not None:
             tool_buffer.name = event.tool_name
@@ -343,7 +365,11 @@ class SessionRecorder:
             self.session_id,
             SessionMessage(
                 kind="tool",
-                content=_tool_content(event, tool_buffer.output),
+                content=_tool_content(
+                    event.kind,
+                    event.error or event.content,
+                    tool_buffer.output,
+                ),
                 created_at=_utc_now().isoformat(),
                 tool_name=tool_buffer.name,
                 tool_call_id=event.tool_call_id,
@@ -355,7 +381,7 @@ class SessionRecorder:
         if event.tool_call_id is not None:
             self._tools.pop(event.tool_call_id, None)
 
-    def _tool_for(self, event: TUIEvent) -> _ToolBuffer:
+    def _tool_for(self, event: SessionEvent) -> _ToolBuffer:
         if event.tool_call_id is None:
             raise ValueError("tool event must include tool_call_id")
         tool_buffer = self._tools.get(event.tool_call_id)
@@ -367,109 +393,6 @@ class SessionRecorder:
 
 def default_session_root() -> Path:
     return Path.home() / ".aceai" / "sessions"
-
-
-def messages_to_tui_events(messages: list[SessionMessage]) -> list[TUIEvent]:
-    events: list[TUIEvent] = []
-    for message in messages:
-        if message.kind == "user":
-            events.append(user_message_event(message.content))
-        elif message.kind == "assistant":
-            usage = _message_usage(message)
-            cost = _message_cost(message)
-            events.append(
-                TUIEvent(
-                    kind="assistant_delta",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title="assistant",
-                    content=message.content,
-                    usage=usage,
-                    cost=cost,
-                    raw_event=None,
-                )
-            )
-        elif message.kind == "tool":
-            call_id = message.tool_call_id or uuid_str()
-            tool_name = message.tool_name or "tool"
-            tool_call = LLMToolCall(
-                name=tool_name,
-                arguments=message.tool_arguments,
-                call_id=call_id,
-            )
-            events.append(
-                TUIEvent(
-                    kind="tool_failed" if message.status == "failed" else "tool_completed",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title=f"tool {tool_name}",
-                    content=message.tool_output,
-                    tool_name=tool_name,
-                    tool_call_id=call_id,
-                    tool_call=tool_call,
-                    tool_result=ToolExecutionResult(
-                        call=tool_call,
-                        output=message.tool_output,
-                        error=message.content if message.status == "failed" else None,
-                    ),
-                    error=message.content if message.status == "failed" else None,
-                    raw_event=None,
-                )
-            )
-        elif message.kind == "error":
-            events.append(
-                TUIEvent(
-                    kind="run_failed",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title="run failed",
-                    content=message.content,
-                    error=message.content,
-                    raw_event=None,
-                )
-            )
-    return events
-
-
-def _message_usage(message: SessionMessage) -> LLMUsage | None:
-    if (
-        message.usage_input_tokens is None
-        and message.usage_output_tokens is None
-        and message.usage_total_tokens is None
-    ):
-        return None
-    return LLMUsage(
-        input_tokens=message.usage_input_tokens,
-        cached_input_tokens=message.usage_cached_input_tokens,
-        output_tokens=message.usage_output_tokens,
-        total_tokens=message.usage_total_tokens,
-    )
-
-
-def _message_cost(message: SessionMessage) -> TUICostEstimate | None:
-    if (
-        message.cost_model is None
-        or message.cost_input_usd is None
-        or message.cost_cached_input_usd is None
-        or message.cost_output_usd is None
-        or message.cost_total_usd is None
-        or message.cost_input_usd_per_million is None
-        or message.cost_cached_input_usd_per_million is None
-        or message.cost_output_usd_per_million is None
-        or message.cost_pricing_source is None
-    ):
-        return None
-    return TUICostEstimate(
-        model=message.cost_model,
-        input_cost_usd=message.cost_input_usd,
-        cached_input_cost_usd=message.cost_cached_input_usd,
-        output_cost_usd=message.cost_output_usd,
-        total_cost_usd=message.cost_total_usd,
-        input_usd_per_million=message.cost_input_usd_per_million,
-        cached_input_usd_per_million=message.cost_cached_input_usd_per_million,
-        output_usd_per_million=message.cost_output_usd_per_million,
-        pricing_source=message.cost_pricing_source,
-    )
 
 
 def messages_to_llm_history(messages: list[SessionMessage]) -> list[LLMMessage]:
@@ -576,9 +499,9 @@ def _message_to_export_lines(message: SessionMessage) -> list[str]:
     raise ValueError("Unsupported session message kind")
 
 
-def _tool_content(event: TUIEvent, output: str) -> str:
-    if event.kind == "tool_failed":
-        return event.error or event.content
+def _tool_content(kind: SessionEventKind, error: str | None, output: str) -> str:
+    if kind == "tool_failed":
+        return error or output
     if '"entries":[' in output:
         entry_count = output.count('"name"')
         return f"completed - {entry_count} entries"

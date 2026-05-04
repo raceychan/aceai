@@ -9,10 +9,12 @@ from aceai.core.events import AgentEvent
 
 from aceai.agent.session import SessionRecorder
 
-from .cost import format_usd
+from aceai.agent.cost import format_usd
 from .events import TUIEvent
 from .events import adapt_agent_event
 from .events import session_notice_event
+from .session_adapter import session_messages_to_tui_events
+from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
 from .setup import SessionSelectScreen
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
@@ -23,6 +25,8 @@ from .widgets import (
     StreamWidget,
     TimelineWidget,
 )
+
+STREAM_DELTA_REFRESH_CHARS = 512
 
 
 class AceAITUI(App[None]):
@@ -86,6 +90,8 @@ class AceAITUI(App[None]):
         self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
+        self._pending_stream_delta_chars = 0
+        self._pending_stream_delta: TUIEvent | None = None
         self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
 
     def compose(self) -> ComposeResult:
@@ -112,6 +118,7 @@ class AceAITUI(App[None]):
         event.stop()
 
     def load_events(self, events: list[TUIEvent]) -> None:
+        self._clear_pending_stream_delta()
         self._state = reduce_events(events)
         self._refresh_widgets()
 
@@ -167,14 +174,22 @@ class AceAITUI(App[None]):
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
-        self.load_events(store.load_tui_events(metadata.session_id))
+        self.load_events(
+            session_messages_to_tui_events(store.load_messages(metadata.session_id))
+        )
         self.append_event(session_notice_event(f"Resumed session {metadata.session_id}"))
 
     def append_event(self, event: TUIEvent) -> None:
+        if self._should_buffer_stream_delta(event):
+            return
+        self._flush_pending_stream_delta()
+        self._append_event_to_state(event)
+        self._refresh_widgets()
+
+    def _append_event_to_state(self, event: TUIEvent) -> None:
         self._state = apply_tui_event(self._state, event)
         if self._session_recorder is not None:
-            self._session_recorder.record(event)
-        self._refresh_widgets()
+            self._session_recorder.record(tui_event_to_session_event(event))
 
     def append_agent_event(self, event: AgentEvent) -> None:
         self.append_event(adapt_agent_event(event))
@@ -229,10 +244,75 @@ class AceAITUI(App[None]):
             usage=self._state.usage,
         )
 
+    def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
+        if event.kind not in ("assistant_delta", "thinking_delta"):
+            return False
+        if self._pending_stream_delta is not None and not _same_stream_delta(
+            self._pending_stream_delta,
+            event,
+        ):
+            self._flush_pending_stream_delta()
+        self._pending_stream_delta_chars += len(event.content)
+        self._pending_stream_delta = _merge_pending_stream_delta(
+            self._pending_stream_delta,
+            event,
+        )
+        if self._pending_stream_delta_chars < STREAM_DELTA_REFRESH_CHARS:
+            return True
+        self._flush_pending_stream_delta()
+        self._refresh_widgets()
+        return True
+
+    def _flush_pending_stream_delta(self) -> None:
+        if self._pending_stream_delta is None:
+            return
+        pending = self._pending_stream_delta
+        self._clear_pending_stream_delta()
+        self._append_event_to_state(pending)
+
+    def _clear_pending_stream_delta(self) -> None:
+        self._pending_stream_delta_chars = 0
+        self._pending_stream_delta = None
+
     def on_unmount(self) -> None:
+        self._flush_pending_stream_delta()
         if self._session_recorder is not None:
             self._session_recorder.finalize()
 
 
 def run_static_tui(events: list[TUIEvent]) -> None:
     AceAITUI(events).run()
+
+
+def _merge_pending_stream_delta(previous: TUIEvent | None, event: TUIEvent) -> TUIEvent:
+    if previous is None:
+        return event
+    if not _same_stream_delta(previous, event):
+        raise ValueError("pending stream delta changed shape before flush")
+    return TUIEvent(
+        kind=previous.kind,
+        step_index=previous.step_index,
+        step_id=previous.step_id,
+        title=previous.title,
+        raw_event=event.raw_event,
+        event_id=previous.event_id,
+        content=previous.content + event.content,
+        tool_name=previous.tool_name,
+        tool_call_id=previous.tool_call_id,
+        tool_call=previous.tool_call,
+        tool_call_delta=previous.tool_call_delta,
+        tool_result=previous.tool_result,
+        segment=event.segment,
+        usage=event.usage,
+        cost=event.cost,
+        error=event.error,
+    )
+
+
+def _same_stream_delta(previous: TUIEvent, event: TUIEvent) -> bool:
+    return (
+        previous.kind == event.kind
+        and previous.step_id == event.step_id
+        and previous.step_index == event.step_index
+        and previous.tool_call_id == event.tool_call_id
+    )
