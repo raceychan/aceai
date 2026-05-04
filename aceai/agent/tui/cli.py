@@ -139,15 +139,56 @@ def resolve_initial_config(
     return stored
 
 
+def apply_session_state_to_initial_config(
+    config: AceAITUIConfig | None,
+    state,
+) -> AceAITUIConfig | None:
+    if state.selected_model == "":
+        return config
+    provider = state.selected_provider
+    if provider == "":
+        if config is None:
+            return config
+        provider = config.provider
+    model = resolve_model(provider, state.selected_model)
+    if config is not None and config.provider == provider:
+        return AceAITUIConfig(
+            provider=config.provider,
+            api_key=config.api_key,
+            model=model,
+            api_keys=config.api_keys,
+        )
+    if config is not None and provider in config.api_keys:
+        return AceAITUIConfig(
+            provider=provider,
+            api_key=config.api_keys[provider],
+            model=model,
+            api_keys=config.api_keys,
+        )
+    env_name = api_key_env(provider)
+    if env_name in os.environ:
+        api_keys: dict[str, str] = {}
+        if config is not None:
+            api_keys.update(config.api_keys)
+        api_keys[provider] = os.environ[env_name]
+        return AceAITUIConfig(
+            provider=provider,
+            api_key=os.environ[env_name],
+            model=model,
+            api_keys=api_keys,
+        )
+    return config
+
+
 def create_session_context(
     *,
     resume_session_id: str | None,
-) -> tuple[object, object, list[object], list[LLMMessage]]:
+) -> tuple[object, object, list[object], list[LLMMessage], object]:
     require_tui_extra()
     store = SessionStore()
     if resume_session_id is None:
         metadata = store.create_session()
-        return store, metadata, [], []
+        return store, metadata, [], [], store.get_session_state(metadata.session_id)
     metadata = store.get_session(resume_session_id)
     event_log = store.load_event_log(resume_session_id)
     return (
@@ -155,6 +196,7 @@ def create_session_context(
         metadata,
         event_log_to_tui_events(event_log),
         event_log.replay_llm_history(),
+        store.get_session_state(resume_session_id),
     )
 
 
@@ -248,9 +290,10 @@ def run_main(args: argparse.Namespace) -> None:
         model=selected_model,
         model_from_env=model_from_env,
     )
-    store, metadata, initial_events, initial_history = create_session_context(
+    store, metadata, initial_events, initial_history, session_state = create_session_context(
         resume_session_id=resume_session_id,
     )
+    config = apply_session_state_to_initial_config(config, session_state)
     recorder = SessionRecorder(store, metadata.session_id)
     if config is None:
         run_configured_tui(

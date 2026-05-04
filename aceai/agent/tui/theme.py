@@ -28,7 +28,7 @@ EVENT_LABELS: dict[TUIEventKind, str] = {
     "step_failed": "step failed",
     "step_started": "step",
     "llm_completed": "llm",
-    "assistant_delta": "assistant",
+    "assistant_delta": "aceai",
     "thinking_delta": "thinking",
     "reasoning_summary": "reasoning",
     "tool_call_delta": "arguments",

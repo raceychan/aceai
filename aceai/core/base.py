@@ -86,6 +86,14 @@ class AgentBase:
         return self._llm_service
 
     @property
+    def executor(self) -> IExecutor | None:
+        return self._executor
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        return self._hosted_tools
+
+    @property
     def max_steps(self) -> Unset[int]:
         return self._max_steps
 

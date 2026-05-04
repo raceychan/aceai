@@ -4,6 +4,7 @@ from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     SessionEvent,
     SessionRecorder,
+    SessionState,
     SessionStore,
 )
 from aceai.core.models import ToolExecutionResult
@@ -51,6 +52,26 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
 
     assert store.list_sessions() == []
     assert not path.exists()
+
+
+def test_session_store_persists_session_state(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+
+    store.update_session_state(
+        metadata.session_id,
+        SessionState(
+            selected_provider="deepseek",
+            selected_model="deepseek-v4-pro",
+        ),
+    )
+
+    state = store.get_session_state(metadata.session_id)
+
+    assert state == SessionState(
+        selected_provider="deepseek",
+        selected_model="deepseek-v4-pro",
+    )
 
 
 def test_session_store_finalize_uses_first_question_as_title(tmp_path) -> None:

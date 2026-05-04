@@ -11,6 +11,7 @@ from aceai.agent.session import SessionRecorder
 
 from aceai.agent.cost import format_usd
 from .events import TUIEvent
+from .metadata import MetadataScreen, MetadataSection
 from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
@@ -70,6 +71,7 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("e", "toggle_events", "Events"),
         ("d", "toggle_detail", "Raw Log"),
+        ("i", "metadata", "Info"),
         ("m", "model_switcher", "Model"),
         ("s", "session_switcher", "Sessions"),
     ]
@@ -237,6 +239,33 @@ class AceAITUI(App[None]):
     def action_session_switcher(self) -> None:
         self.open_session_selector()
 
+    def action_metadata(self) -> None:
+        self.open_metadata_screen()
+
+    def open_metadata_screen(self) -> None:
+        self.push_screen(MetadataScreen(self._metadata_sections()))
+
+    def _metadata_sections(self) -> list[MetadataSection]:
+        usage = self._state.usage
+        lines = [
+            f"session: {self._session_id or '-'}",
+            f"model: {self._status_model or 'unconfigured'}",
+            f"status: {self._state.status}",
+            f"events: {len(self._state.events)}",
+        ]
+        cost_lines = [
+            f"context: {_format_tokens(usage.current_context_tokens)}",
+            f"session tokens: {_format_tokens(usage.session_total_tokens)}",
+            f"input: {_format_tokens(usage.session_input_tokens)}",
+            f"cached input: {_format_tokens(usage.session_cached_input_tokens)}",
+            f"output: {_format_tokens(usage.session_output_tokens)}",
+            f"session cost: {format_usd(usage.session_cost_usd)}",
+        ]
+        return [
+            MetadataSection(title="Runtime", lines=lines),
+            MetadataSection(title="Usage", lines=cost_lines),
+        ]
+
     def on_timeline_widget_event_selected(
         self,
         event: TimelineWidget.EventSelected,
@@ -329,3 +358,9 @@ def _same_stream_delta(previous: TUIEvent, event: TUIEvent) -> bool:
         and previous.step_index == event.step_index
         and previous.tool_call_id == event.tool_call_id
     )
+
+
+def _format_tokens(value: int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:,}"

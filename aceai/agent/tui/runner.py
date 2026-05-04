@@ -8,9 +8,10 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
-from aceai.agent.session import SessionRecorder
+from aceai.agent.session import SessionRecorder, SessionState
 from aceai.core import AgentBase
 from aceai.core.events import RunCompletedEvent
+from aceai.core.executor import ToolExecutor
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
@@ -18,6 +19,7 @@ from aceai.llm.models import LLMRequestMeta
 from .app import AceAITUI
 from .config import AceAITUIConfig
 from .events import TUIEvent
+from .metadata import MetadataSection
 from .setup import ModelSelection, ModelSelectScreen, ProviderSetupScreen
 from .widgets import CommandInput
 
@@ -73,6 +75,7 @@ class AceAIInteractiveTUI(AceAITUI):
             session_recorder=session_recorder,
             session_id=session_id,
         )
+        self._persist_session_state()
         self._agent = agent
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
@@ -91,6 +94,10 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         if question == "/sessions":
             self.open_session_selector()
+            self.exit_command_input(event.input)
+            return
+        if question in ("/config", "/metadata", "/info"):
+            self.open_metadata_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/resume "):
@@ -137,7 +144,10 @@ class AceAIInteractiveTUI(AceAITUI):
             await stream.aclose()
 
     def switch_session(self, session_id: str) -> None:
+        previous_session_id = self._session_id
         super().switch_session(session_id)
+        if self._session_id != previous_session_id:
+            self._restore_session_state()
         self._reload_llm_history()
 
     def _append_history_turn(self, question: str, answer: str) -> None:
@@ -192,6 +202,7 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
+        self._persist_session_state()
         self.set_status_model(self._selected_model)
         self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
 
@@ -206,6 +217,41 @@ class AceAIInteractiveTUI(AceAITUI):
             return
         event_log = self._session_recorder.store.load_event_log(self._session_id)
         self._llm_history = event_log.replay_llm_history()
+
+    def _persist_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        self._session_recorder.store.update_session_state(
+            self._session_id,
+            SessionState(
+                selected_provider=self._provider_name,
+                selected_model=self._selected_model,
+            ),
+        )
+
+    def _restore_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        state = self._session_recorder.store.get_session_state(self._session_id)
+        if state.selected_model == "":
+            return
+        if state.selected_provider != "" and state.selected_provider != self._provider_name:
+            return
+        if state.selected_model not in supported_models(self._provider_name):
+            return
+        self._selected_model = cast(OpenAIModel, state.selected_model)
+        self._request_meta["model"] = self._selected_model
+        self.set_status_model(self._selected_model)
+
+    def _metadata_sections(self) -> list[MetadataSection]:
+        return [
+            *super()._metadata_sections(),
+            *_agent_metadata_sections(
+                self._agent,
+                provider_name=self._provider_name,
+                selected_model=self._selected_model,
+            ),
+        ]
 
 
 class AceAIConfiguredTUI(AceAITUI):
@@ -275,6 +321,7 @@ class AceAIConfiguredTUI(AceAITUI):
         self._agent = self._agent_factory(config)
         self._selected_model = config.model
         self._request_meta["model"] = self._selected_model
+        self._persist_session_state()
         self.set_status_model(self._selected_model)
         if self._initial_question != "":
             self.start_run(self._initial_question)
@@ -292,6 +339,10 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         if question == "/sessions":
             self.open_session_selector()
+            self.exit_command_input(event.input)
+            return
+        if question in ("/config", "/metadata", "/info"):
+            self.open_metadata_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/resume "):
@@ -343,7 +394,10 @@ class AceAIConfiguredTUI(AceAITUI):
             await stream.aclose()
 
     def switch_session(self, session_id: str) -> None:
+        previous_session_id = self._session_id
         super().switch_session(session_id)
+        if self._session_id != previous_session_id:
+            self._restore_session_state()
         self._reload_llm_history()
 
     def _append_history_turn(self, question: str, answer: str) -> None:
@@ -445,6 +499,7 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
+        self._persist_session_state()
         self.set_status_model(self._selected_model)
         self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
 
@@ -459,6 +514,49 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         event_log = self._session_recorder.store.load_event_log(self._session_id)
         self._llm_history = event_log.replay_llm_history()
+
+    def _persist_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        self._session_recorder.store.update_session_state(
+            self._session_id,
+            SessionState(
+                selected_provider=self._provider_name,
+                selected_model=self._selected_model,
+            ),
+        )
+
+    def _restore_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        state = self._session_recorder.store.get_session_state(self._session_id)
+        if state.selected_model == "":
+            return
+        if state.selected_provider == self._provider_name:
+            self.switch_model(state.selected_model)
+
+    def _metadata_sections(self) -> list[MetadataSection]:
+        sections = super()._metadata_sections()
+        if self._agent is None:
+            return [
+                *sections,
+                MetadataSection(
+                    title="Agent",
+                    lines=[
+                        f"provider: {self._provider_name}",
+                        f"model: {self._selected_model}",
+                        "configured: no",
+                    ],
+                ),
+            ]
+        return [
+            *sections,
+            *_agent_metadata_sections(
+                self._agent,
+                provider_name=self._provider_name,
+                selected_model=self._selected_model,
+            ),
+        ]
 
 
 class AceAILiveTUI(AceAIInteractiveTUI):
@@ -561,3 +659,44 @@ def run_agent_tui(
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()
+
+
+def _agent_metadata_sections(
+    agent: AgentBase,
+    *,
+    provider_name: str,
+    selected_model: str,
+) -> list[MetadataSection]:
+    skills = agent.skill_registry.get_skills()
+    skill_lines = [
+        f"{skill.name}: {skill.description} ({skill.skill_file})"
+        for skill in skills
+    ]
+    executor = agent.executor
+    tool_lines: list[str] = []
+    if isinstance(executor, ToolExecutor):
+        for tool in executor.tools.values():
+            tags = ", ".join(tool.metadata.tags)
+            tag_text = f" [{tags}]" if tags else ""
+            tool_lines.append(f"{tool.name}{tag_text}: {tool.description}")
+    hosted_lines = [
+        f"{tool.provider_name}:{tool.native_name}"
+        for tool in agent.hosted_tools
+    ]
+    return [
+        MetadataSection(
+            title="Agent",
+            lines=[
+                f"provider: {provider_name}",
+                f"selected model: {selected_model}",
+                f"default model: {agent.default_model}",
+                f"max steps: {agent.max_steps}",
+            ],
+        ),
+        MetadataSection(title=f"Skills ({len(skill_lines)})", lines=skill_lines),
+        MetadataSection(title=f"Tools ({len(tool_lines)})", lines=tool_lines),
+        MetadataSection(
+            title=f"Hosted Tools ({len(hosted_lines)})",
+            lines=hosted_lines,
+        ),
+    ]

@@ -6,18 +6,22 @@
 
 - `cli`: Add `aceai export <session_id> --file=<path>` to write session exports to a new file without overwriting existing files.
 - `agent`: Let default Ace agents run without a fixed step cap unless callers set `max_steps`.
+- `tui`: Add a metadata/config screen for runtime state, usage, loaded skills, local tools, and hosted tools via `i`, `/config`, `/metadata`, and `/info`.
+- `sessions`: Persist per-session app state such as the selected provider and model so resumed sessions restore their runtime choice.
 
 ### Improvements
 
 - `sessions`: Decouple durable session storage from TUI display events with explicit session/TUI adapters.
 - `cost`: Move usage-cost estimates out of the TUI layer so session recording and display can share the same app-layer cost model.
 - `tui`: Batch small streaming text deltas before rendering to reduce full-transcript redraw pressure for long answers.
+- `tui`: Restyle the main transcript with full-width prompt bands, lighter assistant text, compact tool summaries, and a shorter right-aligned status bar.
 - `tools`: Report app tool filesystem, shell, timeout, and text-replacement failures as tool results the model can observe and recover from.
 
 ### Fixes
 
 - `tui`: Preserve masked API keys when applying model/provider selection so switching no longer reports a missing key after showing one.
 - `tui`: Require provider, model, and API key before applying model-selection changes.
+- `tui`: Keep metadata/config content scrollable while leaving the close action visible.
 
 ### Breaking Changes
 

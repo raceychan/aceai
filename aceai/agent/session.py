@@ -6,6 +6,7 @@ from typing import Any, Literal
 from msgspec import Struct
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import inspect as sql_inspect
 from sqlalchemy import insert as sql_insert
 from sqlalchemy import select as sql_select
 from sqlalchemy import update as sql_update
@@ -23,6 +24,7 @@ from aceai.llm.models import (
 )
 
 SESSION_EVENT_VERSION = 1
+SESSION_STATE_VERSION = 1
 
 SessionEventKind = Literal[
     "assistant_delta",
@@ -66,6 +68,42 @@ class SessionMetadata(Struct, frozen=True, kw_only=True):
             title=row["title"],
             path=str(files_dir / row["path"]),
         )
+
+
+class SessionState(Struct, frozen=True, kw_only=True):
+    selected_provider: str = ""
+    selected_model: str = ""
+    version: int = SESSION_STATE_VERSION
+
+    @classmethod
+    def empty(cls) -> Self:
+        return cls()
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> Self:
+        if payload == {}:
+            return cls.empty()
+        selected_provider = payload["selected_provider"]
+        selected_model = payload["selected_model"]
+        version = payload["version"]
+        if type(selected_provider) is not str:
+            raise TypeError("Session state selected_provider must be str")
+        if type(selected_model) is not str:
+            raise TypeError("Session state selected_model must be str")
+        if type(version) is not int:
+            raise TypeError("Session state version must be int")
+        return cls(
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+            version=version,
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "selected_provider": self.selected_provider,
+            "selected_model": self.selected_model,
+        }
 
 
 class SessionEvent(Struct, frozen=True, kw_only=True):
@@ -240,6 +278,7 @@ _sessions_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, index=True),
     Column("title", String, nullable=False),
     Column("path", String, nullable=False),
+    Column("state_json", String, nullable=False),
 )
 
 
@@ -266,6 +305,7 @@ class SessionStore:
                     updated_at=now,
                     title="New session",
                     path=path.name,
+                    state_json=json.dumps(SessionState.empty().as_json()),
                 )
             )
         return SessionMetadata(
@@ -300,6 +340,30 @@ class SessionStore:
                 sql_update(_sessions_table)
                 .where(_sessions_table.c.session_id == session_id)
                 .values(title=title, updated_at=_utc_now())
+            )
+
+    def get_session_state(self, session_id: str) -> SessionState:
+        query = sql_select(_sessions_table.c.state_json).where(
+            _sessions_table.c.session_id == session_id
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(query).mappings().fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        payload = json.loads(row["state_json"])
+        if not isinstance(payload, dict):
+            raise TypeError("Session state must be a mapping")
+        return SessionState.from_json(payload)
+
+    def update_session_state(self, session_id: str, state: SessionState) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_update(_sessions_table)
+                .where(_sessions_table.c.session_id == session_id)
+                .values(
+                    state_json=json.dumps(state.as_json(), ensure_ascii=False),
+                    updated_at=_utc_now(),
+                )
             )
 
     def delete_session(self, session_id: str) -> None:
@@ -355,6 +419,15 @@ class SessionStore:
 
     def _init_db(self) -> None:
         _metadata.create_all(self.engine)
+        column_names = {
+            column["name"] for column in sql_inspect(self.engine).get_columns("sessions")
+        }
+        if "state_json" not in column_names:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE sessions ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
+                )
+
 
 class SessionRecorder:
     def __init__(self, store: SessionStore, session_id: str) -> None:

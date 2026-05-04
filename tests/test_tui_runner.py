@@ -1,7 +1,7 @@
 import pytest
 
 from aceai.core.base import AgentBase
-from aceai.agent.session import SessionRecorder, SessionStore
+from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMUsage
 from aceai.llm.models import LLMStreamEvent
@@ -13,7 +13,7 @@ from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
 from aceai.agent.tui.setup import ModelSelectScreen, ModelSelection
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, RichLog, Static
 
 
 class StubExecutor:
@@ -227,6 +227,33 @@ async def test_interactive_tui_model_command_updates_next_request_metadata() -> 
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    llm_service = StubLLMService([])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.switch_model("gpt-5.5")
+        app.append_event(TUIEvent.user_message("keep this session"))
+
+    assert store.get_session_state(metadata.session_id) == SessionState(
+        selected_provider="openai",
+        selected_model="gpt-5.5",
+    )
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_status_bar_shows_selected_model() -> None:
     llm_service = StubLLMService([])
     agent = AgentBase(
@@ -281,9 +308,80 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
 
         status = app.query_one(StatusBarWidget)
         assert "ctx: 1,200" in status.current_text
-        assert "session: 1,500" in status.current_text
-        assert "200 cached" in status.current_text
         assert "cost: $0.0141" in status.current_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "debugger"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: debugger\n"
+        "description: Debug flaky tests.\n"
+        "---\n"
+        "# Debugger\n",
+        encoding="utf-8",
+    )
+    llm_service = StubLLMService([])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+        skill_path=tmp_path / "skills",
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test():
+        sections = app._metadata_sections()
+
+    section_lines = {
+        section.title: "\n".join(section.lines)
+        for section in sections
+    }
+    assert "model: gpt-4o" in section_lines["Runtime"]
+    assert "session cost: -" in section_lines["Usage"]
+    assert "provider: openai" in section_lines["Agent"]
+    assert "debugger: Debug flaky tests." in section_lines["Skills (1)"]
+
+
+@pytest.mark.anyio
+async def test_metadata_screen_scrolls_and_keeps_close_button(tmp_path) -> None:
+    skill_root = tmp_path / "skills"
+    for index in range(20):
+        skill_dir = skill_root / f"skill_{index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            f"name: skill_{index}\n"
+            f"description: Skill number {index}.\n"
+            "---\n"
+            "# Skill\n",
+            encoding="utf-8",
+        )
+    llm_service = StubLLMService([])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+        skill_path=skill_root,
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        app.open_metadata_screen()
+        await pilot.pause(0.1)
+        body = app.screen.query_one("#metadata-body", RichLog)
+        close_button = app.screen.query_one("#metadata-close", Button)
+
+        assert body.max_scroll_y > 0
+        assert close_button.display
+
+        await pilot.press("pagedown")
+
+        assert body.scroll_y > 0
 
 
 @pytest.mark.anyio
@@ -565,6 +663,10 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     SessionRecorder(store, second.session_id).record(
         tui_event_to_session_event(TUIEvent.user_message("second"))
     )
+    store.update_session_state(
+        second.session_id,
+        SessionState(selected_provider="openai", selected_model="gpt-5.5"),
+    )
     llm_service = StubLLMService([])
     agent = AgentBase(
         prompt="Prompt",
@@ -586,6 +688,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         assert app._session_id == second.session_id
         assert app.title == f"AceAI {second.session_id}"
         assert app._state.events[0].content == "second"
+        assert app._selected_model == "gpt-5.5"
         assert app._llm_history[0].content[0]["data"] == "second"
 
 

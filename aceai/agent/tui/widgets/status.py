@@ -1,5 +1,7 @@
 """Status bar for the AceAI TUI."""
 
+from rich.align import Align
+from rich.text import Text
 from textual.widgets import Static
 
 from aceai.agent.cost import format_usd
@@ -30,9 +32,13 @@ class StatusBarWidget(Static):
         usage: TUIUsageState | None = None,
     ) -> None:
         model_text = model if model is not None else "unconfigured"
-        usage_text = _usage_text(usage or TUIUsageState())
-        self.current_text = f"model: {model_text}   status: {status}   {usage_text}"
-        self.update(self.current_text)
+        usage_state = usage or TUIUsageState()
+        context = _format_tokens(usage_state.current_context_tokens)
+        cost = format_usd(usage_state.session_cost_usd)
+        self.current_text = (
+            f"status: {status}   model: {model_text}   ctx: {context}   cost: {cost}"
+        )
+        self.update(Align.right(Text(self.current_text)))
 
 
 def _usage_text(usage: TUIUsageState) -> str:
