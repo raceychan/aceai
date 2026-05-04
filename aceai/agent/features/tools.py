@@ -93,7 +93,12 @@ def read_text_file(
     return TextFile(path=str(target), content=content)
 
 
-@tool(tags=["agent_app", "filesystem"], max_calls_per_run=8)
+@tool(
+    tags=["agent_app", "filesystem"],
+    max_calls_per_run=8,
+    require_approval=True,
+    approval_policy="filesystem_write",
+)
 def write_text_file(
     path: Annotated[str, spec(description="UTF-8 text file path to write")],
     content: Annotated[str, spec(description="Complete file content to write")],
@@ -108,7 +113,12 @@ def write_text_file(
     return FileWriteResult(path=str(target), bytes_written=bytes_written)
 
 
-@tool(tags=["agent_app", "filesystem"], max_calls_per_run=12)
+@tool(
+    tags=["agent_app", "filesystem"],
+    max_calls_per_run=12,
+    require_approval=True,
+    approval_policy="filesystem_write",
+)
 def replace_text_in_file(
     path: Annotated[str, spec(description="UTF-8 text file path to edit")],
     old_text: Annotated[str, spec(description="Exact text to replace")],
@@ -135,7 +145,12 @@ def replace_text_in_file(
     )
 
 
-@tool(tags=["agent_app", "shell"], max_calls_per_run=8)
+@tool(
+    tags=["agent_app", "shell"],
+    max_calls_per_run=8,
+    require_approval=True,
+    approval_policy="shell_command",
+)
 def run_shell_command(
     command: Annotated[str, spec(description="Shell command to execute")],
     cwd: Annotated[str, spec(description="Working directory for the command")] = ".",

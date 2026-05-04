@@ -4,6 +4,7 @@ from aceai.core.events import (
     LLMMediaEvent,
     LLMStartedEvent,
     RunCompletedEvent,
+    RunSuspendedEvent,
 )
 from aceai.llm.models import (
     LLMGeneratedMedia,
@@ -14,7 +15,7 @@ from aceai.llm.models import (
     LLMToolCall,
     LLMToolCallDelta,
 )
-from aceai.core.models import AgentStep, ToolExecutionResult
+from aceai.core.models import AgentStep, ToolApprovalRequest, ToolExecutionResult
 from aceai.agent.tui.events import TUIEvent
 
 
@@ -140,6 +141,42 @@ def test_adapt_tool_output_event() -> None:
     assert tui_event.kind == "tool_output"
     assert tui_event.tool_name == "lookup"
     assert tui_event.content == "partial"
+
+
+def test_adapt_tool_approval_requested_event() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(name="write_text_file", arguments="{}", call_id="call-1")
+    request = ToolApprovalRequest(
+        call=call,
+        tool_name="write_text_file",
+        reason="Tool 'write_text_file' requires approval",
+        policy="filesystem_write",
+    )
+    event = builder.tool_approval_requested(request=request)
+
+    tui_event = TUIEvent.from_agent_event(event)
+
+    assert tui_event.kind == "tool_approval_requested"
+    assert tui_event.tool_name == "write_text_file"
+    assert tui_event.tool_call_id == "call-1"
+    assert "filesystem_write" in tui_event.content
+
+
+def test_adapt_run_suspended_event() -> None:
+    call = LLMToolCall(name="write_text_file", arguments="{}", call_id="call-1")
+    request = ToolApprovalRequest(call=call, tool_name="write_text_file")
+    event = RunSuspendedEvent(
+        step_index=0,
+        step_id="step-1",
+        request=request,
+    )
+
+    tui_event = TUIEvent.from_agent_event(event)
+
+    assert tui_event.kind == "run_suspended"
+    assert tui_event.tool_name == "write_text_file"
+    assert tui_event.tool_call_id == "call-1"
+    assert "Choose Approve or Reject" in tui_event.content
 
 
 def test_adapt_run_completed_event() -> None:

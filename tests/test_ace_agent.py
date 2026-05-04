@@ -8,7 +8,8 @@ from aceai.llm.interface import UNSET
 
 
 def test_default_agent_tools_are_product_capabilities() -> None:
-    tool_names = {tool.name for tool in default_agent_tools()}
+    tools = default_agent_tools()
+    tool_names = {tool.name for tool in tools}
 
     assert tool_names == {
         "list_directory",
@@ -17,6 +18,15 @@ def test_default_agent_tools_are_product_capabilities() -> None:
         "replace_text_in_file",
         "run_shell_command",
         "search_text",
+    }
+    approval_policies = {tool.name: tool.metadata.approval_policy for tool in tools}
+    assert approval_policies["write_text_file"] == "filesystem_write"
+    assert approval_policies["replace_text_in_file"] == "filesystem_write"
+    assert approval_policies["run_shell_command"] == "shell_command"
+    assert {tool.name for tool in tools if tool.metadata.require_approval} == {
+        "write_text_file",
+        "replace_text_in_file",
+        "run_shell_command",
     }
 
 

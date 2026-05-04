@@ -1,7 +1,7 @@
 import re
 from html import escape
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, Literal, cast
 
 from msgspec import Struct
 import yaml
@@ -130,6 +130,30 @@ class Skill:
 class SkillLoader:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).expanduser()
+
+    @classmethod
+    def resolve_paths(
+        cls,
+        skill_path: str | Path | Literal["auto", "disable"],
+    ) -> list[Path]:
+        global_skills = Path.home() / ".aceai" / "skills"
+        if skill_path == "auto":
+            return [global_skills, Path.cwd() / ".agent" / "skills"]
+        if skill_path == "disable":
+            return []
+        return [global_skills, Path(skill_path).expanduser()]
+
+    @classmethod
+    def load_registry(
+        cls,
+        skill_path: str | Path | Literal["auto", "disable"],
+        loader_factory: Callable[[str], "SkillLoader"] | None = None,
+    ) -> "SkillRegistry":
+        registry = SkillRegistry()
+        for path in cls.resolve_paths(skill_path):
+            loader = cls(str(path)) if loader_factory is None else loader_factory(str(path))
+            registry.register(*loader.load_skills().get_skills())
+        return registry
 
     def load_skills(self) -> "SkillRegistry":
         registry = SkillRegistry()

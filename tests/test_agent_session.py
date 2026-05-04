@@ -257,6 +257,39 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
+def test_event_log_omits_pending_tool_call_from_llm_history(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"python binary_search.py"}',
+        call_id="call-1",
+    )
+
+    recorder.record(_user_message("run it"))
+    recorder.record(_llm_completed("running it", tool_calls=[call]))
+    recorder.record(_tool_started(call))
+    recorder.record(
+        SessionEvent(
+            kind="tool_approval_requested",
+            payload={
+                "content": "Tool 'run_shell_command' requires approval (shell_command)",
+                "tool_name": call.name,
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        )
+    )
+    recorder.record(_user_message("send approval again"))
+
+    history = store.load_event_log(metadata.session_id).replay_llm_history()
+
+    assert [message.role for message in history] == ["user", "user"]
+    assert history[0].content[0]["data"] == "run it"
+    assert history[1].content[0]["data"] == "send approval again"
+
+
 def test_session_store_exports_readable_text(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -270,6 +303,48 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     assert text.startswith(f"# AceAI session {metadata.session_id}\n")
     assert "## user\nhello\n" in text
     assert "## assistant\nanswer\n" in text
+
+
+def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-1",
+    )
+
+    recorder.record(_tool_started(call))
+    recorder.record(
+        SessionEvent(
+            kind="tool_approval_requested",
+            payload={
+                "content": "Tool 'write_text_file' requires approval (filesystem_write)",
+                "tool_name": call.name,
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        )
+    )
+    recorder.record(
+        SessionEvent(
+            kind="tool_approval_resolved",
+            payload={
+                "content": "approved",
+                "tool_name": call.name,
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        )
+    )
+
+    text = store.export_text(metadata.session_id)
+
+    assert "## tool approval requested: write_text_file\n" in text
+    assert "filesystem_write" in text
+    assert "arguments:\n{\"path\":\"x\",\"content\":\"hello\"}" in text
+    assert "## tool approval resolved: write_text_file\napproved" in text
 
 
 def _user_message(content: str) -> SessionEvent:

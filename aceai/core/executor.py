@@ -2,7 +2,6 @@ from time import perf_counter
 from typing import Any, Callable
 
 from ididi import Graph
-from msgspec import Struct, field
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -11,14 +10,11 @@ from aceai.llm.interface import is_present
 from aceai.llm.models import LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
 from aceai.core.tools import IToolSpec, Tool
+from aceai.core.run_state import ToolInvocation, ToolRunState
 
 
 class ToolExecutionError(AceAIError):
     """Tool failure that should be returned to the model as tool output."""
-
-
-class RunState(Struct, kw_only=True):
-    tool_call_counts: dict[str, int] = field(default_factory=dict[str, int])
 
 
 class IExecutor:
@@ -28,13 +24,17 @@ class IExecutor:
         "select tools by names, good for dynamic tool selection"
         raise NotImplementedError
 
-    async def execute_tool(
+    def resolve_invocation(self, tool_call: LLMToolCall) -> ToolInvocation:
+        "resolve a model-emitted tool call to a concrete local tool invocation"
+        raise NotImplementedError
+
+    async def execute(
         self,
-        tool_call: LLMToolCall,
+        invocation: ToolInvocation,
         *,
-        run_state: RunState,
+        tool_state: ToolRunState,
     ) -> str:
-        "execute a tool call and return the result as string"
+        "execute a resolved tool invocation and return the result as string"
         raise NotImplementedError
 
 
@@ -81,7 +81,10 @@ class ToolExecutor(IExecutor):
             self._all_tools = [tool.tool_spec for tool in self.tools.values()]
         return self._all_tools
 
-    async def resolve_tool(self, tool: Tool[Any, Any], /, **params: Any) -> Any:
+    def resolve_invocation(self, tool_call: LLMToolCall) -> ToolInvocation:
+        return ToolInvocation(call=tool_call, tool=self.tools[tool_call.name])
+
+    async def resolve_tool_deps(self, tool: Tool[Any, Any], /, **params: Any) -> Any:
         dep_params = {
             dname: await self.graph.aresolve(dep, **params)
             for dname, dep in tool.signature.dep_nodes.items()
@@ -89,22 +92,23 @@ class ToolExecutor(IExecutor):
         result = tool(**params, **dep_params)
         return await result if tool.is_async else result
 
-    async def execute_tool(
+    async def execute(
         self,
-        tool_call: LLMToolCall,
+        invocation: ToolInvocation,
         *,
-        run_state: RunState,
+        tool_state: ToolRunState,
     ) -> str:
-        tool_name = tool_call.name
+        tool_call = invocation.call
+        tool = invocation.tool
+        tool_name = tool.name
         param_json = tool_call.arguments
-        tool = self.tools[tool_name]
         max_calls_per_run = tool.metadata.max_calls_per_run
         if is_present(max_calls_per_run):
             if max_calls_per_run < 1:
                 raise ValueError(
                     f"Tool {tool_name!r} has invalid max_calls_per_run={max_calls_per_run}"
                 )
-            current_count = run_state.tool_call_counts.get(tool_name, 0)
+            current_count = tool_state.call_counts.get(tool_name, 0)
             if current_count >= max_calls_per_run:
                 return (
                     f"the tool {tool_name} exceeds its max calls in this run, "
@@ -124,10 +128,10 @@ class ToolExecutor(IExecutor):
             },
         ):
             params = tool.decode_params(param_json)
-            result = await self.resolve_tool(tool, **params)
+            result = await self.resolve_tool_deps(tool, **params)
             if is_present(max_calls_per_run):
-                run_state.tool_call_counts[tool_name] = (
-                    run_state.tool_call_counts.get(tool_name, 0) + 1
+                tool_state.call_counts[tool_name] = (
+                    tool_state.call_counts.get(tool_name, 0) + 1
                 )
             return tool.encode_return(result)
 
@@ -156,30 +160,30 @@ class LoggingToolExecutor(ToolExecutor):
         self.logger = logger
         self.timer = timer
 
-    async def execute_tool(
+    async def execute(
         self,
-        tool_call: LLMToolCall,
+        invocation: ToolInvocation,
         *,
-        run_state: RunState,
+        tool_state: ToolRunState,
     ) -> str:
-        call_id = tool_call.call_id
+        call_id = invocation.call.call_id
         self.logger.info(
-            f"Tool {tool_call.name} starting (call_id={call_id}) with {tool_call.arguments}"
+            f"Tool {invocation.tool.name} starting (call_id={call_id}) with {invocation.call.arguments}"
         )
         start = self.timer()
         try:
-            result = await super().execute_tool(
-                tool_call,
-                run_state=run_state,
+            result = await super().execute(
+                invocation,
+                tool_state=tool_state,
             )
         except Exception:
             duration = self.timer() - start
             self.logger.exception(
-                f"Tool {tool_call.name} failed after {duration:.2f}s",
+                f"Tool {invocation.tool.name} failed after {duration:.2f}s",
             )
             raise
         duration = self.timer() - start
         self.logger.success(
-            f"Tool {tool_call.name} finished in {duration:.2f}s, result: {result}",
+            f"Tool {invocation.tool.name} finished in {duration:.2f}s, result: {result}",
         )
         return result

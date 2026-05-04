@@ -2,7 +2,8 @@ import pytest
 
 from aceai.core.base import AgentBase
 from aceai.llm.errors import AceAIRuntimeError
-from aceai.core.executor import RunState, ToolExecutionError
+from aceai.core.executor import ToolExecutionError
+from aceai.core.run_state import ToolRunState
 from aceai.core.events import (
     AgentEvent,
     LLMMediaEvent,
@@ -12,10 +13,14 @@ from aceai.core.events import (
     LLMToolCallDeltaEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    RunSuspendedEvent,
     StepCompletedEvent,
+    ToolApprovalRequestedEvent,
+    ToolApprovalResolvedEvent,
     ToolFailedEvent,
     ToolStartedEvent,
 )
+from aceai.core.models import ToolApprovalDecision
 from aceai.llm import LLMResponse
 from aceai.llm.interface import UNSET
 from aceai.llm.models import (
@@ -30,9 +35,14 @@ from aceai.llm.models import (
 
 
 class StubExecutor:
-    def __init__(self, results: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        results: dict[str, str] | None = None,
+        approval_required: set[str] | None = None,
+    ) -> None:
         self.tool_specs: list[object] = []
         self._results = results or {}
+        self._approval_required = approval_required or set()
         self.calls: list[LLMToolCall] = []
 
     def select_tools(
@@ -42,14 +52,38 @@ class StubExecutor:
             raise ValueError("Cannot specify both include and exclude")
         return self.tool_specs
 
-    async def execute_tool(
+    def resolve_invocation(self, tool_call: LLMToolCall):
+        return StubInvocation(
+            call=tool_call,
+            approval_required=tool_call.name in self._approval_required,
+        )
+
+    async def execute(
         self,
-        tool_call: LLMToolCall,
+        invocation,
         *,
-        run_state: RunState,
+        tool_state: ToolRunState,
     ) -> str:
+        tool_call = invocation.call
         self.calls.append(tool_call)
         return self._results[tool_call.name]
+
+
+class StubInvocation:
+    def __init__(self, call: LLMToolCall, approval_required: bool = False) -> None:
+        self.call = call
+        self.approval_required = approval_required
+        self.tool = StubTool(call.name)
+
+
+class StubTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.metadata = StubToolMetadata()
+
+
+class StubToolMetadata:
+    approval_policy = "test_policy"
 
 
 class StubLLMService:
@@ -74,11 +108,11 @@ class RaisingExecutor(StubExecutor):
         super().__init__()
         self._error = error
 
-    async def execute_tool(
+    async def execute(
         self,
-        tool_call: LLMToolCall,
+        invocation,
         *,
-        run_state: RunState,
+        tool_state: ToolRunState,
     ) -> str:
         raise self._error
 
@@ -817,24 +851,177 @@ async def test_agent_executes_all_tool_calls_in_step() -> None:
     assert events[-1].final_answer == "done"
 
 
-class ShortCircuitAgent(AgentBase):
-    async def _run_step(
-        self,
-        *,
-        event_builder,
-        run_state,
-        **request_meta,
-    ):
-        yield event_builder.llm_started()
-        raise RuntimeError("preflight failure")
+@pytest.mark.anyio
+async def test_agent_suspends_before_approval_required_tool() -> None:
+    call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="use write", tool_calls=[call]),
+            )
+        ],
+    ]
+    executor = StubExecutor(
+        {"write_file": '{"ok":true}'},
+        approval_required={"write_file"},
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(streams),
+        executor=executor,
+        max_steps=2,
+    )
+    run = agent.create_run("Write it")
+
+    events = [event async for event in run.execute()]
+
+    requested = [event for event in events if isinstance(event, ToolApprovalRequestedEvent)]
+    suspended = [event for event in events if isinstance(event, RunSuspendedEvent)]
+    assert requested
+    assert suspended
+    assert requested[0].request.call is call
+    assert requested[0].request.tool_name == "write_file"
+    assert run.status == "suspended"
+    assert executor.calls == []
+
+
+@pytest.mark.anyio
+async def test_agent_resumes_approved_tool_and_continues_conversation() -> None:
+    call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="use write", tool_calls=[call]),
+            )
+        ],
+        make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+    ]
+    executor = StubExecutor(
+        {"write_file": '{"ok":true}'},
+        approval_required={"write_file"},
+    )
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        max_steps=2,
+    )
+    run = agent.create_run("Write it")
+    suspend_events = [event async for event in run.execute()]
+    request = [
+        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+    ][0].request
+
+    resume_events = [
+        event async for event in run.resume_approval(ToolApprovalDecision.approve(request))
+    ]
+
+    resolved = [
+        event for event in resume_events if isinstance(event, ToolApprovalResolvedEvent)
+    ]
+    assert resolved and resolved[0].decision.approved is True
+    assert executor.calls == [call]
+    assert isinstance(resume_events[-1], RunCompletedEvent)
+    assert resume_events[-1].final_answer == "done"
+    tool_message = llm_service.calls[1]["messages"][-1]
+    assert tool_message.role == "tool"
+    assert tool_message.content[0]["data"] == '{"ok":true}'
+
+
+@pytest.mark.anyio
+async def test_agent_rejects_tool_and_returns_rejection_to_model() -> None:
+    call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="use write", tool_calls=[call]),
+            )
+        ],
+        make_stream(response=LLMResponse(text="skipped"), deltas=["skipped"]),
+    ]
+    executor = StubExecutor(
+        {"write_file": '{"ok":true}'},
+        approval_required={"write_file"},
+    )
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        max_steps=2,
+    )
+    run = agent.create_run("Write it")
+    suspend_events = [event async for event in run.execute()]
+    request = [
+        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+    ][0].request
+
+    resume_events = [
+        event
+        async for event in run.resume_approval(
+            ToolApprovalDecision.reject(request, reason="not now")
+        )
+    ]
+
+    assert executor.calls == []
+    failed = [event for event in resume_events if isinstance(event, ToolFailedEvent)]
+    assert failed and failed[0].error == "not now"
+    tool_message = llm_service.calls[1]["messages"][-1]
+    assert tool_message.role == "tool"
+    assert tool_message.content[0]["data"] == "Tool execution rejected: not now"
+    assert isinstance(resume_events[-1], RunCompletedEvent)
+    assert resume_events[-1].final_answer == "skipped"
+
+
+@pytest.mark.anyio
+async def test_suspended_agent_run_requires_approval_resume() -> None:
+    call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [
+                [
+                    LLMStreamEvent(
+                        event_type="response.completed",
+                        response=LLMResponse(text="use write", tool_calls=[call]),
+                    )
+                ],
+            ]
+        ),
+        executor=StubExecutor(
+            {"write_file": '{"ok":true}'},
+            approval_required={"write_file"},
+        ),
+        max_steps=2,
+    )
+    run = agent.create_run("Write it")
+
+    [event async for event in run.execute()]
+
+    with pytest.raises(AceAIRuntimeError, match="resume_approval"):
+        async for _ in run.execute():
+            pass
+    with pytest.raises(AceAIRuntimeError, match="does not match"):
+        async for _ in run.resume_approval(
+            ToolApprovalDecision(call_id="other-call", approved=True)
+        ):
+            pass
 
 
 @pytest.mark.anyio
 async def test_agent_run_rethrows_when_no_steps_recorded() -> None:
-    agent = ShortCircuitAgent(
+    agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
-        llm_service=StubLLMService([]),
+        llm_service=RaisingStreamLLMService([], RuntimeError("preflight failure")),
         executor=StubExecutor(),
         max_steps=1,
     )

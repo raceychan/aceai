@@ -18,6 +18,7 @@ from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, select_event
 from .widgets import (
+    ApprovalWidget,
     CommandInput,
     DetailWidget,
     StatusBarWidget,
@@ -56,7 +57,7 @@ class AceAITUI(App[None]):
         display: none;
     }
 
-    DetailWidget.collapsed {
+        DetailWidget.collapsed {
         display: none;
     }
 
@@ -100,6 +101,7 @@ class AceAITUI(App[None]):
             yield TimelineWidget(id="timeline", classes="collapsed")
             yield StreamWidget(id="stream")
             yield DetailWidget(id="detail", classes="collapsed")
+        yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
         yield CommandInput(id="input")
         yield Footer()
@@ -119,6 +121,8 @@ class AceAITUI(App[None]):
 
     def load_events(self, events: list[TUIEvent]) -> None:
         self._clear_pending_stream_delta()
+        if self.is_mounted:
+            self.clear_approval_request()
         self._state = reduce_events(events)
         self._refresh_widgets()
 
@@ -208,6 +212,12 @@ class AceAITUI(App[None]):
                 usage=self._state.usage,
             )
 
+    def show_approval_request(self, request) -> None:
+        self.query_one(ApprovalWidget).show_request(request)
+
+    def clear_approval_request(self) -> None:
+        self.query_one(ApprovalWidget).clear_request()
+
     def exit_command_input(self, command_input: CommandInput) -> None:
         command_input.value = ""
         command_input.blur()
@@ -284,6 +294,11 @@ class AceAITUI(App[None]):
             status=self._state.status,
             usage=self._state.usage,
         )
+        command_input = self.query_one(CommandInput)
+        if self._state.status == "suspended":
+            command_input.placeholder = "Choose Approve or Reject"
+        else:
+            command_input.placeholder = "Ask AceAI or type /quit"
 
     def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
         if event.kind not in ("assistant_delta", "thinking_delta"):

@@ -3,8 +3,9 @@ from pathlib import Path
 from ididi import Graph
 import pytest
 
-from aceai.core.executor import RunState, ToolExecutor
 from aceai.core.base import AgentBase
+from aceai.core.executor import ToolExecutor
+from aceai.core.run_state import ToolRunState
 from aceai.llm.errors import AceAIConfigurationError
 from aceai.llm.interface import UNSET
 from aceai.llm.models import LLMToolCall
@@ -168,13 +169,14 @@ async def test_agent_base_registers_skill_tools_on_tool_executor(
 
     assert "skills_list" in executor.tools
     assert "skill_view" in executor.tools
-    result = await executor.execute_tool(
-        LLMToolCall(
-            name="skill_view",
-            arguments='{"name":"release"}',
-            call_id="call-skill",
-        ),
-        run_state=RunState(),
+    call = LLMToolCall(
+        name="skill_view",
+        arguments='{"name":"release"}',
+        call_id="call-skill",
+    )
+    result = await executor.execute(
+        executor.resolve_invocation(call),
+        tool_state=ToolRunState(),
     )
     assert "Do release work." in result
 

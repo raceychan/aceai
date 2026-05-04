@@ -3,7 +3,8 @@ import pytest
 from aceai.core.base import AgentBase
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMUsage
+from aceai.core.run_state import ToolRunState
+from aceai.llm.models import LLMToolCall, LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
@@ -12,6 +13,7 @@ from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
 from aceai.agent.tui.setup import ModelSelectScreen, ModelSelection
+from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
 from textual.widgets import Button, Input, RichLog, Static
 
@@ -25,6 +27,50 @@ class StubExecutor:
         if include and exclude:
             raise ValueError("Cannot specify both include and exclude")
         return []
+
+
+class ApprovalExecutor:
+    def __init__(self) -> None:
+        self.calls: list[LLMToolCall] = []
+
+    def select_tools(
+        self,
+        include: set[str] | None = None,
+        exclude: set[str] | None = None,
+    ) -> list[object]:
+        if include and exclude:
+            raise ValueError("Cannot specify both include and exclude")
+        return []
+
+    def resolve_invocation(self, tool_call: LLMToolCall):
+        return ApprovalInvocation(tool_call)
+
+    async def execute(
+        self,
+        invocation,
+        *,
+        tool_state: ToolRunState,
+    ) -> str:
+        self.calls.append(invocation.call)
+        return '{"ok":true}'
+
+
+class ApprovalInvocation:
+    def __init__(self, call: LLMToolCall) -> None:
+        self.call = call
+        self.approval_required = True
+        self.tool = ApprovalTool(call.name)
+
+
+class ApprovalTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.metadata = ApprovalToolMetadata()
+
+
+class ApprovalToolMetadata:
+    require_approval = True
+    approval_policy = "filesystem_write"
 
 
 class StubLLMService:
@@ -191,6 +237,176 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
         assert app._state.final_answer == "second"
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "First?"
         assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-1",
+    )
+    llm_service = MultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="use tool", tool_calls=[call]),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="done"),
+                ),
+            ],
+        ]
+    )
+    executor = ApprovalExecutor()
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Write it"))
+        await pilot.pause(0.1)
+
+        assert app._state.status == "suspended"
+        assert executor.calls == []
+        assert app._active_runtime is not None
+        assert app._active_runtime.status == "suspended"
+        assert command_input.placeholder == "Choose Approve or Reject"
+        status = app.query_one(StatusBarWidget)
+        assert "action: choose Approve or Reject" in status.current_text
+        approval = app.query_one(ApprovalWidget)
+        assert not approval.has_class("collapsed")
+        assert approval.query_one("#approval-approve", Button).label.plain == "A Approve"
+        assert approval.query_one("#approval-reject", Button).label.plain == "R Reject"
+        assert "content:" in str(approval.query_one("#approval-summary", Static).render())
+
+        approval.post_message(ApprovalWidget.Selected(approved=True))
+        await pilot.pause(0.1)
+
+        assert app._state.status == "completed"
+        assert app._state.final_answer == "done"
+        assert command_input.placeholder == "Ask AceAI or type /quit"
+        assert approval.has_class("collapsed")
+        assert executor.calls == [call]
+        assert app._llm_history[-1].role == "assistant"
+        assert app._llm_history[-1].content[0]["data"] == "done"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_approves_suspended_tool_with_keyboard() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-1",
+    )
+    llm_service = MultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="use tool", tool_calls=[call]),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="done"),
+                ),
+            ],
+        ]
+    )
+    executor = ApprovalExecutor()
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Write it"))
+        await pilot.pause(0.1)
+
+        await pilot.press("a")
+        await pilot.pause(0.1)
+
+        assert app._state.status == "completed"
+        assert app._state.final_answer == "done"
+        assert executor.calls == [call]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_shows_next_approval_after_resume_suspends_again() -> None:
+    first_call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-1",
+    )
+    second_call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"python binary_search.py"}',
+        call_id="call-2",
+    )
+    llm_service = MultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="write file", tool_calls=[first_call]),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="run file", tool_calls=[second_call]),
+                ),
+            ],
+        ]
+    )
+    executor = ApprovalExecutor()
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Write and run it"))
+        await pilot.pause(0.1)
+
+        approval = app.query_one(ApprovalWidget)
+        assert app._state.status == "suspended"
+        assert not approval.has_class("collapsed")
+        assert "write_text_file" in str(
+            approval.query_one("#approval-summary", Static).render()
+        )
+
+        approval.post_message(ApprovalWidget.Selected(approved=True))
+        await pilot.pause(0.1)
+
+        assert app._state.status == "suspended"
+        assert app._active_runtime is not None
+        assert app._active_runtime.status == "suspended"
+        assert command_input.placeholder == "Choose Approve or Reject"
+        assert executor.calls == [first_call]
+        assert not approval.has_class("collapsed")
+        summary = str(approval.query_one("#approval-summary", Static).render())
+        assert "run_shell_command" in summary
+        assert "python binary_search.py" in summary
 
 
 @pytest.mark.anyio

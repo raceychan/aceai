@@ -1,5 +1,32 @@
 # Changelog
 
+## AceAI v0.2.6
+
+### Features
+
+- `core`: Add `AgentRuntime` with explicit runtime state, pending approval tracking, and resumable human-in-the-loop tool approval flow.
+- `tools`: Add approval policy metadata for app tools, including filesystem write and shell command approval requirements.
+- `tui`: Add inline approval controls for suspended tool calls with clickable `A Approve` / `R Reject` actions and keyboard shortcuts.
+- `sessions`: Persist and export tool approval requested/resolved events so saved runs show the human-in-the-loop decision chain.
+
+### Improvements
+
+- `runtime`: Collapse executor-owned pending approval fields into core runtime state so tool approval, resume, and run status share one source of truth.
+- `tui`: Route initial runtime execution and approval resume streams through one shared event consumer so suspended/completed handling cannot drift between paths.
+- `tui`: Keep approval controls compact and near the input area while preserving readable transcript rendering.
+- `sessions`: Mark unresolved restored approvals as expired in the transcript instead of showing non-actionable approval buttons.
+
+### Fixes
+
+- `sessions`: Omit unresolved assistant tool calls from replayed LLM history so resumed conversations no longer trigger provider errors about missing tool messages.
+- `tui`: Show the next approval prompt when a resumed approval flow suspends again for a subsequent tool call.
+- `tui`: Keep restored pending approval history visible without pretending old approvals can still be clicked.
+
+### Breaking Changes
+
+- `core`: Rename `AgentRun` to `AgentRuntime` and `AgentRunState` to `AgentRuntimeState`; callers must use the new runtime naming.
+- `executor`: Replace executor-owned run state with `ToolRunState`; custom executors must accept the updated `tool_state` contract.
+
 ## AceAI v0.2.5
 
 ### Features

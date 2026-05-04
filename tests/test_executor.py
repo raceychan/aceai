@@ -6,7 +6,8 @@ from ididi import Graph, use
 from msgspec import Struct
 
 from aceai.llm.errors import AceAIRuntimeError
-from aceai.core.executor import LoggingToolExecutor, RunState, ToolExecutor
+from aceai.core.executor import LoggingToolExecutor, ToolExecutor
+from aceai.core.run_state import ToolRunState
 from aceai.llm.models import LLMToolCall
 from aceai.core.tools import tool
 from aceai.core.tools._tool_sig import Annotated, spec
@@ -87,6 +88,17 @@ def build_tool(func):
     return tool(func)
 
 
+async def execute_call(
+    executor: ToolExecutor,
+    call: LLMToolCall,
+    tool_state: ToolRunState | None = None,
+) -> str:
+    return await executor.execute(
+        executor.resolve_invocation(call),
+        tool_state=tool_state or ToolRunState(),
+    )
+
+
 @pytest.fixture
 async def graph() -> AsyncGenerator[Graph, None]:
     graph = Graph()
@@ -107,7 +119,7 @@ async def test_tool_executor_executes_tool_with_dep_graph(graph: Graph) -> None:
         call_id="call-123",
     )
 
-    encoded_result = await executor.execute_tool(call, run_state=RunState())
+    encoded_result = await execute_call(executor, call)
 
     assert encoded_result == '"primary:7"'
 
@@ -123,7 +135,7 @@ async def test_tool_executor_awaits_async_tool_results(graph: Graph) -> None:
         call_id="call-async",
     )
 
-    result = await executor.execute_tool(call, run_state=RunState())
+    result = await execute_call(executor, call)
 
     assert result == "3"
 
@@ -146,7 +158,7 @@ async def test_logging_tool_executor_logs_successful_calls(graph: Graph) -> None
         call_id="req-success",
     )
 
-    result = await executor.execute_tool(call, run_state=RunState())
+    result = await execute_call(executor, call)
 
     assert result == "3"
     assert logger.info_messages == [
@@ -177,7 +189,7 @@ async def test_logging_tool_executor_logs_and_reraises_failures(graph: Graph) ->
     )
 
     with pytest.raises(AceAIRuntimeError, match="expected failure"):
-        await executor.execute_tool(call, run_state=RunState())
+        await execute_call(executor, call)
 
     assert logger.info_messages == [
         'Tool unreliable_tool starting (call_id=req-fail) with {"value":1}'
@@ -193,7 +205,7 @@ async def test_tool_executor_resolves_httpx_async_client(graph: Graph) -> None:
 
     call = LLMToolCall(name=client_tool.name, arguments="{}", call_id="req-httpx")
 
-    result = await executor.execute_tool(call, run_state=RunState())
+    result = await execute_call(executor, call)
 
     assert result == '"AsyncClient"'
 
@@ -217,7 +229,7 @@ async def test_tool_executor_encodes_struct_return(graph: Graph) -> None:
         call_id="req-struct",
     )
 
-    encoded = await executor.execute_tool(call, run_state=RunState())
+    encoded = await execute_call(executor, call)
 
     assert encoded == '{"value":5}'
 
@@ -245,15 +257,17 @@ async def test_tool_executor_enforces_max_calls_per_run(graph: Graph) -> None:
 
     tick_tool = tool(max_calls_per_run=1)(tick)
     executor = ToolExecutor(graph, [tick_tool])
-    run_state = RunState()
+    tool_state = ToolRunState()
 
-    first = await executor.execute_tool(
+    first = await execute_call(
+        executor,
         LLMToolCall(name=tick_tool.name, arguments="{}", call_id="call-1"),
-        run_state=run_state,
+        tool_state,
     )
-    second = await executor.execute_tool(
+    second = await execute_call(
+        executor,
         LLMToolCall(name=tick_tool.name, arguments="{}", call_id="call-2"),
-        run_state=run_state,
+        tool_state,
     )
 
     assert first == "1"
@@ -261,3 +275,24 @@ async def test_tool_executor_enforces_max_calls_per_run(graph: Graph) -> None:
         "the tool tick exceeds its max calls in this run, do not call it again"
     )
     assert executed == [1]
+
+
+@pytest.mark.anyio
+async def test_tool_executor_resolves_invocation_with_approval_metadata(
+    graph: Graph,
+) -> None:
+    approved_tool = tool(require_approval=True)(echo_message)
+    executor = ToolExecutor(graph, [approved_tool])
+    call = LLMToolCall(
+        name=approved_tool.name,
+        arguments='{"message":"hello"}',
+        call_id="call-approval",
+    )
+
+    invocation = executor.resolve_invocation(call)
+    result = await executor.execute(invocation, tool_state=ToolRunState())
+
+    assert invocation.call is call
+    assert invocation.tool is approved_tool
+    assert invocation.approval_required is True
+    assert result == '"hello"'

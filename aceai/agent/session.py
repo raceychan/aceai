@@ -37,12 +37,15 @@ SessionEventKind = Literal[
     "reasoning_summary",
     "run_completed",
     "run_failed",
+    "run_suspended",
     "session_notice",
     "step_completed",
     "step_failed",
     "step_started",
     "thinking_delta",
     "tool_call_delta",
+    "tool_approval_requested",
+    "tool_approval_resolved",
     "tool_completed",
     "tool_failed",
     "tool_output",
@@ -131,12 +134,15 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "reasoning_summary",
             "run_completed",
             "run_failed",
+            "run_suspended",
             "session_notice",
             "step_completed",
             "step_failed",
             "step_started",
             "thinking_delta",
             "tool_call_delta",
+            "tool_approval_requested",
+            "tool_approval_resolved",
             "tool_completed",
             "tool_failed",
             "tool_output",
@@ -212,23 +218,40 @@ class EventLog:
 
     def replay_llm_history(self) -> list[LLMMessage]:
         history: list[LLMMessage] = []
+        pending_tool_call: LLMToolCallMessage | None = None
+        pending_tool_call_ids: set[str] = set()
+        pending_tool_call_recorded = False
         for event in self.events:
             if event.kind == "user_message":
+                pending_tool_call = None
+                pending_tool_call_ids = set()
+                pending_tool_call_recorded = False
                 history.append(
                     LLMMessage.build(role="user", content=event.payload["content"])
                 )
             elif event.kind == "assistant_message":
+                pending_tool_call = None
+                pending_tool_call_ids = set()
+                pending_tool_call_recorded = False
                 history.append(
                     LLMMessage.build(role="assistant", content=event.payload["content"])
                 )
             elif event.kind == "assistant_tool_call":
-                history.append(
-                    LLMToolCallMessage.from_content(
-                        content=event.payload["content"],
-                        tool_calls=LLMToolCall.list_from_payload(event.payload),
-                    )
+                tool_calls = LLMToolCall.list_from_payload(event.payload)
+                pending_tool_call = LLMToolCallMessage.from_content(
+                    content=event.payload["content"],
+                    tool_calls=tool_calls,
                 )
+                pending_tool_call_ids = {call.call_id for call in tool_calls}
+                pending_tool_call_recorded = False
             elif event.kind == "tool_result":
+                if event.payload["tool_call_id"] not in pending_tool_call_ids:
+                    continue
+                if not pending_tool_call_recorded:
+                    if pending_tool_call is None:
+                        raise RuntimeError("Pending tool call history is missing")
+                    history.append(pending_tool_call)
+                    pending_tool_call_recorded = True
                 history.append(
                     LLMToolUseMessage.from_content(
                         content=event.payload["output"],
@@ -236,6 +259,10 @@ class EventLog:
                         call_id=event.payload["tool_call_id"],
                     )
                 )
+                pending_tool_call_ids.remove(event.payload["tool_call_id"])
+                if len(pending_tool_call_ids) == 0:
+                    pending_tool_call = None
+                    pending_tool_call_recorded = False
         return history
 
     def replay_export_text(self, metadata: SessionMetadata) -> str:
@@ -459,6 +486,9 @@ class SessionRecorder:
         if event.kind == "tool_output":
             self._tool_for(event).output += event.payload["content"]
             return
+        if event.kind == "tool_approval_requested":
+            self._record_tool_approval_requested(event)
+            return
         if event.kind == "llm_completed":
             self._record_llm_completed(event)
             return
@@ -481,7 +511,9 @@ class SessionRecorder:
                 },
                 event,
             )
-        elif event.kind in ("run_completed", "step_completed", "step_started"):
+        elif event.kind == "tool_approval_resolved":
+            self._record_tool_approval_resolved(event)
+        elif event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
             self._append_event(event.kind, dict(event.payload), event)
         elif event.kind in ("media", "reasoning_summary"):
             self._append_event(event.kind, dict(event.payload), event)
@@ -547,6 +579,50 @@ class SessionRecorder:
         tool_buffer.call = call
         tool_buffer.arguments = call.arguments
         self._append_event("tool_started", dict(event.payload), event)
+
+    def _record_tool_approval_requested(self, event: SessionEvent) -> None:
+        tool_buffer = self._tool_for(event)
+        if "tool_name" in event.payload:
+            tool_buffer.name = event.payload["tool_name"]
+        if "tool_call" in event.payload:
+            call = LLMToolCall.from_payload(event.payload["tool_call"])
+            tool_buffer.call = call
+            tool_buffer.arguments = call.arguments
+        if tool_buffer.name is None:
+            return
+        self._append_event(
+            "tool_approval_requested",
+            {
+                "content": event.payload["content"],
+                "tool_name": tool_buffer.name,
+                "tool_call_id": event.payload["tool_call_id"],
+                "tool_arguments": tool_buffer.arguments,
+                "tool_call": event.payload["tool_call"],
+            },
+            event,
+        )
+
+    def _record_tool_approval_resolved(self, event: SessionEvent) -> None:
+        tool_buffer = self._tool_for(event)
+        if "tool_name" in event.payload:
+            tool_buffer.name = event.payload["tool_name"]
+        if "tool_call" in event.payload:
+            call = LLMToolCall.from_payload(event.payload["tool_call"])
+            tool_buffer.call = call
+            tool_buffer.arguments = call.arguments
+        if tool_buffer.name is None:
+            return
+        self._append_event(
+            "tool_approval_resolved",
+            {
+                "content": event.payload["content"],
+                "tool_name": tool_buffer.name,
+                "tool_call_id": event.payload["tool_call_id"],
+                "tool_arguments": tool_buffer.arguments,
+                "tool_call": event.payload["tool_call"],
+            },
+            event,
+        )
 
     def _record_tool_result(self, event: SessionEvent) -> None:
         tool_buffer = self._tool_for(event)
@@ -633,6 +709,17 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
         if event.payload["output"] != "":
             lines.extend(["output:", event.payload["output"]])
         return lines
+    if event.kind == "tool_approval_requested":
+        name = event.payload["tool_name"]
+        lines = [f"## tool approval requested: {name}"]
+        if event.payload["content"] != "":
+            lines.append(event.payload["content"])
+        if event.payload["tool_arguments"] != "":
+            lines.extend(["arguments:", event.payload["tool_arguments"]])
+        return lines
+    if event.kind == "tool_approval_resolved":
+        name = event.payload["tool_name"]
+        return [f"## tool approval resolved: {name}", event.payload["content"]]
     if event.kind == "error":
         status = event.payload["status"]
         return [f"## error ({status})", event.payload["content"]]

@@ -51,6 +51,48 @@ class ToolExecutionResult(Record, kw_only=True):
     """Optional executor-provided metadata (latency, logs, etc.)."""
 
 
+class ToolApprovalRequest(Record, kw_only=True):
+    """Request for caller approval before executing a resolved tool call."""
+
+    call: LLMToolCall
+    """Tool call proposed by the model."""
+
+    tool_name: str
+    """Resolved local tool name."""
+
+    reason: str = ""
+    """Optional policy reason shown to the caller."""
+
+    policy: str = ""
+    """Policy that requires this approval."""
+
+
+class ToolApprovalDecision(Record, kw_only=True):
+    """Caller decision for a pending tool approval request."""
+
+    call_id: str
+    """Tool call id this decision resolves."""
+
+    approved: bool
+    """Whether the tool call may execute."""
+
+    reason: str = ""
+    """Optional caller reason, especially useful for rejection."""
+
+    @classmethod
+    def approve(cls, request: ToolApprovalRequest) -> "ToolApprovalDecision":
+        return cls(call_id=request.call.call_id, approved=True)
+
+    @classmethod
+    def reject(
+        cls,
+        request: ToolApprovalRequest,
+        *,
+        reason: str,
+    ) -> "ToolApprovalDecision":
+        return cls(call_id=request.call.call_id, approved=False, reason=reason)
+
+
 class AgentStepAnnotations(Record, kw_only=True):
     """Auxiliary annotations that enrich each agent reasoning step."""
 

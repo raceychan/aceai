@@ -47,6 +47,14 @@ class IToolMeta(TypedDict, total=False):
     """
     Whether to record tool calls and outputs in the agent's history.
     """
+    require_approval: bool
+    """
+    Whether the agent must ask the caller before executing this tool.
+    """
+    approval_policy: str
+    """
+    Policy identifier shown when approval is required.
+    """
     tags: list[str]
 
 
@@ -56,6 +64,8 @@ class ToolMeta(Struct):
     description: str = ""
     max_calls_per_run: Maybe[int] = MISSING
     record_in_history: Maybe[bool] = MISSING
+    require_approval: bool = False
+    approval_policy: str = ""
     tags: list[str] = field(default_factory=list[str])
 
 
