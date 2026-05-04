@@ -1,5 +1,29 @@
 # Changelog
 
+## AceAI v0.2.4
+
+### Features
+
+- `deepseek`: Add DeepSeek as a supported provider using the OpenAI-compatible chat completions API, including streaming text, reasoning content, tool calls, and token usage.
+- `models`: Move supported providers, default models, model lists, and token pricing into a provider catalog so app defaults can be maintained outside provider code.
+- `tui`: Replace model selection with provider and model text inputs that support progressive autocomplete, keyboard selection, and provider-specific API key lookup.
+
+### Improvements
+
+- `tui`: Show masked API keys as `*****************xxxx` and automatically reuse stored provider keys without exposing secrets in the selector.
+- `tui`: Render streamed reasoning before the answer content it belongs to, and keep reasoning visible for models that expose thinking output.
+- `cost`: Restore live cost estimates for DeepSeek by consuming streamed usage chunks and centralizing model pricing through the provider catalog.
+- `ci`: Add wheel build and install smoke tests, including the base install hint for users who launch the TUI without the optional `tui` dependencies.
+
+### Fixes
+
+- `cli`: Keep TUI dependencies optional and show the correct `aceai[tui]` installation hint instead of failing with a raw missing-module traceback.
+- `tui`: Restore command-input cleanup after submitting a prompt and preserve API keys when switching between providers.
+
+### Breaking Changes
+
+- `config`: Replace the legacy top-level `api_key` config field with provider-scoped `api_keys`; users should store keys under `api_keys.<provider>`.
+
 ## AceAI v0.2.3
 
 ### Features
