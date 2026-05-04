@@ -100,6 +100,7 @@ class AceAITUI(App[None]):
 
     def on_mount(self) -> None:
         self.load_events(self._events)
+        self.query_one(StreamWidget).focus()
 
     def on_key(self, event: Key) -> None:
         if event.key != "enter":
@@ -186,6 +187,11 @@ class AceAITUI(App[None]):
                 status=self._state.status,
                 usage=self._state.usage,
             )
+
+    def exit_command_input(self, command_input: CommandInput) -> None:
+        command_input.value = ""
+        command_input.blur()
+        self.query_one("#stream").focus()
 
     def action_toggle_detail(self) -> None:
         detail = self.query_one(DetailWidget)

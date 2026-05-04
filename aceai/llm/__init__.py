@@ -7,6 +7,7 @@ from .models import LLMProviderBase as LLMProviderBase
 from .models import LLMRequestMeta as LLMRequestMeta
 from .service import ILLMService as ILLMService
 from .service import LLMService as LLMService
+from .deepseek import DeepSeek as DeepSeek
 from .errors import AceAIConfigurationError as AceAIConfigurationError
 from .errors import AceAIError as AceAIError
 from .errors import AceAIImplementationError as AceAIImplementationError

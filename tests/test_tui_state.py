@@ -253,7 +253,9 @@ async def test_escape_exits_input_mode_and_returns_focus_to_stream() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         stream = app.query_one(StreamWidget)
-        command_input.focus()
+        await pilot.pause()
+        app.set_focus(command_input)
+        await pilot.pause()
 
         assert command_input.has_focus
 

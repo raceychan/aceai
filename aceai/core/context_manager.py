@@ -104,6 +104,7 @@ class ContextManager:
         assistant_msg = LLMToolCallMessage.from_content(
             content=tool_call_resp.text,
             tool_calls=tool_call_resp.tool_calls,
+            reasoning_content=tool_call_resp.reasoning_content,
         )
         self._context.append(assistant_msg)
 

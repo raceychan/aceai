@@ -40,3 +40,18 @@ def test_build_ace_agent_wires_app_tools_and_builtin_skills(
         "skill_view",
     }
     assert "developer" in agent.skill_registry.skills
+
+
+def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    agent = build_ace_agent(
+        provider_name="deepseek",
+        api_key="test-key",
+        model="deepseek-v4-flash",
+    )
+
+    assert agent.default_model == "deepseek-v4-flash"
+    assert agent._hosted_tools == []

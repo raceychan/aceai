@@ -22,5 +22,8 @@ lab/
 # Local caches
 .cache/
 
+# Local AceAI user config and secrets
+.aceai/
+
 # Local agent skills
 .agent/skills/aceai-release/

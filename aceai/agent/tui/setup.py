@@ -1,21 +1,85 @@
 """Provider setup screen for the AceAI TUI."""
 
 from datetime import datetime
+import os
 from typing import cast
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
+from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
 
+from aceai.agent.provider_catalog import (
+    api_key_env,
+    default_model,
+    supported_models,
+    supported_provider_names,
+)
 from aceai.agent.session import SessionMetadata, SessionStore
+from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-from .config import AceAITUIConfig, OPENAI_MODEL_OPTIONS, SUPPORTED_OPENAI_MODELS
+from .config import AceAITUIConfig
 from .config import save_config
 from .cost import format_usd
 from .session_display import session_display_title
+
+
+class ModelSelection(Record, kw_only=True):
+    provider: str
+    model: OpenAIModel
+    api_key: str
+
+
+def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
+    text = Text()
+    for index, candidate in enumerate(candidates):
+        style = "reverse" if index == highlighted else ""
+        marker = "> " if index == highlighted else "  "
+        text.append(f"{marker}{candidate}", style=style)
+        if index < len(candidates) - 1:
+            text.append("\n")
+    return text
+
+
+def _matching_candidates(candidates: tuple[str, ...], value: str) -> tuple[str, ...]:
+    if value == "":
+        return ()
+    if value in candidates:
+        return ()
+    return tuple(candidate for candidate in candidates if candidate.startswith(value))
+
+
+def _highlight_for_value(candidates: tuple[str, ...], value: str) -> int:
+    if not candidates:
+        return 0
+    if value in candidates:
+        return candidates.index(value)
+    for index, candidate in enumerate(candidates):
+        if candidate.startswith(value):
+            return index
+    return 0
+
+
+def _move_highlight(candidates: tuple[str, ...], highlighted: int, delta: int) -> int:
+    if not candidates:
+        return 0
+    return (highlighted + delta) % len(candidates)
+
+
+def _masked_api_key(api_key: str) -> str:
+    if api_key == "":
+        return ""
+    return f"*****************{api_key[-4:]}"
+
+
+def _api_key_value_from_input(value: str, api_key: str) -> str:
+    if value == _masked_api_key(api_key):
+        return ""
+    return value
 
 
 class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
@@ -45,7 +109,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         height: 1;
     }
 
-    Input, Select, Checkbox {
+    Input, Checkbox {
         background: #3b4252;
         color: #eceff4;
         border: solid #88c0d0;
@@ -60,26 +124,51 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
     def __init__(self, *, default_model: OpenAIModel) -> None:
         super().__init__()
         self._default_model = default_model
+        self._provider = "openai"
+        self._provider_highlight = _highlight_for_value(
+            supported_provider_names(),
+            self._provider,
+        )
+        self._model_highlight = _highlight_for_value(
+            supported_models(self._provider),
+            self._default_model,
+        )
 
     def compose(self) -> ComposeResult:
         with Container(id="setup-panel"):
             yield Label("AceAI provider setup", id="setup-title")
             yield Label("Provider")
-            yield Select(
-                [("OpenAI", "openai")],
+            yield Input(
                 value="openai",
-                allow_blank=False,
+                placeholder="Provider",
                 id="provider",
             )
+            yield Static(
+                _candidate_text(
+                    _matching_candidates(supported_provider_names(), "openai"),
+                    self._provider_highlight,
+                ),
+                id="provider-options",
+            )
             yield Label("Model")
-            yield Select(
-                OPENAI_MODEL_OPTIONS,
+            yield Input(
                 value=self._default_model,
-                allow_blank=False,
+                placeholder="Model",
                 id="model",
             )
+            yield Static(
+                _candidate_text(
+                    _matching_candidates(supported_models("openai"), self._default_model),
+                    self._model_highlight,
+                ),
+                id="model-options",
+            )
             yield Label("API key")
-            yield Input(password=True, placeholder="OPENAI_API_KEY", id="api-key")
+            yield Input(
+                password=True,
+                placeholder=api_key_env("openai"),
+                id="api-key",
+            )
             yield Checkbox("Persist to ~/.aceai/config.yaml", id="persist")
             yield Static("", id="setup-error")
             with Horizontal(id="setup-actions"):
@@ -96,25 +185,142 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         if api_key == "":
             self.query_one("#setup-error", Static).update("API key is required")
             return
-        provider = self.query_one("#provider", Select).value
-        model = self.query_one("#model", Select).value
-        if provider != "openai":
-            raise ValueError("Unsupported provider")
-        if model not in SUPPORTED_OPENAI_MODELS:
+        provider = self._selected_provider()
+        model = self.query_one("#model", Input).value
+        if model not in supported_models(provider):
             raise ValueError("Unsupported model")
         config = AceAITUIConfig(
-            provider="openai",
+            provider=provider,
             api_key=api_key,
             model=cast(OpenAIModel, model),
+            api_keys={provider: api_key},
         )
         persist = self.query_one("#persist", Checkbox).value
         if persist:
             save_config(config)
         self.dismiss(config)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "provider":
+            self._provider_highlight = 0
+            self._refresh_provider_candidates()
+            if event.value in supported_provider_names():
+                self._select_provider(event.value)
+            return
+        if event.input.id == "model":
+            self._model_highlight = 0
+            self._refresh_model_candidates()
 
-class ModelSelectScreen(ModalScreen[OpenAIModel]):
-    """Select the runtime model for future TUI runs."""
+    def on_key(self, event: Key) -> None:
+        provider_input = self.query_one("#provider", Input)
+        model_input = self.query_one("#model", Input)
+        if provider_input.has_focus and event.key in ("up", "down", "tab"):
+            candidates = self._provider_candidates()
+            if not candidates:
+                return
+            event.prevent_default()
+            event.stop()
+            self._handle_candidate_key(
+                event.key,
+                input_widget=provider_input,
+                candidates=candidates,
+                field="provider",
+            )
+            return
+        if model_input.has_focus and event.key in ("up", "down", "tab"):
+            candidates = self._model_candidates()
+            if not candidates:
+                return
+            event.prevent_default()
+            event.stop()
+            self._handle_candidate_key(
+                event.key,
+                input_widget=model_input,
+                candidates=candidates,
+                field="model",
+            )
+
+    def _handle_candidate_key(
+        self,
+        key: str,
+        *,
+        input_widget: Input,
+        candidates: tuple[str, ...],
+        field: str,
+    ) -> None:
+        if field == "provider":
+            if key == "up":
+                self._provider_highlight = _move_highlight(
+                    candidates, self._provider_highlight, -1
+                )
+                self._refresh_provider_candidates()
+                return
+            if key == "down":
+                self._provider_highlight = _move_highlight(
+                    candidates, self._provider_highlight, 1
+                )
+                self._refresh_provider_candidates()
+                return
+            input_widget.value = candidates[self._provider_highlight]
+            self._refresh_provider_candidates()
+            return
+        if key == "up":
+            self._model_highlight = _move_highlight(
+                candidates, self._model_highlight, -1
+            )
+            self._refresh_model_candidates()
+            return
+        if key == "down":
+            self._model_highlight = _move_highlight(
+                candidates, self._model_highlight, 1
+            )
+            self._refresh_model_candidates()
+            return
+        input_widget.value = candidates[self._model_highlight]
+        self._refresh_model_candidates()
+
+    def _select_provider(self, provider: str) -> None:
+        self._provider = provider
+        model_input = self.query_one("#model", Input)
+        model_input.value = default_model(provider)
+        self._model_highlight = _highlight_for_value(
+            supported_models(provider),
+            model_input.value,
+        )
+        self._refresh_model_candidates()
+        self.query_one("#api-key", Input).placeholder = api_key_env(self._provider)
+
+    def _provider_candidates(self) -> tuple[str, ...]:
+        return _matching_candidates(
+            supported_provider_names(),
+            self.query_one("#provider", Input).value,
+        )
+
+    def _model_candidates(self) -> tuple[str, ...]:
+        return _matching_candidates(
+            supported_models(self._provider),
+            self.query_one("#model", Input).value,
+        )
+
+    def _refresh_provider_candidates(self) -> None:
+        self.query_one("#provider-options", Static).update(
+            _candidate_text(self._provider_candidates(), self._provider_highlight)
+        )
+
+    def _refresh_model_candidates(self) -> None:
+        self.query_one("#model-options", Static).update(
+            _candidate_text(self._model_candidates(), self._model_highlight)
+        )
+
+    def _selected_provider(self) -> str:
+        value = self.query_one("#provider", Input).value
+        if value not in supported_provider_names():
+            raise ValueError("Unsupported provider")
+        return value
+
+
+class ModelSelectScreen(ModalScreen[ModelSelection]):
+    """Select the runtime provider and model for future TUI runs."""
 
     DEFAULT_CSS = """
     ModelSelectScreen {
@@ -135,10 +341,15 @@ class ModelSelectScreen(ModalScreen[OpenAIModel]):
         margin-bottom: 1;
     }
 
-    Select {
+    Input {
         background: #3b4252;
         color: #eceff4;
         border: solid #88c0d0;
+    }
+
+    #model-error {
+        color: #bf616a;
+        height: 1;
     }
 
     #model-actions {
@@ -147,22 +358,198 @@ class ModelSelectScreen(ModalScreen[OpenAIModel]):
     }
     """
 
-    def __init__(self, *, current_model: OpenAIModel) -> None:
+    def __init__(
+        self,
+        *,
+        provider_name: str,
+        current_model: OpenAIModel,
+        api_keys: dict[str, str],
+    ) -> None:
         super().__init__()
+        self._provider_name = provider_name
         self._current_model = current_model
+        self._api_keys = api_keys
+        self._provider_highlight = _highlight_for_value(
+            supported_provider_names(),
+            self._provider_name,
+        )
+        self._model_highlight = _highlight_for_value(
+            supported_models(self._provider_name),
+            self._current_model,
+        )
 
     def compose(self) -> ComposeResult:
         with Container(id="model-panel"):
-            yield Label("Model", id="model-title")
-            yield Select(
-                OPENAI_MODEL_OPTIONS,
+            yield Label("Provider and model", id="model-title")
+            yield Label("Provider")
+            yield Input(
+                value=self._provider_name,
+                placeholder="Provider",
+                id="provider",
+            )
+            yield Static(
+                _candidate_text(
+                    _matching_candidates(supported_provider_names(), self._provider_name),
+                    self._provider_highlight,
+                ),
+                id="provider-options",
+            )
+            yield Label("Model")
+            yield Input(
                 value=self._current_model,
-                allow_blank=False,
+                placeholder="Model",
                 id="model",
             )
+            yield Static(
+                _candidate_text(
+                    _matching_candidates(
+                        supported_models(self._provider_name),
+                        self._current_model,
+                    ),
+                    self._model_highlight,
+                ),
+                id="model-options",
+            )
+            yield Label("API key")
+            yield Input(
+                value=_masked_api_key(self._api_key_for_provider(self._provider_name)),
+                placeholder=f"{api_key_env(self._provider_name)} or leave blank",
+                id="api-key",
+            )
+            yield Static("", id="model-error")
             with Horizontal(id="model-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "provider":
+            self._provider_highlight = 0
+            self._refresh_provider_candidates()
+            if event.value in supported_provider_names():
+                self._select_provider(event.value)
+            return
+        if event.input.id == "model":
+            self._model_highlight = 0
+            self._refresh_model_candidates()
+
+    def on_key(self, event: Key) -> None:
+        provider_input = self.query_one("#provider", Input)
+        model_input = self.query_one("#model", Input)
+        if provider_input.has_focus and event.key in ("up", "down", "tab"):
+            candidates = self._provider_candidates()
+            if not candidates:
+                return
+            event.prevent_default()
+            event.stop()
+            self._handle_candidate_key(
+                event.key,
+                input_widget=provider_input,
+                candidates=candidates,
+                field="provider",
+            )
+            return
+        if model_input.has_focus and event.key in ("up", "down", "tab"):
+            candidates = self._model_candidates()
+            if not candidates:
+                return
+            event.prevent_default()
+            event.stop()
+            self._handle_candidate_key(
+                event.key,
+                input_widget=model_input,
+                candidates=candidates,
+                field="model",
+            )
+
+    def _handle_candidate_key(
+        self,
+        key: str,
+        *,
+        input_widget: Input,
+        candidates: tuple[str, ...],
+        field: str,
+    ) -> None:
+        if field == "provider":
+            if key == "up":
+                self._provider_highlight = _move_highlight(
+                    candidates, self._provider_highlight, -1
+                )
+                self._refresh_provider_candidates()
+                return
+            if key == "down":
+                self._provider_highlight = _move_highlight(
+                    candidates, self._provider_highlight, 1
+                )
+                self._refresh_provider_candidates()
+                return
+            input_widget.value = candidates[self._provider_highlight]
+            self._refresh_provider_candidates()
+            return
+        if key == "up":
+            self._model_highlight = _move_highlight(
+                candidates, self._model_highlight, -1
+            )
+            self._refresh_model_candidates()
+            return
+        if key == "down":
+            self._model_highlight = _move_highlight(
+                candidates, self._model_highlight, 1
+            )
+            self._refresh_model_candidates()
+            return
+        input_widget.value = candidates[self._model_highlight]
+        self._refresh_model_candidates()
+
+    def _select_provider(self, provider: str) -> None:
+        self._provider_name = provider
+        model_input = self.query_one("#model", Input)
+        model_input.value = default_model(self._provider_name)
+        self._model_highlight = _highlight_for_value(
+            supported_models(self._provider_name),
+            model_input.value,
+        )
+        self._refresh_model_candidates()
+        self.query_one("#api-key", Input).placeholder = (
+            f"{api_key_env(self._provider_name)} or leave blank"
+        )
+        self.query_one("#api-key", Input).value = _masked_api_key(
+            self._api_key_for_provider(self._provider_name)
+        )
+
+    def _provider_candidates(self) -> tuple[str, ...]:
+        return _matching_candidates(
+            supported_provider_names(),
+            self.query_one("#provider", Input).value,
+        )
+
+    def _model_candidates(self) -> tuple[str, ...]:
+        return _matching_candidates(
+            supported_models(self._provider_name),
+            self.query_one("#model", Input).value,
+        )
+
+    def _refresh_provider_candidates(self) -> None:
+        self.query_one("#provider-options", Static).update(
+            _candidate_text(self._provider_candidates(), self._provider_highlight)
+        )
+
+    def _refresh_model_candidates(self) -> None:
+        self.query_one("#model-options", Static).update(
+            _candidate_text(self._model_candidates(), self._model_highlight)
+        )
+        model = self.query_one("#model", Input).value
+        if model in supported_models(self._provider_name):
+            self.query_one("#api-key", Input).value = _masked_api_key(
+                self._api_key_for_provider(self._provider_name)
+            )
+
+    def _api_key_for_provider(self, provider: str) -> str:
+        if provider in self._api_keys:
+            return self._api_keys[provider]
+        env_name = api_key_env(provider)
+        if env_name in os.environ:
+            return os.environ[env_name]
+        return ""
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -170,10 +557,24 @@ class ModelSelectScreen(ModalScreen[OpenAIModel]):
             return
         if event.button.id != "apply":
             return
-        model = self.query_one("#model", Select).value
-        if model not in SUPPORTED_OPENAI_MODELS:
-            raise ValueError("Unsupported model")
-        self.dismiss(cast(OpenAIModel, model))
+        provider = self.query_one("#provider", Input).value
+        model = self.query_one("#model", Input).value
+        if provider not in supported_provider_names():
+            self.query_one("#model-error", Static).update("Unsupported provider")
+            return
+        if model not in supported_models(provider):
+            self.query_one("#model-error", Static).update("Unsupported model")
+            return
+        self.dismiss(
+            ModelSelection(
+                provider=provider,
+                model=cast(OpenAIModel, model),
+                api_key=_api_key_value_from_input(
+                    self.query_one("#api-key", Input).value,
+                    self._api_key_for_provider(provider),
+                ),
+            )
+        )
 
 
 class SessionSelectScreen(ModalScreen[str]):

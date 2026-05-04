@@ -16,6 +16,26 @@ class StubRecorder:
         self.saved = saved
 
 
+def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "SessionRecorder", None)
+    monkeypatch.setattr(cli, "SessionStore", None)
+    monkeypatch.setattr(cli, "messages_to_llm_history", None)
+    monkeypatch.setattr(cli, "run_configured_tui", None)
+    monkeypatch.setattr(cli, "run_interactive_tui", None)
+
+    def import_module(name: str):
+        if name == "aceai.agent.session":
+            raise ModuleNotFoundError("No module named 'sqlalchemy'", name="sqlalchemy")
+        raise AssertionError(name)
+
+    monkeypatch.setattr(cli.importlib, "import_module", import_module)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([])
+
+    assert str(exc_info.value) == cli.TUI_EXTRA_INSTALL_HINT
+
+
 def test_cli_rejects_direct_question_without_creating_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
@@ -77,6 +97,35 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
             ),
         ),
     ]
+
+
+def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    def build_default_agent(*, api_key, model, provider="openai"):
+        calls.append(("build", (provider, api_key, model)))
+        return agent
+
+    def run_interactive_tui(received_agent, **kwargs):
+        calls.append(("interactive", (received_agent, kwargs)))
+
+    monkeypatch.setenv("ACEAI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "key")
+    monkeypatch.delenv("ACEAI_MODEL", raising=False)
+    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(
+        cli,
+        "create_session_context",
+        lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
+    )
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main([])
+
+    assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-pro"))
 
 
 def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:

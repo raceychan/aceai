@@ -72,22 +72,7 @@ from .models import (
 from .tool_spec import IToolSpec
 
 
-OpenAIModel = Literal[
-    "gpt-5.5",
-    "gpt-5.5-pro",
-    "gpt-5.4",
-    "gpt-5.4-pro",
-    "gpt-5.4-mini",
-    "gpt-5.4-nano",
-    "gpt-5.2",
-    "gpt-5.2-pro",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-5.1",
-    "o3",
-    "o3-mini",
-    "o4-mini",
-]
+OpenAIModel = str
 
 
 class OpenAIMeta(TypedDict, total=False):
@@ -402,9 +387,16 @@ class OpenAIPayload(Struct, kw_only=True):
 class OpenAI(LLMProviderBase):
     """OpenAI provider for LLM completions."""
 
-    def __init__(self, client: AsyncOpenAI, *, default_meta: OpenAIMeta):
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        *,
+        default_meta: OpenAIMeta,
+        provider_name: str = "openai",
+    ):
         self._client = client
         self._default_metadata = convert(default_meta, type=OpenAIMeta)
+        self._provider_name = provider_name
         self._tracer = trace.get_tracer("aceai.llm.openai")
 
     @property
@@ -452,7 +444,7 @@ class OpenAI(LLMProviderBase):
         response_id: str | None = None,
     ) -> LLMProviderMeta:
         return LLMProviderMeta(
-            provider_name="openai",
+            provider_name=self._provider_name,
             model=model,
             latency_ms=latency_ms,
             response_id=response_id,

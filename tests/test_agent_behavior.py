@@ -320,6 +320,36 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_preserves_reasoning_content_during_tool_sub_turn() -> None:
+    lookup_call = LLMToolCall(name="lookup", arguments="{}", call_id="tool-1")
+    streams = [
+        make_stream(
+            response=LLMResponse(
+                text="",
+                tool_calls=[lookup_call],
+                reasoning_content="need lookup first",
+            )
+        ),
+        make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+    ]
+    llm_service = StubLLMService(streams)
+    executor = StubExecutor({"lookup": "tool result"})
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        max_steps=3,
+    )
+
+    events = await collect_events(agent, "Use lookup")
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assistant_message = llm_service.calls[1]["messages"][-2]
+    assert assistant_message.reasoning_content == "need lookup first"
+
+
+@pytest.mark.anyio
 async def test_agent_does_not_complete_mid_step_after_tool_calls() -> None:
     lookup_call = LLMToolCall(name="lookup", arguments="{}", call_id="tool-1")
     streams = [
@@ -613,6 +643,53 @@ async def test_reasoning_segments_do_not_populate_reasoning_log() -> None:
     assert isinstance(final_event, RunCompletedEvent)
     assert final_event.step.reasoning_log == ""
     assert final_event.step.reasoning_log_truncated is False
+
+
+@pytest.mark.anyio
+async def test_agent_emits_streaming_reasoning_before_text() -> None:
+    reasoning_segment = LLMSegment(
+        type="reasoning",
+        content="think first",
+    )
+    stream = [
+        LLMStreamEvent(
+            event_type="response.reasoning.delta",
+            segments=[reasoning_segment],
+        ),
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="answer",
+        ),
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(
+                text="answer",
+                segments=[LLMSegment(type="reasoning", content="think first")],
+            ),
+        ),
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([stream]),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question")
+
+    reasoning_index = next(
+        index for index, event in enumerate(events) if isinstance(event, LLMReasoningEvent)
+    )
+    text_index = next(
+        index for index, event in enumerate(events) if isinstance(event, LLMOutputDeltaEvent)
+    )
+    assert reasoning_index < text_index
+    assert [
+        event
+        for event in events
+        if isinstance(event, LLMReasoningEvent)
+    ][0].segment is reasoning_segment
+    assert len([event for event in events if isinstance(event, LLMReasoningEvent)]) == 1
 
 
 @pytest.mark.anyio

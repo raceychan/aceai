@@ -6,9 +6,12 @@ from aceai.llm import LLMResponse
 from aceai.llm.models import LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import user_message_event
-from aceai.agent.tui.runner import AceAIInteractiveTUI, AceAILiveTUI
+from aceai.agent.tui.config import AceAITUIConfig
+from aceai.agent.tui.app import AceAITUI
+from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
+from aceai.agent.tui.setup import ModelSelectScreen, ModelSelection
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 
 class StubExecutor:
@@ -307,6 +310,176 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
 
         assert app._selected_model == "gpt-5.5"
         assert llm_service.calls[0]["metadata"]["model"] == "gpt-5.5"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_m_key_opens_model_selector() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.open_model_selector = lambda: calls.append("model")
+
+    async with app.run_test() as pilot:
+        await pilot.press("m")
+
+    assert calls == ["model"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        command_input.focus()
+        app.on_input_submitted(Input.Submitted(command_input, "Use selected model"))
+        await pilot.pause(0.1)
+
+        assert not command_input.has_focus
+        assert app.query_one("#stream").has_focus
+
+
+@pytest.mark.anyio
+async def test_model_selector_prefills_masked_api_key() -> None:
+    screen = ModelSelectScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        assert screen.query_one("#api-key", Input).value == "*****************ding"
+
+
+@pytest.mark.anyio
+async def test_model_selector_selects_prefixed_model_candidate_with_tab() -> None:
+    screen = ModelSelectScreen(
+        provider_name="deepseek",
+        current_model="deepseek-v4-pro",
+        api_keys={},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        model_input = screen.query_one("#model", Input)
+        model_input.focus()
+
+        model_input.value = "deepseek-c"
+        await pilot.pause()
+        await pilot.press("tab")
+
+        assert model_input.value == "deepseek-chat"
+        assert str(screen.query_one("#model-options", Static).render()) == ""
+
+
+@pytest.mark.anyio
+async def test_model_selector_selects_prefixed_provider_candidate_with_tab() -> None:
+    screen = ModelSelectScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        api_keys={"deepseek": "sk-deepseek-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.focus()
+
+        provider_input.value = "d"
+        await pilot.pause()
+        await pilot.press("tab")
+
+        assert provider_input.value == "deepseek"
+        assert screen.query_one("#model", Input).value == "deepseek-v4-pro"
+        assert screen.query_one("#api-key", Input).value == "*****************ding"
+        assert str(screen.query_one("#provider-options", Static).render()) == ""
+
+
+@pytest.mark.anyio
+async def test_model_selector_hides_candidates_for_empty_input() -> None:
+    screen = ModelSelectScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        api_keys={},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.value = ""
+        await pilot.pause()
+
+        assert str(screen.query_one("#provider-options", Static).render()) == ""
+
+
+@pytest.mark.anyio
+async def test_configured_tui_switches_provider_without_reusing_current_key(
+    monkeypatch,
+) -> None:
+    calls: list[AceAITUIConfig] = []
+
+    def agent_factory(config: AceAITUIConfig) -> AgentBase:
+        calls.append(config)
+        return AgentBase(
+            prompt="Prompt",
+            default_model=config.model,
+            llm_service=StubLLMService([]),  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AceAITUIConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test():
+        app._handle_model_selection(
+            ModelSelection(
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                api_key="",
+            )
+        )
+
+    assert calls[-1] == AceAITUIConfig(
+        provider="deepseek",
+        api_key="deepseek-key",
+        model="deepseek-v4-flash",
+        api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
+    )
 
 
 @pytest.mark.anyio

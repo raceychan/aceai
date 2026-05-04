@@ -4,7 +4,13 @@ from rich.table import Table
 from rich.text import Text
 
 from aceai.core.events import AgentEventBuilder
-from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta
+from aceai.llm.models import (
+    LLMReasoningSegmentMeta,
+    LLMResponse,
+    LLMSegment,
+    LLMToolCall,
+    LLMToolCallDelta,
+)
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolExecutionResult
 from aceai.agent.tui.events import adapt_agent_event, user_message_event
@@ -171,6 +177,73 @@ def test_assistant_markdown_renders_as_markdown() -> None:
     panel_renderable = panel.renderable
     assert isinstance(panel_renderable, Markdown)
     assert panel_renderable.markup == "## Steps\n\n- Use `rg`\n- Run tests"
+
+
+def test_reasoning_summary_renders_before_completed_answer() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        adapt_agent_event(builder.llm_started()),
+        adapt_agent_event(
+            builder.llm_reasoning(
+                segment=LLMSegment(type="reasoning", content="think first")
+            )
+        ),
+        adapt_agent_event(
+            builder.llm_completed(
+                step=AgentStep(llm_response=LLMResponse(text="answer"))
+            )
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 2
+    reasoning = renderables[0]
+    answer = renderables[1]
+    assert isinstance(reasoning, Panel)
+    assert reasoning.title == "reasoning"
+    reasoning_renderable = reasoning.renderable
+    assert isinstance(reasoning_renderable, Text)
+    assert reasoning_renderable.plain == "think first"
+    assert isinstance(answer, Panel)
+    assert answer.title is None
+
+
+def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        adapt_agent_event(
+            builder.llm_reasoning(
+                segment=LLMSegment(
+                    type="reasoning",
+                    content="think first",
+                    meta=LLMReasoningSegmentMeta(
+                        item_id="reasoning",
+                        kind="content",
+                        index=0,
+                        is_delta=True,
+                    ),
+                )
+            )
+        ),
+        adapt_agent_event(builder.llm_text_delta(text_delta="answer")),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 2
+    reasoning = renderables[0]
+    answer = renderables[1]
+    assert isinstance(reasoning, Panel)
+    assert reasoning.title is None
+    reasoning_renderable = reasoning.renderable
+    assert isinstance(reasoning_renderable, Text)
+    assert reasoning_renderable.plain == "think first"
+    assert isinstance(answer, Panel)
+    assert answer.title is None
+    answer_renderable = answer.renderable
+    assert isinstance(answer_renderable, Markdown)
+    assert answer_renderable.markup == "answer"
 
 
 def test_main_stream_omits_lifecycle_events() -> None:

@@ -87,10 +87,15 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
     assistant_buffer_step_id = ""
     thinking_buffer = ""
     assistant_step_ids: set[str] = set()
+    pending_reasoning: dict[str, list[TUIEvent]] = {}
+    rendered_reasoning_step_ids: set[str] = set()
     tool_blocks: dict[str, _ToolBlockState] = {}
     rendered_tool_call_ids: set[str] = set()
 
     for event in events:
+        if event.kind == "reasoning_summary":
+            pending_reasoning.setdefault(event.step_id, []).append(event)
+            continue
         if event.kind == "assistant_delta":
             assistant_buffer_step_id = event.step_id
             assistant_buffer += event.content
@@ -106,43 +111,69 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             "tool_completed",
             "tool_failed",
         ):
+            thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
+            _flush_pending_reasoning(
+                renderables,
+                assistant_buffer_step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
             assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
                 renderables,
                 assistant_buffer,
                 assistant_buffer_step_id,
                 assistant_step_ids,
             )
-            thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
             _update_tool_block(tool_blocks, event)
             if event.kind in ("tool_completed", "tool_failed"):
                 renderables.append(_render_tool_block(tool_blocks[event.tool_call_id]))
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
+        if event.kind == "llm_completed":
+            _flush_pending_reasoning(
+                renderables,
+                event.step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
+        thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
         assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
             renderables,
             assistant_buffer,
             assistant_buffer_step_id,
             assistant_step_ids,
         )
-        thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
 
         if event.kind == "llm_completed" and event.step_id in assistant_step_ids:
             continue
 
         rendered = _render_event(event)
         if rendered is not None:
+            _flush_pending_reasoning(
+                renderables,
+                event.step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
             if event.kind == "llm_completed":
                 assistant_step_ids.add(event.step_id)
             renderables.append(rendered)
 
+    thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
     assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
         renderables,
         assistant_buffer,
         assistant_buffer_step_id,
         assistant_step_ids,
     )
-    thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
+    for step_id in pending_reasoning:
+        _flush_pending_reasoning(
+            renderables,
+            step_id,
+            pending_reasoning,
+            rendered_reasoning_step_ids,
+        )
     for call_id, tool_block in tool_blocks.items():
         if call_id in rendered_tool_call_ids:
             continue
@@ -150,6 +181,24 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             continue
         renderables.append(_render_tool_block(tool_block))
     return renderables
+
+
+def _flush_pending_reasoning(
+    renderables: list[RenderableType],
+    step_id: str,
+    pending_reasoning: dict[str, list[TUIEvent]],
+    rendered_reasoning_step_ids: set[str],
+) -> None:
+    if step_id in rendered_reasoning_step_ids:
+        return
+    events = pending_reasoning.get(step_id)
+    if events is None:
+        return
+    for event in events:
+        rendered = _render_event(event)
+        if rendered is not None:
+            renderables.append(rendered)
+    rendered_reasoning_step_ids.add(step_id)
 
 
 def _flush_assistant_buffer(
@@ -179,7 +228,7 @@ def _flush_thinking_buffer(
     if thinking_buffer:
         renderables.append(
             _render_text_block(
-                "thinking",
+                "reasoning",
                 thinking_buffer,
                 event_kind="thinking_delta",
             )

@@ -154,12 +154,18 @@ class AgentBase:
             )
 
         try:
+            reasoning_streamed = False
             async for stream_event in stream:
                 match stream_event.event_type:
                     case "response.output_text.delta":
                         chunk = stream_event.text_delta
                         if isinstance(chunk, str):
                             yield event_builder.llm_text_delta(text_delta=chunk)
+                    case "response.reasoning.delta":
+                        reasoning_streamed = True
+                        for segment in stream_event.segments:
+                            if segment.type == "reasoning":
+                                yield event_builder.llm_reasoning(segment=segment)
                     case "response.media":
                         yield event_builder.llm_media(segments=stream_event.segments)
                     case "response.function_call_arguments.delta":
@@ -179,7 +185,7 @@ class AgentBase:
                                 "LLM stream completed without a response payload"
                             )
                         for segment in response.segments:
-                            if segment.type == "reasoning":
+                            if segment.type == "reasoning" and not reasoning_streamed:
                                 yield event_builder.llm_reasoning(segment=segment)
                         yield AgentStep(
                             step_id=event_builder.step_id,

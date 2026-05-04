@@ -1,17 +1,16 @@
 """Estimated token cost helpers for the AceAI TUI."""
 
+from aceai.agent.provider_catalog import (
+    ModelTokenPrice,
+    price_for_model,
+    price_for_model_any_provider,
+    pricing_source,
+)
 from aceai.llm.interface import Record
 from aceai.llm.models import LLMUsage
 
 
-PRICING_SOURCE = "openai-api-pricing-2026-05-04"
-
-
-class ModelTokenPrice(Record, kw_only=True):
-    model: str
-    input_usd_per_million: float
-    cached_input_usd_per_million: float
-    output_usd_per_million: float
+PRICING_SOURCE = pricing_source()
 
 
 class TUICostEstimate(Record, kw_only=True):
@@ -26,44 +25,15 @@ class TUICostEstimate(Record, kw_only=True):
     pricing_source: str
 
 
-MODEL_TOKEN_PRICES: tuple[ModelTokenPrice, ...] = (
-    ModelTokenPrice(
-        model="gpt-5.5-pro",
-        input_usd_per_million=30.0,
-        cached_input_usd_per_million=30.0,
-        output_usd_per_million=180.0,
-    ),
-    ModelTokenPrice(
-        model="gpt-5.4-pro",
-        input_usd_per_million=30.0,
-        cached_input_usd_per_million=30.0,
-        output_usd_per_million=180.0,
-    ),
-    ModelTokenPrice(
-        model="gpt-5.5",
-        input_usd_per_million=5.0,
-        cached_input_usd_per_million=0.5,
-        output_usd_per_million=30.0,
-    ),
-    ModelTokenPrice(
-        model="gpt-5.4-mini",
-        input_usd_per_million=0.75,
-        cached_input_usd_per_million=0.075,
-        output_usd_per_million=4.5,
-    ),
-    ModelTokenPrice(
-        model="gpt-5.4",
-        input_usd_per_million=2.5,
-        cached_input_usd_per_million=0.25,
-        output_usd_per_million=15.0,
-    ),
-)
-
-
-def estimate_usage_cost(model: str | None, usage: LLMUsage | None) -> TUICostEstimate | None:
+def estimate_usage_cost(
+    model: str | None,
+    usage: LLMUsage | None,
+    *,
+    provider_name: str | None = None,
+) -> TUICostEstimate | None:
     if model is None or usage is None:
         return None
-    price = _price_for_model(model)
+    price = _price_for_model(model, provider_name=provider_name)
     if price is None:
         return None
     input_tokens = _tokens(usage.input_tokens)
@@ -96,11 +66,14 @@ def format_usd(value: float | None) -> str:
     return f"${value:.4f}"
 
 
-def _price_for_model(model: str) -> ModelTokenPrice | None:
-    for price in MODEL_TOKEN_PRICES:
-        if model == price.model or model.startswith(f"{price.model}-"):
-            return price
-    return None
+def _price_for_model(
+    model: str,
+    *,
+    provider_name: str | None = None,
+) -> ModelTokenPrice | None:
+    if provider_name is not None:
+        return price_for_model(provider_name, model)
+    return price_for_model_any_provider(model)
 
 
 def _tokens(value: int | None) -> int:

@@ -7,6 +7,7 @@ from aceai.core.events import (
 )
 from aceai.llm.models import (
     LLMGeneratedMedia,
+    LLMReasoningSegmentMeta,
     LLMResponse,
     LLMUsage,
     LLMSegment,
@@ -92,6 +93,26 @@ def test_adapt_reasoning_event() -> None:
     assert tui_event.kind == "reasoning_summary"
     assert tui_event.content == "checked the facts"
     assert tui_event.segment is segment
+
+
+def test_adapt_streaming_reasoning_delta_event() -> None:
+    builder = AgentEventBuilder(step_index=2, step_id="step-3")
+    segment = LLMSegment(
+        type="reasoning",
+        content="checked",
+        meta=LLMReasoningSegmentMeta(
+            item_id="reasoning",
+            kind="content",
+            index=0,
+            is_delta=True,
+        ),
+    )
+    event = builder.llm_reasoning(segment=segment)
+
+    tui_event = adapt_agent_event(event)
+
+    assert tui_event.kind == "thinking_delta"
+    assert tui_event.title == "reasoning"
 
 
 def test_adapt_tool_completed_event() -> None:

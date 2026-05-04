@@ -149,6 +149,9 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
     tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
     """Always a list; empty list indicates a bug in the caller."""
 
+    reasoning_content: str | None = None
+    """Provider-specific thinking content needed to continue tool-call sub-turns."""
+
     def asdict(self) -> StrDict:
         res = super().asdict()
         res["tool_calls"] = [tc.asdict() for tc in self.tool_calls]
@@ -159,9 +162,14 @@ class LLMToolCallMessage(LLMMessage, kw_only=True):
         cls,
         content: SupportedValueType,
         tool_calls: list[LLMToolCall],
+        reasoning_content: str | None = None,
     ) -> "LLMToolCallMessage":
         content = parts_factory(content)
-        return cls(content=content, tool_calls=tool_calls)
+        return cls(
+            content=content,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
+        )
 
 
 class LLMToolUseMessage(LLMMessage, kw_only=True):
@@ -412,6 +420,7 @@ class LLMReasoningSegmentMeta(Record, kw_only=True):
     kind: Literal["summary", "content"]
     index: int
     status: Literal["in_progress", "completed", "incomplete"] | None = None
+    is_delta: bool = False
 
 
 type LLMSegmentMeta = LLMToolCallSegmentMeta | LLMImageSegmentMeta | LLMReasoningSegmentMeta
@@ -478,6 +487,9 @@ class LLMResponse(Record):
     reasoning: LLMReasoningMeta | None = None
     """Optional reasoning-related metadata (usage/config), separate from segments."""
 
+    reasoning_content: str | None = None
+    """Provider-specific thinking content required by some tool-call APIs."""
+
 
 class LLMStreamChunk(Record):
     """Streaming delta emitted by adapters."""
@@ -503,6 +515,7 @@ class LLMStreamEvent(Record):
 
     event_type: Literal[
         "response.output_text.delta",
+        "response.reasoning.delta",
         "response.function_call_arguments.delta",
         "response.completed",
         "response.error",

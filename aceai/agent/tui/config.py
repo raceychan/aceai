@@ -1,42 +1,32 @@
 """Configuration records and persistence for the AceAI CLI TUI."""
 
 from pathlib import Path
-from typing import Literal
-
 import yaml
+from msgspec import field
 
+from aceai.agent.provider_catalog import (
+    default_model,
+    model_options,
+    stale_default_models,
+    supported_models,
+    supported_provider_names,
+)
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-ProviderName = Literal["openai"]
+ProviderName = str
 CONFIG_VERSION = 2
-DEFAULT_OPENAI_MODEL: OpenAIModel = "gpt-5.5"
-STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = ("gpt-5.1",)
-OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = (
-    ("GPT-5.5", "gpt-5.5"),
-    ("GPT-5.5 pro", "gpt-5.5-pro"),
-    ("GPT-5.4", "gpt-5.4"),
-    ("GPT-5.4 pro", "gpt-5.4-pro"),
-    ("GPT-5.4 mini", "gpt-5.4-mini"),
-    ("GPT-5.4 nano", "gpt-5.4-nano"),
-    ("GPT-5.2", "gpt-5.2"),
-    ("GPT-5.2 pro", "gpt-5.2-pro"),
-    ("GPT-5.1", "gpt-5.1"),
-    ("GPT-4o", "gpt-4o"),
-    ("GPT-4o mini", "gpt-4o-mini"),
-    ("o3", "o3"),
-    ("o3 mini", "o3-mini"),
-    ("o4 mini", "o4-mini"),
-)
-SUPPORTED_OPENAI_MODELS: tuple[OpenAIModel, ...] = tuple(
-    option[1] for option in OPENAI_MODEL_OPTIONS
-)
+DEFAULT_OPENAI_MODEL: OpenAIModel = default_model("openai")
+STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = stale_default_models("openai")
+OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = model_options("openai")
+SUPPORTED_OPENAI_MODELS: tuple[OpenAIModel, ...] = supported_models("openai")
 
 
 class AceAITUIConfig(Record, kw_only=True):
     provider: ProviderName
     api_key: str
     model: OpenAIModel
+    api_keys: dict[str, str] = field(default_factory=dict[str, str])
 
 
 def default_config_path() -> Path:
@@ -51,20 +41,26 @@ def load_config(path: Path | None = None) -> AceAITUIConfig | None:
     if not isinstance(data, dict):
         raise TypeError("AceAI config must be a mapping")
     provider = data["provider"]
-    api_key = data["api_key"]
-    model = data["model"]
+    if provider not in supported_provider_names():
+        raise ValueError("AceAI config provider is unsupported")
+    api_keys = _load_api_keys(data)
+    if provider not in api_keys:
+        raise ValueError("AceAI config api_keys missing active provider")
+    api_key = api_keys[provider]
+    model = data["model"] if "model" in data else default_model(provider)
     has_config_version = "config_version" in data
     if has_config_version and type(data["config_version"]) is not int:
         raise TypeError("AceAI config config_version must be int")
-    if provider != "openai":
-        raise ValueError("AceAI config provider must be openai")
-    if type(api_key) is not str:
-        raise TypeError("AceAI config api_key must be str")
-    if model not in SUPPORTED_OPENAI_MODELS:
+    if model not in supported_models(provider):
         raise ValueError("AceAI config model is unsupported")
-    if not has_config_version and model in STALE_DEFAULT_OPENAI_MODELS:
-        model = DEFAULT_OPENAI_MODEL
-    return AceAITUIConfig(provider=provider, api_key=api_key, model=model)
+    if not has_config_version and model in stale_default_models(provider):
+        model = default_model(provider)
+    return AceAITUIConfig(
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        api_keys=api_keys,
+    )
 
 
 def save_config(config: AceAITUIConfig, path: Path | None = None) -> None:
@@ -75,7 +71,7 @@ def save_config(config: AceAITUIConfig, path: Path | None = None) -> None:
             {
                 "config_version": CONFIG_VERSION,
                 "provider": config.provider,
-                "api_key": config.api_key,
+                "api_keys": {**config.api_keys, config.provider: config.api_key},
                 "model": config.model,
             },
             sort_keys=False,
@@ -83,3 +79,21 @@ def save_config(config: AceAITUIConfig, path: Path | None = None) -> None:
         encoding="utf-8",
     )
     target.chmod(0o600)
+
+
+def _load_api_keys(data: dict[object, object]) -> dict[str, str]:
+    api_keys: dict[str, str] = {}
+    if "api_keys" not in data:
+        return api_keys
+    raw_api_keys = data["api_keys"]
+    if not isinstance(raw_api_keys, dict):
+        raise TypeError("AceAI config api_keys must be a mapping")
+    for provider, api_key in raw_api_keys.items():
+        if type(provider) is not str:
+            raise TypeError("AceAI config api_keys provider names must be str")
+        if provider not in supported_provider_names():
+            raise ValueError("AceAI config api_keys provider is unsupported")
+        if type(api_key) is not str:
+            raise TypeError("AceAI config api_keys values must be str")
+        api_keys[provider] = api_key
+    return api_keys

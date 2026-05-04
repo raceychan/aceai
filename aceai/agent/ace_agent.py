@@ -4,6 +4,7 @@ from ididi import Graph
 from openai import AsyncOpenAI
 
 from aceai.core import AgentBase, ToolExecutor
+from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.service import LLMService
@@ -34,17 +35,29 @@ def build_ace_agent(
     *,
     api_key: str,
     model: OpenAIModel,
+    provider_name: str = "openai",
     hosted_tools: list[LLMHostedToolSpec] | None = None,
 ) -> AgentBase:
-    provider = OpenAI(
-        client=AsyncOpenAI(api_key=api_key),
-        default_meta={"model": model},
-    )
+    if provider_name == "openai":
+        provider = OpenAI(
+            client=AsyncOpenAI(api_key=api_key),
+            default_meta={"model": model},
+        )
+    elif provider_name == "deepseek":
+        provider = DeepSeek(
+            api_key=api_key,
+            default_meta={"model": model},
+        )
+    else:
+        raise ValueError("Unsupported provider")
     llm_service = LLMService([provider], timeout_seconds=120.0)
     executor = ToolExecutor(Graph(), default_agent_tools())
-    selected_hosted_tools = (
-        ACE_AGENT_HOSTED_TOOLS if hosted_tools is None else hosted_tools
-    )
+    if hosted_tools is None and provider_name == "openai":
+        selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
+    elif hosted_tools is None:
+        selected_hosted_tools = []
+    else:
+        selected_hosted_tools = hosted_tools
     return AgentBase(
         prompt=ACE_AGENT_SYSTEM_PROMPT,
         default_model=model,

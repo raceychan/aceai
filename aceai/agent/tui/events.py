@@ -23,7 +23,13 @@ from aceai.core.events import (
 )
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.interface import Record, is_set
-from aceai.llm.models import LLMUsage, LLMSegment, LLMToolCall, LLMToolCallDelta
+from aceai.llm.models import (
+    LLMReasoningSegmentMeta,
+    LLMUsage,
+    LLMSegment,
+    LLMToolCall,
+    LLMToolCallDelta,
+)
 from aceai.core.models import ToolExecutionResult
 from .cost import TUICostEstimate, estimate_usage_cost
 
@@ -114,8 +120,14 @@ def adapt_agent_event(event: AgentEvent) -> TUIEvent:
             raw_event=event,
         )
     if isinstance(event, LLMReasoningEvent):
+        kind: TUIEventKind = "reasoning_summary"
+        if (
+            isinstance(event.segment.meta, LLMReasoningSegmentMeta)
+            and event.segment.meta.is_delta
+        ):
+            kind = "thinking_delta"
         return TUIEvent(
-            kind="reasoning_summary",
+            kind=kind,
             step_index=event.step_index,
             step_id=event.step_id,
             title="reasoning",
@@ -148,7 +160,10 @@ def adapt_agent_event(event: AgentEvent) -> TUIEvent:
         usage: LLMUsage | None = None
         if is_set(response.usage):
             usage = response.usage
-        cost = estimate_usage_cost(response.model, usage)
+        provider_name = None
+        if response.provider_meta:
+            provider_name = response.provider_meta[0].provider_name
+        cost = estimate_usage_cost(response.model, usage, provider_name=provider_name)
         return TUIEvent(
             kind="llm_completed",
             step_index=event.step_index,
