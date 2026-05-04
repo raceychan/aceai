@@ -1,4 +1,8 @@
-"""Estimated token cost helpers for the AceAI TUI."""
+"""Estimated token cost helpers for AceAI agent sessions."""
+
+from typing import Any
+
+from typing_extensions import Self
 
 from aceai.agent.provider_catalog import (
     ModelTokenPrice,
@@ -13,7 +17,7 @@ from aceai.llm.models import LLMUsage
 PRICING_SOURCE = pricing_source()
 
 
-class TUICostEstimate(Record, kw_only=True):
+class CostEstimate(Record, kw_only=True):
     model: str
     input_cost_usd: float
     cached_input_cost_usd: float
@@ -24,13 +28,27 @@ class TUICostEstimate(Record, kw_only=True):
     output_usd_per_million: float
     pricing_source: str
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> Self:
+        return cls(
+            model=payload["model"],
+            input_cost_usd=payload["input_cost_usd"],
+            cached_input_cost_usd=payload["cached_input_cost_usd"],
+            output_cost_usd=payload["output_cost_usd"],
+            total_cost_usd=payload["total_cost_usd"],
+            input_usd_per_million=payload["input_usd_per_million"],
+            cached_input_usd_per_million=payload["cached_input_usd_per_million"],
+            output_usd_per_million=payload["output_usd_per_million"],
+            pricing_source=payload["pricing_source"],
+        )
+
 
 def estimate_usage_cost(
     model: str | None,
     usage: LLMUsage | None,
     *,
     provider_name: str | None = None,
-) -> TUICostEstimate | None:
+) -> CostEstimate | None:
     if model is None or usage is None:
         return None
     price = _price_for_model(model, provider_name=provider_name)
@@ -45,7 +63,7 @@ def estimate_usage_cost(
         cached_input_tokens * price.cached_input_usd_per_million / 1_000_000
     )
     output_cost = output_tokens * price.output_usd_per_million / 1_000_000
-    return TUICostEstimate(
+    return CostEstimate(
         model=price.model,
         input_cost_usd=input_cost,
         cached_input_cost_usd=cached_input_cost,

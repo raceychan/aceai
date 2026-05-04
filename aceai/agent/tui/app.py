@@ -9,13 +9,14 @@ from aceai.core.events import AgentEvent
 
 from aceai.agent.session import SessionRecorder
 
-from .cost import format_usd
+from aceai.agent.cost import format_usd
 from .events import TUIEvent
-from .events import adapt_agent_event
-from .events import session_notice_event
+from .metadata import MetadataScreen, MetadataSection
+from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
+from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
-from .state import TUIRunState, apply_tui_event, initial_state, reduce_events
+from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, select_event
 from .widgets import (
     CommandInput,
     DetailWidget,
@@ -23,6 +24,8 @@ from .widgets import (
     StreamWidget,
     TimelineWidget,
 )
+
+STREAM_DELTA_REFRESH_CHARS = 512
 
 
 class AceAITUI(App[None]):
@@ -68,6 +71,7 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("e", "toggle_events", "Events"),
         ("d", "toggle_detail", "Raw Log"),
+        ("i", "metadata", "Info"),
         ("m", "model_switcher", "Model"),
         ("s", "session_switcher", "Sessions"),
     ]
@@ -86,6 +90,8 @@ class AceAITUI(App[None]):
         self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
+        self._pending_stream_delta_chars = 0
+        self._pending_stream_delta: TUIEvent | None = None
         self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
 
     def compose(self) -> ComposeResult:
@@ -112,16 +118,17 @@ class AceAITUI(App[None]):
         event.stop()
 
     def load_events(self, events: list[TUIEvent]) -> None:
+        self._clear_pending_stream_delta()
         self._state = reduce_events(events)
         self._refresh_widgets()
 
     def show_sessions(self) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
         sessions = self._session_recorder.store.list_sessions()
         if not sessions:
-            self.append_event(session_notice_event("No sessions found."))
+            self.append_event(TUIEvent.session_notice("No sessions found."))
             return
         total_cost = self._session_recorder.store.total_cost_usd()
         lines = [f"Total cost: {format_usd(total_cost)}", "", "Sessions:"]
@@ -133,15 +140,15 @@ class AceAITUI(App[None]):
             )
         lines.append("")
         lines.append("Use /resume <session_id> to switch sessions.")
-        self.append_event(session_notice_event("\n".join(lines)))
+        self.append_event(TUIEvent.session_notice("\n".join(lines)))
 
     def open_session_selector(self) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
             return
         sessions = self._session_recorder.store.list_sessions()
         if not sessions:
-            self.append_event(session_notice_event("No sessions found."))
+            self.append_event(TUIEvent.session_notice("No sessions found."))
             return
         self.push_screen(
             SessionSelectScreen(
@@ -159,25 +166,38 @@ class AceAITUI(App[None]):
 
     def switch_session(self, session_id: str) -> None:
         if self._session_recorder is None:
-            self.append_event(session_notice_event("No session store is configured."))
+            self.append_event(TUIEvent.session_notice("No session store is configured."))
+            return
+        if session_id == self._session_id:
+            return
+        store = self._session_recorder.store
+        try:
+            metadata = store.get_session(session_id)
+        except KeyError:
+            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
             return
         self._session_recorder.finalize()
-        store = self._session_recorder.store
-        metadata = store.get_session(session_id)
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
-        self.load_events(store.load_tui_events(metadata.session_id))
-        self.append_event(session_notice_event(f"Resumed session {metadata.session_id}"))
+        event_log = store.load_event_log(metadata.session_id)
+        self.load_events(event_log_to_tui_events(event_log))
+        self.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
 
     def append_event(self, event: TUIEvent) -> None:
-        self._state = apply_tui_event(self._state, event)
-        if self._session_recorder is not None:
-            self._session_recorder.record(event)
+        if self._should_buffer_stream_delta(event):
+            return
+        self._flush_pending_stream_delta()
+        self._append_event_to_state(event)
         self._refresh_widgets()
 
+    def _append_event_to_state(self, event: TUIEvent) -> None:
+        self._state = apply_tui_event(self._state, event)
+        if self._session_recorder is not None:
+            self._session_recorder.record(tui_event_to_session_event(event))
+
     def append_agent_event(self, event: AgentEvent) -> None:
-        self.append_event(adapt_agent_event(event))
+        self.append_event(TUIEvent.from_agent_event(event))
 
     def set_status_model(self, model: str | None) -> None:
         self._status_model = model
@@ -213,11 +233,47 @@ class AceAITUI(App[None]):
 
     def action_model_switcher(self) -> None:
         self.append_event(
-            session_notice_event("Model selection is only available in live TUI runs.")
+            TUIEvent.session_notice("Model selection is only available in live TUI runs.")
         )
 
     def action_session_switcher(self) -> None:
         self.open_session_selector()
+
+    def action_metadata(self) -> None:
+        self.open_metadata_screen()
+
+    def open_metadata_screen(self) -> None:
+        self.push_screen(MetadataScreen(self._metadata_sections()))
+
+    def _metadata_sections(self) -> list[MetadataSection]:
+        usage = self._state.usage
+        lines = [
+            f"session: {self._session_id or '-'}",
+            f"model: {self._status_model or 'unconfigured'}",
+            f"status: {self._state.status}",
+            f"events: {len(self._state.events)}",
+        ]
+        cost_lines = [
+            f"context: {_format_tokens(usage.current_context_tokens)}",
+            f"session tokens: {_format_tokens(usage.session_total_tokens)}",
+            f"input: {_format_tokens(usage.session_input_tokens)}",
+            f"cached input: {_format_tokens(usage.session_cached_input_tokens)}",
+            f"output: {_format_tokens(usage.session_output_tokens)}",
+            f"session cost: {format_usd(usage.session_cost_usd)}",
+        ]
+        return [
+            MetadataSection(title="Runtime", lines=lines),
+            MetadataSection(title="Usage", lines=cost_lines),
+        ]
+
+    def on_timeline_widget_event_selected(
+        self,
+        event: TimelineWidget.EventSelected,
+    ) -> None:
+        self._state = select_event(self._state, event.event_id)
+        self.query_one(DetailWidget).remove_class("collapsed")
+        self.query_one(DetailWidget).set_state(self._state)
+        event.stop()
 
     def _refresh_widgets(self) -> None:
         self.query_one(TimelineWidget).set_state(self._state)
@@ -229,10 +285,82 @@ class AceAITUI(App[None]):
             usage=self._state.usage,
         )
 
+    def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
+        if event.kind not in ("assistant_delta", "thinking_delta"):
+            return False
+        if self._pending_stream_delta is not None and not _same_stream_delta(
+            self._pending_stream_delta,
+            event,
+        ):
+            self._flush_pending_stream_delta()
+        self._pending_stream_delta_chars += len(event.content)
+        self._pending_stream_delta = _merge_pending_stream_delta(
+            self._pending_stream_delta,
+            event,
+        )
+        if self._pending_stream_delta_chars < STREAM_DELTA_REFRESH_CHARS:
+            return True
+        self._flush_pending_stream_delta()
+        self._refresh_widgets()
+        return True
+
+    def _flush_pending_stream_delta(self) -> None:
+        if self._pending_stream_delta is None:
+            return
+        pending = self._pending_stream_delta
+        self._clear_pending_stream_delta()
+        self._append_event_to_state(pending)
+
+    def _clear_pending_stream_delta(self) -> None:
+        self._pending_stream_delta_chars = 0
+        self._pending_stream_delta = None
+
     def on_unmount(self) -> None:
+        self._flush_pending_stream_delta()
         if self._session_recorder is not None:
             self._session_recorder.finalize()
 
 
 def run_static_tui(events: list[TUIEvent]) -> None:
     AceAITUI(events).run()
+
+
+def _merge_pending_stream_delta(previous: TUIEvent | None, event: TUIEvent) -> TUIEvent:
+    if previous is None:
+        return event
+    if not _same_stream_delta(previous, event):
+        raise ValueError("pending stream delta changed shape before flush")
+    return TUIEvent(
+        kind=previous.kind,
+        step_index=previous.step_index,
+        step_id=previous.step_id,
+        title=previous.title,
+        raw_event=event.raw_event,
+        event_id=previous.event_id,
+        content=previous.content + event.content,
+        tool_name=previous.tool_name,
+        tool_call_id=previous.tool_call_id,
+        tool_call=previous.tool_call,
+        tool_calls=previous.tool_calls,
+        tool_call_delta=previous.tool_call_delta,
+        tool_result=previous.tool_result,
+        segment=event.segment,
+        usage=event.usage,
+        cost=event.cost,
+        error=event.error,
+    )
+
+
+def _same_stream_delta(previous: TUIEvent, event: TUIEvent) -> bool:
+    return (
+        previous.kind == event.kind
+        and previous.step_id == event.step_id
+        and previous.step_index == event.step_index
+        and previous.tool_call_id == event.tool_call_id
+    )
+
+
+def _format_tokens(value: int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:,}"

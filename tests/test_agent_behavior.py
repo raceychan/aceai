@@ -1,8 +1,8 @@
 import pytest
 
-from aceai.core.base import AgentBase, ToolExecutionFailure
+from aceai.core.base import AgentBase
 from aceai.llm.errors import AceAIRuntimeError
-from aceai.core.executor import RunState
+from aceai.core.executor import RunState, ToolExecutionError
 from aceai.core.events import (
     AgentEvent,
     LLMMediaEvent,
@@ -12,10 +12,12 @@ from aceai.core.events import (
     LLMToolCallDeltaEvent,
     RunCompletedEvent,
     RunFailedEvent,
+    StepCompletedEvent,
     ToolFailedEvent,
     ToolStartedEvent,
 )
 from aceai.llm import LLMResponse
+from aceai.llm.interface import UNSET
 from aceai.llm.models import (
     LLMGeneratedMedia,
     LLMHostedToolSpec,
@@ -317,6 +319,10 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     tool_events = [event for event in events if isinstance(event, ToolStartedEvent)]
     assert tool_events
     assert tool_events[0].tool_name == "lookup"
+    completed_steps = [
+        event for event in events if isinstance(event, StepCompletedEvent)
+    ]
+    assert [event.step_index for event in completed_steps] == [0, 1]
 
 
 @pytest.mark.anyio
@@ -394,6 +400,29 @@ async def test_agent_raises_after_exceeding_turn_limit() -> None:
 
     assert isinstance(events[-1], RunFailedEvent)
     assert events[-1].error == "Agent exceeded maximum steps: 1 without answering"
+
+
+@pytest.mark.anyio
+async def test_agent_unset_max_steps_runs_until_answer() -> None:
+    streams = [
+        make_stream(response=LLMResponse(text=""), deltas=[]),
+        make_stream(response=LLMResponse(text=""), deltas=[]),
+        make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+    ]
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=UNSET,
+    )
+
+    events = await collect_events(agent, "try again")
+
+    assert len(llm_service.calls) == 3
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
 
 
 @pytest.mark.anyio
@@ -693,7 +722,42 @@ async def test_agent_emits_streaming_reasoning_before_text() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
+async def test_agent_returns_tool_execution_failure_to_model() -> None:
+    call = LLMToolCall(name="calc", arguments="{}", call_id="calc-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="use calc", tool_calls=[call]),
+            )
+        ],
+        make_stream(response=LLMResponse(text="recovered"), deltas=["recovered"]),
+    ]
+    executor = RaisingExecutor(ToolExecutionError("no calc"))
+    llm_service = StubLLMService(streams)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+    )
+
+    events = await collect_events(agent, "Question?")
+
+    tool_failed = [evt for evt in events if isinstance(evt, ToolFailedEvent)]
+    assert tool_failed and tool_failed[0].error == "no calc"
+    assert tool_failed[0].tool_result.error == "no calc"
+    assert tool_failed[0].tool_result.output == "Tool execution failed: no calc"
+    tool_message = llm_service.calls[1]["messages"][-1]
+    assert tool_message.role == "tool"
+    assert tool_message.call_id == "calc-1"
+    assert tool_message.content[0]["data"] == "Tool execution failed: no calc"
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "recovered"
+
+
+@pytest.mark.anyio
+async def test_agent_reraises_unstructured_tool_failure() -> None:
     call = LLMToolCall(name="calc", arguments="{}", call_id="calc-1")
     stream = [
         LLMStreamEvent(
@@ -701,7 +765,7 @@ async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
             response=LLMResponse(text="use calc", tool_calls=[call]),
         )
     ]
-    executor = RaisingExecutor(ValueError("no calc"))
+    executor = RaisingExecutor(ValueError("broken executor"))
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -710,14 +774,12 @@ async def test_agent_tool_execution_failure_emits_tool_failed_event() -> None:
     )
 
     events: list[AgentEvent] = []
-    with pytest.raises(ToolExecutionFailure) as exc_info:
-        async for evt in agent.run("Question?"):
-            events.append(evt)
+    with pytest.raises(ValueError, match="broken executor"):
+        async for event in agent.run("Question?"):
+            events.append(event)
 
-    tool_failed = [evt for evt in events if isinstance(evt, ToolFailedEvent)]
-    assert tool_failed and tool_failed[0].error == "no calc"
     assert isinstance(events[-1], RunFailedEvent)
-    assert exc_info.value.original_error.__class__ is ValueError
+    assert not [event for event in events if isinstance(event, ToolFailedEvent)]
 
 
 @pytest.mark.anyio

@@ -6,8 +6,8 @@ from msgspec import field
 
 from aceai.llm.interface import Record
 from aceai.llm.models import LLMUsage
+from aceai.agent.cost import CostEstimate
 
-from .cost import TUICostEstimate
 from .events import TUIEvent
 
 TUIRunStatus = Literal["idle", "running", "completed", "failed"]
@@ -65,17 +65,75 @@ def reduce_events(events: list[TUIEvent]) -> TUIRunState:
     return state
 
 
+def select_event(state: TUIRunState, event_id: str) -> TUIRunState:
+    for event in state.events:
+        if event.event_id == event_id:
+            return TUIRunState(
+                status=state.status,
+                steps=state.steps,
+                events=state.events,
+                selected_event_id=event_id,
+                final_answer=state.final_answer,
+                error=state.error,
+                usage=state.usage,
+            )
+    raise ValueError("selected event does not exist")
+
+
 def apply_tui_event(state: TUIRunState, event: TUIEvent) -> TUIRunState:
     steps = _apply_step_event(state.steps, event)
     status = _next_run_status(state.status, event)
+    events = _append_event(state.events, event)
+    selected_event_id = events[-1].event_id
     return TUIRunState(
         status=status,
         steps=steps,
-        events=[*state.events, event],
-        selected_event_id=event.event_id,
+        events=events,
+        selected_event_id=selected_event_id,
         final_answer=event.content if event.kind == "run_completed" else state.final_answer,
         error=event.error if event.kind == "run_failed" else state.error,
         usage=_apply_usage_event(state.usage, event),
+    )
+
+
+def _append_event(events: list[TUIEvent], event: TUIEvent) -> list[TUIEvent]:
+    if not events:
+        return [event]
+    previous = events[-1]
+    if not _can_merge_stream_delta(previous, event):
+        return [*events, event]
+    return [*events[:-1], _merge_stream_delta(previous, event)]
+
+
+def _can_merge_stream_delta(previous: TUIEvent, event: TUIEvent) -> bool:
+    return (
+        previous.kind == event.kind
+        and event.kind in ("assistant_delta", "thinking_delta")
+        and previous.step_id == event.step_id
+        and previous.step_index == event.step_index
+        and previous.tool_call_id == event.tool_call_id
+    )
+
+
+def _merge_stream_delta(previous: TUIEvent, event: TUIEvent) -> TUIEvent:
+    return TUIEvent(
+        kind=previous.kind,
+        step_index=previous.step_index,
+        step_id=previous.step_id,
+        title=previous.title,
+        raw_event=event.raw_event,
+        event_id=previous.event_id,
+        content=previous.content + event.content,
+        tool_name=previous.tool_name,
+        tool_call_id=previous.tool_call_id,
+        tool_call=previous.tool_call,
+        tool_calls=previous.tool_calls,
+        tool_call_delta=previous.tool_call_delta,
+        tool_result=previous.tool_result,
+        segment=event.segment,
+        usage=event.usage,
+        cost=event.cost,
+        error=event.error,
     )
 
 
@@ -127,7 +185,7 @@ def _add_tokens(total: int | None, increment: int) -> int | None:
     return total + increment
 
 
-def _add_cost(total: float | None, cost: TUICostEstimate | None) -> float | None:
+def _add_cost(total: float | None, cost: CostEstimate | None) -> float | None:
     if cost is None:
         return total
     if total is None:
@@ -174,7 +232,7 @@ def _update_step(step: TUIStepState, event: TUIEvent) -> TUIStepState:
         step_index=step.step_index,
         step_id=step.step_id,
         status=_next_step_status(step.status, event),
-        events=[*step.events, event],
+        events=_append_event(step.events, event),
         tools=_apply_tool_event(step.tools, event),
     )
 

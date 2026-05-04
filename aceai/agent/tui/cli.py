@@ -4,6 +4,7 @@ import argparse
 import importlib
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol, Sequence
 
 from aceai.agent.ace_agent import build_ace_agent
@@ -22,7 +23,7 @@ from .config import (
     AceAITUIConfig,
     load_config,
 )
-from .cost import format_usd
+from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
 TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
@@ -35,7 +36,7 @@ TUI_EXTRA_INSTALL_HINT = (
 
 SessionRecorder = None
 SessionStore = None
-messages_to_llm_history = None
+event_log_to_tui_events = None
 run_configured_tui = None
 run_interactive_tui = None
 
@@ -51,13 +52,14 @@ class SessionStoreLike(Protocol):
 def require_tui_extra() -> None:
     global SessionRecorder
     global SessionStore
-    global messages_to_llm_history
+    global event_log_to_tui_events
     global run_configured_tui
     global run_interactive_tui
     if SessionStore is not None:
         return
     try:
         session_module = importlib.import_module("aceai.agent.session")
+        replay_module = importlib.import_module("aceai.agent.tui.session_replay")
         runner_module = importlib.import_module("aceai.agent.tui.runner")
     except ModuleNotFoundError as exc:
         if exc.name in TUI_EXTRA_MODULES:
@@ -65,7 +67,7 @@ def require_tui_extra() -> None:
         raise
     SessionRecorder = session_module.SessionRecorder
     SessionStore = session_module.SessionStore
-    messages_to_llm_history = session_module.messages_to_llm_history
+    event_log_to_tui_events = replay_module.event_log_to_tui_events
     run_configured_tui = runner_module.run_configured_tui
     run_interactive_tui = runner_module.run_interactive_tui
 
@@ -137,22 +139,64 @@ def resolve_initial_config(
     return stored
 
 
+def apply_session_state_to_initial_config(
+    config: AceAITUIConfig | None,
+    state,
+) -> AceAITUIConfig | None:
+    if state.selected_model == "":
+        return config
+    provider = state.selected_provider
+    if provider == "":
+        if config is None:
+            return config
+        provider = config.provider
+    model = resolve_model(provider, state.selected_model)
+    if config is not None and config.provider == provider:
+        return AceAITUIConfig(
+            provider=config.provider,
+            api_key=config.api_key,
+            model=model,
+            api_keys=config.api_keys,
+        )
+    if config is not None and provider in config.api_keys:
+        return AceAITUIConfig(
+            provider=provider,
+            api_key=config.api_keys[provider],
+            model=model,
+            api_keys=config.api_keys,
+        )
+    env_name = api_key_env(provider)
+    if env_name in os.environ:
+        api_keys: dict[str, str] = {}
+        if config is not None:
+            api_keys.update(config.api_keys)
+        api_keys[provider] = os.environ[env_name]
+        return AceAITUIConfig(
+            provider=provider,
+            api_key=os.environ[env_name],
+            model=model,
+            api_keys=api_keys,
+        )
+    return config
+
+
 def create_session_context(
     *,
     resume_session_id: str | None,
-) -> tuple[object, object, list[object], list[LLMMessage]]:
+) -> tuple[object, object, list[object], list[LLMMessage], object]:
     require_tui_extra()
     store = SessionStore()
     if resume_session_id is None:
         metadata = store.create_session()
-        return store, metadata, [], []
+        return store, metadata, [], [], store.get_session_state(metadata.session_id)
     metadata = store.get_session(resume_session_id)
-    messages = store.load_messages(resume_session_id)
+    event_log = store.load_event_log(resume_session_id)
     return (
         store,
         metadata,
-        store.load_tui_events(resume_session_id),
-        messages_to_llm_history(messages),
+        event_log_to_tui_events(event_log),
+        event_log.replay_llm_history(),
+        store.get_session_state(resume_session_id),
     )
 
 
@@ -179,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=CLI_MODELS,
         help="Model for the default AceAI CLI agent.",
     )
+    parser.add_argument(
+        "--file",
+        default=None,
+        help="Write aceai export output to a new file instead of stdout.",
+    )
     return parser
 
 
@@ -203,7 +252,12 @@ def run_main(args: argparse.Namespace) -> None:
         if len(command_parts) != 2:
             raise ValueError("aceai export requires a session_id")
         require_tui_extra()
-        print(SessionStore().export_text(command_parts[1]), end="")
+        export_text = SessionStore().export_text(command_parts[1])
+        if args.file is not None:
+            with Path(args.file).open("x", encoding="utf-8") as stream:
+                stream.write(export_text)
+            return
+        print(export_text, end="")
         return
     if command_parts and command_parts[0] == "cost":
         if len(command_parts) != 1:
@@ -236,9 +290,10 @@ def run_main(args: argparse.Namespace) -> None:
         model=selected_model,
         model_from_env=model_from_env,
     )
-    store, metadata, initial_events, initial_history = create_session_context(
+    store, metadata, initial_events, initial_history, session_state = create_session_context(
         resume_session_id=resume_session_id,
     )
+    config = apply_session_state_to_initial_config(config, session_state)
     recorder = SessionRecorder(store, metadata.session_id)
     if config is None:
         run_configured_tui(

@@ -1,14 +1,16 @@
 from datetime import datetime
 
-from aceai.agent.session import SessionRecorder, SessionStore, messages_to_llm_history
-from aceai.agent.tui.events import adapt_agent_event, user_message_event
-from aceai.core.events import AgentEventBuilder
-from aceai.core.models import AgentStep, ToolExecutionResult
+from aceai.agent.cost import estimate_usage_cost
+from aceai.agent.session import (
+    SessionEvent,
+    SessionRecorder,
+    SessionState,
+    SessionStore,
+)
+from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
-    LLMResponse,
     LLMToolCall,
-    LLMToolCallDelta,
     LLMUsage,
 )
 
@@ -22,7 +24,7 @@ def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
     assert type(metadata.created_at) is datetime
     assert type(metadata.updated_at) is datetime
     assert (tmp_path / "sessions.sqlite3").exists()
-    assert (tmp_path / "files" / f"{metadata.session_id}.jsonl").exists()
+    assert (tmp_path / "files" / f"{metadata.session_id}.events.jsonl").exists()
     assert store.get_session(metadata.session_id).session_id == metadata.session_id
 
 
@@ -44,7 +46,7 @@ def test_session_store_lists_sessions_by_recent_update(tmp_path) -> None:
 def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
-    path = tmp_path / "files" / f"{metadata.session_id}.jsonl"
+    path = tmp_path / "files" / f"{metadata.session_id}.events.jsonl"
 
     store.delete_session(metadata.session_id)
 
@@ -52,11 +54,31 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     assert not path.exists()
 
 
+def test_session_store_persists_session_state(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+
+    store.update_session_state(
+        metadata.session_id,
+        SessionState(
+            selected_provider="deepseek",
+            selected_model="deepseek-v4-pro",
+        ),
+    )
+
+    state = store.get_session_state(metadata.session_id)
+
+    assert state == SessionState(
+        selected_provider="deepseek",
+        selected_model="deepseek-v4-pro",
+    )
+
+
 def test_session_store_finalize_uses_first_question_as_title(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("What files are here?"))
+    recorder.record(_user_message("What files are here?"))
 
     title = store.finalize_session_title(metadata.session_id)
 
@@ -74,14 +96,14 @@ def test_session_recorder_finalize_deletes_empty_session(tmp_path) -> None:
     assert saved is False
     assert recorder.saved is False
     assert store.list_sessions() == []
-    assert not (tmp_path / "files" / f"{metadata.session_id}.jsonl").exists()
+    assert not (tmp_path / "files" / f"{metadata.session_id}.events.jsonl").exists()
 
 
 def test_session_recorder_finalize_keeps_non_empty_session(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
+    recorder.record(_user_message("hello"))
 
     saved = recorder.finalize()
 
@@ -95,33 +117,15 @@ def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
 
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="hel"
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="lo"
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(llm_response=LLMResponse(text="hello"))
-            )
-        )
-    )
+    recorder.record(_user_message("hello"))
+    recorder.record(_assistant_delta("hel"))
+    recorder.record(_assistant_delta("lo"))
+    recorder.record(_llm_completed("hello"))
 
-    messages = store.load_messages(metadata.session_id)
+    events = store.load_event_log(metadata.session_id).events
 
-    assert [message.kind for message in messages] == ["user", "assistant"]
-    assert messages[1].content == "hello"
+    assert [event.kind for event in events] == ["user_message", "assistant_message"]
+    assert events[1].payload["content"] == "hello"
 
 
 def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
@@ -135,35 +139,19 @@ def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
         total_tokens=17,
     )
 
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="answer",
-                        model="gpt-5.5",
-                        usage=usage,
-                    )
-                )
-            )
-        )
-    )
+    recorder.record(_llm_completed("answer", model="gpt-5.5", usage=usage))
 
-    messages = store.load_messages(metadata.session_id)
-    events = store.load_tui_events(metadata.session_id)
+    events = store.load_event_log(metadata.session_id).events
 
-    assert messages[0].usage_input_tokens == 12
-    assert messages[0].usage_cached_input_tokens == 8
-    assert messages[0].usage_output_tokens == 5
-    assert messages[0].usage_total_tokens == 17
-    assert messages[0].cost_model == "gpt-5.5"
-    assert messages[0].cost_total_usd is not None
-    assert messages[0].cost_cached_input_usd is not None
-    assert round(messages[0].cost_cached_input_usd, 6) == 0.000004
-    assert round(messages[0].cost_total_usd, 6) == 0.000174
-    assert events[0].usage == usage
-    assert events[0].cost is not None
-    assert round(events[0].cost.total_cost_usd, 6) == 0.000174
+    assert events[0].payload["usage"]["input_tokens"] == 12
+    assert events[0].payload["usage"]["cached_input_tokens"] == 8
+    assert events[0].payload["usage"]["output_tokens"] == 5
+    assert events[0].payload["usage"]["total_tokens"] == 17
+    assert events[0].payload["cost"]["model"] == "gpt-5.5"
+    assert events[0].payload["cost"]["total_cost_usd"] is not None
+    assert events[0].payload["cost"]["cached_input_cost_usd"] is not None
+    assert round(events[0].payload["cost"]["cached_input_cost_usd"], 6) == 0.000004
+    assert round(events[0].payload["cost"]["total_cost_usd"], 6) == 0.000174
 
 
 def test_session_store_sums_total_cost_across_sessions(tmp_path) -> None:
@@ -172,38 +160,26 @@ def test_session_store_sums_total_cost_across_sessions(tmp_path) -> None:
     second = store.create_session()
 
     SessionRecorder(store, first.session_id).record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="first",
-                        model="gpt-5.5",
-                        usage=LLMUsage(
-                            input_tokens=1_000,
-                            cached_input_tokens=600,
-                            output_tokens=100,
-                            total_tokens=1_100,
-                        ),
-                    )
-                )
-            )
+        _llm_completed(
+            "first",
+            model="gpt-5.5",
+            usage=LLMUsage(
+                input_tokens=1_000,
+                cached_input_tokens=600,
+                output_tokens=100,
+                total_tokens=1_100,
+            ),
         )
     )
     SessionRecorder(store, second.session_id).record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-2").llm_completed(
-                step=AgentStep(
-                    llm_response=LLMResponse(
-                        text="second",
-                        model="gpt-5.4-mini",
-                        usage=LLMUsage(
-                            input_tokens=1_000,
-                            output_tokens=100,
-                            total_tokens=1_100,
-                        ),
-                    )
-                )
-            )
+        _llm_completed(
+            "second",
+            model="gpt-5.4-mini",
+            usage=LLMUsage(
+                input_tokens=1_000,
+                output_tokens=100,
+                total_tokens=1_100,
+            ),
         )
     )
 
@@ -215,26 +191,19 @@ def test_session_recorder_saves_non_streaming_llm_completion(tmp_path) -> None:
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
 
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
-                step=AgentStep(llm_response=LLMResponse(text="answer"))
-            )
-        )
-    )
+    recorder.record(_llm_completed("answer"))
 
-    messages = store.load_messages(metadata.session_id)
+    events = store.load_event_log(metadata.session_id).events
 
-    assert len(messages) == 1
-    assert messages[0].kind == "assistant"
-    assert messages[0].content == "answer"
+    assert len(events) == 1
+    assert events[0].kind == "assistant_message"
+    assert events[0].payload["content"] == "answer"
 
 
 def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="list_directory",
         arguments='{"path":"."}',
@@ -250,95 +219,50 @@ def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
         ),
     )
 
-    recorder.record(
-        adapt_agent_event(
-            builder.llm_tool_call_delta(
-                tool_call_delta=LLMToolCallDelta(
-                    id="call-1",
-                    arguments_delta='{"path"',
-                )
-            )
-        )
-    )
-    recorder.record(
-        adapt_agent_event(
-            builder.llm_tool_call_delta(
-                tool_call_delta=LLMToolCallDelta(
-                    id="call-1",
-                    arguments_delta=':"."}',
-                )
-            )
-        )
-    )
-    recorder.record(adapt_agent_event(builder.tool_started(tool_call=call)))
-    recorder.record(
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result))
-    )
+    recorder.record(_tool_call_delta("call-1", '{"path"'))
+    recorder.record(_tool_call_delta("call-1", ':"."}'))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
 
-    messages = store.load_messages(metadata.session_id)
+    events = store.load_event_log(metadata.session_id).events
 
-    assert len(messages) == 1
-    assert messages[0].kind == "tool"
-    assert messages[0].tool_name == "list_directory"
-    assert messages[0].tool_arguments == '{"path":"."}'
-    assert messages[0].content == "completed - 2 entries"
+    assert [event.kind for event in events] == ["tool_started", "tool_result"]
+    assert events[1].payload["tool_name"] == "list_directory"
+    assert events[1].payload["tool_arguments"] == '{"path":"."}'
+    assert events[1].payload["content"] == "completed - 2 entries"
 
 
-def test_session_store_restores_compact_messages_as_tui_events(tmp_path) -> None:
+def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
+    recorder.record(_user_message("hello"))
+    call = LLMToolCall(
+        name="list_directory",
+        arguments='{"path":"."}',
+        call_id="call-1",
     )
-    recorder.flush_assistant()
+    result = ToolExecutionResult(call=call, output='{"entries":[]}')
+    recorder.record(_llm_completed("", tool_calls=[call]))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
 
-    events = store.load_tui_events(metadata.session_id)
+    history = store.load_event_log(metadata.session_id).replay_llm_history()
 
-    assert [event.kind for event in events] == ["user_message", "assistant_delta"]
-    assert events[0].content == "hello"
-    assert events[1].content == "answer"
-
-
-def test_session_messages_restore_user_assistant_llm_history_only(tmp_path) -> None:
-    store = SessionStore(tmp_path)
-    metadata = store.create_session()
-    recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
-    )
-    recorder.flush_assistant()
-
-    history = messages_to_llm_history(store.load_messages(metadata.session_id))
-
-    assert history == [
-        LLMMessage.build(role="user", content="hello"),
-        LLMMessage.build(role="assistant", content="answer"),
-    ]
+    assert history[0] == LLMMessage.build(role="user", content="hello")
+    assert history[1].role == "assistant"
+    assert history[1].tool_calls == [call]
+    assert history[2].role == "tool"
+    assert history[2].call_id == "call-1"
+    assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
 def test_session_store_exports_readable_text(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
-    recorder.record(user_message_event("hello"))
-    recorder.record(
-        adapt_agent_event(
-            AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                text_delta="answer"
-            )
-        )
-    )
+    recorder.record(_user_message("hello"))
+    recorder.record(_assistant_delta("answer"))
     recorder.flush_assistant()
 
     text = store.export_text(metadata.session_id)
@@ -346,3 +270,76 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     assert text.startswith(f"# AceAI session {metadata.session_id}\n")
     assert "## user\nhello\n" in text
     assert "## assistant\nanswer\n" in text
+
+
+def _user_message(content: str) -> SessionEvent:
+    return SessionEvent(kind="user_message", payload={"content": content})
+
+
+def _assistant_delta(content: str) -> SessionEvent:
+    return SessionEvent(kind="assistant_delta", payload={"content": content})
+
+
+def _llm_completed(
+    content: str,
+    *,
+    model: str | None = None,
+    usage: LLMUsage | None = None,
+    tool_calls: list[LLMToolCall] | None = None,
+) -> SessionEvent:
+    payload = {
+        "content": content,
+        "tool_calls": [] if tool_calls is None else [call.asdict() for call in tool_calls],
+    }
+    if usage is not None:
+        payload["usage"] = {
+            "input_tokens": usage.input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+    cost = estimate_usage_cost(model, usage)
+    if cost is not None:
+        payload["cost"] = cost.asdict()
+    return SessionEvent(
+        kind="llm_completed",
+        payload=payload,
+    )
+
+
+def _tool_call_delta(call_id: str, content: str) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_call_delta",
+        payload={"content": content, "tool_call_id": call_id},
+    )
+
+
+def _tool_started(call: LLMToolCall) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_started",
+        payload={
+            "content": "",
+            "tool_name": call.name,
+            "tool_call_id": call.call_id,
+            "tool_call": call.asdict(),
+        },
+    )
+
+
+def _tool_completed(
+    call: LLMToolCall,
+    result: ToolExecutionResult,
+) -> SessionEvent:
+    return SessionEvent(
+        kind="tool_completed",
+        payload={
+            "content": result.output,
+            "tool_name": call.name,
+            "tool_call_id": call.call_id,
+            "tool_call": call.asdict(),
+            "tool_result": {
+                "output": result.output,
+                "error": result.error,
+            },
+        },
+    )

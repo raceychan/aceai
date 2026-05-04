@@ -3,6 +3,7 @@
 from typing import Literal
 
 from msgspec import field
+from typing_extensions import Self
 
 from aceai.core.events import (
     AgentEvent,
@@ -31,7 +32,8 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import ToolExecutionResult
-from .cost import TUICostEstimate, estimate_usage_cost
+from aceai.agent.cost import CostEstimate, estimate_usage_cost
+from aceai.agent.session import EventLog, SessionEvent
 
 TUIEventKind = Literal[
     "user_message",
@@ -67,39 +69,143 @@ class TUIEvent(Record, kw_only=True):
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_call: LLMToolCall | None = None
+    tool_calls: list[LLMToolCall] = field(default_factory=list[LLMToolCall])
     tool_call_delta: LLMToolCallDelta | None = None
     tool_result: ToolExecutionResult | None = None
     segment: LLMSegment | None = None
     usage: LLMUsage | None = None
-    cost: TUICostEstimate | None = None
+    cost: CostEstimate | None = None
     error: str | None = None
 
+    @classmethod
+    def user_message(cls, question: str) -> Self:
+        return cls(
+            kind="user_message",
+            step_index=-1,
+            step_id=uuid_str(),
+            title="you",
+            content=question,
+            raw_event=None,
+        )
 
-def user_message_event(question: str) -> TUIEvent:
-    """Create a TUI-only event for the submitted user question."""
+    @classmethod
+    def session_notice(cls, content: str) -> Self:
+        return cls(
+            kind="session_notice",
+            step_index=-1,
+            step_id=uuid_str(),
+            title="session",
+            content=content,
+            raw_event=None,
+        )
 
-    return TUIEvent(
-        kind="user_message",
-        step_index=-1,
-        step_id=uuid_str(),
-        title="you",
-        content=question,
-        raw_event=None,
-    )
+    @classmethod
+    def from_agent_event(cls, event: AgentEvent) -> Self:
+        return _agent_event_to_tui_event(event)
+
+    @classmethod
+    def from_session_event(cls, event: SessionEvent) -> Self | None:
+        if event.kind == "user_message":
+            return cls.user_message(event.payload["content"])
+        if event.kind == "assistant_message":
+            return cls._from_session_assistant_event(event)
+        if event.kind == "assistant_tool_call":
+            if event.payload["content"] == "":
+                return None
+            return cls._from_session_assistant_event(event)
+        if event.kind == "tool_started":
+            return cls._from_session_tool_started_event(event)
+        if event.kind == "tool_result":
+            return cls._from_session_tool_result_event(event)
+        if event.kind == "error":
+            return cls._from_session_error_event(event)
+        if event.kind in ("run_completed", "step_completed", "step_started"):
+            return cls._from_session_control_event(event)
+        return None
+
+    @classmethod
+    def list_from_event_log(cls, event_log: EventLog) -> list[Self]:
+        events: list[Self] = []
+        for session_event in event_log.events:
+            event = cls.from_session_event(session_event)
+            if event is not None:
+                events.append(event)
+        return events
+
+    @classmethod
+    def _from_session_assistant_event(cls, event: SessionEvent) -> Self:
+        return cls(
+            kind="assistant_delta",
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title="assistant",
+            content=event.payload["content"],
+            usage=_session_usage(event),
+            cost=_session_cost(event),
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_tool_result_event(cls, event: SessionEvent) -> Self:
+        call = _session_tool_call(event)
+        status = event.payload["status"]
+        return cls(
+            kind="tool_failed" if status == "failed" else "tool_completed",
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title=f"tool {event.payload['tool_name']}",
+            content=event.payload["output"],
+            tool_name=event.payload["tool_name"],
+            tool_call_id=event.payload["tool_call_id"],
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output=event.payload["output"],
+                error=event.payload["content"] if status == "failed" else None,
+            ),
+            error=event.payload["content"] if status == "failed" else None,
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_tool_started_event(cls, event: SessionEvent) -> Self:
+        call = _session_tool_call(event)
+        return cls(
+            kind="tool_started",
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title=f"tool {event.payload['tool_name']}",
+            tool_name=event.payload["tool_name"],
+            tool_call_id=event.payload["tool_call_id"],
+            tool_call=call,
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_error_event(cls, event: SessionEvent) -> Self:
+        return cls(
+            kind="run_failed",
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title="run failed",
+            content=event.payload["content"],
+            error=event.payload["content"],
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_control_event(cls, event: SessionEvent) -> Self:
+        return cls(
+            kind=event.kind,
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title=event.kind,
+            content=event.payload["content"],
+            raw_event=None,
+        )
 
 
-def session_notice_event(content: str) -> TUIEvent:
-    return TUIEvent(
-        kind="session_notice",
-        step_index=-1,
-        step_id=uuid_str(),
-        title="session",
-        content=content,
-        raw_event=None,
-    )
-
-
-def adapt_agent_event(event: AgentEvent) -> TUIEvent:
+def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
     """Convert an agent event into the stable TUI event shape."""
 
     if isinstance(event, LLMStartedEvent):
@@ -170,6 +276,7 @@ def adapt_agent_event(event: AgentEvent) -> TUIEvent:
             step_id=event.step_id,
             title="llm completed",
             content=response.text,
+            tool_calls=response.tool_calls,
             usage=usage,
             cost=cost,
             raw_event=event,
@@ -262,3 +369,34 @@ def adapt_agent_event(event: AgentEvent) -> TUIEvent:
             raw_event=event,
         )
     raise TypeError(f"Unsupported agent event: {event.__class__.__name__}")
+
+
+def _session_usage(event: SessionEvent) -> LLMUsage | None:
+    if "usage" not in event.payload:
+        return None
+    return LLMUsage.from_payload(event.payload["usage"])
+
+
+def _session_cost(event: SessionEvent) -> CostEstimate | None:
+    if "cost" not in event.payload:
+        return None
+    return CostEstimate.from_payload(event.payload["cost"])
+
+
+def _session_step_index(event: SessionEvent) -> int:
+    if event.step_index is None:
+        return -1
+    return event.step_index
+
+
+def _session_tool_call(event: SessionEvent) -> LLMToolCall:
+    if "tool_call" in event.payload:
+        return LLMToolCall.from_payload(event.payload["tool_call"])
+    return LLMToolCall.from_payload(
+        {
+            "type": "function_call",
+            "name": event.payload["tool_name"],
+            "arguments": event.payload["tool_arguments"],
+            "call_id": event.payload["tool_call_id"],
+        }
+    )

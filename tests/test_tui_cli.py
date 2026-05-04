@@ -16,10 +16,20 @@ class StubRecorder:
         self.saved = saved
 
 
+class StubSessionState:
+    selected_provider = ""
+    selected_model = ""
+
+
+class StubDeepSeekSessionState:
+    selected_provider = "deepseek"
+    selected_model = "deepseek-v4-flash"
+
+
 def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
     monkeypatch.setattr(cli, "SessionRecorder", None)
     monkeypatch.setattr(cli, "SessionStore", None)
-    monkeypatch.setattr(cli, "messages_to_llm_history", None)
+    monkeypatch.setattr(cli, "event_log_to_tui_events", None)
     monkeypatch.setattr(cli, "run_configured_tui", None)
     monkeypatch.setattr(cli, "run_interactive_tui", None)
 
@@ -74,7 +84,13 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "create_session_context",
-        lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
+        lambda *, resume_session_id: (
+            object(),
+            StubMetadata(),
+            ["event"],
+            ["history"],
+            StubSessionState(),
+        ),
     )
     recorder = StubRecorder()
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
@@ -117,7 +133,13 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "create_session_context",
-        lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
+        lambda *, resume_session_id: (
+            object(),
+            StubMetadata(),
+            ["event"],
+            ["history"],
+            StubSessionState(),
+        ),
     )
     recorder = StubRecorder()
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
@@ -126,6 +148,41 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     cli.main([])
 
     assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-pro"))
+
+
+def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    def build_default_agent(*, api_key, model, provider="openai"):
+        calls.append(("build", (provider, api_key, model)))
+        return agent
+
+    def run_interactive_tui(received_agent, **kwargs):
+        calls.append(("interactive", (received_agent, kwargs)))
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "key")
+    monkeypatch.setenv("ACEAI_PROVIDER", "deepseek")
+    monkeypatch.delenv("ACEAI_MODEL", raising=False)
+    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(
+        cli,
+        "create_session_context",
+        lambda *, resume_session_id: (
+            object(),
+            StubMetadata(),
+            ["event"],
+            ["history"],
+            StubDeepSeekSessionState(),
+        ),
+    )
+    recorder = StubRecorder()
+    monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main(["resume", "session-1"])
+
+    assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-flash"))
 
 
 def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
@@ -152,7 +209,13 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "create_session_context",
-        lambda *, resume_session_id: (object(), StubMetadata(), ["event"], ["history"]),
+        lambda *, resume_session_id: (
+            object(),
+            StubMetadata(),
+            ["event"],
+            ["history"],
+            StubSessionState(),
+        ),
     )
     recorder = StubRecorder()
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
@@ -199,7 +262,7 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
 
     def create_session_context(*, resume_session_id):
         calls.append(("session", resume_session_id))
-        return object(), StubMetadata(), ["restored"], ["history"]
+        return object(), StubMetadata(), ["restored"], ["history"], StubSessionState()
 
     def run_interactive_tui(received_agent, **kwargs):
         calls.append(("interactive", (received_agent, kwargs)))
@@ -248,7 +311,7 @@ def test_cli_resume_without_session_id_loads_latest_updated_session(monkeypatch)
 
     def create_session_context(*, resume_session_id):
         calls.append(("session", resume_session_id))
-        return object(), StubMetadata(), ["restored"], ["history"]
+        return object(), StubMetadata(), ["restored"], ["history"], StubSessionState()
 
     def run_interactive_tui(received_agent, **kwargs):
         calls.append(("interactive", (received_agent, kwargs)))
@@ -311,7 +374,13 @@ def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys)
     monkeypatch.setattr(
         cli,
         "create_session_context",
-        lambda *, resume_session_id: (object(), StubMetadata(), [], []),
+        lambda *, resume_session_id: (
+            object(),
+            StubMetadata(),
+            [],
+            [],
+            StubSessionState(),
+        ),
     )
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
@@ -334,6 +403,40 @@ def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
 
     captured = capsys.readouterr()
     assert captured.out == "# AceAI session session-1\n\n## user\nhello\n"
+
+
+def test_cli_export_writes_session_text_to_new_file(monkeypatch, tmp_path, capsys) -> None:
+    class StubStore:
+        def export_text(self, session_id):
+            assert session_id == "session-1"
+            return "# AceAI session session-1\n\n## user\nhello\n"
+
+    target = tmp_path / "debug.md"
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    cli.main(["export", "session-1", f"--file={target}"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert target.read_text(encoding="utf-8") == (
+        "# AceAI session session-1\n\n## user\nhello\n"
+    )
+
+
+def test_cli_export_file_fails_when_target_exists(monkeypatch, tmp_path) -> None:
+    class StubStore:
+        def export_text(self, session_id):
+            assert session_id == "session-1"
+            return "# AceAI session session-1\n"
+
+    target = tmp_path / "debug.md"
+    target.write_text("existing\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    with pytest.raises(FileExistsError):
+        cli.main(["export", "session-1", f"--file={target}"])
+
+    assert target.read_text(encoding="utf-8") == "existing\n"
 
 
 def test_cli_cost_prints_total_session_cost(monkeypatch, capsys) -> None:

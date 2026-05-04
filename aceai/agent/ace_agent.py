@@ -64,6 +64,5 @@ def build_ace_agent(
         llm_service=llm_service,
         executor=executor,
         skill_path=ACE_AGENT_SKILLS_DIR,
-        max_steps=8,
         hosted_tools=selected_hosted_tools,
     )

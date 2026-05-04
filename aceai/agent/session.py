@@ -6,19 +6,50 @@ from typing import Any, Literal
 from msgspec import Struct
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import inspect as sql_inspect
 from sqlalchemy import insert as sql_insert
 from sqlalchemy import select as sql_select
 from sqlalchemy import update as sql_update
 from sqlalchemy.engine import RowMapping
+from typing_extensions import Self
 
-from aceai.core.models import ToolExecutionResult
+from aceai.agent.cost import CostEstimate
 from aceai.core.helpers.string import uuid_str
-from aceai.llm.models import LLMMessage, LLMToolCall, LLMUsage
+from aceai.llm.models import (
+    LLMMessage,
+    LLMToolCall,
+    LLMToolCallMessage,
+    LLMToolUseMessage,
+    LLMUsage,
+)
 
-from .tui.cost import TUICostEstimate
-from .tui.events import TUIEvent, user_message_event
+SESSION_EVENT_VERSION = 1
+SESSION_STATE_VERSION = 1
 
-SessionMessageKind = Literal["user", "assistant", "tool", "error"]
+SessionEventKind = Literal[
+    "assistant_delta",
+    "assistant_message",
+    "assistant_tool_call",
+    "error",
+    "llm_completed",
+    "llm_started",
+    "media",
+    "reasoning_summary",
+    "run_completed",
+    "run_failed",
+    "session_notice",
+    "step_completed",
+    "step_failed",
+    "step_started",
+    "thinking_delta",
+    "tool_call_delta",
+    "tool_completed",
+    "tool_failed",
+    "tool_output",
+    "tool_result",
+    "tool_started",
+    "user_message",
+]
 
 
 class SessionMetadata(Struct, frozen=True, kw_only=True):
@@ -28,35 +59,214 @@ class SessionMetadata(Struct, frozen=True, kw_only=True):
     title: str
     path: str
 
+    @classmethod
+    def from_row(cls, row: RowMapping, *, files_dir: Path) -> Self:
+        return cls(
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            title=row["title"],
+            path=str(files_dir / row["path"]),
+        )
 
-class SessionMessage(Struct, frozen=True, kw_only=True):
-    kind: SessionMessageKind
-    content: str
-    created_at: str
-    tool_name: str | None = None
-    tool_call_id: str | None = None
-    tool_arguments: str = ""
-    tool_output: str = ""
-    status: str = ""
-    usage_input_tokens: int | None = None
-    usage_cached_input_tokens: int | None = None
-    usage_output_tokens: int | None = None
-    usage_total_tokens: int | None = None
-    cost_model: str | None = None
-    cost_input_usd: float | None = None
-    cost_cached_input_usd: float | None = None
-    cost_output_usd: float | None = None
-    cost_total_usd: float | None = None
-    cost_input_usd_per_million: float | None = None
-    cost_cached_input_usd_per_million: float | None = None
-    cost_output_usd_per_million: float | None = None
-    cost_pricing_source: str | None = None
+
+class SessionState(Struct, frozen=True, kw_only=True):
+    selected_provider: str = ""
+    selected_model: str = ""
+    version: int = SESSION_STATE_VERSION
+
+    @classmethod
+    def empty(cls) -> Self:
+        return cls()
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> Self:
+        if payload == {}:
+            return cls.empty()
+        selected_provider = payload["selected_provider"]
+        selected_model = payload["selected_model"]
+        version = payload["version"]
+        if type(selected_provider) is not str:
+            raise TypeError("Session state selected_provider must be str")
+        if type(selected_model) is not str:
+            raise TypeError("Session state selected_model must be str")
+        if type(version) is not int:
+            raise TypeError("Session state version must be int")
+        return cls(
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+            version=version,
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "selected_provider": self.selected_provider,
+            "selected_model": self.selected_model,
+        }
+
+
+class SessionEvent(Struct, frozen=True, kw_only=True):
+    kind: SessionEventKind
+    payload: dict[str, Any]
+    version: int = SESSION_EVENT_VERSION
+    event_id: str = ""
+    session_id: str = ""
+    run_id: str = ""
+    step_id: str | None = None
+    step_index: int | None = None
+    created_at: str = ""
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> Self:
+        kind = payload["kind"]
+        if kind not in (
+            "assistant_delta",
+            "assistant_message",
+            "assistant_tool_call",
+            "error",
+            "llm_completed",
+            "llm_started",
+            "media",
+            "reasoning_summary",
+            "run_completed",
+            "run_failed",
+            "session_notice",
+            "step_completed",
+            "step_failed",
+            "step_started",
+            "thinking_delta",
+            "tool_call_delta",
+            "tool_completed",
+            "tool_failed",
+            "tool_output",
+            "tool_result",
+            "tool_started",
+            "user_message",
+        ):
+            raise ValueError("Unsupported session event kind")
+        return cls(
+            version=payload["version"],
+            event_id=payload["event_id"],
+            session_id=payload["session_id"],
+            run_id=payload["run_id"],
+            step_id=payload["step_id"],
+            step_index=payload["step_index"],
+            kind=kind,
+            created_at=payload["created_at"],
+            payload=payload["payload"],
+        )
+
+    def with_session_defaults(self, *, session_id: str) -> Self:
+        return SessionEvent(
+            version=self.version,
+            event_id=self.event_id or uuid_str(),
+            session_id=self.session_id or session_id,
+            run_id=self.run_id,
+            step_id=self.step_id,
+            step_index=self.step_index,
+            kind=self.kind,
+            created_at=self.created_at or _utc_now().isoformat(),
+            payload=self.payload,
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "event_id": self.event_id,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "step_id": self.step_id,
+            "step_index": self.step_index,
+            "kind": self.kind,
+            "created_at": self.created_at,
+            "payload": self.payload,
+        }
 
 
 class _ToolBuffer(Struct, kw_only=True):
     name: str | None = None
     arguments: str = ""
     output: str = ""
+    call: LLMToolCall | None = None
+
+
+class EventLog:
+    def __init__(self, events: list[SessionEvent]) -> None:
+        self.events = events
+
+    def append(self, event: SessionEvent) -> None:
+        self.events.append(event)
+
+    def has_transcript(self) -> bool:
+        for event in self.events:
+            if event.kind in (
+                "assistant_message",
+                "assistant_tool_call",
+                "error",
+                "tool_result",
+                "user_message",
+            ):
+                return True
+        return False
+
+    def replay_llm_history(self) -> list[LLMMessage]:
+        history: list[LLMMessage] = []
+        for event in self.events:
+            if event.kind == "user_message":
+                history.append(
+                    LLMMessage.build(role="user", content=event.payload["content"])
+                )
+            elif event.kind == "assistant_message":
+                history.append(
+                    LLMMessage.build(role="assistant", content=event.payload["content"])
+                )
+            elif event.kind == "assistant_tool_call":
+                history.append(
+                    LLMToolCallMessage.from_content(
+                        content=event.payload["content"],
+                        tool_calls=LLMToolCall.list_from_payload(event.payload),
+                    )
+                )
+            elif event.kind == "tool_result":
+                history.append(
+                    LLMToolUseMessage.from_content(
+                        content=event.payload["output"],
+                        name=event.payload["tool_name"],
+                        call_id=event.payload["tool_call_id"],
+                    )
+                )
+        return history
+
+    def replay_export_text(self, metadata: SessionMetadata) -> str:
+        lines = [
+            f"# AceAI session {metadata.session_id}",
+            f"title: {metadata.title}",
+            f"created_at: {metadata.created_at.isoformat()}",
+            f"updated_at: {metadata.updated_at.isoformat()}",
+            "",
+        ]
+        for event in self.events:
+            event_lines = _event_to_export_lines(event)
+            if not event_lines:
+                continue
+            lines.extend(event_lines)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def total_cost_usd(self) -> float:
+        total = 0.0
+        for event in self.events:
+            cost = _cost_from_event_payload(event.payload)
+            if cost is not None:
+                total += cost.total_cost_usd
+        return total
+
+    def title_source(self) -> str:
+        for event in self.events:
+            if event.kind == "user_message" and event.payload["content"] != "":
+                return event.payload["content"][:40]
+        return "Empty session"
 
 
 _metadata = MetaData()
@@ -68,6 +278,7 @@ _sessions_table = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, index=True),
     Column("title", String, nullable=False),
     Column("path", String, nullable=False),
+    Column("state_json", String, nullable=False),
 )
 
 
@@ -84,7 +295,7 @@ class SessionStore:
     def create_session(self) -> SessionMetadata:
         session_id = uuid_str()
         now = _utc_now()
-        path = self.files_dir / f"{session_id}.jsonl"
+        path = self.files_dir / f"{session_id}.events.jsonl"
         path.write_text("", encoding="utf-8")
         with self.engine.begin() as conn:
             conn.execute(
@@ -94,6 +305,7 @@ class SessionStore:
                     updated_at=now,
                     title="New session",
                     path=path.name,
+                    state_json=json.dumps(SessionState.empty().as_json()),
                 )
             )
         return SessionMetadata(
@@ -112,7 +324,7 @@ class SessionStore:
             row = conn.execute(query).mappings().fetchone()
         if row is None:
             raise KeyError(session_id)
-        return self._metadata_from_row(row)
+        return SessionMetadata.from_row(row, files_dir=self.files_dir)
 
     def list_sessions(self) -> list[SessionMetadata]:
         query = sql_select(_sessions_table).order_by(
@@ -120,7 +332,7 @@ class SessionStore:
         )
         with self.engine.connect() as conn:
             rows = conn.execute(query).mappings().fetchall()
-        return [self._metadata_from_row(row) for row in rows]
+        return [SessionMetadata.from_row(row, files_dir=self.files_dir) for row in rows]
 
     def update_session_title(self, session_id: str, title: str) -> None:
         with self.engine.begin() as conn:
@@ -128,6 +340,30 @@ class SessionStore:
                 sql_update(_sessions_table)
                 .where(_sessions_table.c.session_id == session_id)
                 .values(title=title, updated_at=_utc_now())
+            )
+
+    def get_session_state(self, session_id: str) -> SessionState:
+        query = sql_select(_sessions_table.c.state_json).where(
+            _sessions_table.c.session_id == session_id
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(query).mappings().fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        payload = json.loads(row["state_json"])
+        if not isinstance(payload, dict):
+            raise TypeError("Session state must be a mapping")
+        return SessionState.from_json(payload)
+
+    def update_session_state(self, session_id: str, state: SessionState) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_update(_sessions_table)
+                .where(_sessions_table.c.session_id == session_id)
+                .values(
+                    state_json=json.dumps(state.as_json(), ensure_ascii=False),
+                    updated_at=_utc_now(),
+                )
             )
 
     def delete_session(self, session_id: str) -> None:
@@ -141,19 +377,15 @@ class SessionStore:
         Path(metadata.path).unlink()
 
     def finalize_session_title(self, session_id: str) -> str:
-        messages = self.load_messages(session_id)
-        title_source = "Empty session"
-        for message in messages:
-            if message.kind == "user" and message.content != "":
-                title_source = message.content[:40]
-                break
+        title_source = self.load_event_log(session_id).title_source()
         self.update_session_title(session_id, title_source)
         return title_source
 
-    def append_message(self, session_id: str, message: SessionMessage) -> None:
+    def append_event(self, session_id: str, event: SessionEvent) -> None:
         metadata = self.get_session(session_id)
+        persisted_event = event.with_session_defaults(session_id=session_id)
         with Path(metadata.path).open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(_message_to_json(message), ensure_ascii=False))
+            stream.write(json.dumps(persisted_event.as_json(), ensure_ascii=False))
             stream.write("\n")
         with self.engine.begin() as conn:
             conn.execute(
@@ -162,46 +394,39 @@ class SessionStore:
                 .values(updated_at=_utc_now())
             )
 
-    def load_messages(self, session_id: str) -> list[SessionMessage]:
+    def load_event_log(self, session_id: str) -> EventLog:
         metadata = self.get_session(session_id)
         path = Path(metadata.path)
-        messages: list[SessionMessage] = []
+        events: list[SessionEvent] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if line == "":
                 continue
             payload = json.loads(line)
             if not isinstance(payload, dict):
-                raise TypeError("Session message must be a mapping")
-            messages.append(_message_from_json(payload))
-        return messages
-
-    def load_tui_events(self, session_id: str) -> list[TUIEvent]:
-        return messages_to_tui_events(self.load_messages(session_id))
+                raise TypeError("Session event must be a mapping")
+            events.append(SessionEvent.from_json(payload))
+        return EventLog(events)
 
     def export_text(self, session_id: str) -> str:
         metadata = self.get_session(session_id)
-        messages = self.load_messages(session_id)
-        return messages_to_export_text(metadata, messages)
+        return self.load_event_log(session_id).replay_export_text(metadata)
 
     def total_cost_usd(self) -> float:
         total = 0.0
         for session in self.list_sessions():
-            for message in self.load_messages(session.session_id):
-                if message.cost_total_usd is not None:
-                    total += message.cost_total_usd
+            total += self.load_event_log(session.session_id).total_cost_usd()
         return total
 
     def _init_db(self) -> None:
         _metadata.create_all(self.engine)
-
-    def _metadata_from_row(self, row: RowMapping) -> SessionMetadata:
-        return SessionMetadata(
-            session_id=row["session_id"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            title=row["title"],
-            path=str(self.files_dir / row["path"]),
-        )
+        column_names = {
+            column["name"] for column in sql_inspect(self.engine).get_columns("sessions")
+        }
+        if "state_json" not in column_names:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE sessions ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
 
 class SessionRecorder:
@@ -217,107 +442,68 @@ class SessionRecorder:
     def saved(self) -> bool:
         return self._saved
 
-    def record(self, event: TUIEvent) -> None:
+    def record(self, event: SessionEvent) -> None:
         if event.kind == "session_notice":
             return
         if event.kind == "assistant_delta":
-            self._assistant_buffer += event.content
+            self._assistant_buffer += event.payload["content"]
+            return
+        if event.kind == "thinking_delta":
             return
         if event.kind == "tool_call_delta":
-            self._tool_for(event).arguments += event.content
+            self._tool_for(event).arguments += event.payload["content"]
             return
         if event.kind == "tool_started":
-            tool_buffer = self._tool_for(event)
-            tool_buffer.name = event.tool_name
-            if event.tool_call is not None:
-                tool_buffer.arguments = event.tool_call.arguments
+            self._record_tool_started(event)
             return
         if event.kind == "tool_output":
-            self._tool_for(event).output += event.content
+            self._tool_for(event).output += event.payload["content"]
             return
         if event.kind == "llm_completed":
-            if self._assistant_buffer != "":
-                self.flush_assistant(event.usage, event.cost)
-            elif event.content != "":
-                self._append_assistant_message(event.content, event.usage, event.cost)
+            self._record_llm_completed(event)
             return
 
         self.flush_assistant()
         if event.kind == "user_message":
-            self.store.append_message(
-                self.session_id,
-                SessionMessage(
-                    kind="user",
-                    content=event.content,
-                    created_at=_utc_now().isoformat(),
-                ),
+            self._append_event(
+                "user_message",
+                {"content": event.payload["content"]},
+                event,
             )
         elif event.kind in ("tool_completed", "tool_failed"):
-            self._record_tool(event)
+            self._record_tool_result(event)
         elif event.kind in ("run_failed", "step_failed"):
-            self.store.append_message(
-                self.session_id,
-                SessionMessage(
-                    kind="error",
-                    content=event.error or event.content,
-                    created_at=_utc_now().isoformat(),
-                    status="failed",
-                ),
+            self._append_event(
+                "error",
+                {
+                    "content": event.payload.get("error") or event.payload["content"],
+                    "status": "failed",
+                },
+                event,
             )
+        elif event.kind in ("run_completed", "step_completed", "step_started"):
+            self._append_event(event.kind, dict(event.payload), event)
+        elif event.kind in ("media", "reasoning_summary"):
+            self._append_event(event.kind, dict(event.payload), event)
 
     def flush_assistant(
         self,
         usage: LLMUsage | None = None,
-        cost: TUICostEstimate | None = None,
+        cost: CostEstimate | None = None,
     ) -> None:
         if self._assistant_buffer == "":
             return
-        self._append_assistant_message(self._assistant_buffer, usage, cost)
+        payload: dict[str, Any] = {"content": self._assistant_buffer}
+        payload.update(_usage_payload(usage))
+        payload.update(_cost_payload(cost))
+        self._append_event("assistant_message", payload, None)
         self._assistant_buffer = ""
-
-    def _append_assistant_message(
-        self,
-        content: str,
-        usage: LLMUsage | None,
-        cost: TUICostEstimate | None,
-    ) -> None:
-        self.store.append_message(
-            self.session_id,
-            SessionMessage(
-                kind="assistant",
-                content=content,
-                created_at=_utc_now().isoformat(),
-                usage_input_tokens=None if usage is None else usage.input_tokens,
-                usage_cached_input_tokens=(
-                    None if usage is None else usage.cached_input_tokens
-                ),
-                usage_output_tokens=None if usage is None else usage.output_tokens,
-                usage_total_tokens=None if usage is None else usage.total_tokens,
-                cost_model=None if cost is None else cost.model,
-                cost_input_usd=None if cost is None else cost.input_cost_usd,
-                cost_cached_input_usd=(
-                    None if cost is None else cost.cached_input_cost_usd
-                ),
-                cost_output_usd=None if cost is None else cost.output_cost_usd,
-                cost_total_usd=None if cost is None else cost.total_cost_usd,
-                cost_input_usd_per_million=(
-                    None if cost is None else cost.input_usd_per_million
-                ),
-                cost_cached_input_usd_per_million=(
-                    None if cost is None else cost.cached_input_usd_per_million
-                ),
-                cost_output_usd_per_million=(
-                    None if cost is None else cost.output_usd_per_million
-                ),
-                cost_pricing_source=None if cost is None else cost.pricing_source,
-            ),
-        )
 
     def finalize(self) -> bool:
         if self._finalized:
             return self._saved
         self.flush_assistant()
-        if not self.store.load_messages(self.session_id):
+        if not self.store.load_event_log(self.session_id).has_transcript():
             self.store.delete_session(self.session_id)
             self._saved = False
             self._finalized = True
@@ -327,258 +513,178 @@ class SessionRecorder:
         self._finalized = True
         return self._saved
 
-    def _record_tool(self, event: TUIEvent) -> None:
+    def _record_llm_completed(self, event: SessionEvent) -> None:
+        content = self._assistant_buffer or event.payload["content"]
+        self._assistant_buffer = ""
+        tool_calls = LLMToolCall.list_from_payload(event.payload)
+        if tool_calls:
+            self._append_event(
+                "assistant_tool_call",
+                {
+                    "content": content,
+                    "tool_calls": [call.asdict() for call in tool_calls],
+                    **_usage_payload(_usage_from_event_payload(event.payload)),
+                    **_cost_payload(_cost_from_event_payload(event.payload)),
+                },
+                event,
+            )
+            return
+        if content != "":
+            self._append_event(
+                "assistant_message",
+                {
+                    "content": content,
+                    **_usage_payload(_usage_from_event_payload(event.payload)),
+                    **_cost_payload(_cost_from_event_payload(event.payload)),
+                },
+                event,
+            )
+
+    def _record_tool_started(self, event: SessionEvent) -> None:
         tool_buffer = self._tool_for(event)
-        if event.tool_name is not None:
-            tool_buffer.name = event.tool_name
-        if event.tool_call is not None:
-            tool_buffer.arguments = event.tool_call.arguments
-        if event.tool_result is not None:
-            tool_buffer.output = event.tool_result.output
-        elif event.content != "":
-            tool_buffer.output = event.content
+        tool_buffer.name = event.payload["tool_name"]
+        call = LLMToolCall.from_payload(event.payload["tool_call"])
+        tool_buffer.call = call
+        tool_buffer.arguments = call.arguments
+        self._append_event("tool_started", dict(event.payload), event)
+
+    def _record_tool_result(self, event: SessionEvent) -> None:
+        tool_buffer = self._tool_for(event)
+        if "tool_name" in event.payload:
+            tool_buffer.name = event.payload["tool_name"]
+        if "tool_call" in event.payload:
+            call = LLMToolCall.from_payload(event.payload["tool_call"])
+            tool_buffer.call = call
+            tool_buffer.arguments = call.arguments
+        if "tool_result" in event.payload:
+            tool_buffer.output = event.payload["tool_result"]["output"]
+        elif event.payload["content"] != "":
+            tool_buffer.output = event.payload["content"]
         if tool_buffer.name is None:
             return
-        self.store.append_message(
-            self.session_id,
-            SessionMessage(
-                kind="tool",
-                content=_tool_content(event, tool_buffer.output),
-                created_at=_utc_now().isoformat(),
-                tool_name=tool_buffer.name,
-                tool_call_id=event.tool_call_id,
-                tool_arguments=tool_buffer.arguments,
-                tool_output=tool_buffer.output,
-                status="failed" if event.kind == "tool_failed" else "completed",
-            ),
+        self._append_event(
+            "tool_result",
+            {
+                "content": _tool_content(
+                    event.kind,
+                    event.payload.get("error") or event.payload["content"],
+                    tool_buffer.output,
+                ),
+                "tool_name": tool_buffer.name,
+                "tool_call_id": event.payload["tool_call_id"],
+                "tool_arguments": tool_buffer.arguments,
+                "output": tool_buffer.output,
+                "status": "failed" if event.kind == "tool_failed" else "completed",
+            },
+            event,
         )
-        if event.tool_call_id is not None:
-            self._tools.pop(event.tool_call_id, None)
+        self._tools.pop(event.payload["tool_call_id"], None)
 
-    def _tool_for(self, event: TUIEvent) -> _ToolBuffer:
-        if event.tool_call_id is None:
+    def _tool_for(self, event: SessionEvent) -> _ToolBuffer:
+        if "tool_call_id" not in event.payload:
             raise ValueError("tool event must include tool_call_id")
-        tool_buffer = self._tools.get(event.tool_call_id)
+        call_id = event.payload["tool_call_id"]
+        tool_buffer = self._tools.get(call_id)
         if tool_buffer is None:
             tool_buffer = _ToolBuffer()
-            self._tools[event.tool_call_id] = tool_buffer
+            self._tools[call_id] = tool_buffer
         return tool_buffer
+
+    def _append_event(
+        self,
+        kind: SessionEventKind,
+        payload: dict[str, Any],
+        source_event: SessionEvent | None,
+    ) -> None:
+        self.store.append_event(
+            self.session_id,
+            SessionEvent(
+                session_id=self.session_id,
+                run_id="" if source_event is None else source_event.run_id,
+                step_id=None if source_event is None else source_event.step_id,
+                step_index=None if source_event is None else source_event.step_index,
+                kind=kind,
+                payload=payload,
+            ),
+        )
 
 
 def default_session_root() -> Path:
     return Path.home() / ".aceai" / "sessions"
 
 
-def messages_to_tui_events(messages: list[SessionMessage]) -> list[TUIEvent]:
-    events: list[TUIEvent] = []
-    for message in messages:
-        if message.kind == "user":
-            events.append(user_message_event(message.content))
-        elif message.kind == "assistant":
-            usage = _message_usage(message)
-            cost = _message_cost(message)
-            events.append(
-                TUIEvent(
-                    kind="assistant_delta",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title="assistant",
-                    content=message.content,
-                    usage=usage,
-                    cost=cost,
-                    raw_event=None,
-                )
-            )
-        elif message.kind == "tool":
-            call_id = message.tool_call_id or uuid_str()
-            tool_name = message.tool_name or "tool"
-            tool_call = LLMToolCall(
-                name=tool_name,
-                arguments=message.tool_arguments,
-                call_id=call_id,
-            )
-            events.append(
-                TUIEvent(
-                    kind="tool_failed" if message.status == "failed" else "tool_completed",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title=f"tool {tool_name}",
-                    content=message.tool_output,
-                    tool_name=tool_name,
-                    tool_call_id=call_id,
-                    tool_call=tool_call,
-                    tool_result=ToolExecutionResult(
-                        call=tool_call,
-                        output=message.tool_output,
-                        error=message.content if message.status == "failed" else None,
-                    ),
-                    error=message.content if message.status == "failed" else None,
-                    raw_event=None,
-                )
-            )
-        elif message.kind == "error":
-            events.append(
-                TUIEvent(
-                    kind="run_failed",
-                    step_index=-1,
-                    step_id=uuid_str(),
-                    title="run failed",
-                    content=message.content,
-                    error=message.content,
-                    raw_event=None,
-                )
-            )
-    return events
+def _event_to_export_lines(event: SessionEvent) -> list[str]:
+    if event.kind == "user_message":
+        return ["## user", event.payload["content"]]
+    if event.kind == "assistant_message":
+        return ["## assistant", event.payload["content"]]
+    if event.kind == "assistant_tool_call":
+        lines = ["## assistant tool calls"]
+        if event.payload["content"] != "":
+            lines.append(event.payload["content"])
+        for call in LLMToolCall.list_from_payload(event.payload):
+            lines.extend([f"tool: {call.name}", "arguments:", call.arguments])
+        return lines
+    if event.kind == "tool_result":
+        name = event.payload["tool_name"]
+        lines = [f"## tool: {name} ({event.payload['status']})"]
+        if event.payload["tool_arguments"] != "":
+            lines.extend(["arguments:", event.payload["tool_arguments"]])
+        if event.payload["output"] != "":
+            lines.extend(["output:", event.payload["output"]])
+        return lines
+    if event.kind == "error":
+        status = event.payload["status"]
+        return [f"## error ({status})", event.payload["content"]]
+    return []
 
 
-def _message_usage(message: SessionMessage) -> LLMUsage | None:
-    if (
-        message.usage_input_tokens is None
-        and message.usage_output_tokens is None
-        and message.usage_total_tokens is None
-    ):
-        return None
-    return LLMUsage(
-        input_tokens=message.usage_input_tokens,
-        cached_input_tokens=message.usage_cached_input_tokens,
-        output_tokens=message.usage_output_tokens,
-        total_tokens=message.usage_total_tokens,
-    )
-
-
-def _message_cost(message: SessionMessage) -> TUICostEstimate | None:
-    if (
-        message.cost_model is None
-        or message.cost_input_usd is None
-        or message.cost_cached_input_usd is None
-        or message.cost_output_usd is None
-        or message.cost_total_usd is None
-        or message.cost_input_usd_per_million is None
-        or message.cost_cached_input_usd_per_million is None
-        or message.cost_output_usd_per_million is None
-        or message.cost_pricing_source is None
-    ):
-        return None
-    return TUICostEstimate(
-        model=message.cost_model,
-        input_cost_usd=message.cost_input_usd,
-        cached_input_cost_usd=message.cost_cached_input_usd,
-        output_cost_usd=message.cost_output_usd,
-        total_cost_usd=message.cost_total_usd,
-        input_usd_per_million=message.cost_input_usd_per_million,
-        cached_input_usd_per_million=message.cost_cached_input_usd_per_million,
-        output_usd_per_million=message.cost_output_usd_per_million,
-        pricing_source=message.cost_pricing_source,
-    )
-
-
-def messages_to_llm_history(messages: list[SessionMessage]) -> list[LLMMessage]:
-    history: list[LLMMessage] = []
-    for message in messages:
-        if message.kind == "user":
-            history.append(LLMMessage.build(role="user", content=message.content))
-        elif message.kind == "assistant":
-            history.append(LLMMessage.build(role="assistant", content=message.content))
-    return history
-
-
-def messages_to_export_text(
-    metadata: SessionMetadata, messages: list[SessionMessage]
-) -> str:
-    lines = [
-        f"# AceAI session {metadata.session_id}",
-        f"title: {metadata.title}",
-        f"created_at: {metadata.created_at.isoformat()}",
-        f"updated_at: {metadata.updated_at.isoformat()}",
-        "",
-    ]
-    for message in messages:
-        lines.extend(_message_to_export_lines(message))
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _message_to_json(message: SessionMessage) -> dict[str, Any]:
+def _usage_payload(usage: LLMUsage | None) -> dict[str, Any]:
+    if usage is None:
+        return {}
     return {
-        "kind": message.kind,
-        "content": message.content,
-        "created_at": message.created_at,
-        "tool_name": message.tool_name,
-        "tool_call_id": message.tool_call_id,
-        "tool_arguments": message.tool_arguments,
-        "tool_output": message.tool_output,
-        "status": message.status,
-        "usage_input_tokens": message.usage_input_tokens,
-        "usage_cached_input_tokens": message.usage_cached_input_tokens,
-        "usage_output_tokens": message.usage_output_tokens,
-        "usage_total_tokens": message.usage_total_tokens,
-        "cost_model": message.cost_model,
-        "cost_input_usd": message.cost_input_usd,
-        "cost_cached_input_usd": message.cost_cached_input_usd,
-        "cost_output_usd": message.cost_output_usd,
-        "cost_total_usd": message.cost_total_usd,
-        "cost_input_usd_per_million": message.cost_input_usd_per_million,
-        "cost_cached_input_usd_per_million": (
-            message.cost_cached_input_usd_per_million
-        ),
-        "cost_output_usd_per_million": message.cost_output_usd_per_million,
-        "cost_pricing_source": message.cost_pricing_source,
+        "usage": {
+            "input_tokens": usage.input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+        }
     }
 
 
-def _message_from_json(payload: dict[str, Any]) -> SessionMessage:
-    kind = payload["kind"]
-    if kind not in ("user", "assistant", "tool", "error"):
-        raise ValueError("Unsupported session message kind")
-    return SessionMessage(
-        kind=kind,
-        content=payload["content"],
-        created_at=payload["created_at"],
-        tool_name=payload["tool_name"],
-        tool_call_id=payload["tool_call_id"],
-        tool_arguments=payload["tool_arguments"],
-        tool_output=payload["tool_output"],
-        status=payload["status"],
-        usage_input_tokens=payload.get("usage_input_tokens"),
-        usage_cached_input_tokens=payload.get("usage_cached_input_tokens"),
-        usage_output_tokens=payload.get("usage_output_tokens"),
-        usage_total_tokens=payload.get("usage_total_tokens"),
-        cost_model=payload.get("cost_model"),
-        cost_input_usd=payload.get("cost_input_usd"),
-        cost_cached_input_usd=payload.get("cost_cached_input_usd"),
-        cost_output_usd=payload.get("cost_output_usd"),
-        cost_total_usd=payload.get("cost_total_usd"),
-        cost_input_usd_per_million=payload.get("cost_input_usd_per_million"),
-        cost_cached_input_usd_per_million=payload.get(
-            "cost_cached_input_usd_per_million"
-        ),
-        cost_output_usd_per_million=payload.get("cost_output_usd_per_million"),
-        cost_pricing_source=payload.get("cost_pricing_source"),
-    )
+def _cost_payload(cost: CostEstimate | None) -> dict[str, Any]:
+    if cost is None:
+        return {}
+    return {
+        "cost": {
+            "model": cost.model,
+            "input_cost_usd": cost.input_cost_usd,
+            "cached_input_cost_usd": cost.cached_input_cost_usd,
+            "output_cost_usd": cost.output_cost_usd,
+            "total_cost_usd": cost.total_cost_usd,
+            "input_usd_per_million": cost.input_usd_per_million,
+            "cached_input_usd_per_million": cost.cached_input_usd_per_million,
+            "output_usd_per_million": cost.output_usd_per_million,
+            "pricing_source": cost.pricing_source,
+        }
+    }
 
 
-def _message_to_export_lines(message: SessionMessage) -> list[str]:
-    if message.kind == "user":
-        return ["## user", message.content]
-    if message.kind == "assistant":
-        return ["## assistant", message.content]
-    if message.kind == "tool":
-        name = message.tool_name or "tool"
-        lines = [f"## tool: {name} ({message.status})"]
-        if message.tool_arguments != "":
-            lines.extend(["arguments:", message.tool_arguments])
-        if message.tool_output != "":
-            lines.extend(["output:", message.tool_output])
-        return lines
-    if message.kind == "error":
-        status = message.status or "failed"
-        return [f"## error ({status})", message.content]
-    raise ValueError("Unsupported session message kind")
+def _usage_from_event_payload(payload: dict[str, Any]) -> LLMUsage | None:
+    if "usage" not in payload:
+        return None
+    return LLMUsage.from_payload(payload["usage"])
 
 
-def _tool_content(event: TUIEvent, output: str) -> str:
-    if event.kind == "tool_failed":
-        return event.error or event.content
+def _cost_from_event_payload(payload: dict[str, Any]) -> CostEstimate | None:
+    if "cost" not in payload:
+        return None
+    return CostEstimate.from_payload(payload["cost"])
+
+
+def _tool_content(kind: SessionEventKind, error: str | None, output: str) -> str:
+    if kind == "tool_failed":
+        return error or output
     if '"entries":[' in output:
         entry_count = output.count('"name"')
         return f"completed - {entry_count} entries"

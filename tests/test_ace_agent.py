@@ -1,6 +1,10 @@
+import pytest
+
 from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR, build_ace_agent
 from aceai.agent.features import default_agent_tools
-from aceai.core import ToolExecutor
+from aceai.agent.features.tools import read_text_file
+from aceai.core import ToolExecutionError, ToolExecutor
+from aceai.llm.interface import UNSET
 
 
 def test_default_agent_tools_are_product_capabilities() -> None:
@@ -24,7 +28,7 @@ def test_build_ace_agent_wires_app_tools_and_builtin_skills(
     agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
 
     assert agent.default_model == "gpt-5.5"
-    assert agent.max_steps == 8
+    assert agent.max_steps is UNSET
     assert ACE_AGENT_SKILLS_DIR.exists()
     assert isinstance(agent._executor, ToolExecutor)
     assert agent._hosted_tools[0].provider_name == "openai"
@@ -55,3 +59,10 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
 
     assert agent.default_model == "deepseek-v4-flash"
     assert agent._hosted_tools == []
+
+
+def test_app_file_tool_reports_missing_file_as_tool_execution_error(tmp_path) -> None:
+    missing_path = tmp_path / "missing.py"
+
+    with pytest.raises(ToolExecutionError, match="No such file or directory"):
+        read_text_file(path=str(missing_path))

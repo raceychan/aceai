@@ -1,4 +1,4 @@
-from rich.panel import Panel
+from rich.console import Group
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
@@ -13,11 +13,10 @@ from aceai.llm.models import (
 )
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolExecutionResult
-from aceai.agent.tui.events import adapt_agent_event, user_message_event
+from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.state import reduce_events
 from aceai.agent.tui.widgets.stream import (
     StreamWidget,
-    _chat_panel_width,
     _render_events,
 )
 
@@ -25,30 +24,28 @@ from aceai.agent.tui.widgets.stream import (
 def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(builder.llm_text_delta(text_delta="Hi")),
-        adapt_agent_event(builder.llm_text_delta(text_delta="!")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="Hi")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="!")),
     ]
 
     renderables = _render_events(events)
 
     assert len(renderables) == 1
-    panel = renderables[0]
-    assert isinstance(panel, Panel)
-    panel_renderable = panel.renderable
-    assert isinstance(panel_renderable, Markdown)
-    assert panel_renderable.markup == "Hi!"
+    block = renderables[0]
+    assert isinstance(block, Text)
+    assert block.plain == "  Hi!"
 
 
 def test_main_stream_renders_question_before_answer() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        user_message_event("How do I search?"),
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(builder.llm_text_delta(text_delta="Use rg.")),
-        adapt_agent_event(
+        TUIEvent.user_message("How do I search?"),
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="Use rg.")),
+        TUIEvent.from_agent_event(
             builder.step_completed(step=AgentStep(llm_response=LLMResponse(text="Use rg.")))
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.run_completed(
                 step=AgentStep(llm_response=LLMResponse(text="Use rg.")),
                 final_answer="Use rg.",
@@ -62,32 +59,46 @@ def test_main_stream_renders_question_before_answer() -> None:
     question = renderables[0]
     answer = renderables[1]
     assert isinstance(question, Table)
-    assert isinstance(answer, Panel)
-    question_panel = question.columns[1]._cells[0]
-    assert isinstance(question_panel, Panel)
-    assert question_panel.title is None
-    assert answer.title is None
-    assert not answer.expand
-    question_renderable = question_panel.renderable
-    answer_renderable = answer.renderable
+    assert question.expand
+    assert isinstance(answer, Text)
+    question_renderable = question.columns[0]._cells[0]
     assert isinstance(question_renderable, Text)
-    assert isinstance(answer_renderable, Markdown)
-    assert question_renderable.plain == "How do I search?"
-    assert answer_renderable.markup == "Use rg."
+    assert question_renderable.plain == "▌ How do I search?"
+    assert answer.plain == "  Use rg."
 
 
 def test_user_messages_render_right_aligned() -> None:
-    renderables = _render_events([user_message_event("Where am I?")])
+    renderables = _render_events([TUIEvent.user_message("Where am I?")])
 
     message = renderables[0]
     assert isinstance(message, Table)
     assert message.expand
-    assert len(message.columns) == 2
+    assert len(message.columns) == 1
     assert message.columns[0].ratio == 1
-    panel = message.columns[1]._cells[0]
-    assert isinstance(panel, Panel)
-    assert not panel.expand
-    assert panel.title is None
+    assert message.columns[0].style == "bold #eceff4 on #3b4252"
+    text = message.columns[0]._cells[0]
+    assert isinstance(text, Text)
+    assert text.plain == "▌ Where am I?"
+
+
+def test_user_messages_after_answers_get_turn_spacing() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    renderables = _render_events(
+        [
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
+            TUIEvent.user_message("next question"),
+        ]
+    )
+
+    assert len(renderables) == 3
+    spacer = renderables[1]
+    assert isinstance(spacer, Text)
+    assert spacer.plain == ""
+    question = renderables[2]
+    assert isinstance(question, Table)
+    question_text = question.columns[0]._cells[0]
+    assert isinstance(question_text, Text)
+    assert question_text.plain == "▌ next question"
 
 
 def test_stream_writes_user_message_rows_expanded() -> None:
@@ -107,7 +118,7 @@ def test_stream_writes_user_message_rows_expanded() -> None:
     stream.clear = lambda: None
     stream.call_after_refresh = lambda *args, **kwargs: None
 
-    stream.set_state(reduce_events([user_message_event("Where am I?")]))
+    stream.set_state(reduce_events([TUIEvent.user_message("Where am I?")]))
 
     assert len(writes) == 1
     content, expand = writes[0]
@@ -115,7 +126,7 @@ def test_stream_writes_user_message_rows_expanded() -> None:
     assert expand
 
 
-def test_stream_writes_assistant_messages_with_capped_width() -> None:
+def test_stream_writes_assistant_messages_as_plain_text() -> None:
     stream = StreamWidget()
     writes: list[tuple[object, int | None]] = []
 
@@ -132,7 +143,7 @@ def test_stream_writes_assistant_messages_with_capped_width() -> None:
     stream.clear = lambda: None
     stream.call_after_refresh = lambda *args, **kwargs: None
 
-    event = adapt_agent_event(
+    event = TUIEvent.from_agent_event(
         AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
             text_delta="x" * 300
         )
@@ -141,40 +152,23 @@ def test_stream_writes_assistant_messages_with_capped_width() -> None:
 
     assert len(writes) == 1
     content, width = writes[0]
-    assert isinstance(content, Panel)
-    assert width == 100
-
-
-def test_short_assistant_messages_keep_natural_width() -> None:
-    panel = _render_events(
-        [
-            adapt_agent_event(
-                AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
-                    text_delta="Use rg."
-                )
-            )
-        ]
-    )[0]
-
-    assert isinstance(panel, Panel)
-    assert _chat_panel_width(panel, 120) == 11
+    assert isinstance(content, Text)
+    assert width == 1
 
 
 def test_assistant_markdown_renders_as_markdown() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_text_delta(text_delta="## Steps\n\n- Use `rg`\n- Run tests")
         ),
     ]
 
     renderables = _render_events(events)
 
-    panel = renderables[0]
-    assert isinstance(panel, Panel)
-    assert not panel.expand
-    assert panel.title is None
-    panel_renderable = panel.renderable
+    block = renderables[0]
+    assert isinstance(block, Group)
+    panel_renderable = block.renderables[1]
     assert isinstance(panel_renderable, Markdown)
     assert panel_renderable.markup == "## Steps\n\n- Use `rg`\n- Run tests"
 
@@ -182,13 +176,13 @@ def test_assistant_markdown_renders_as_markdown() -> None:
 def test_reasoning_summary_renders_before_completed_answer() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(
             builder.llm_reasoning(
                 segment=LLMSegment(type="reasoning", content="think first")
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_completed(
                 step=AgentStep(llm_response=LLMResponse(text="answer"))
             )
@@ -200,19 +194,18 @@ def test_reasoning_summary_renders_before_completed_answer() -> None:
     assert len(renderables) == 2
     reasoning = renderables[0]
     answer = renderables[1]
-    assert isinstance(reasoning, Panel)
-    assert reasoning.title == "reasoning"
-    reasoning_renderable = reasoning.renderable
+    assert isinstance(reasoning, Text)
+    reasoning_renderable = reasoning
     assert isinstance(reasoning_renderable, Text)
-    assert reasoning_renderable.plain == "think first"
-    assert isinstance(answer, Panel)
-    assert answer.title is None
+    assert reasoning_renderable.plain == "  * reasoning  think first"
+    assert isinstance(answer, Text)
+    assert answer.plain == "  answer"
 
 
 def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_reasoning(
                 segment=LLMSegment(
                     type="reasoning",
@@ -226,7 +219,7 @@ def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
                 )
             )
         ),
-        adapt_agent_event(builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
     ]
 
     renderables = _render_events(events)
@@ -234,25 +227,21 @@ def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
     assert len(renderables) == 2
     reasoning = renderables[0]
     answer = renderables[1]
-    assert isinstance(reasoning, Panel)
-    assert reasoning.title is None
-    reasoning_renderable = reasoning.renderable
+    assert isinstance(reasoning, Text)
+    reasoning_renderable = reasoning
     assert isinstance(reasoning_renderable, Text)
-    assert reasoning_renderable.plain == "think first"
-    assert isinstance(answer, Panel)
-    assert answer.title is None
-    answer_renderable = answer.renderable
-    assert isinstance(answer_renderable, Markdown)
-    assert answer_renderable.markup == "answer"
+    assert reasoning_renderable.plain == "  * reasoning  think first"
+    assert isinstance(answer, Text)
+    assert answer.plain == "  answer"
 
 
 def test_main_stream_omits_lifecycle_events() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     step = AgentStep(llm_response=LLMResponse(text="done"))
     events = [
-        adapt_agent_event(builder.llm_started()),
-        adapt_agent_event(builder.step_completed(step=step)),
-        adapt_agent_event(builder.run_completed(step=step, final_answer="done")),
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(builder.step_completed(step=step)),
+        TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")),
     ]
 
     renderables = _render_events(events)
@@ -272,7 +261,7 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
         output='{"path":"binary_search.py","bytes_written":9}',
     )
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -280,7 +269,7 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
                 )
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -288,25 +277,22 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
                 )
             )
         ),
-        adapt_agent_event(builder.tool_started(tool_call=call)),
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
     ]
 
     renderables = _render_events(events)
 
     assert len(renderables) == 1
-    panel = renderables[0]
-    assert isinstance(panel, Panel)
-    assert panel.title == "tool: write_text_file"
-    panel_renderable = panel.renderable
-    assert isinstance(panel_renderable, Text)
-    assert panel_renderable.plain == "completed - file written"
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == "  ● write_text_file  completed - file written"
 
 
 def test_unknown_in_progress_tool_call_deltas_do_not_render() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -314,7 +300,7 @@ def test_unknown_in_progress_tool_call_deltas_do_not_render() -> None:
                 )
             )
         ),
-        adapt_agent_event(
+        TUIEvent.from_agent_event(
             builder.llm_tool_call_delta(
                 tool_call_delta=LLMToolCallDelta(
                     id="call-1",
@@ -346,16 +332,13 @@ def test_directory_tool_result_summarizes_entry_count_without_details() -> None:
         ),
     )
     events = [
-        adapt_agent_event(builder.tool_started(tool_call=call)),
-        adapt_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
     ]
 
     renderables = _render_events(events)
 
     assert len(renderables) == 1
-    panel = renderables[0]
-    assert isinstance(panel, Panel)
-    assert panel.title == "tool: list_directory"
-    panel_renderable = panel.renderable
-    assert isinstance(panel_renderable, Text)
-    assert panel_renderable.plain == "completed - 2 entries"
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == "  ● list_directory  completed - 2 entries"

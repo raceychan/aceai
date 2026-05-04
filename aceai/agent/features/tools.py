@@ -4,6 +4,7 @@ from typing import Any
 
 from msgspec import Struct
 
+from aceai.core.executor import ToolExecutionError
 from aceai.core.tools import Annotated, Tool, spec, tool
 
 
@@ -56,7 +57,11 @@ def list_directory(
     """List direct children of a directory."""
     root = Path(path).expanduser()
     entries: list[DirectoryEntry] = []
-    for child in sorted(root.iterdir()):
+    try:
+        children = sorted(root.iterdir())
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    for child in children:
         if child.is_dir():
             kind = "directory"
         elif child.is_file():
@@ -79,7 +84,13 @@ def read_text_file(
 ) -> TextFile:
     """Read a UTF-8 text file exactly as stored on disk."""
     target = Path(path).expanduser()
-    return TextFile(path=str(target), content=target.read_text(encoding="utf-8"))
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    except UnicodeError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    return TextFile(path=str(target), content=content)
 
 
 @tool(tags=["agent_app", "filesystem"], max_calls_per_run=8)
@@ -89,8 +100,11 @@ def write_text_file(
 ) -> FileWriteResult:
     """Write complete UTF-8 text content to a file."""
     target = Path(path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    bytes_written = target.write_text(content, encoding="utf-8")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        bytes_written = target.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
     return FileWriteResult(path=str(target), bytes_written=bytes_written)
 
 
@@ -102,11 +116,19 @@ def replace_text_in_file(
 ) -> TextReplacementResult:
     """Replace exact text in a UTF-8 file."""
     target = Path(path).expanduser()
-    content = target.read_text(encoding="utf-8")
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    except UnicodeError as exc:
+        raise ToolExecutionError(str(exc)) from exc
     if old_text not in content:
-        raise ValueError("old_text was not found in file")
+        raise ToolExecutionError("old_text was not found in file")
     updated = content.replace(old_text, new_text)
-    target.write_text(updated, encoding="utf-8")
+    try:
+        target.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
     return TextReplacementResult(
         path=str(target),
         replacements=content.count(old_text),
@@ -120,15 +142,20 @@ def run_shell_command(
     timeout_seconds: Annotated[int, spec(description="Command timeout in seconds")] = 120,
 ) -> CommandResult:
     """Run a shell command and return stdout, stderr, and exit code."""
-    completed = subprocess.run(
-        command,
-        cwd=Path(cwd).expanduser(),
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(cwd).expanduser(),
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ToolExecutionError(str(exc)) from exc
     return CommandResult(
         command=command,
         cwd=cwd,
@@ -144,12 +171,15 @@ def search_text(
     path: Annotated[str, spec(description="File or directory path to search")] = ".",
 ) -> SearchResult:
     """Search text with ripgrep and return line-numbered matches."""
-    completed = subprocess.run(
-        ["rg", "--line-number", "--column", query, path],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["rg", "--line-number", "--column", query, path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ToolExecutionError(str(exc)) from exc
     return SearchResult(
         query=query,
         path=path,

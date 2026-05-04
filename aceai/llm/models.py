@@ -81,6 +81,21 @@ class LLMToolCall(Record, kw_only=True):
     call_id: str
     """Stable identifier used to correlate streaming deltas and tool outputs."""
 
+    @classmethod
+    def from_payload(cls, payload: StrDict) -> Self:
+        return cls(
+            type=payload["type"],
+            name=payload["name"],
+            arguments=payload["arguments"],
+            call_id=payload["call_id"],
+        )
+
+    @classmethod
+    def list_from_payload(cls, payload: StrDict) -> list[Self]:
+        if "tool_calls" not in payload:
+            return []
+        return [cls.from_payload(call) for call in payload["tool_calls"]]
+
 
 class LLMToolCallDelta(Record):
     """Incremental tool call update emitted during streaming."""
@@ -323,6 +338,15 @@ class LLMUsage(Record):
 
     total_tokens: int | None = None
     """Optional; only present if the provider supplies the aggregate."""
+
+    @classmethod
+    def from_payload(cls, payload: StrDict) -> Self:
+        return cls(
+            input_tokens=payload["input_tokens"],
+            cached_input_tokens=payload["cached_input_tokens"],
+            output_tokens=payload["output_tokens"],
+            total_tokens=payload["total_tokens"],
+        )
 
 
 class LLMCitationRef(Record):

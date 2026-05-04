@@ -1,10 +1,8 @@
 """Main event stream pane for the read-only TUI prototype."""
 
 from msgspec import Struct
-from rich.cells import cell_len
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from textual.events import Resize
@@ -14,8 +12,11 @@ from aceai.agent.tui.events import TUIEvent, TUIEventKind
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
-DEFAULT_CHAT_PANEL_WIDTH = 100
-CHAT_PANEL_WIDTH_RATIO = 0.86
+PROMPT_BAR_STYLE = "bold #eceff4 on #3b4252"
+PROMPT_MARK_STYLE = "bold #88c0d0 on #3b4252"
+SUBTLE_BULLET_STYLE = "bold #9aa3b2"
+REASONING_MARK_STYLE = "bold #d08770"
+TRANSCRIPT_GUTTER = "  "
 
 
 class StreamWidget(RichLog):
@@ -61,16 +62,7 @@ class StreamWidget(RichLog):
         if isinstance(renderable, Table):
             self.write(renderable, expand=True)
             return
-        if _is_chat_panel(renderable):
-            self.write(
-                renderable,
-                width=_chat_panel_width(
-                    renderable,
-                    _available_stream_width(self),
-                ),
-            )
-            return
-        self.write(renderable)
+        self.write(renderable, width=_available_stream_width(self))
 
 
 class _ToolBlockState(Struct, kw_only=True):
@@ -156,6 +148,8 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
                 pending_reasoning,
                 rendered_reasoning_step_ids,
             )
+            if event.kind == "user_message" and renderables:
+                renderables.append(Text(""))
             if event.kind == "llm_completed":
                 assistant_step_ids.add(event.step_id)
             renderables.append(rendered)
@@ -210,12 +204,7 @@ def _flush_assistant_buffer(
     if assistant_buffer == "":
         return "", assistant_buffer_step_id
     renderables.append(
-        _render_text_block(
-            "assistant",
-            assistant_buffer,
-            event_kind="assistant_delta",
-            markdown=True,
-        )
+        _render_assistant_block(assistant_buffer)
     )
     assistant_step_ids.add(assistant_buffer_step_id)
     return "", ""
@@ -262,7 +251,7 @@ def _update_tool_block(
         tool_block.status = "completed"
 
 
-def _render_tool_block(tool_block: _ToolBlockState) -> Panel:
+def _render_tool_block(tool_block: _ToolBlockState) -> Text:
     event_kind: TUIEventKind = (
         "tool_failed"
         if tool_block.status == "failed"
@@ -273,12 +262,13 @@ def _render_tool_block(tool_block: _ToolBlockState) -> Panel:
     style = EVENT_STYLES[event_kind]
     if tool_block.name is None:
         raise ValueError("tool block must include a tool name before rendering")
-    title = f"tool: {tool_block.name}"
-    return Panel(
-        Text(_tool_summary(tool_block), style=style),
-        title=title,
-        border_style=style,
-    )
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    text.append("●", style=SUBTLE_BULLET_STYLE)
+    text.append(" ")
+    text.append(tool_block.name, style=style)
+    text.append(f"  {_tool_summary(tool_block)}", style=style)
+    return text
 
 
 def _tool_summary(tool_block: _ToolBlockState) -> str:
@@ -309,24 +299,56 @@ def _tool_output_summary(output: str) -> str:
     return "result ready"
 
 
+def _render_assistant_block(content: str) -> RenderableType:
+    style = EVENT_STYLES["assistant_delta"]
+    if _looks_like_markdown(content):
+        return Group(
+            Text(""),
+            Markdown(content, style=style),
+        )
+    lines = content.splitlines()
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    if not lines:
+        return text
+    text.append(lines[0], style=style)
+    for line in lines[1:]:
+        text.append("\n  ")
+        text.append(line, style=style)
+    return text
+
+
 def _render_text_block(
     label: str,
     content: str,
     *,
     event_kind: TUIEventKind,
     markdown: bool = False,
-) -> Panel:
+) -> RenderableType:
     style = EVENT_STYLES[event_kind]
-    body: RenderableType
-    if markdown:
-        body = Markdown(content, style=style)
-    else:
-        body = Text(content, style=style)
-    return Panel(
-        body,
-        border_style=style,
-        expand=False,
-    )
+    if event_kind in ("thinking_delta", "reasoning_summary"):
+        return _render_reasoning_line(label, content, style=style)
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    text.append("●", style=SUBTLE_BULLET_STYLE)
+    text.append(" ")
+    text.append(label, style=f"bold {style}")
+    if content != "":
+        text.append("  ")
+    text.append(content, style=style)
+    return text
+
+
+def _render_reasoning_line(label: str, content: str, *, style: str) -> Text:
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    text.append("*", style=REASONING_MARK_STYLE)
+    text.append(" ")
+    text.append(label, style=f"bold {style}")
+    if content != "":
+        text.append("  ")
+        text.append(content, style=style)
+    return text
 
 
 def _render_event(event: TUIEvent) -> RenderableType | None:
@@ -339,42 +361,24 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind == "tool_call_delta":
         return None
     if event.kind == "assistant_delta":
-        return _render_text_block(
-            label,
-            event.content,
-            event_kind=event.kind,
-            markdown=True,
-        )
+        return _render_assistant_block(event.content)
     if event.kind in ("thinking_delta", "reasoning_summary"):
-        return Panel(
-            Text(event.content, style=style),
-            title=label,
-            border_style=style,
-        )
+        return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind in ("tool_started", "tool_completed", "tool_failed", "tool_output"):
         if event.kind == "tool_started":
             return None
         title = _tool_title(label, event)
-        return Panel(
-            Text(event.content or event.tool_call_id or "", style=style),
-            title=title,
-            border_style=style,
+        return _render_text_block(
+            title,
+            event.content or event.tool_call_id or "",
+            event_kind=event.kind,
         )
     if event.kind == "media":
-        return Panel(
-            Text("media segment", style=style),
-            title=label,
-            border_style=style,
-        )
+        return _render_text_block(label, "media segment", event_kind=event.kind)
     if event.kind == "llm_completed":
         if event.content == "":
             return None
-        return _render_text_block(
-            "assistant",
-            event.content,
-            event_kind="assistant_delta",
-            markdown=True,
-        )
+        return _render_assistant_block(event.content)
     if event.kind in ("step_started", "step_completed", "run_completed"):
         return None
     return Text(f"{label}: {event.content}", style=style)
@@ -394,30 +398,22 @@ def _render_user_message(
     label: str,
     event_kind: TUIEventKind,
 ) -> Table:
-    style = EVENT_STYLES[event_kind]
     row = Table.grid(expand=True)
-    row.add_column(ratio=1)
-    row.add_column()
-    row.add_row(
-        "",
-        Panel(
-            Text(content, style=style),
-            border_style=style,
-            expand=False,
-        ),
-    )
+    row.add_column(ratio=1, style=PROMPT_BAR_STYLE)
+    text = Text()
+    text.append("▌ ", style=PROMPT_MARK_STYLE)
+    text.append(content, style=PROMPT_BAR_STYLE)
+    row.add_row(text, style=PROMPT_BAR_STYLE)
     return row
 
 
-def _is_chat_panel(renderable: RenderableType) -> bool:
-    return isinstance(renderable, Panel) and renderable.title is None
-
-
-def _chat_panel_width(panel: Panel, available_width: int) -> int:
-    if available_width <= 0:
-        return min(_natural_panel_width(panel), DEFAULT_CHAT_PANEL_WIDTH)
-    max_width = max(24, min(available_width, int(available_width * CHAT_PANEL_WIDTH_RATIO)))
-    return min(_natural_panel_width(panel), max_width)
+def _looks_like_markdown(content: str) -> bool:
+    for line in content.splitlines():
+        if line.startswith(("#", "> ", "- ", "* ", "```")):
+            return True
+        if line[:2].isdigit() and line[2:4] == ". ":
+            return True
+    return "`" in content or "**" in content or "__" in content
 
 
 def _available_stream_width(stream: StreamWidget) -> int:
@@ -427,20 +423,6 @@ def _available_stream_width(stream: StreamWidget) -> int:
         stream.size.width,
     )
     for width in widths:
-        if width > 0:
-            return width
-    return 0
-
-
-def _natural_panel_width(panel: Panel) -> int:
-    body = panel.renderable
-    if isinstance(body, Text):
-        content = body.plain
-    elif isinstance(body, Markdown):
-        content = body.markup
-    else:
-        return 80
-    widest_line = 1
-    for line in content.splitlines():
-        widest_line = max(widest_line, cell_len(line))
-    return widest_line + 4
+        if width > 4:
+            return width - 4
+    return 1
