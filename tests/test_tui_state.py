@@ -5,7 +5,7 @@ import pytest
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
-from aceai.agent.tui.app import AceAITUI
+from aceai.agent.tui.app import AceAICommandProvider, AceAITUI
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
@@ -920,6 +920,31 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
         assert app.title == f"AceAI {second.session_id}"
         assert app._state.events[0].content == "second question"
+
+
+@pytest.mark.anyio
+async def test_command_palette_can_open_session_selector(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    store.update_session_title(first.session_id, "first question")
+    store.update_session_title(second.session_id, "second question")
+    app = AceAITUI(
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        provider = AceAICommandProvider(app.screen)
+        hits = [hit async for hit in provider.search("session")]
+        hits[0].command()
+        await pilot.pause(0.1)
+
+        table = app.screen.query_one("#session-table", DataTable)
+
+        assert "s" not in {binding[0] for binding in app.BINDINGS}
+        assert table.row_count == 2
 
 
 @pytest.mark.anyio

@@ -1,6 +1,7 @@
 """Read-only Textual application for AceAI event streams."""
 
 from textual.app import App, ComposeResult
+from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.widgets import Footer, Header
@@ -29,8 +30,37 @@ from .widgets import (
 STREAM_DELTA_REFRESH_CHARS = 512
 
 
+class AceAICommandProvider(Provider):
+    """Command palette entries for AceAI application actions."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        for command_name in ("Switch session", "Resume session"):
+            match = matcher.match(command_name)
+            if match > 0:
+                yield Hit(
+                    match,
+                    matcher.highlight(command_name),
+                    self._open_session_selector,
+                    text=command_name,
+                    help="Browse saved sessions and switch the current TUI session.",
+                )
+
+    async def discover(self) -> Hits:
+        yield DiscoveryHit(
+            "Switch session",
+            self._open_session_selector,
+            help="Browse saved sessions and switch the current TUI session.",
+        )
+
+    def _open_session_selector(self) -> None:
+        self.app.open_session_selector()
+
+
 class AceAITUI(App[None]):
     """Read-only TUI prototype backed by normalized TUI events."""
+
+    COMMANDS = {*App.COMMANDS, AceAICommandProvider}
 
     CSS = """
     Screen {
@@ -70,7 +100,6 @@ class AceAITUI(App[None]):
         ("c", "config", "Config"),
         ("t", "trajectory", "Trajectory"),
         ("i", "metadata", "Info"),
-        ("s", "session_switcher", "Sessions"),
     ]
 
     def __init__(
@@ -231,9 +260,6 @@ class AceAITUI(App[None]):
         self.append_event(
             TUIEvent.session_notice("Configuration is only available in live TUI runs.")
         )
-
-    def action_session_switcher(self) -> None:
-        self.open_session_selector()
 
     def action_metadata(self) -> None:
         self.open_metadata_screen()
