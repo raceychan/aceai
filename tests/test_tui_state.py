@@ -4,7 +4,7 @@ import pytest
 
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
-from aceai.core.models import AgentStep
+from aceai.core.models import AgentStep, ToolExecutionResult
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
 from aceai.agent.tui.demo import static_demo_events
@@ -12,9 +12,10 @@ from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import initial_state, reduce_events, select_event
+from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
-from aceai.llm.models import LLMResponse, LLMUsage
-from rich.console import Console
+from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
+from rich.console import Console, Group
 from textual.widgets import DataTable, Footer, Static
 
 
@@ -269,10 +270,347 @@ async def test_timeline_accepts_step_and_tool_rows_for_same_event() -> None:
 
 
 @pytest.mark.anyio
-async def test_detail_renders_tool_arguments_and_output() -> None:
-    events = static_demo_events()
-    tool_event = _first_event(events, "tool_completed")
+async def test_trajectory_screen_renders_event_trajectory() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"letters.txt","content":"abc"}',
+        call_id="call-1",
+    )
+    events = [
+        TUIEvent.user_message("write a file"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-1",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-1",
+            title="assistant",
+            content="I will write it.",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_requested",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file approval",
+            content="approval required",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file completed",
+            content='{"path":"letters.txt","bytes_written":3}',
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output='{"path":"letters.txt","bytes_written":3}',
+            ),
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="step_completed",
+            step_index=0,
+            step_id="step-1",
+            title="step completed",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_completed",
+            step_index=0,
+            step_id="step-1",
+            title="run completed",
+            content="I will write it.",
+            raw_event=None,
+        ),
+        TUIEvent.user_message("what happened?"),
+        TUIEvent(
+            kind="step_started",
+            step_index=1,
+            step_id="step-2",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_completed",
+            step_index=1,
+            step_id="step-2",
+            title="run completed",
+            content="The file was written.",
+            raw_event=None,
+        ),
+    ]
     app = AceAITUI(events)
+
+    async with app.run_test() as pilot:
+        await pilot.press("t")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, TrajectoryScreen)
+
+        rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+        assert "Trajectory" in rendered
+        assert "turns" in rendered
+        assert "steps" in rendered
+        assert "events" in rendered
+        assert "tool calls" in rendered
+        assert "approvals" in rendered
+        assert "failures" in rendered
+        assert "T   2" not in rendered
+        assert "E   11" not in rendered
+        assert " 1  write a file" in rendered
+        assert " 2  what happened?" in rendered
+        assert "▌ 1" in rendered
+        assert "▌ 2" in rendered
+        assert "│ call" in rendered
+        assert "└ result" in rendered
+        assert "◆" in rendered
+        assert "answer" in rendered
+        assert "TURN" not in rendered
+        assert "QUESTION" not in rendered
+        assert "STEP" not in rendered
+        assert "OUTCOME" not in rendered
+        assert "write a file" in rendered
+        assert "what happened?" in rendered
+        assert "I will write it." in rendered
+        assert rendered.count("I will write it.") == 1
+        assert "approval required" in rendered
+        assert "write_text_file" in rendered
+        assert "wrote 3 bytes" in rendered
+        assert "The file was written." in rendered
+        assert "I will write it. - I will write it." not in rendered
+
+
+def test_trajectory_summarizes_shell_tool_result_output() -> None:
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"ls","cwd":"/tmp","timeout_seconds":10}',
+        call_id="call-shell",
+    )
+    events = [
+        TUIEvent.user_message("run ls"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-shell",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-shell",
+            title="tool run_shell_command",
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-shell",
+            title="tool run_shell_command completed",
+            content='{"command":"ls","cwd":"/tmp","exit_code":0,"stdout":"a.py\\nb.py\\n","stderr":""}',
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output='{"command":"ls","cwd":"/tmp","exit_code":0,"stdout":"a.py\\nb.py\\n","stderr":""}',
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "$ ls" in rendered
+    assert "a.py" in rendered
+    assert '"stdout"' not in rendered
+    assert '"exit_code"' not in rendered
+
+
+def test_trajectory_marks_multiline_preview_as_truncated() -> None:
+    events = [
+        TUIEvent.user_message("show result"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-show",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-show",
+            title="assistant",
+            content="结果如下：\n\naceai\nAGENTS.md\nREADME.md",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "结果如下：" in rendered
+    assert "... (+4 lines)" in rendered
+    assert "aceai\n" not in rendered
+    assert "AGENTS.md" not in rendered
+    assert "README.md" not in rendered
+
+
+def test_trajectory_distinguishes_rejected_approval_from_tool_failure() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-rejected",
+    )
+    events = [
+        TUIEvent.user_message("write it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-rejected",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_requested",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file approval",
+            content="Tool 'write_text_file' requires approval",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_resolved",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file approval resolved",
+            content="rejected: rejected by caller",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_failed",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file failed",
+            content="rejected by caller",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output="Tool execution rejected: rejected by caller",
+                error="rejected by caller",
+            ),
+            error="rejected by caller",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "rejected      1" in rendered
+    assert "failures      0" in rendered
+    assert "rejected" in rendered
+
+
+def test_trajectory_marks_suspended_step_as_waiting() -> None:
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"rm x","cwd":".","timeout_seconds":10}',
+        call_id="call-waiting",
+    )
+    events = [
+        TUIEvent.user_message("delete it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-waiting",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-waiting",
+            title="assistant",
+            content="I need approval.",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_suspended",
+            step_index=0,
+            step_id="step-waiting",
+            title="run suspended",
+            content="waiting for approval. Choose Approve or Reject.",
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "waiting" in rendered
+    assert "running  step-w" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_renders_tool_arguments_and_output() -> None:
+    call = LLMToolCall(
+        name="search_docs",
+        arguments='{"query":"aceai tui"}',
+        call_id="call-1234567890",
+    )
+    tool_event = TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id="step-1",
+        title="tool search_docs",
+        raw_event=None,
+        content='{"matches":["spec/tui.md","docs/tui.md"]}',
+        tool_name="search_docs",
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(
+            call=call,
+            output='{"matches":["spec/tui.md","docs/tui.md"]}',
+        ),
+    )
+    app = AceAITUI([tool_event])
 
     async with app.run_test():
         app._state = select_event(app._state, tool_event.event_id)
@@ -281,8 +619,77 @@ async def test_detail_renders_tool_arguments_and_output() -> None:
 
         rendered = _render_to_text(detail.render())
 
-        assert '{"query":"aceai tui"}' in rendered
+        assert '"query": "aceai tui"' in rendered
         assert '{"matches":["spec/tui.md","docs/tui.md"]}' in rendered
+        assert "TOOL CALL" in rendered
+        assert "RESULT" in rendered
+        assert "arguments{" not in rendered
+        assert "output{" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_omits_empty_raw_event_section() -> None:
+    event = TUIEvent.user_message("show the readable part")
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "CONTENT" in rendered
+        assert "show the readable part" in rendered
+        assert "raw event" not in rendered
+        assert "None" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_shortens_long_ids() -> None:
+    event = TUIEvent(
+        kind="session_notice",
+        step_index=0,
+        step_id="12345678-1234-1234-1234-123456789abc",
+        title="session",
+        content="notice",
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "12345678...9abc" in rendered
+        assert "12345678-1234-1234-1234-123456789abc" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_renders_errors_as_separate_section() -> None:
+    event = TUIEvent(
+        kind="run_failed",
+        step_index=0,
+        step_id="step-1",
+        title="run failed",
+        content="the run failed",
+        error="boom",
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "ERROR" in rendered
+        assert "boom" in rendered
 
 
 @pytest.mark.anyio

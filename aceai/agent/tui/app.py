@@ -17,6 +17,7 @@ from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, select_event
+from .trajectory import TrajectoryScreen
 from .widgets import (
     ApprovalWidget,
     CommandInput,
@@ -72,6 +73,7 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("e", "toggle_events", "Events"),
         ("d", "toggle_detail", "Raw Log"),
+        ("t", "trajectory", "Trajectory"),
         ("i", "metadata", "Info"),
         ("m", "model_switcher", "Model"),
         ("s", "session_switcher", "Sessions"),
@@ -252,8 +254,14 @@ class AceAITUI(App[None]):
     def action_metadata(self) -> None:
         self.open_metadata_screen()
 
+    def action_trajectory(self) -> None:
+        self.open_trajectory_screen()
+
     def open_metadata_screen(self) -> None:
         self.push_screen(MetadataScreen(self._metadata_sections()))
+
+    def open_trajectory_screen(self) -> None:
+        self.push_screen(TrajectoryScreen(self._state.events))
 
     def _metadata_sections(self) -> list[MetadataSection]:
         usage = self._state.usage
