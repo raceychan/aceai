@@ -199,6 +199,28 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_events_share_a_non_empty_run_id() -> None:
+    streams = [
+        make_stream(
+            response=LLMResponse(text="answer"),
+            deltas=["answer"],
+        )
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(streams),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question?")
+    run_ids = {event.run_id for event in events}
+
+    assert len(run_ids) == 1
+    assert "" not in run_ids
+
+
+@pytest.mark.anyio
 async def test_agent_returns_llm_text_without_tool_calls() -> None:
     streams = [
         make_stream(
@@ -931,6 +953,59 @@ async def test_agent_resumes_approved_tool_and_continues_conversation() -> None:
     tool_message = llm_service.calls[1]["messages"][-1]
     assert tool_message.role == "tool"
     assert tool_message.content[0]["data"] == '{"ok":true}'
+
+
+@pytest.mark.anyio
+async def test_agent_reuses_approved_tool_name_in_same_run() -> None:
+    first_call = LLMToolCall(
+        name="write_file",
+        arguments='{"path":"a"}',
+        call_id="write-1",
+    )
+    second_call = LLMToolCall(
+        name="write_file",
+        arguments='{"path":"b"}',
+        call_id="write-2",
+    )
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text="use write",
+                    tool_calls=[first_call, second_call],
+                ),
+            )
+        ],
+        make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+    ]
+    executor = StubExecutor(
+        {"write_file": '{"ok":true}'},
+        approval_required={"write_file"},
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(streams),
+        executor=executor,
+        max_steps=2,
+    )
+    run = agent.create_run("Write both")
+    suspend_events = [event async for event in run.execute()]
+    request = [
+        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+    ][0].request
+
+    resume_events = [
+        event async for event in run.resume_approval(ToolApprovalDecision.approve(request))
+    ]
+
+    assert executor.calls == [first_call, second_call]
+    assert not [
+        event for event in resume_events if isinstance(event, RunSuspendedEvent)
+    ]
+    assert isinstance(resume_events[-1], RunCompletedEvent)
+    assert resume_events[-1].final_answer == "done"
 
 
 @pytest.mark.anyio

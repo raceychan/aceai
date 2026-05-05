@@ -198,6 +198,20 @@ class SkillRegistry:
     def get_skills(self) -> list[Skill]:
         return list(self._skills.values())
 
+    def select(self, names: tuple[str, ...]) -> "SkillRegistry":
+        selected = SkillRegistry()
+        selected_names = set(names)
+        for name in names:
+            self.get(name)
+        selected.register(
+            *[
+                skill
+                for skill in self.get_skills()
+                if skill.name in selected_names
+            ]
+        )
+        return selected
+
     def parse_skill_mentions(self, text: str) -> list[str]:
         names: list[str] = []
         seen: set[str] = set()

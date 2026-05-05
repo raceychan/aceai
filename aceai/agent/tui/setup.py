@@ -5,12 +5,23 @@ import os
 from typing import cast
 
 from rich.text import Text
+from msgspec import field
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.events import Key
-from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Input,
+    Label,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from aceai.agent.provider_catalog import (
     api_key_env,
@@ -18,20 +29,43 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
+from aceai.agent.config import config_schema
+from aceai.agent.permissions import TOOL_PERMISSION_OPTIONS, ToolPermission
 from aceai.agent.session import SessionMetadata, SessionStore
+from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-from .config import AceAITUIConfig
-from .config import save_config
+from aceai.agent.config import AceAITUIConfig
+from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
 from .session_display import session_display_title
 
 
-class ModelSelection(Record, kw_only=True):
+class ConfigSelection(Record, kw_only=True):
     provider: str
     model: OpenAIModel
+    default_model: OpenAIModel
     api_key: str
+    skills: str
+    skill_selection_mode: str = "all"
+    enabled_skills: tuple[str, ...] = ()
+    tool_permissions: dict[str, ToolPermission] = field(
+        default_factory=dict[str, ToolPermission]
+    )
+
+
+class SkillConfigItem(Record, kw_only=True):
+    name: str
+    description: str
+    location: str
+
+
+class ToolPermissionItem(Record, kw_only=True):
+    name: str
+    description: str
+    permission: ToolPermission
 
 
 def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
@@ -82,6 +116,55 @@ def _api_key_value_from_input(value: str, api_key: str) -> str:
     return value
 
 
+def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
+    return tuple(
+        SkillConfigItem(
+            name=skill.name,
+            description=skill.description,
+            location=str(skill.skill_file),
+        )
+        for skill in registry.get_skills()
+    )
+
+
+def _skill_checkboxes(
+    skill_items: tuple[SkillConfigItem, ...],
+    checked_items: tuple[SkillConfigItem, ...],
+):
+    if not skill_items:
+        yield Static("No skills available", id="skills-empty")
+        return
+    checked_names = {item.name for item in checked_items}
+    for index, item in enumerate(skill_items):
+        with Container(classes="skill-entry"):
+            yield Checkbox(
+                item.name,
+                value=item.name in checked_names,
+                id=f"skill-{index}",
+            )
+            yield Static(
+                item.description,
+                classes="skill-description",
+                id=f"skill-description-{index}",
+            )
+            yield Static(
+                item.location,
+                classes="skill-location",
+                id=f"skill-location-{index}",
+            )
+
+
+def _selected_skill_names(
+    screen: ModalScreen[object],
+    skill_items: tuple[SkillConfigItem, ...],
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for index, item in enumerate(skill_items):
+        if screen.query_one(f"#skill-{index}", Checkbox).value:
+            selected.append(item.name)
+    return tuple(selected)
+
+
 class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
     """Collect provider settings before the first live agent run."""
 
@@ -109,6 +192,34 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         height: 1;
     }
 
+    #setup-divider {
+        height: 1;
+        margin: 1 0;
+        border-top: solid #4c566a;
+    }
+
+    #setup-skills-list {
+        height: auto;
+    }
+
+    .skill-entry {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .skill-description {
+        color: #e5e9f0;
+        margin-left: 3;
+        height: auto;
+    }
+
+    .skill-location {
+        color: #a7b1c2;
+        margin-left: 3;
+        height: auto;
+    }
+
     Input, Checkbox {
         background: #3b4252;
         color: #eceff4;
@@ -125,6 +236,9 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         super().__init__()
         self._default_model = default_model
         self._provider = "openai"
+        self._skill_items = _skill_config_items(
+            SkillLoader.load_registry(ACE_AGENT_SKILL_PATH)
+        )
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
             self._provider,
@@ -136,8 +250,8 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
 
     def compose(self) -> ComposeResult:
         with Container(id="setup-panel"):
-            yield Label("AceAI provider setup", id="setup-title")
-            yield Label("Provider")
+            yield Label("AceAI configuration", id="setup-title")
+            yield Label(_field_label("provider"))
             yield Input(
                 value="openai",
                 placeholder="Provider",
@@ -150,7 +264,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
                 ),
                 id="provider-options",
             )
-            yield Label("Model")
+            yield Label(_field_label("model"))
             yield Input(
                 value=self._default_model,
                 placeholder="Model",
@@ -163,13 +277,17 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
                 ),
                 id="model-options",
             )
-            yield Label("API key")
+            yield Label(_field_label("api_key"))
             yield Input(
                 password=True,
                 placeholder=api_key_env("openai"),
                 id="api-key",
             )
-            yield Checkbox("Persist to ~/.aceai/config.yaml", id="persist")
+            yield Static("", id="setup-divider")
+            yield Label(_skills_field_label())
+            with Container(id="setup-skills-list"):
+                yield from _skill_checkboxes(self._skill_items, self._skill_items)
+            yield Checkbox("Persist to .aceai/config.yml", id="persist")
             yield Static("", id="setup-error")
             with Horizontal(id="setup-actions"):
                 yield Button("Start", variant="primary", id="start")
@@ -189,10 +307,15 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         model = self.query_one("#model", Input).value
         if model not in supported_models(provider):
             raise ValueError("Unsupported model")
+        enabled_skills = self._selected_skill_names()
         config = AceAITUIConfig(
             provider=provider,
             api_key=api_key,
             model=cast(OpenAIModel, model),
+            default_model=cast(OpenAIModel, model),
+            skills=ACE_AGENT_SKILL_PATH,
+            skill_selection_mode="selected",
+            enabled_skills=list(enabled_skills),
             api_keys={provider: api_key},
         )
         persist = self.query_one("#persist", Checkbox).value
@@ -318,41 +441,125 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
             raise ValueError("Unsupported provider")
         return value
 
+    def _selected_skill_names(self) -> tuple[str, ...]:
+        return _selected_skill_names(self, self._skill_items)
 
-class ModelSelectScreen(ModalScreen[ModelSelection]):
-    """Select the runtime provider and model for future TUI runs."""
+
+class ConfigScreen(Screen[ConfigSelection | None]):
+    """Collect runtime app configuration changes for future TUI runs."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
 
     DEFAULT_CSS = """
-    ModelSelectScreen {
-        align: center middle;
-    }
-
-    #model-panel {
-        width: 60;
-        height: auto;
-        border: solid #88c0d0;
-        padding: 1 2;
+    ConfigScreen {
+        layout: vertical;
         background: #2e3440;
         color: #e5e9f0;
     }
 
-    #model-title {
+    #config-panel {
+        width: 100%;
+        height: 1fr;
+        padding: 1 3;
+        background: #2e3440;
+        color: #e5e9f0;
+    }
+
+    #config-tabs {
+        height: 1fr;
+    }
+
+    #config-scroll, #tool-permissions-scroll, #system-prompt-scroll {
+        width: 100%;
+        height: 1fr;
+    }
+
+    #config-title {
         text-style: bold;
         margin-bottom: 1;
     }
 
-    Input {
+    Input, Checkbox {
         background: #3b4252;
         color: #eceff4;
         border: solid #88c0d0;
     }
 
-    #model-error {
+    #config-error {
         color: #bf616a;
         height: 1;
     }
 
-    #model-actions {
+    .config-divider {
+        height: 1;
+        margin: 1 0;
+        border-top: solid #4c566a;
+    }
+
+    #system-prompt {
+        height: auto;
+        min-height: 20;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: solid #4c566a;
+        background: #3b4252;
+        color: #eceff4;
+    }
+
+    #config-skills-list {
+        height: auto;
+    }
+
+    #tool-permissions-list {
+        height: auto;
+    }
+
+    .tool-permission-entry {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .tool-permission-row {
+        width: 100%;
+        height: auto;
+    }
+
+    .tool-permission-name {
+        width: 1fr;
+        height: auto;
+    }
+
+    .tool-permission-select {
+        width: 12;
+    }
+
+    .tool-permission-description {
+        color: #a7b1c2;
+        height: auto;
+    }
+
+    .skill-entry {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .skill-description {
+        color: #e5e9f0;
+        margin-left: 3;
+        height: auto;
+    }
+
+    .skill-location {
+        color: #a7b1c2;
+        margin-left: 3;
+        height: auto;
+    }
+
+    #config-actions {
         height: auto;
         margin-top: 1;
     }
@@ -363,12 +570,36 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
         *,
         provider_name: str,
         current_model: OpenAIModel,
+        default_model: OpenAIModel,
+        skills: str,
         api_keys: dict[str, str],
+        skill_items: tuple[SkillConfigItem, ...] = (),
+        skill_selection_mode: str = "all",
+        enabled_skills: tuple[str, ...] = (),
+        tool_permission_items: tuple[ToolPermissionItem, ...] = (),
+        system_prompt: str = "",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
         self._current_model = current_model
+        self._default_model = default_model
+        self._skills = skills
+        self._skill_items = skill_items
+        self._skill_selection_mode = skill_selection_mode
+        self._enabled_skills = enabled_skills
+        self._tool_names = tuple(item.name for item in tool_permission_items)
+        self._tool_descriptions = {
+            item.name: item.description for item in tool_permission_items
+        }
+        self._tool_permissions = {
+            item.name: item.permission for item in tool_permission_items
+        }
+        self._tool_permission_button_names = {
+            f"tool-permission-{index}": item.name
+            for index, item in enumerate(tool_permission_items)
+        }
         self._api_keys = api_keys
+        self._system_prompt = system_prompt
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
             self._provider_name,
@@ -379,47 +610,75 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
         )
 
     def compose(self) -> ComposeResult:
-        with Container(id="model-panel"):
-            yield Label("Provider and model", id="model-title")
-            yield Label("Provider")
-            yield Input(
-                value=self._provider_name,
-                placeholder="Provider",
-                id="provider",
-            )
-            yield Static(
-                _candidate_text(
-                    _matching_candidates(supported_provider_names(), self._provider_name),
-                    self._provider_highlight,
-                ),
-                id="provider-options",
-            )
-            yield Label("Model")
-            yield Input(
-                value=self._current_model,
-                placeholder="Model",
-                id="model",
-            )
-            yield Static(
-                _candidate_text(
-                    _matching_candidates(
-                        supported_models(self._provider_name),
-                        self._current_model,
-                    ),
-                    self._model_highlight,
-                ),
-                id="model-options",
-            )
-            yield Label("API key")
-            yield Input(
-                value=_masked_api_key(self._api_key_for_provider(self._provider_name)),
-                placeholder=api_key_env(self._provider_name),
-                id="api-key",
-            )
-            yield Static("", id="model-error")
-            with Horizontal(id="model-actions"):
+        with Container(id="config-panel"):
+            yield Label("AceAI configuration", id="config-title")
+            with TabbedContent(initial="settings-tab", id="config-tabs"):
+                with TabPane("Settings", id="settings-tab"):
+                    with VerticalScroll(id="config-scroll"):
+                        yield Label(_field_label("provider"))
+                        yield Input(
+                            value=self._provider_name,
+                            placeholder="Provider",
+                            id="provider",
+                        )
+                        yield Static(
+                            _candidate_text(
+                                _matching_candidates(
+                                    supported_provider_names(), self._provider_name
+                                ),
+                                self._provider_highlight,
+                            ),
+                            id="provider-options",
+                        )
+                        yield Label(_field_label("model"))
+                        yield Input(
+                            value=self._current_model,
+                            placeholder="Model",
+                            id="model",
+                        )
+                        yield Static(
+                            _candidate_text(
+                                _matching_candidates(
+                                    supported_models(self._provider_name),
+                                    self._current_model,
+                                ),
+                                self._model_highlight,
+                            ),
+                            id="model-options",
+                        )
+                        yield Label(_field_label("api_key"))
+                        yield Input(
+                            value=_masked_api_key(
+                                self._api_key_for_provider(self._provider_name)
+                            ),
+                            placeholder=api_key_env(self._provider_name),
+                            id="api-key",
+                        )
+                        yield Static(
+                            "",
+                            classes="config-divider",
+                            id="config-skills-divider",
+                        )
+                        yield Label(_skills_field_label())
+                        with Container(id="config-skills-list"):
+                            yield from _skill_checkboxes(
+                                self._skill_items,
+                                self._checked_skill_items(),
+                            )
+                        yield Static("", id="config-error")
+                with TabPane("Tools", id="tool-permissions-tab"):
+                    with VerticalScroll(id="tool-permissions-scroll"):
+                        with Container(id="tool-permissions-list"):
+                            yield from self._tool_permission_controls()
+                with TabPane("System Prompt", id="system-prompt-tab"):
+                    with VerticalScroll(id="system-prompt-scroll"):
+                        yield Static(self._system_prompt, id="system-prompt")
+            with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "provider":
@@ -555,10 +814,17 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
+        if event.button.id == "allow-all-tools":
+            self._set_all_tool_permissions("always")
+            return
+        if event.button.id == "disable-all-tools":
+            self._set_all_tool_permissions("never")
+            return
         if event.button.id != "apply":
             return
         provider = self.query_one("#provider", Input).value
         model = self.query_one("#model", Input).value
+        enabled_skills = self._selected_skill_names()
         stored_api_key = (
             self._api_key_for_provider(provider)
             if provider in supported_provider_names()
@@ -568,23 +834,87 @@ class ModelSelectScreen(ModalScreen[ModelSelection]):
             self.query_one("#api-key", Input).value,
             stored_api_key,
         )
-        error = _model_selection_error(provider, model, api_key)
+        error = _config_selection_error(
+            provider,
+            model,
+            api_key,
+            self._skills,
+        )
         if error is not None:
-            self.query_one("#model-error", Static).update(error)
+            self.query_one("#config-error", Static).update(error)
             return
+        self._sync_tool_permissions_from_controls()
         self.dismiss(
-            ModelSelection(
+            ConfigSelection(
                 provider=provider,
                 model=cast(OpenAIModel, model),
+                default_model=cast(OpenAIModel, model),
                 api_key=api_key,
+                skills=self._skills,
+                skill_selection_mode="selected",
+                enabled_skills=enabled_skills,
+                tool_permissions=dict(self._tool_permissions),
             )
         )
 
+    def _checked_skill_items(self) -> tuple[SkillConfigItem, ...]:
+        if self._skill_selection_mode == "all":
+            return self._skill_items
+        selected_names = set(self._enabled_skills)
+        return tuple(item for item in self._skill_items if item.name in selected_names)
 
-def _model_selection_error(
+    def _selected_skill_names(self) -> tuple[str, ...]:
+        return _selected_skill_names(self, self._skill_items)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id is None:
+            return
+        if not event.select.id.startswith("tool-permission-"):
+            return
+        if event.value not in TOOL_PERMISSION_OPTIONS:
+            raise ValueError("Unsupported tool permission")
+        tool_name = self._tool_permission_button_names[event.select.id]
+        self._tool_permissions[tool_name] = event.value
+
+    def _tool_permission_controls(self) -> ComposeResult:
+        with Horizontal(classes="tool-permission-row"):
+            yield Button("Allow all", id="allow-all-tools")
+            yield Button("Disable all", id="disable-all-tools")
+        for index, tool_name in enumerate(self._tool_names):
+            with Container(classes="tool-permission-entry"):
+                with Horizontal(classes="tool-permission-row"):
+                    yield Static(tool_name, classes="tool-permission-name")
+                    yield Select(
+                        tuple((option, option) for option in TOOL_PERMISSION_OPTIONS),
+                        value=self._tool_permissions[tool_name],
+                        allow_blank=False,
+                        id=f"tool-permission-{index}",
+                        classes="tool-permission-select",
+                    )
+                yield Static(
+                    self._tool_descriptions[tool_name],
+                    classes="tool-permission-description",
+                    id=f"tool-permission-description-{index}",
+                )
+
+    def _set_all_tool_permissions(self, permission: ToolPermission) -> None:
+        for index, tool_name in enumerate(self._tool_names):
+            self._tool_permissions[tool_name] = permission
+            self.query_one(f"#tool-permission-{index}", Select).value = permission
+
+    def _sync_tool_permissions_from_controls(self) -> None:
+        for index, tool_name in enumerate(self._tool_names):
+            value = self.query_one(f"#tool-permission-{index}", Select).value
+            if value not in TOOL_PERMISSION_OPTIONS:
+                raise ValueError("Unsupported tool permission")
+            self._tool_permissions[tool_name] = value
+
+
+def _config_selection_error(
     provider: str,
     model: str,
     api_key: str,
+    skills: str,
 ) -> str | None:
     if provider == "":
         return "Provider is required"
@@ -592,11 +922,29 @@ def _model_selection_error(
         return "Model is required"
     if api_key == "":
         return "API key is required"
+    if skills == "":
+        return "Skills is required"
     if provider not in supported_provider_names():
         return "Unsupported provider"
     if model not in supported_models(provider):
         return "Unsupported model"
     return None
+
+
+def _field_label(name: str) -> str:
+    for field in config_schema().fields:
+        if field.name == name:
+            marker = " *" if field.required else ""
+            return f"{field.name}{marker}"
+    raise ValueError("Unknown config field")
+
+
+def _skills_field_label() -> str:
+    for field in config_schema().fields:
+        if field.name == "skills":
+            marker = " *" if field.required else ""
+            return f"skills for current model{marker}"
+    raise ValueError("Unknown config field")
 
 
 class SessionSelectScreen(ModalScreen[str]):

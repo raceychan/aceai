@@ -1,8 +1,12 @@
 from rich.console import Group
 from rich.markdown import Markdown
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
+from textual.events import Click
+from textual.strip import Strip
 
+from aceai.agent.session import EventLog, SessionEvent
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
     LLMReasoningSegmentMeta,
@@ -12,13 +16,54 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import AgentStep
+from aceai.core.models import ToolApprovalRequest
 from aceai.core.models import ToolExecutionResult
 from aceai.agent.tui.events import TUIEvent
-from aceai.agent.tui.state import reduce_events
+from aceai.agent.tui.session_replay import event_log_to_tui_events
+from aceai.agent.tui.state import TUIRunState, reduce_events
 from aceai.agent.tui.widgets.stream import (
     StreamWidget,
     _render_events,
 )
+
+
+def _stream_set_state_writes(state: TUIRunState) -> list[Text]:
+    stream = StreamWidget()
+    writes: list[Text] = []
+    _capture_stream_writes(stream, writes)
+    stream.set_state(state)
+    return writes
+
+
+def _capture_stream_writes(stream: StreamWidget, writes: list[Text]) -> None:
+    def fake_write(
+        content: object,
+        width: int | None = None,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
+    ) -> StreamWidget:
+        if isinstance(content, Text):
+            writes.append(content)
+        stream.lines.append(Strip.blank(1))
+        return stream
+
+    def fake_clear() -> StreamWidget:
+        writes.clear()
+        stream.lines.clear()
+        return stream
+
+    def fake_call_after_refresh(
+        callback: object,
+        *args: object,
+        animate: bool = False,
+    ) -> bool:
+        return True
+
+    stream.write = fake_write
+    stream.clear = fake_clear
+    stream.call_after_refresh = fake_call_after_refresh
 
 
 def test_consecutive_assistant_deltas_render_as_one_block() -> None:
@@ -107,16 +152,28 @@ def test_stream_writes_user_message_rows_expanded() -> None:
 
     def fake_write(
         content: object,
-        *,
+        width: int | None = None,
         expand: bool = False,
-        **kwargs: object,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
     ) -> StreamWidget:
         writes.append((content, expand))
         return stream
 
+    def fake_clear() -> StreamWidget:
+        return stream
+
+    def fake_call_after_refresh(
+        callback: object,
+        *args: object,
+        animate: bool = False,
+    ) -> bool:
+        return True
+
     stream.write = fake_write
-    stream.clear = lambda: None
-    stream.call_after_refresh = lambda *args, **kwargs: None
+    stream.clear = fake_clear
+    stream.call_after_refresh = fake_call_after_refresh
 
     stream.set_state(reduce_events([TUIEvent.user_message("Where am I?")]))
 
@@ -132,16 +189,28 @@ def test_stream_writes_assistant_messages_as_plain_text() -> None:
 
     def fake_write(
         content: object,
-        *,
         width: int | None = None,
-        **kwargs: object,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
     ) -> StreamWidget:
         writes.append((content, width))
         return stream
 
+    def fake_clear() -> StreamWidget:
+        return stream
+
+    def fake_call_after_refresh(
+        callback: object,
+        *args: object,
+        animate: bool = False,
+    ) -> bool:
+        return True
+
     stream.write = fake_write
-    stream.clear = lambda: None
-    stream.call_after_refresh = lambda *args, **kwargs: None
+    stream.clear = fake_clear
+    stream.call_after_refresh = fake_call_after_refresh
 
     event = TUIEvent.from_agent_event(
         AgentEventBuilder(step_index=0, step_id="step-1").llm_text_delta(
@@ -154,6 +223,261 @@ def test_stream_writes_assistant_messages_as_plain_text() -> None:
     content, width = writes[0]
     assert isinstance(content, Text)
     assert width == 1
+
+
+def test_stream_collapses_tool_activity_only_after_completion() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"content":"b"}'),
+            )
+        ),
+    ]
+    running_writes = _stream_set_state_writes(reduce_events(events))
+    completed_writes = _stream_set_state_writes(
+        reduce_events(
+            [
+                *events,
+                TUIEvent.from_agent_event(
+                    builder.run_completed(
+                        step=AgentStep(llm_response=LLMResponse(text="done")),
+                        final_answer="done",
+                    )
+                ),
+            ]
+        )
+    )
+
+    assert [text.plain for text in running_writes] == [
+        "  ● read_text_file  completed - result ready",
+        "  ● read_text_file  completed - result ready",
+    ]
+    assert [text.plain for text in completed_writes] == [
+        "  [+] tools  2 completed  expand",
+    ]
+
+
+def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=first,
+                    tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+                )
+            ),
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=second,
+                    tool_result=ToolExecutionResult(call=second, output='{"content":"b"}'),
+                )
+            ),
+            TUIEvent.from_agent_event(
+                builder.run_completed(
+                    step=AgentStep(llm_response=LLMResponse(text="done")),
+                    final_answer="done",
+                )
+            ),
+        ]
+    )
+    stream = StreamWidget()
+    writes: list[Text] = []
+    _capture_stream_writes(stream, writes)
+    stream.set_state(state)
+
+    stream.on_click(
+        Click(
+            stream,
+            0,
+            0,
+            0,
+            0,
+            1,
+            False,
+            False,
+            False,
+            style=Style(meta={"tool_activity_id": "call-1|call-2"}),
+        )
+    )
+
+    assert [text.plain for text in writes] == [
+        "  [-] tools  2 completed  collapse",
+        "    ● read_text_file  completed - result ready",
+        "    ● read_text_file  completed - result ready",
+    ]
+
+    stream.on_click(
+        Click(
+            stream,
+            0,
+            0,
+            0,
+            0,
+            1,
+            False,
+            False,
+            False,
+            style=Style(meta={"tool_activity_id": "call-1|call-2"}),
+        )
+    )
+
+    assert [text.plain for text in writes] == [
+        "  [+] tools  2 completed  expand",
+    ]
+
+
+def test_completed_replayed_approval_cycles_collapse() -> None:
+    call = {
+        "type": "function_call",
+        "name": "replace_text_in_file",
+        "arguments": '{"path":"a.py"}',
+        "call_id": "call-1",
+    }
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(
+                    kind="tool_approval_requested",
+                    payload={
+                        "content": "Tool requires approval",
+                        "tool_name": "replace_text_in_file",
+                        "tool_call_id": "call-1",
+                        "tool_arguments": '{"path":"a.py"}',
+                        "tool_call": call,
+                    },
+                    step_id="step-1",
+                    step_index=0,
+                ),
+                SessionEvent(
+                    kind="run_suspended",
+                    payload={
+                        "content": "waiting for approval. Choose Approve or Reject.",
+                    },
+                    step_id="step-1",
+                    step_index=0,
+                ),
+                SessionEvent(
+                    kind="tool_result",
+                    payload={
+                        "content": "",
+                        "tool_name": "replace_text_in_file",
+                        "tool_call_id": "call-1",
+                        "tool_arguments": '{"path":"a.py"}',
+                        "output": '{"ok":true}',
+                        "status": "completed",
+                    },
+                    step_id="step-1",
+                    step_index=0,
+                ),
+                SessionEvent(
+                    kind="run_completed",
+                    payload={"content": "done"},
+                    step_id="step-1",
+                    step_index=0,
+                ),
+            ]
+        )
+    )
+
+    writes = _stream_set_state_writes(reduce_events(events))
+
+    assert [text.plain for text in writes] == [
+        "  ● replace_text_in_file  completed - result ready",
+    ]
+
+
+def test_completed_tool_activity_ignores_invisible_control_events() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    first_request = ToolApprovalRequest(
+        call=first,
+        tool_name="replace_text_in_file",
+        reason="requires approval",
+        policy="filesystem_write",
+    )
+    second_request = ToolApprovalRequest(
+        call=second,
+        tool_name="replace_text_in_file",
+        reason="requires approval",
+        policy="filesystem_write",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(builder.tool_approval_requested(request=first_request)),
+        TUIEvent.from_agent_event(builder.run_suspended(request=first_request)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"ok":true}'),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.step_completed(step=AgentStep(llm_response=LLMResponse(text="")))
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(builder.tool_approval_requested(request=second_request)),
+        TUIEvent.from_agent_event(builder.run_suspended(request=second_request)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"ok":true}'),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="done")),
+                final_answer="done",
+            )
+        ),
+    ]
+
+    writes = _stream_set_state_writes(reduce_events(events))
+
+    assert [text.plain for text in writes] == [
+        "  [+] tools  2 completed  expand",
+    ]
 
 
 def test_assistant_markdown_renders_as_markdown() -> None:
@@ -233,6 +557,43 @@ def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
     assert reasoning_renderable.plain == "  * reasoning  think first"
     assert isinstance(answer, Text)
     assert answer.plain == "  answer"
+
+
+def test_tool_call_step_does_not_render_assistant_scratchpad() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="lookup",
+        arguments="{}",
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(call=call, output='{"ok":true}')
+    events = [
+        TUIEvent.from_agent_event(
+            builder.llm_text_delta(text_delta="Need to inspect files.")
+        ),
+        TUIEvent.from_agent_event(
+            builder.llm_completed(
+                step=AgentStep(
+                    llm_response=LLMResponse(
+                        text="Need to inspect files.",
+                        tool_calls=[call],
+                    )
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(tool_call=call, tool_result=result)
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    tool = renderables[0]
+    assert isinstance(tool, Text)
+    assert "lookup" in tool.plain
+    assert "Need to inspect files" not in tool.plain
 
 
 def test_main_stream_omits_lifecycle_events() -> None:
@@ -342,3 +703,306 @@ def test_directory_tool_result_summarizes_entry_count_without_details() -> None:
     text = renderables[0]
     assert isinstance(text, Text)
     assert text.plain == "  ● list_directory  completed - 2 entries"
+
+
+def test_consecutive_completed_tools_compact_by_tool_name() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"content":"b"}'),
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == "  [+] tools  2 completed  expand"
+
+
+def test_consecutive_completed_tool_activity_compacts_across_tool_names() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="search_text",
+        arguments='{"query":"needle"}',
+        call_id="call-2",
+    )
+    third = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-3",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"matches":[]}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=third)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=third,
+                tool_result=ToolExecutionResult(call=third, output='{"ok":true}'),
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == "  [+] tools  3 completed  expand"
+
+
+def test_failed_tools_do_not_compact_into_completed_group() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    failed_result = ToolExecutionResult(
+        call=second,
+        output="failed",
+        error="missing",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_failed(
+                tool_call=second,
+                tool_result=failed_result,
+                error="missing",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 2
+    completed = renderables[0]
+    failed = renderables[1]
+    assert isinstance(completed, Text)
+    assert isinstance(failed, Text)
+    assert completed.plain == "  ● read_text_file  completed - result ready"
+    assert failed.plain == "  ● read_text_file  failed"
+
+
+def test_repeated_approval_cycles_compact_by_tool_name() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_approval_requested(
+                request=ToolApprovalRequest(
+                    call=first,
+                    tool_name="replace_text_in_file",
+                    reason="requires approval",
+                    policy="filesystem_write",
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"ok":true}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_approval_requested(
+                request=ToolApprovalRequest(
+                    call=second,
+                    tool_name="replace_text_in_file",
+                    reason="requires approval",
+                    policy="filesystem_write",
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"ok":true}'),
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == "  [+] tools  2 completed  expand"
+
+
+def test_pending_approval_group_stays_visible() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    request = ToolApprovalRequest(
+        call=second,
+        tool_name="replace_text_in_file",
+        reason="requires approval",
+        policy="filesystem_write",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"ok":true}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_approval_requested(
+                request=request
+            )
+        ),
+        TUIEvent.from_agent_event(builder.run_suspended(request=request)),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == (
+        "  [+] tools  2 calls, waiting for approval  expand"
+    )
+
+
+def test_run_suspended_does_not_render_separate_approval_line() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    request = ToolApprovalRequest(
+        call=call,
+        tool_name="replace_text_in_file",
+        reason="requires approval",
+        policy="filesystem_write",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_approval_requested(request=request)),
+        TUIEvent.from_agent_event(builder.run_suspended(request=request)),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == (
+        "  ● replace_text_in_file  waiting for approval"
+    )
+
+
+def test_running_tool_activity_does_not_collapse() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"b.py"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output='{"content":"b"}'),
+            )
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 2
+    first_rendered = renderables[0]
+    second_rendered = renderables[1]
+    assert isinstance(first_rendered, Text)
+    assert isinstance(second_rendered, Text)
+    assert first_rendered.plain == "  ● read_text_file  completed - result ready"
+    assert second_rendered.plain == "  ● read_text_file  completed - result ready"

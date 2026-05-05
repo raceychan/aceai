@@ -4,4 +4,5 @@ from ._tool_sig import spec as spec
 from .tool import IToolSpec as IToolSpec
 from .tool import OpenAIToolSpec as OpenAIToolSpec
 from .tool import Tool as Tool
+from .tool import ToolMeta as ToolMeta
 from .tool import tool as tool

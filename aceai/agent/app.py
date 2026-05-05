@@ -1,0 +1,237 @@
+from typing import AsyncGenerator
+
+from opentelemetry.context import Context
+
+from aceai.agent.session import SessionRecorder, SessionState, SessionStore
+from aceai.agent.session import EventLog
+from aceai.agent.session_service import AgentSessionSnapshot, SessionService
+from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
+from aceai.core.events import AgentEvent, RunCompletedEvent
+from aceai.core.models import ToolApprovalRequest
+from aceai.llm.models import LLMMessage, LLMRequestMeta
+
+
+class AceAgentApp:
+    """Reusable agent app runtime used by UI and future ports."""
+
+    def __init__(
+        self,
+        agent: AgentBase,
+        *,
+        provider_name: str,
+        selected_model: str,
+        initial_history: list[LLMMessage] | None = None,
+        session_service: SessionService | None = None,
+        session_store: SessionStore | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
+        trace_ctx: Context | None = None,
+        request_meta: LLMRequestMeta | None = None,
+    ) -> None:
+        self._agent = agent
+        self._provider_name = provider_name
+        self._selected_model = selected_model
+        self._request_meta = _copy_request_meta(request_meta)
+        self._request_meta["model"] = selected_model
+        self._session_service = session_service or SessionService(
+            store=session_store,
+            recorder=session_recorder,
+            session_id=session_id,
+        )
+        self._trace_ctx = trace_ctx
+        self._llm_history = list(initial_history or [])
+        self._active_runtime: AgentRuntime | None = None
+        self._approved_tool_names: set[str] = set()
+        session_id = self._session_service.session_id
+        if session_id is not None:
+            self._approved_tool_names.update(
+                _approved_tool_names_from_event_log(
+                    self._session_service.snapshot(session_id).event_log
+                )
+            )
+
+    @property
+    def agent(self) -> AgentBase:
+        return self._agent
+
+    @property
+    def provider_name(self) -> str:
+        return self._provider_name
+
+    @property
+    def selected_model(self) -> str:
+        return self._selected_model
+
+    @property
+    def session_service(self) -> SessionService:
+        return self._session_service
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_service.session_id
+
+    @property
+    def session_recorder(self) -> SessionRecorder | None:
+        return self._session_service.recorder
+
+    @property
+    def llm_history(self) -> list[LLMMessage]:
+        return list(self._llm_history)
+
+    @property
+    def active_runtime(self) -> AgentRuntime | None:
+        return self._active_runtime
+
+    @property
+    def is_running_suspended(self) -> bool:
+        runtime = self._active_runtime
+        return runtime is not None and runtime.status == "suspended"
+
+    def ensure_session(self) -> str:
+        return self._session_service.ensure_session()
+
+    def switch_session(self, session_id: str) -> AgentSessionSnapshot:
+        snapshot = self._session_service.attach_session(session_id)
+        self._llm_history = list(snapshot.history)
+        self._active_runtime = None
+        self._approved_tool_names = _approved_tool_names_from_event_log(
+            snapshot.event_log
+        )
+        return snapshot
+
+    def restore_history_from_active_session(self) -> None:
+        session_id = self.session_id
+        if session_id is None:
+            self._llm_history = []
+            self._active_runtime = None
+            return
+        self._llm_history = self._session_service.snapshot(session_id).history
+        self._active_runtime = None
+
+    def switch_model(self, model: str) -> None:
+        self._selected_model = model
+        self._request_meta["model"] = model
+        self.persist_session_state()
+
+    def persist_session_state(self) -> None:
+        session_id = self.session_id
+        if session_id is None:
+            return
+        self._session_service.update_state(
+            session_id,
+            SessionState(
+                selected_provider=self._provider_name,
+                selected_model=self._selected_model,
+            ),
+        )
+
+    def pending_approval_request(self) -> ToolApprovalRequest | None:
+        runtime = self._active_runtime
+        if runtime is None:
+            return None
+        pending = runtime.run_state.pending_approval
+        if pending is None:
+            return None
+        return pending.request
+
+    async def start_turn(self, question: str) -> AsyncGenerator[AgentEvent, None]:
+        self.ensure_session()
+        self.persist_session_state()
+        self._active_runtime = self._agent.create_resume_run(
+            question,
+            self._llm_history,
+            trace_ctx=self._trace_ctx,
+            **self._request_meta_for_run(),
+        )
+        self._active_runtime.run_state.tools.approved_tool_names = (
+            self._approved_tool_names
+        )
+        self._session_service.record_user_message(
+            question,
+            run_id=self._active_runtime.run_id,
+        )
+        async for event in self._consume_runtime_stream(
+            self._active_runtime,
+            self._active_runtime.execute(),
+        ):
+            yield event
+
+    async def approve_tool(self) -> AsyncGenerator[AgentEvent, None]:
+        request = self.pending_approval_request()
+        if request is None:
+            raise RuntimeError("No pending tool approval")
+        async for event in self._resume_approval(ToolApprovalDecision.approve(request)):
+            yield event
+
+    async def reject_tool(self, reason: str) -> AsyncGenerator[AgentEvent, None]:
+        request = self.pending_approval_request()
+        if request is None:
+            raise RuntimeError("No pending tool approval")
+        if reason == "":
+            reason = "rejected by caller"
+        async for event in self._resume_approval(
+            ToolApprovalDecision.reject(request, reason=reason)
+        ):
+            yield event
+
+    async def _resume_approval(
+        self,
+        decision: ToolApprovalDecision,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        runtime = self._current_runtime()
+        async for event in self._consume_runtime_stream(
+            runtime,
+            runtime.resume_approval(decision),
+        ):
+            yield event
+
+    async def _consume_runtime_stream(
+        self,
+        runtime: AgentRuntime,
+        stream: AsyncGenerator[AgentEvent, None],
+    ) -> AsyncGenerator[AgentEvent, None]:
+        try:
+            async for event in stream:
+                self._session_service.record_agent_event(event)
+                if isinstance(event, RunCompletedEvent):
+                    self._finish_runtime_turn(runtime, event.final_answer)
+                yield event
+        finally:
+            await stream.aclose()
+
+    def _current_runtime(self) -> AgentRuntime:
+        runtime = self._active_runtime
+        if runtime is None:
+            raise RuntimeError("AceAI runtime is not active")
+        return runtime
+
+    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
+        self._llm_history = list(runtime.context.context[1:])
+        self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+
+    def _request_meta_for_run(self) -> LLMRequestMeta:
+        request_meta = _copy_request_meta(self._request_meta)
+        request_meta["model"] = self._selected_model
+        return request_meta
+
+
+def _copy_request_meta(request_meta: LLMRequestMeta | None) -> LLMRequestMeta:
+    if request_meta is None:
+        return {}
+    return {
+        **request_meta,
+    }
+
+
+def _approved_tool_names_from_event_log(event_log: EventLog) -> set[str]:
+    approved_tool_names: set[str] = set()
+    for event in event_log.events:
+        if event.kind != "tool_approval_resolved":
+            continue
+        if event.payload["content"] != "approved":
+            continue
+        tool_name = event.payload["tool_name"]
+        if type(tool_name) is not str:
+            raise TypeError("tool approval payload tool_name must be str")
+        approved_tool_names.add(tool_name)
+    return approved_tool_names

@@ -4,17 +4,21 @@ import pytest
 
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
-from aceai.core.models import AgentStep
+from aceai.core.models import AgentStep, ToolExecutionResult
+from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
+from aceai.agent.tui.app import STREAM_DELTA_REFRESH_SECONDS
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import initial_state, reduce_events, select_event
-from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
-from aceai.llm.models import LLMResponse, LLMUsage
-from rich.console import Console
+from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
+from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget
+from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
+from rich.console import Console, Group
+from textual.events import Click
 from textual.widgets import DataTable, Footer, Static
 
 
@@ -227,27 +231,25 @@ async def test_static_tui_loads_fixture_events() -> None:
     events = static_demo_events()
     app = AceAITUI(events)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         assert app._state.status == "completed"
-        timeline = app.query_one(TimelineWidget)
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
-        assert timeline.can_focus
         assert stream.can_focus
         assert detail.can_focus
-        assert timeline.has_class("collapsed")
+        assert not stream.debug_mode
         assert detail.has_class("collapsed")
 
 
 @pytest.mark.anyio
-async def test_timeline_selection_opens_tool_result_detail() -> None:
+async def test_debug_mode_stream_selection_opens_tool_result_detail() -> None:
     events = static_demo_events()
     tool_event = _first_event(events, "tool_completed")
     app = AceAITUI(events)
 
     async with app.run_test() as pilot:
-        timeline = app.query_one(TimelineWidget)
-        timeline.post_message(TimelineWidget.EventSelected(tool_event.event_id))
+        stream = app.query_one(StreamWidget)
+        stream.post_message(StreamWidget.EventSelected(tool_event.event_id))
         await pilot.pause()
 
         detail = app.query_one(DetailWidget)
@@ -257,36 +259,621 @@ async def test_timeline_selection_opens_tool_result_detail() -> None:
 
 
 @pytest.mark.anyio
-async def test_timeline_accepts_step_and_tool_rows_for_same_event() -> None:
+async def test_debug_mode_reuses_message_panel_and_opens_selected_detail() -> None:
     app = AceAITUI(static_demo_events())
 
     async with app.run_test() as pilot:
-        timeline = app.query_one(TimelineWidget)
-        timeline.set_state(app._state)
+        stream = app.query_one(StreamWidget)
+        detail = app.query_one(DetailWidget)
+
+        await pilot.press("d")
+
+        assert stream.debug_mode
+        assert stream.has_focus
+        assert not detail.has_class("collapsed")
+        assert app._state.selected_event_id is not None
+
+
+@pytest.mark.anyio
+async def test_debug_mode_can_move_selection_inside_message_panel() -> None:
+    app = AceAITUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        stream = app.query_one(StreamWidget)
+
+        await pilot.press("d")
+        first_selected = app._state.selected_event_id
+        await pilot.press("down")
+
+        assert stream.debug_mode
+        assert app._state.selected_event_id != first_selected
+
+
+@pytest.mark.anyio
+async def test_debug_mode_click_selects_message_in_main_stream() -> None:
+    app = AceAITUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        stream = app.query_one(StreamWidget)
+
+        await pilot.press("d")
+        assert len(stream._debug_line_spans) >= 2
+        target = stream._debug_line_spans[1]
+        stream.on_click(
+            Click(
+                stream,
+                x=1,
+                y=target.start_line - stream.scroll_y,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
         await pilot.pause()
 
-        assert timeline.option_count > 0
+        assert app._state.selected_event_id == target.event_id
+        assert not app.query_one(DetailWidget).has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_trajectory_screen_renders_event_trajectory() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"letters.txt","content":"abc"}',
+        call_id="call-1",
+    )
+    events = [
+        TUIEvent.user_message("write a file"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-1",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-1",
+            title="assistant",
+            content="I will write it.",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_requested",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file approval",
+            content="approval required",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-1",
+            title="tool write_text_file completed",
+            content='{"path":"letters.txt","bytes_written":3}',
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output='{"path":"letters.txt","bytes_written":3}',
+            ),
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="step_completed",
+            step_index=0,
+            step_id="step-1",
+            title="step completed",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_completed",
+            step_index=0,
+            step_id="step-1",
+            title="run completed",
+            content="I will write it.",
+            raw_event=None,
+        ),
+        TUIEvent.user_message("what happened?"),
+        TUIEvent(
+            kind="step_started",
+            step_index=1,
+            step_id="step-2",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_completed",
+            step_index=1,
+            step_id="step-2",
+            title="run completed",
+            content="The file was written.",
+            raw_event=None,
+        ),
+    ]
+    app = AceAITUI(events)
+
+    async with app.run_test() as pilot:
+        await pilot.press("t")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, TrajectoryScreen)
+
+        rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+        assert "Trajectory" in rendered
+        assert "turns" in rendered
+        assert "steps" in rendered
+        assert "events" in rendered
+        assert "tool calls" in rendered
+        assert "approvals" in rendered
+        assert "failures" in rendered
+        assert "T   2" not in rendered
+        assert "E   11" not in rendered
+        assert " 1  write a file" in rendered
+        assert " 2  what happened?" in rendered
+        assert "▌ 1" in rendered
+        assert "▌ 2" in rendered
+        assert "│ call" in rendered
+        assert "└ result" in rendered
+        assert "◆" in rendered
+        assert "answer" in rendered
+        assert "TURN" not in rendered
+        assert "QUESTION" not in rendered
+        assert "STEP" not in rendered
+        assert "OUTCOME" not in rendered
+        assert "write a file" in rendered
+        assert "what happened?" in rendered
+        assert "I will write it." in rendered
+        assert rendered.count("I will write it.") == 1
+        assert "approval required" in rendered
+        assert "write_text_file" in rendered
+        assert "wrote 3 bytes" in rendered
+        assert "The file was written." in rendered
+        assert "I will write it. - I will write it." not in rendered
+
+
+def test_trajectory_summarizes_shell_tool_result_output() -> None:
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"ls","cwd":"/tmp","timeout_seconds":10}',
+        call_id="call-shell",
+    )
+    events = [
+        TUIEvent.user_message("run ls"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-shell",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-shell",
+            title="tool run_shell_command",
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-shell",
+            title="tool run_shell_command completed",
+            content='{"command":"ls","cwd":"/tmp","exit_code":0,"stdout":"a.py\\nb.py\\n","stderr":""}',
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output='{"command":"ls","cwd":"/tmp","exit_code":0,"stdout":"a.py\\nb.py\\n","stderr":""}',
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "$ ls" in rendered
+    assert "a.py" in rendered
+    assert '"stdout"' not in rendered
+    assert '"exit_code"' not in rendered
+
+
+def test_trajectory_renders_plain_text_tool_result_output() -> None:
+    call = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"tests/test_ace_agent.py"}',
+        call_id="call-replace",
+    )
+    events = [
+        TUIEvent.user_message("patch file"),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-replace",
+            title="tool replace_text_in_file completed",
+            content=(
+                "the tool replace_text_in_file exceeds its max calls in this run, "
+                "do not call it again"
+            ),
+            tool_name="replace_text_in_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output=(
+                    "the tool replace_text_in_file exceeds its max calls in this run, "
+                    "do not call it again"
+                ),
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "replace_text_in_file" in rendered
+    assert "exceeds its max calls" in rendered
+
+
+def test_trajectory_does_not_repeat_streamed_answer_on_llm_completion() -> None:
+    events = [
+        TUIEvent.user_message("explain it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-stream",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-stream",
+            title="assistant",
+            content="streamed answer",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="llm_completed",
+            step_index=0,
+            step_id="step-stream",
+            title="llm completed",
+            content="streamed answer",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="step_completed",
+            step_index=0,
+            step_id="step-stream",
+            title="step completed",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert rendered.count("streamed answer") == 1
+    assert "llm completed" in rendered
+
+
+def test_trajectory_renders_session_notices_without_running_step() -> None:
+    events = [
+        TUIEvent.session_notice("Resumed session abc"),
+        TUIEvent.session_notice("Switched model to gpt-5.5"),
+        TUIEvent.user_message("hello"),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "session" in rendered
+    assert "Resumed session abc" in rendered
+    assert "Switched model to gpt-5.5" in rendered
+    assert "running" not in rendered
+    assert "▌ -" not in rendered
+
+
+def test_trajectory_marks_multiline_preview_as_truncated() -> None:
+    events = [
+        TUIEvent.user_message("show result"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-show",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-show",
+            title="assistant",
+            content="结果如下：\n\naceai\nAGENTS.md\nREADME.md",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "结果如下：" in rendered
+    assert "... (+4 lines)" in rendered
+    assert "aceai\n" not in rendered
+    assert "AGENTS.md" not in rendered
+    assert "README.md" not in rendered
+
+
+def test_trajectory_distinguishes_rejected_approval_from_tool_failure() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-rejected",
+    )
+    events = [
+        TUIEvent.user_message("write it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-rejected",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_requested",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file approval",
+            content="Tool 'write_text_file' requires approval",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_approval_resolved",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file approval resolved",
+            content="rejected: rejected by caller",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_failed",
+            step_index=0,
+            step_id="step-rejected",
+            title="tool write_text_file failed",
+            content="rejected by caller",
+            tool_name="write_text_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output="Tool execution rejected: rejected by caller",
+                error="rejected by caller",
+            ),
+            error="rejected by caller",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "rejected    1" in rendered
+    assert "failures    0" in rendered
+    assert "rejected" in rendered
+
+
+def test_trajectory_marks_suspended_step_as_waiting() -> None:
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"rm x","cwd":".","timeout_seconds":10}',
+        call_id="call-waiting",
+    )
+    events = [
+        TUIEvent.user_message("delete it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-waiting",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-waiting",
+            title="assistant",
+            content="I need approval.",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="run_suspended",
+            step_index=0,
+            step_id="step-waiting",
+            title="run suspended",
+            content="waiting for approval. Choose Approve or Reject.",
+            tool_name="run_shell_command",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "waiting" in rendered
+    assert "running  step-w" not in rendered
 
 
 @pytest.mark.anyio
 async def test_detail_renders_tool_arguments_and_output() -> None:
-    events = static_demo_events()
-    tool_event = _first_event(events, "tool_completed")
-    app = AceAITUI(events)
+    call = LLMToolCall(
+        name="search_docs",
+        arguments='{"query":"aceai tui"}',
+        call_id="call-1234567890",
+    )
+    tool_event = TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id="step-1",
+        title="tool search_docs",
+        raw_event=None,
+        content='{"matches":["spec/tui.md","docs/tui.md"]}',
+        tool_name="search_docs",
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(
+            call=call,
+            output='{"matches":["spec/tui.md","docs/tui.md"]}',
+        ),
+    )
+    app = AceAITUI([tool_event])
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app._state = select_event(app._state, tool_event.event_id)
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
 
         rendered = _render_to_text(detail.render())
 
-        assert '{"query":"aceai tui"}' in rendered
+        assert '"query": "aceai tui"' in rendered
         assert '{"matches":["spec/tui.md","docs/tui.md"]}' in rendered
+        assert "TOOL CALL" in rendered
+        assert "RESULT" in rendered
+        assert "arguments{" not in rendered
+        assert "output{" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_omits_empty_raw_event_section() -> None:
+    event = TUIEvent.user_message("show the readable part")
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "CONTENT" in rendered
+        assert "show the readable part" in rendered
+        assert "raw event" not in rendered
+        assert "None" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_shortens_long_ids() -> None:
+    event = TUIEvent(
+        kind="session_notice",
+        step_index=0,
+        step_id="12345678-1234-1234-1234-123456789abc",
+        title="session",
+        content="notice",
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "12345678...9abc" in rendered
+        assert "12345678-1234-1234-1234-123456789abc" not in rendered
+
+
+@pytest.mark.anyio
+async def test_detail_renders_errors_as_separate_section() -> None:
+    event = TUIEvent(
+        kind="run_failed",
+        step_index=0,
+        step_id="step-1",
+        title="run failed",
+        content="the run failed",
+        error="boom",
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+
+    async with app.run_test():
+        app._state = select_event(app._state, event.event_id)
+        detail = app.query_one(DetailWidget)
+        detail.set_state(app._state)
+
+        rendered = _render_to_text(detail.render())
+
+        assert "ERROR" in rendered
+        assert "boom" in rendered
 
 
 @pytest.mark.anyio
 async def test_tui_batches_small_stream_delta_refreshes() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    app = AceAITUI([])
+
+    async with app.run_test() as pilot:
+        refreshes: list[int] = []
+
+        def fake_refresh_widgets() -> None:
+            refreshes.append(len(app._state.events))
+
+        app._refresh_widgets = fake_refresh_widgets
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")))
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")))
+
+        assert refreshes == [1]
+        assert len(app._state.events) == 1
+        assert app._state.events[0].content == "hello "
+
+        await pilot.pause(STREAM_DELTA_REFRESH_SECONDS * 2)
+
+        assert refreshes == [1, 1]
+        assert app._state.events[0].content == "hello world"
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.llm_text_delta(text_delta="x" * STREAM_DELTA_REFRESH_CHARS)
+            )
+        )
+
+        assert refreshes == [1, 1, 1]
+        assert len(app._state.events) == 1
+        assert app._state.events[0].content == "hello world" + (
+            "x" * STREAM_DELTA_REFRESH_CHARS
+        )
+
+
+@pytest.mark.anyio
+async def test_tui_refreshes_first_stream_delta_immediately() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     app = AceAITUI([])
 
@@ -297,23 +884,10 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")))
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")))
-
-        assert refreshes == []
-        assert app._state.events == []
-
-        app.append_event(
-            TUIEvent.from_agent_event(
-                builder.llm_text_delta(text_delta="x" * STREAM_DELTA_REFRESH_CHARS)
-            )
-        )
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="h")))
 
         assert refreshes == [1]
-        assert len(app._state.events) == 1
-        assert app._state.events[0].content == "hello world" + (
-            "x" * STREAM_DELTA_REFRESH_CHARS
-        )
+        assert app._state.events[0].content == "h"
 
 
 @pytest.mark.anyio
@@ -332,7 +906,7 @@ async def test_tui_flushes_pending_stream_delta_on_completion() -> None:
         app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="done")))
         app.append_event(TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")))
 
-        assert refreshes == [2]
+        assert refreshes == [1, 2]
 
 
 @pytest.mark.anyio
@@ -439,6 +1013,19 @@ async def test_tui_header_uses_session_id(tmp_path) -> None:
 
     async with app.run_test():
         assert app.title == f"AceAI {metadata.session_id}"
+
+
+@pytest.mark.anyio
+async def test_empty_tui_exit_does_not_create_session_store(monkeypatch) -> None:
+    class FailingSessionStore:
+        def __init__(self) -> None:
+            raise AssertionError("empty TUI exit should not touch the session store")
+
+    monkeypatch.setattr(tui_app_module, "SessionStore", FailingSessionStore)
+    app = AceAITUI([])
+
+    async with app.run_test():
+        pass
 
 
 @pytest.mark.anyio

@@ -5,7 +5,11 @@ from typing import Any
 from msgspec import Struct
 
 from aceai.core.executor import ToolExecutionError
-from aceai.core.tools import Annotated, Tool, spec, tool
+from aceai.agent.permissions import ToolPermission
+from aceai.core.tools import Annotated, Tool, ToolMeta, spec, tool
+
+from .patch import apply_patch, preview_patch
+from .repo import git_diff, git_status
 
 
 class DirectoryEntry(Struct, frozen=True, kw_only=True):
@@ -204,12 +208,49 @@ def search_text(
     )
 
 
-def default_agent_tools() -> list[Tool[Any, Any]]:
-    return [
+def default_agent_tools(
+    tool_permissions: dict[str, ToolPermission] | None = None,
+) -> list[Tool[Any, Any]]:
+    tools = [
         list_directory,
         read_text_file,
         write_text_file,
         replace_text_in_file,
+        preview_patch,
+        apply_patch,
+        git_status,
+        git_diff,
         run_shell_command,
         search_text,
     ]
+    if tool_permissions is None:
+        return tools
+    return _apply_tool_permissions(tools, tool_permissions)
+
+
+def _apply_tool_permissions(
+    tools: list[Tool[Any, Any]],
+    tool_permissions: dict[str, ToolPermission],
+) -> list[Tool[Any, Any]]:
+    configured_tools: list[Tool[Any, Any]] = []
+    for configured_tool in tools:
+        if configured_tool.name not in tool_permissions:
+            configured_tools.append(configured_tool)
+            continue
+        permission = tool_permissions[configured_tool.name]
+        if permission == "never":
+            continue
+        require_approval = permission == "ask"
+        configured_tools.append(
+            configured_tool.with_metadata(
+                ToolMeta(
+                    description=configured_tool.metadata.description,
+                    max_calls_per_run=configured_tool.metadata.max_calls_per_run,
+                    record_in_history=configured_tool.metadata.record_in_history,
+                    require_approval=require_approval,
+                    approval_policy=configured_tool.metadata.approval_policy,
+                    tags=configured_tool.metadata.tags,
+                )
+            )
+        )
+    return configured_tools

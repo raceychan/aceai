@@ -1,5 +1,29 @@
 # Changelog
 
+## AceAI v0.2.7
+
+### Features
+
+- `config`: Add project-level `.aceai/config.yml` support with startup precedence over the global `~/.aceai/config.yaml` fallback.
+- `permissions`: Add per-tool app permissions with `always`, `ask`, and `never` policies that control whether tools execute directly, require approval, or stay hidden from the model.
+- `tui`: Add a dedicated Tools tab in the config screen with per-tool permission dropdowns plus `Allow all` and `Disable all` bulk actions.
+
+### Improvements
+
+- `config`: Persist config changes from the TUI back into the current project while preserving explicit path overrides for tests and tooling.
+- `agent`: Apply configured tool permissions when building the default Ace agent without mutating the module-level tool objects.
+- `docs`: Document project config precedence and the user-facing semantics of tool permission values.
+
+### Fixes
+
+- `tests`: Isolate CLI config tests from a developer machine's real saved AceAI config so local `~/.aceai/config.yaml` cannot change expected behavior.
+- `packaging`: Keep the `aceai.agent` package import light enough for the base `aceai` command to show the optional TUI dependency hint instead of importing session storage dependencies too early.
+
+### Breaking Changes
+
+- `config`: `save_config()` without an explicit path now writes `.aceai/config.yml` in the current project instead of `~/.aceai/config.yaml`; callers that need global config writes must pass `default_config_path()` explicitly.
+- `agent`: Remove session and app facade re-exports from `aceai.agent`; callers must import `AceAgentApp`, session models, event stores, and `SessionService` from their concrete modules.
+
 ## AceAI v0.2.6
 
 ### Features

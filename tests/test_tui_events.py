@@ -50,6 +50,18 @@ def test_adapt_llm_completed_event() -> None:
     assert tui_event.content == "intermediate"
 
 
+def test_adapt_llm_completed_event_hides_tool_call_content() -> None:
+    call = LLMToolCall(name="lookup", arguments="{}", call_id="call-1")
+    step = AgentStep(llm_response=LLMResponse(text="scratchpad", tool_calls=[call]))
+    event = LLMCompletedEvent(step_index=0, step_id="step-1", step=step)
+
+    tui_event = TUIEvent.from_agent_event(event)
+
+    assert tui_event.kind == "llm_completed"
+    assert tui_event.content == ""
+    assert tui_event.tool_calls == [call]
+
+
 def test_adapt_llm_completed_event_includes_usage_and_cost() -> None:
     usage = LLMUsage(
         input_tokens=10,

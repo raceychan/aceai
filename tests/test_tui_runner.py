@@ -10,12 +10,26 @@ from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AceAITUIConfig
+from aceai.agent.config import clear_config, current_config
+from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
-from aceai.agent.tui.setup import ModelSelectScreen, ModelSelection
+from aceai.agent.tui.setup import (
+    ConfigScreen,
+    ConfigSelection,
+    SkillConfigItem,
+    ToolPermissionItem,
+)
 from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Button, Input, RichLog, Static
+from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, TabbedContent
+
+
+@pytest.fixture(autouse=True)
+def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
+    store = SessionStore(tmp_path / "sessions")
+    monkeypatch.setattr(tui_app_module, "SessionStore", lambda: store)
+    return store
 
 
 class StubExecutor:
@@ -132,7 +146,9 @@ async def test_live_tui_streams_agent_events_into_state() -> None:
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_submits_question_from_input() -> None:
+async def test_interactive_tui_submits_question_from_input(
+    tui_session_store: SessionStore,
+) -> None:
     llm_service = StubLLMService(
         [
             LLMStreamEvent(
@@ -152,6 +168,8 @@ async def test_interactive_tui_submits_question_from_input() -> None:
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent)
+    assert app._session_recorder is None
+    assert app._session_id is None
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -162,6 +180,14 @@ async def test_interactive_tui_submits_question_from_input() -> None:
         assert app._state.final_answer == "answer"
         assert command_input.value == ""
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "What now?"
+        assert app._session_recorder is not None
+        assert app._session_id is not None
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert event_log.events[0].payload["content"] == "What now?"
+        run_ids = {session_event.run_id for session_event in event_log.events}
+        assert len(run_ids) == 1
+        assert "" not in run_ids
+        assert event_log.get_run(next(iter(run_ids))).question == "What now?"
 
 
 @pytest.mark.anyio
@@ -446,6 +472,9 @@ async def test_interactive_tui_model_command_updates_next_request_metadata() -> 
 async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
+    SessionRecorder(store, metadata.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("keep this session"))
+    )
     llm_service = StubLLMService([])
     agent = AgentBase(
         prompt="Prompt",
@@ -461,12 +490,35 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
 
     async with app.run_test():
         app.switch_model("gpt-5.5")
-        app.append_event(TUIEvent.user_message("keep this session"))
 
     assert store.get_session_state(metadata.session_id) == SessionState(
         selected_provider="openai",
         selected_model="gpt-5.5",
     )
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    llm_service = StubLLMService([])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
+        app.switch_model("gpt-5.5")
+
+    assert store.list_sessions() == []
 
 
 @pytest.mark.anyio
@@ -620,7 +672,7 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
-        app._handle_model_selection("gpt-5.5")
+        app._handle_config_selection("gpt-5.5")
         app.on_input_submitted(Input.Submitted(command_input, "Use selected model"))
         await pilot.pause(0.1)
 
@@ -629,7 +681,7 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_m_key_opens_model_selector() -> None:
+async def test_interactive_tui_c_key_opens_config_screen() -> None:
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -638,12 +690,111 @@ async def test_interactive_tui_m_key_opens_model_selector() -> None:
     )
     app = AceAIInteractiveTUI(agent)
     calls: list[str] = []
-    app.open_model_selector = lambda: calls.append("model")
+    app.open_config_screen = lambda: calls.append("config")
 
     async with app.run_test() as pilot:
-        await pilot.press("m")
+        await pilot.press("c")
 
-    assert calls == ["model"]
+    assert calls == ["config"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_config_command_opens_config_screen() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.open_config_screen = lambda: calls.append("config")
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/config"))
+
+    assert calls == ["config"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_info_command_uses_registered_alias() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.open_metadata_screen = lambda: calls.append("metadata")
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/info"))
+
+    assert calls == ["metadata"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_resume_command_uses_registered_arg_handler(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    SessionRecorder(store, first.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("first"))
+    )
+    SessionRecorder(store, second.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("second"))
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        initial_events=event_log_to_tui_events(store.load_event_log(first.session_id)),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, f"/resume {second.session_id}"))
+
+    assert app._session_id == second.session_id
+    assert app._state.events[0].content == "second"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_unknown_slash_input_runs_as_question() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/unknown command"))
+        await pilot.pause(0.1)
+
+    assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "/unknown command"
 
 
 @pytest.mark.anyio
@@ -675,10 +826,12 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
 
 
 @pytest.mark.anyio
-async def test_model_selector_prefills_masked_api_key() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_prefills_masked_api_key() -> None:
+    screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
         api_keys={"openai": "sk-test-ending"},
     )
 
@@ -690,78 +843,314 @@ async def test_model_selector_prefills_masked_api_key() -> None:
 
 
 @pytest.mark.anyio
-async def test_model_selector_apply_restores_masked_api_key() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_apply_restores_masked_api_key() -> None:
+    screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
         api_keys={"openai": "sk-test-ending"},
     )
 
     async with AceAITUI([]).run_test() as pilot:
         pilot.app.push_screen(screen)
         await pilot.pause()
-        selections: list[ModelSelection | None] = []
+        selections: list[ConfigSelection | None] = []
 
-        def dismiss(selection: ModelSelection | None) -> None:
+        def dismiss(selection: ConfigSelection | None) -> None:
             selections.append(selection)
 
         screen.dismiss = dismiss
-        _press_model_apply(screen)
+        _press_config_apply(screen)
 
         assert selections == [
-            ModelSelection(
+            ConfigSelection(
                 provider="openai",
                 model="gpt-5.5",
+                default_model="gpt-5.5",
                 api_key="sk-test-ending",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=(),
             )
         ]
 
 
 @pytest.mark.anyio
-async def test_model_selector_requires_provider_model_and_api_key() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_uses_model_as_default_model_and_separates_skills() -> None:
+    skill_item = SkillConfigItem(
+        name="developer",
+        description=(
+            "Practical software development workflow with careful repository "
+            "inspection, implementation, and verification."
+        ),
+        location="/skills/developer/SKILL.md",
+    )
+    screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
+        default_model="gpt-4o",
+        skills="auto",
+        skill_items=(skill_item,),
+        skill_selection_mode="all",
+        enabled_skills=(),
         api_keys={"openai": "sk-test-ending"},
     )
 
     async with AceAITUI([]).run_test() as pilot:
         pilot.app.push_screen(screen)
         await pilot.pause()
-        selections: list[ModelSelection | None] = []
+        selections: list[ConfigSelection | None] = []
 
-        def dismiss(selection: ModelSelection | None) -> None:
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        screen.query_one("#model", Input).value = "gpt-4o"
+        screen_ids = {node.id for node in screen.query("*") if node.id is not None}
+        _press_config_apply(screen)
+
+        assert "default-model" not in screen_ids
+        assert screen.query_one("#api-key", Input).region.y < screen.query_one(
+            "#config-skills-list"
+        ).region.y
+        assert str(screen.query_one("#skill-0", Checkbox).label) == "developer"
+        assert (
+            "Practical software development workflow"
+            in str(screen.query_one("#skill-description-0", Static).render())
+        )
+        assert selections == [
+            ConfigSelection(
+                provider="openai",
+                model="gpt-4o",
+                default_model="gpt-4o",
+                api_key="sk-test-ending",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=("developer",),
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_is_fullscreen_and_splits_system_prompt_tab() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        system_prompt="You are AceAI.\n\nSkill instructions are active.",
+    )
+
+    async with AceAITUI([]).run_test(size=(100, 30)) as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        panel = screen.query_one("#config-panel")
+        tabs = screen.query_one("#config-tabs", TabbedContent)
+        settings_tab = screen.query_one("#settings-tab")
+        prompt_tab = screen.query_one("#system-prompt-tab")
+        prompt = screen.query_one("#system-prompt", Static)
+
+        assert panel.region.width == 100
+        assert panel.region.height == 30
+        assert tabs.active == "settings-tab"
+        assert screen.query_one("#provider", Input) in settings_tab.query("*")
+        assert prompt in prompt_tab.query("*")
+        assert "You are AceAI" in str(prompt.render())
+        assert "Skill instructions are active" in str(prompt.render())
+
+
+@pytest.mark.anyio
+async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> None:
+    tool_items = (
+        ToolPermissionItem(
+            name="run_shell_command",
+            description="Run a shell command.",
+            permission="ask",
+        ),
+        ToolPermissionItem(
+            name="read_text_file",
+            description="Read a file.",
+            permission="always",
+        ),
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=tool_items,
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        tabs = screen.query_one("#config-tabs", TabbedContent)
+        tool_select = screen.query_one("#tool-permission-0", Select)
+
+        assert screen.query_one("#tool-permissions-tab") in tabs.query("*")
+        assert tool_select.value == "ask"
+
+        tool_select.value = "never"
+        _press_config_apply(screen)
+
+        assert selections[-1].tool_permissions == {
+            "run_shell_command": "never",
+            "read_text_file": "always",
+        }
+
+
+@pytest.mark.anyio
+async def test_config_screen_can_allow_or_disable_all_tools() -> None:
+    tool_items = (
+        ToolPermissionItem(
+            name="run_shell_command",
+            description="Run a shell command.",
+            permission="ask",
+        ),
+        ToolPermissionItem(
+            name="read_text_file",
+            description="Read a file.",
+            permission="always",
+        ),
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=tool_items,
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+
+        class DisablePressed:
+            button = screen.query_one("#disable-all-tools", Button)
+
+        screen.on_button_pressed(DisablePressed())
+        assert screen.query_one("#tool-permission-0", Select).value == "never"
+        assert screen.query_one("#tool-permission-1", Select).value == "never"
+
+        class AllowPressed:
+            button = screen.query_one("#allow-all-tools", Button)
+
+        screen.on_button_pressed(AllowPressed())
+        _press_config_apply(screen)
+
+        assert selections[-1].tool_permissions == {
+            "run_shell_command": "always",
+            "read_text_file": "always",
+        }
+
+
+@pytest.mark.anyio
+async def test_config_screen_can_disable_current_agent_skill() -> None:
+    skill_item = SkillConfigItem(
+        name="developer",
+        description="Development workflow.",
+        location="/skills/developer/SKILL.md",
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        skill_items=(skill_item,),
+        skill_selection_mode="all",
+        enabled_skills=(),
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        screen.query_one("#skill-0", Checkbox).value = False
+        _press_config_apply(screen)
+
+        assert selections[-1] == ConfigSelection(
+            provider="openai",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_key="sk-test-ending",
+            skills="auto",
+            skill_selection_mode="selected",
+            enabled_skills=(),
+        )
+
+
+@pytest.mark.anyio
+async def test_config_screen_requires_provider_model_and_api_key() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
             selections.append(selection)
 
         screen.dismiss = dismiss
         provider_input = screen.query_one("#provider", Input)
         model_input = screen.query_one("#model", Input)
         api_key_input = screen.query_one("#api-key", Input)
-        error = screen.query_one("#model-error", Static)
+        error = screen.query_one("#config-error", Static)
 
         provider_input.value = ""
-        _press_model_apply(screen)
+        _press_config_apply(screen)
         assert selections == []
         assert str(error.render()) == "Provider is required"
 
         provider_input.value = "openai"
         model_input.value = ""
-        _press_model_apply(screen)
+        _press_config_apply(screen)
         assert selections == []
         assert str(error.render()) == "Model is required"
 
         model_input.value = "gpt-5.5"
         api_key_input.value = ""
-        _press_model_apply(screen)
+        _press_config_apply(screen)
         assert selections == []
         assert str(error.render()) == "API key is required"
 
 
 @pytest.mark.anyio
-async def test_model_selector_selects_prefixed_model_candidate_with_tab() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_selects_prefixed_model_candidate_with_tab() -> None:
+    screen = ConfigScreen(
         provider_name="deepseek",
         current_model="deepseek-v4-pro",
+        default_model="deepseek-v4-pro",
+        skills="auto",
         api_keys={},
     )
 
@@ -780,10 +1169,12 @@ async def test_model_selector_selects_prefixed_model_candidate_with_tab() -> Non
 
 
 @pytest.mark.anyio
-async def test_model_selector_selects_prefixed_provider_candidate_with_tab() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_selects_prefixed_provider_candidate_with_tab() -> None:
+    screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
         api_keys={"deepseek": "sk-deepseek-ending"},
     )
 
@@ -804,10 +1195,12 @@ async def test_model_selector_selects_prefixed_provider_candidate_with_tab() -> 
 
 
 @pytest.mark.anyio
-async def test_model_selector_hides_candidates_for_empty_input() -> None:
-    screen = ModelSelectScreen(
+async def test_config_screen_hides_candidates_for_empty_input() -> None:
+    screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
         api_keys={},
     )
 
@@ -823,6 +1216,7 @@ async def test_model_selector_hides_candidates_for_empty_input() -> None:
 
 @pytest.mark.anyio
 async def test_configured_tui_switches_provider_without_reusing_current_key(
+    tmp_path,
     monkeypatch,
 ) -> None:
     calls: list[AceAITUIConfig] = []
@@ -837,6 +1231,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         )
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.chdir(tmp_path)
     app = AceAIConfiguredTUI(
         agent_factory,
         initial_config=AceAITUIConfig(
@@ -849,12 +1244,17 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         default_model="gpt-5.5",
     )
 
+    clear_config()
     async with app.run_test():
-        app._handle_model_selection(
-            ModelSelection(
+        app._handle_config_selection(
+            ConfigSelection(
                 provider="deepseek",
                 model="deepseek-v4-flash",
+                default_model="deepseek-v4-pro",
                 api_key="",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=(),
             )
         )
 
@@ -862,8 +1262,14 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         provider="deepseek",
         api_key="deepseek-key",
         model="deepseek-v4-flash",
+        default_model="deepseek-v4-pro",
+        skills="auto",
+        skill_selection_mode="selected",
+        enabled_skills=[],
         api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
     )
+    assert current_config() == calls[-1]
+    assert (tmp_path / ".aceai" / "config.yml").exists()
 
 
 @pytest.mark.anyio
@@ -908,7 +1314,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         assert app._llm_history[0].content[0]["data"] == "second"
 
 
-def _press_model_apply(screen: ModelSelectScreen) -> None:
+def _press_config_apply(screen: ConfigScreen) -> None:
     class Pressed:
         button = screen.query_one("#apply", Button)
 

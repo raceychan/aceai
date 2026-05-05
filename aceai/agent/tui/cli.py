@@ -7,7 +7,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from aceai.agent.ace_agent import build_ace_agent
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
+from aceai.agent.permissions import ToolPermission
 from aceai.agent.provider_catalog import (
     all_supported_models,
     api_key_env,
@@ -16,12 +17,14 @@ from aceai.agent.provider_catalog import (
     supported_provider_names,
 )
 from aceai.core import AgentBase
+from aceai.llm.interface import UNSET
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 
-from .config import (
+from aceai.agent.config import (
     AceAITUIConfig,
     load_config,
+    replace_config,
 )
 from aceai.agent.cost import format_usd
 
@@ -34,8 +37,8 @@ TUI_EXTRA_INSTALL_HINT = (
     "  pip install 'aceai[tui]'"
 )
 
-SessionRecorder = None
 SessionStore = None
+SessionRecorder = None
 event_log_to_tui_events = None
 run_configured_tui = None
 run_interactive_tui = None
@@ -50,8 +53,8 @@ class SessionStoreLike(Protocol):
 
 
 def require_tui_extra() -> None:
-    global SessionRecorder
     global SessionStore
+    global SessionRecorder
     global event_log_to_tui_events
     global run_configured_tui
     global run_interactive_tui
@@ -65,8 +68,8 @@ def require_tui_extra() -> None:
         if exc.name in TUI_EXTRA_MODULES:
             raise SystemExit(TUI_EXTRA_INSTALL_HINT) from None
         raise
-    SessionRecorder = session_module.SessionRecorder
     SessionStore = session_module.SessionStore
+    SessionRecorder = session_module.SessionRecorder
     event_log_to_tui_events = replay_module.event_log_to_tui_events
     run_configured_tui = runner_module.run_configured_tui
     run_interactive_tui = runner_module.run_interactive_tui
@@ -76,22 +79,75 @@ def build_default_agent(
     *,
     api_key: str,
     model: OpenAIModel,
+    default_model: OpenAIModel | None = None,
     provider: str = "openai",
+    skills: str | None = None,
+    skill_selection_mode: str = "all",
+    enabled_skills: list[str] | None = None,
+    tool_permissions: dict[str, ToolPermission] | None = None,
 ) -> AgentBase:
+    agent_model = model if default_model is None else default_model
+    skill_path = skills if skills is not None else None
+    enabled_skill_names = (
+        tuple(enabled_skills or [])
+        if skill_selection_mode == "selected"
+        else UNSET
+    )
     if provider == "openai":
-        return build_ace_agent(api_key=api_key, model=model)
-    return build_ace_agent(api_key=api_key, model=model, provider_name=provider)
+        if skill_path is None:
+            return build_ace_agent(
+                api_key=api_key,
+                model=agent_model,
+                enabled_skill_names=enabled_skill_names,
+                tool_permissions=tool_permissions,
+            )
+        return build_ace_agent(
+            api_key=api_key,
+            model=agent_model,
+            skill_path=skill_path,
+            enabled_skill_names=enabled_skill_names,
+            tool_permissions=tool_permissions,
+        )
+    if skill_path is None:
+        return build_ace_agent(
+            api_key=api_key,
+            model=agent_model,
+            provider_name=provider,
+            enabled_skill_names=enabled_skill_names,
+            tool_permissions=tool_permissions,
+        )
+    return build_ace_agent(
+        api_key=api_key,
+        model=agent_model,
+        provider_name=provider,
+        skill_path=skill_path,
+        enabled_skill_names=enabled_skill_names,
+        tool_permissions=tool_permissions,
+    )
 
 
 def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
     if config.provider not in supported_provider_names():
         raise ValueError("Unsupported provider")
     if config.provider == "openai":
-        return build_default_agent(api_key=config.api_key, model=config.model)
+        return build_default_agent(
+            api_key=config.api_key,
+            model=config.model,
+            default_model=config.default_model,
+            skills=config.skills,
+            skill_selection_mode=config.skill_selection_mode,
+            enabled_skills=config.enabled_skills,
+            tool_permissions=config.tool_permissions,
+        )
     return build_default_agent(
         api_key=config.api_key,
         model=config.model,
+        default_model=config.default_model,
         provider=config.provider,
+        skills=config.skills,
+        skill_selection_mode=config.skill_selection_mode,
+        enabled_skills=config.enabled_skills,
+        tool_permissions=config.tool_permissions,
     )
 
 
@@ -114,29 +170,43 @@ def resolve_initial_config(
     model: OpenAIModel,
     model_from_env: bool,
 ) -> AceAITUIConfig | None:
+    stored = load_config()
+    if stored is not None:
+        if model_from_env:
+            selected_model = resolve_model(stored.provider, model)
+            return replace_config(
+                AceAITUIConfig(
+                    provider=stored.provider,
+                    api_key=stored.api_key,
+                    model=selected_model,
+                    default_model=stored.default_model,
+                    skills=stored.skills,
+                    skill_selection_mode=stored.skill_selection_mode,
+                    enabled_skills=stored.enabled_skills,
+                    api_keys=stored.api_keys,
+                    tool_permissions=stored.tool_permissions,
+                )
+            )
+        return stored
     env_name = api_key_env(provider)
     if env_name in os.environ:
         selected_model = model
         if not model_from_env:
             selected_model = default_model(provider)
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=os.environ[env_name],
-            model=selected_model,
-            api_keys={provider: os.environ[env_name]},
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=os.environ[env_name],
+                model=selected_model,
+                default_model=default_model(provider),
+                skills=ACE_AGENT_SKILL_PATH,
+                skill_selection_mode="all",
+                enabled_skills=[],
+                api_keys={provider: os.environ[env_name]},
+                tool_permissions={},
+            )
         )
-    stored = load_config()
-    if stored is None:
-        return None
-    if model_from_env:
-        selected_model = resolve_model(stored.provider, model)
-        return AceAITUIConfig(
-            provider=stored.provider,
-            api_key=stored.api_key,
-            model=selected_model,
-            api_keys=stored.api_keys,
-        )
-    return stored
+    return None
 
 
 def apply_session_state_to_initial_config(
@@ -152,18 +222,32 @@ def apply_session_state_to_initial_config(
         provider = config.provider
     model = resolve_model(provider, state.selected_model)
     if config is not None and config.provider == provider:
-        return AceAITUIConfig(
-            provider=config.provider,
-            api_key=config.api_key,
-            model=model,
-            api_keys=config.api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=config.provider,
+                api_key=config.api_key,
+                model=model,
+                default_model=config.default_model,
+                skills=config.skills,
+                skill_selection_mode=config.skill_selection_mode,
+                enabled_skills=config.enabled_skills,
+                api_keys=config.api_keys,
+                tool_permissions=config.tool_permissions,
+            )
         )
     if config is not None and provider in config.api_keys:
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=config.api_keys[provider],
-            model=model,
-            api_keys=config.api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=config.api_keys[provider],
+                model=model,
+                default_model=default_model(provider),
+                skills=config.skills,
+                skill_selection_mode=config.skill_selection_mode,
+                enabled_skills=config.enabled_skills,
+                api_keys=config.api_keys,
+                tool_permissions=config.tool_permissions,
+            )
         )
     env_name = api_key_env(provider)
     if env_name in os.environ:
@@ -171,32 +255,38 @@ def apply_session_state_to_initial_config(
         if config is not None:
             api_keys.update(config.api_keys)
         api_keys[provider] = os.environ[env_name]
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=os.environ[env_name],
-            model=model,
-            api_keys=api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=os.environ[env_name],
+                model=model,
+                default_model=default_model(provider),
+                skills=config.skills if config is not None else ACE_AGENT_SKILL_PATH,
+                skill_selection_mode=config.skill_selection_mode
+                if config is not None
+                else "all",
+                enabled_skills=config.enabled_skills if config is not None else [],
+                api_keys=api_keys,
+                tool_permissions=config.tool_permissions if config is not None else {},
+            )
         )
     return config
 
 
-def create_session_context(
+def load_session_context(
     *,
-    resume_session_id: str | None,
+    session_id: str,
 ) -> tuple[object, object, list[object], list[LLMMessage], object]:
     require_tui_extra()
     store = SessionStore()
-    if resume_session_id is None:
-        metadata = store.create_session()
-        return store, metadata, [], [], store.get_session_state(metadata.session_id)
-    metadata = store.get_session(resume_session_id)
-    event_log = store.load_event_log(resume_session_id)
+    metadata = store.get_session(session_id)
+    event_log = store.load_event_log(session_id)
     return (
         store,
         metadata,
         event_log_to_tui_events(event_log),
         event_log.replay_llm_history(),
-        store.get_session_state(resume_session_id),
+        store.get_session_state(session_id),
     )
 
 
@@ -290,11 +380,19 @@ def run_main(args: argparse.Namespace) -> None:
         model=selected_model,
         model_from_env=model_from_env,
     )
-    store, metadata, initial_events, initial_history, session_state = create_session_context(
-        resume_session_id=resume_session_id,
-    )
-    config = apply_session_state_to_initial_config(config, session_state)
-    recorder = SessionRecorder(store, metadata.session_id)
+    require_tui_extra()
+    if resume_session_id is None:
+        initial_events = []
+        initial_history = []
+        recorder = None
+        session_id = None
+    else:
+        store, metadata, initial_events, initial_history, session_state = load_session_context(
+            session_id=resume_session_id,
+        )
+        config = apply_session_state_to_initial_config(config, session_state)
+        recorder = SessionRecorder(store, metadata.session_id)
+        session_id = metadata.session_id
     if config is None:
         run_configured_tui(
             build_agent_from_config,
@@ -304,10 +402,10 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
-        if recorder.saved:
-            print(f"Session saved: {metadata.session_id}")
+        if recorder is not None and recorder.saved:
+            print(f"Session saved: {session_id}")
         return
     if run_configured_tui is None:
         agent = build_agent_from_config(config)
@@ -316,7 +414,7 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
     else:
         run_configured_tui(
@@ -327,7 +425,7 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
-    if recorder.saved:
-        print(f"Session saved: {metadata.session_id}")
+    if recorder is not None and recorder.saved:
+        print(f"Session saved: {session_id}")

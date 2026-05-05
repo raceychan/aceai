@@ -74,6 +74,7 @@ class AgentRuntime:
         self.request_meta = request_meta
         self.steps: list[AgentStep] = []
         self.run_state = AgentRuntimeState()
+        self.run_id = str(uuid4())
 
     @property
     def status(self) -> AgentRuntimeStatus:
@@ -227,7 +228,10 @@ class AgentRuntime:
         for index, call in enumerate(tool_calls[start_index:], start=start_index):
             invocation = executor.resolve_invocation(call)
             yield event_builder.tool_started(tool_call=call)
-            if invocation.approval_required:
+            if (
+                invocation.approval_required
+                and invocation.tool.name not in self.run_state.tools.approved_tool_names
+            ):
                 request = ToolApprovalRequest(
                     call=call,
                     tool_name=invocation.tool.name,
@@ -397,6 +401,7 @@ class AgentRuntime:
             error=error_msg,
         )
         yield RunFailedEvent(
+            run_id=self.run_id,
             step_index=step_index,
             step_id=step_id,
             step=step,
@@ -434,6 +439,7 @@ class AgentRuntime:
             for _ in step_iterator:
                 step_id = str(uuid4())
                 event_builder = AgentEventBuilder(
+                    run_id=self.run_id,
                     step_index=len(self.steps),
                     step_id=step_id,
                 )
@@ -508,6 +514,7 @@ class AgentRuntime:
             decision=decision,
         )
         if decision.approved:
+            self.run_state.tools.approved_tool_names.add(pending.invocation.tool.name)
             async for event in self._execute_invocation(
                 pending.step,
                 pending.event_builder,
@@ -561,6 +568,7 @@ class AgentBase:
         executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
         skill_path: str | Path | Literal["auto", "disable"] = "auto",
+        enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
         hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
@@ -570,6 +578,8 @@ class AgentBase:
             skill_path,
             loader_factory=skill_loader_factory,
         )
+        if is_set(enabled_skill_names):
+            self._skill_registry = self._skill_registry.select(enabled_skill_names)
         skill_prompt = format_skills_for_prompt(self._skill_registry)
         self._default_model = default_model
         self._llm_service = llm_service

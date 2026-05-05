@@ -31,6 +31,9 @@ from openai.types.responses.response_image_gen_call_partial_image_event import (
 )
 from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
+from openai.types.responses.response_reasoning_summary_text_delta_event import (
+    ResponseReasoningSummaryTextDeltaEvent,
+)
 from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
@@ -212,7 +215,9 @@ class OpenAIPayload(Struct, kw_only=True):
 
         input_messages = self._format_messages_for_responses(self.messages)
         kwargs: dict[str, Any] = {"input": input_messages}
-        request_metadata = self.metadata if "metadata" in payload else {}
+        request_metadata: OpenAIMeta = {}
+        if is_set(self.metadata):
+            request_metadata = self.metadata
 
         model_name = request_metadata.get("model")
         if not model_name:
@@ -229,6 +234,8 @@ class OpenAIPayload(Struct, kw_only=True):
                     f"Model {model_name} does not support reasoning summaries"
                 )
             kwargs["reasoning"] = reasoning_cfg
+        elif self._supports_reasoning_summary(model_name):
+            kwargs["reasoning"] = {"summary": "auto"}
 
         if "max_tokens" in payload:
             kwargs["max_output_tokens"] = self.max_tokens
@@ -244,12 +251,12 @@ class OpenAIPayload(Struct, kw_only=True):
                 "OpenAI Responses API does not support stop sequences; ignoring request.stop"
             )
 
-        if "response_format" in payload:
+        if is_set(self.response_format):
             text_config = self._build_text_config(self.response_format)
             if text_config:
                 kwargs["text"] = text_config
 
-        if "tools" in payload:
+        if is_set(self.tools):
             kwargs["tools"] = [self._format_tool(tool) for tool in self.tools]
 
         if "tool_choice" in payload:
@@ -304,6 +311,8 @@ class OpenAIPayload(Struct, kw_only=True):
         for part in content:
             if part["type"] != "text":
                 raise ValueError(f"{context} only supports text parts")
+            if "data" not in part:
+                raise ValueError(f"{context} text parts must include data")
             data = part["data"]
             if not isinstance(data, str):
                 raise TypeError(f"{context} text parts must be str")
@@ -318,6 +327,8 @@ class OpenAIPayload(Struct, kw_only=True):
             match part["type"]:
                 case "text":
                     text_type = "output_text" if role == "assistant" else "input_text"
+                    if "data" not in part:
+                        raise ValueError("Text message parts must include data")
                     data = part["data"]
                     if not isinstance(data, str):
                         raise TypeError("Text message parts must be str")
@@ -329,14 +340,15 @@ class OpenAIPayload(Struct, kw_only=True):
                 case "file":
                     raise ValueError("OpenAI Responses does not support file input")
                 case _:
-                    raise ValueError(f"Unsupported message part: {part.type}")
+                    raise ValueError(f"Unsupported message part: {part['type']}")
         return payload
 
     def _format_image_part(self, part: LLMMessagePart) -> dict[str, Any]:
         image_url = part.get("url")
-        if image_url is None and isinstance(part.get("binary"), bytes):
+        binary = part.get("binary")
+        if image_url is None and isinstance(binary, bytes):
             mime = part.get("mime_type", "image/png")
-            b64 = base64.b64encode(part["binary"]).decode("ascii")
+            b64 = base64.b64encode(binary).decode("ascii")
             image_url = f"data:{mime};base64,{b64}"
         if image_url is None:
             raise ValueError("Image parts must include `url` or `data`")
@@ -372,7 +384,7 @@ class OpenAIPayload(Struct, kw_only=True):
     def _format_tool(self, tool: LLMToolSpec) -> dict[str, Any]:
         if isinstance(tool, IToolSpec):
             schema = tool.generate_schema()
-            return cast(FunctionToolParam, schema)
+            return cast(dict[str, Any], cast(FunctionToolParam, schema))
         if tool.provider_name != "openai":
             raise AceAIConfigurationError(
                 f"OpenAI cannot serialize hosted tool for provider {tool.provider_name}"
@@ -654,6 +666,25 @@ class OpenAI(LLMProviderBase):
                     )
                 ]
                 event_type = "response.function_call_arguments.delta"
+            case ResponseReasoningSummaryTextDeltaEvent(
+                delta=delta,
+                item_id=item_id,
+                summary_index=summary_index,
+            ) if delta:
+                segments = [
+                    LLMSegment(
+                        type="reasoning",
+                        content=delta,
+                        meta=LLMReasoningSegmentMeta(
+                            item_id=item_id,
+                            kind="summary",
+                            index=summary_index,
+                            status="in_progress",
+                            is_delta=True,
+                        ),
+                    )
+                ]
+                event_type = "response.reasoning.delta"
             case ResponseImageGenCallPartialImageEvent(partial_image_b64=partial_b64):
                 media = self._media_from_base64(partial_b64)
                 segments = [

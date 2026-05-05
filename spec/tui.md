@@ -105,7 +105,16 @@ setup screen before creating the agent. The setup screen currently exposes:
 - model selection
 - opt-in persistence
 
-Persisted settings are written to `~/.aceai/config.yaml` with mode `0600`.
+On startup AceAI reads `.aceai/config.yml` in the current project first, then
+falls back to `~/.aceai/config.yaml`. Persisted settings are written to
+`.aceai/config.yml` with mode `0600`.
+
+The config surface includes a dedicated tools tab. Each local app tool has one
+permission value:
+
+- `always`: expose and execute the tool without approval
+- `ask`: expose the tool and suspend for caller approval before execution
+- `never`: do not expose the tool to the model
 
 ## Event Model
 
