@@ -106,19 +106,17 @@ class TUIEvent(Record, kw_only=True):
         )
 
     @classmethod
-    def from_agent_event(cls, event: AgentEvent) -> Self:
+    def from_agent_event(cls, event: AgentEvent) -> "TUIEvent":
         return _agent_event_to_tui_event(event)
 
     @classmethod
-    def from_session_event(cls, event: SessionEvent) -> Self | None:
+    def from_session_event(cls, event: SessionEvent) -> "TUIEvent | None":
         if event.kind == "user_message":
             return cls.user_message(event.payload["content"])
         if event.kind == "assistant_message":
             return cls._from_session_assistant_event(event)
         if event.kind == "assistant_tool_call":
-            if event.payload["content"] == "":
-                return None
-            return cls._from_session_assistant_event(event)
+            return None
         if event.kind == "tool_started":
             return cls._from_session_tool_started_event(event)
         if event.kind in ("tool_approval_requested", "tool_approval_resolved"):
@@ -132,8 +130,8 @@ class TUIEvent(Record, kw_only=True):
         return None
 
     @classmethod
-    def list_from_event_log(cls, event_log: EventLog) -> list[Self]:
-        events: list[Self] = []
+    def list_from_event_log(cls, event_log: EventLog) -> list["TUIEvent"]:
+        events: list[TUIEvent] = []
         for session_event in event_log.events:
             event = cls.from_session_event(session_event)
             if event is not None:
@@ -192,8 +190,11 @@ class TUIEvent(Record, kw_only=True):
     @classmethod
     def _from_session_tool_approval_event(cls, event: SessionEvent) -> Self:
         call = _session_tool_call(event)
+        kind: TUIEventKind = "tool_approval_requested"
+        if event.kind == "tool_approval_resolved":
+            kind = "tool_approval_resolved"
         return cls(
-            kind=event.kind,
+            kind=kind,
             step_index=_session_step_index(event),
             step_id=event.step_id or uuid_str(),
             title=f"tool {event.payload['tool_name']}",
@@ -218,12 +219,26 @@ class TUIEvent(Record, kw_only=True):
 
     @classmethod
     def _from_session_control_event(cls, event: SessionEvent) -> Self:
+        kind: TUIEventKind
+        if event.kind == "run_completed":
+            kind = "run_completed"
+        elif event.kind == "run_suspended":
+            kind = "run_suspended"
+        elif event.kind == "step_completed":
+            kind = "step_completed"
+        elif event.kind == "step_started":
+            kind = "step_started"
+        else:
+            raise ValueError("unsupported session control event")
         return cls(
-            kind=event.kind,
+            kind=kind,
             step_index=_session_step_index(event),
             step_id=event.step_id or uuid_str(),
             title=event.kind,
             content=event.payload["content"],
+            tool_name=_session_payload_str_or_none(event, "tool_name"),
+            tool_call_id=_session_payload_str_or_none(event, "tool_call_id"),
+            tool_call=_session_optional_tool_call(event),
             raw_event=None,
         )
 
@@ -298,7 +313,7 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             step_index=event.step_index,
             step_id=event.step_id,
             title="llm completed",
-            content=response.text,
+            content="" if response.tool_calls else response.text,
             tool_calls=response.tool_calls,
             usage=usage,
             cost=cost,
@@ -466,3 +481,18 @@ def _session_tool_call(event: SessionEvent) -> LLMToolCall:
             "call_id": event.payload["tool_call_id"],
         }
     )
+
+
+def _session_optional_tool_call(event: SessionEvent) -> LLMToolCall | None:
+    if "tool_call" not in event.payload:
+        return None
+    return LLMToolCall.from_payload(event.payload["tool_call"])
+
+
+def _session_payload_str_or_none(event: SessionEvent, key: str) -> str | None:
+    if key not in event.payload:
+        return None
+    value = event.payload[key]
+    if type(value) is not str:
+        raise TypeError(f"Session event payload {key} must be str")
+    return value

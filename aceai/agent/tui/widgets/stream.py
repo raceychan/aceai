@@ -4,6 +4,7 @@ from msgspec import Struct
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual.events import Click, Key, Resize
@@ -18,6 +19,7 @@ PROMPT_BAR_STYLE = "bold #eceff4 on #3b4252"
 PROMPT_MARK_STYLE = "bold #88c0d0 on #3b4252"
 SUBTLE_BULLET_STYLE = "bold #9aa3b2"
 REASONING_MARK_STYLE = "bold #d08770"
+EXPAND_MARK_STYLE = "bold #88c0d0"
 TRANSCRIPT_GUTTER = "  "
 
 
@@ -53,6 +55,8 @@ class StreamWidget(RichLog):
         self._debug_mode = False
         self._selected_debug_index = 0
         self._debug_line_spans: list[_DebugLineSpan] = []
+        self._expanded_tool_activity_ids: set[str] = set()
+        self._tool_activity_line_spans: list[_ToolActivityLineSpan] = []
 
     @property
     def debug_mode(self) -> bool:
@@ -80,8 +84,22 @@ class StreamWidget(RichLog):
         elif self._debug_mode:
             self._write_debug_stream()
         else:
-            for renderable in _render_events(self._state.events):
-                self._write_stream_renderable(renderable)
+            self._tool_activity_line_spans = []
+            for entry in _render_event_entries(
+                self._state.events,
+                collapse_tool_activity=self._state.status == "completed",
+                expanded_tool_activity_ids=self._expanded_tool_activity_ids,
+            ):
+                start_line = len(self.lines)
+                self._write_stream_renderable(entry.renderable)
+                if entry.tool_activity_id != "":
+                    self._tool_activity_line_spans.append(
+                        _ToolActivityLineSpan(
+                            activity_id=entry.tool_activity_id,
+                            start_line=start_line,
+                            end_line=len(self.lines),
+                        )
+                    )
         self.call_after_refresh(self.scroll_end, animate=False)
 
     def on_key(self, event: Key) -> None:
@@ -104,14 +122,31 @@ class StreamWidget(RichLog):
             event.stop()
 
     def on_click(self, event: Click) -> None:
-        if not self._debug_mode:
-            return
         line_index = self.scroll_y + event.y
+        if not self._debug_mode:
+            activity_id = _tool_activity_id_from_click(event)
+            if activity_id != "":
+                self._toggle_tool_activity(activity_id)
+                event.stop()
+                return
+            for span in self._tool_activity_line_spans:
+                if span.start_line <= line_index < span.end_line:
+                    self._toggle_tool_activity(span.activity_id)
+                    event.stop()
+                    return
+            return
         for span in self._debug_line_spans:
             if span.start_line <= line_index < span.end_line:
                 self._select_debug_event(span.index)
                 event.stop()
                 return
+
+    def _toggle_tool_activity(self, activity_id: str) -> None:
+        if activity_id in self._expanded_tool_activity_ids:
+            self._expanded_tool_activity_ids.remove(activity_id)
+        else:
+            self._expanded_tool_activity_ids.add(activity_id)
+        self.set_state(self._state)
 
     def _select_debug_event(self, index: int) -> None:
         selectable_events = _selectable_debug_events(self._state.events)
@@ -170,9 +205,24 @@ class _ToolBlockState(Struct, kw_only=True):
     status: str = "running"
 
 
+class _ToolActivityState(Struct, kw_only=True):
+    blocks: dict[str, _ToolBlockState]
+
+
+class _StreamRenderable(Struct, kw_only=True):
+    renderable: RenderableType
+    tool_activity_id: str = ""
+
+
 class _DebugRenderable(Struct, kw_only=True):
     event_id: str
     renderable: RenderableType
+
+
+class _ToolActivityLineSpan(Struct, kw_only=True):
+    activity_id: str
+    start_line: int
+    end_line: int
 
 
 class _DebugLineSpan(Struct, kw_only=True):
@@ -182,8 +232,28 @@ class _DebugLineSpan(Struct, kw_only=True):
     end_line: int
 
 
-def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
-    renderables: list[RenderableType] = []
+def _render_events(
+    events: list[TUIEvent],
+    *,
+    collapse_tool_activity: bool = False,
+) -> list[RenderableType]:
+    return [
+        entry.renderable
+        for entry in _render_event_entries(
+            events,
+            collapse_tool_activity=collapse_tool_activity,
+            expanded_tool_activity_ids=set(),
+        )
+    ]
+
+
+def _render_event_entries(
+    events: list[TUIEvent],
+    *,
+    collapse_tool_activity: bool,
+    expanded_tool_activity_ids: set[str],
+) -> list[_StreamRenderable]:
+    entries: list[_StreamRenderable] = []
     assistant_buffer = ""
     assistant_buffer_step_id = ""
     thinking_buffer = ""
@@ -192,6 +262,7 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
     rendered_reasoning_step_ids: set[str] = set()
     tool_blocks: dict[str, _ToolBlockState] = {}
     rendered_tool_call_ids: set[str] = set()
+    pending_tool_activity: _ToolActivityState | None = None
 
     for event in events:
         if event.kind == "reasoning_summary":
@@ -213,39 +284,64 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             "tool_approval_resolved",
             "tool_completed",
             "tool_failed",
+            "run_suspended",
         ):
-            thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
+            thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
             _flush_pending_reasoning(
-                renderables,
+                entries,
                 assistant_buffer_step_id,
                 pending_reasoning,
                 rendered_reasoning_step_ids,
             )
             assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
-                renderables,
+                entries,
                 assistant_buffer,
                 assistant_buffer_step_id,
                 assistant_step_ids,
             )
             _update_tool_block(tool_blocks, event)
             if event.kind in ("tool_completed", "tool_failed", "tool_approval_requested"):
-                renderables.append(_render_tool_block(tool_blocks[event.tool_call_id]))
+                if collapse_tool_activity:
+                    pending_tool_activity = _append_tool_block(
+                        entries,
+                        pending_tool_activity,
+                        tool_blocks[event.tool_call_id],
+                        expanded_tool_activity_ids,
+                    )
+                else:
+                    entries.append(
+                        _StreamRenderable(
+                            renderable=_render_tool_block(tool_blocks[event.tool_call_id])
+                        )
+                    )
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
         if event.kind == "llm_completed":
             _flush_pending_reasoning(
-                renderables,
+                entries,
                 event.step_id,
                 pending_reasoning,
                 rendered_reasoning_step_ids,
             )
-        thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
+            if event.tool_calls:
+                if assistant_buffer_step_id == event.step_id:
+                    assistant_buffer = ""
+                    assistant_buffer_step_id = ""
+                continue
+        if _is_invisible_control_event(event):
+            continue
+        thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
         assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
-            renderables,
+            entries,
             assistant_buffer,
             assistant_buffer_step_id,
             assistant_step_ids,
+        )
+        pending_tool_activity = _flush_tool_activity(
+            entries,
+            pending_tool_activity,
+            expanded_tool_activity_ids,
         )
 
         if event.kind == "llm_completed" and event.step_id in assistant_step_ids:
@@ -254,27 +350,27 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
         rendered = _render_event(event)
         if rendered is not None:
             _flush_pending_reasoning(
-                renderables,
+                entries,
                 event.step_id,
                 pending_reasoning,
                 rendered_reasoning_step_ids,
             )
-            if event.kind == "user_message" and renderables:
-                renderables.append(Text(""))
+            if event.kind == "user_message" and entries:
+                entries.append(_StreamRenderable(renderable=Text("")))
             if event.kind == "llm_completed":
                 assistant_step_ids.add(event.step_id)
-            renderables.append(rendered)
+            entries.append(_StreamRenderable(renderable=rendered))
 
-    thinking_buffer = _flush_thinking_buffer(renderables, thinking_buffer)
+    thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
     assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
-        renderables,
+        entries,
         assistant_buffer,
         assistant_buffer_step_id,
         assistant_step_ids,
     )
     for step_id in pending_reasoning:
         _flush_pending_reasoning(
-            renderables,
+            entries,
             step_id,
             pending_reasoning,
             rendered_reasoning_step_ids,
@@ -284,8 +380,21 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             continue
         if tool_block.name is None:
             continue
-        renderables.append(_render_tool_block(tool_block))
-    return renderables
+        if collapse_tool_activity:
+            pending_tool_activity = _append_tool_block(
+                entries,
+                pending_tool_activity,
+                tool_block,
+                expanded_tool_activity_ids,
+            )
+        else:
+            entries.append(_StreamRenderable(renderable=_render_tool_block(tool_block)))
+    _flush_tool_activity(
+        entries,
+        pending_tool_activity,
+        expanded_tool_activity_ids,
+    )
+    return entries
 
 
 def _render_debug_events(events: list[TUIEvent]) -> list[_DebugRenderable]:
@@ -329,7 +438,7 @@ def _selected_debug_panel(renderable: RenderableType) -> RenderableType:
 
 
 def _flush_pending_reasoning(
-    renderables: list[RenderableType],
+    renderables: list[_StreamRenderable],
     step_id: str,
     pending_reasoning: dict[str, list[TUIEvent]],
     rendered_reasoning_step_ids: set[str],
@@ -342,12 +451,12 @@ def _flush_pending_reasoning(
     for event in events:
         rendered = _render_event(event)
         if rendered is not None:
-            renderables.append(rendered)
+            renderables.append(_StreamRenderable(renderable=rendered))
     rendered_reasoning_step_ids.add(step_id)
 
 
 def _flush_assistant_buffer(
-    renderables: list[RenderableType],
+    renderables: list[_StreamRenderable],
     assistant_buffer: str,
     assistant_buffer_step_id: str,
     assistant_step_ids: set[str],
@@ -355,25 +464,78 @@ def _flush_assistant_buffer(
     if assistant_buffer == "":
         return "", assistant_buffer_step_id
     renderables.append(
-        _render_assistant_block(assistant_buffer)
+        _StreamRenderable(renderable=_render_assistant_block(assistant_buffer))
     )
     assistant_step_ids.add(assistant_buffer_step_id)
     return "", ""
 
 
 def _flush_thinking_buffer(
-    renderables: list[RenderableType],
+    renderables: list[_StreamRenderable],
     thinking_buffer: str,
 ) -> str:
     if thinking_buffer:
         renderables.append(
-            _render_text_block(
-                "reasoning",
-                thinking_buffer,
-                event_kind="thinking_delta",
+            _StreamRenderable(
+                renderable=_render_text_block(
+                    "reasoning",
+                    thinking_buffer,
+                    event_kind="thinking_delta",
+                )
             )
         )
     return ""
+
+
+def _append_tool_block(
+    renderables: list[_StreamRenderable],
+    pending_tool_activity: _ToolActivityState | None,
+    tool_block: _ToolBlockState,
+    expanded_tool_activity_ids: set[str],
+) -> _ToolActivityState | None:
+    if not _tool_block_belongs_to_activity(tool_block):
+        pending_tool_activity = _flush_tool_activity(
+            renderables,
+            pending_tool_activity,
+            expanded_tool_activity_ids,
+        )
+        renderables.append(_StreamRenderable(renderable=_render_tool_block(tool_block)))
+        return pending_tool_activity
+    if pending_tool_activity is None:
+        pending_tool_activity = _ToolActivityState(blocks={})
+    pending_tool_activity.blocks[tool_block.call_id] = _clone_tool_block(tool_block)
+    return pending_tool_activity
+
+
+def _flush_tool_activity(
+    renderables: list[_StreamRenderable],
+    pending_tool_activity: _ToolActivityState | None,
+    expanded_tool_activity_ids: set[str],
+) -> None:
+    if pending_tool_activity is not None:
+        renderables.extend(
+            _render_tool_activity_entries(
+                pending_tool_activity,
+                expanded_tool_activity_ids,
+            )
+        )
+    return None
+
+
+def _tool_block_belongs_to_activity(tool_block: _ToolBlockState) -> bool:
+    if tool_block.name is None:
+        raise ValueError("tool block must include a tool name before rendering")
+    return tool_block.status in ("awaiting_approval", "completed")
+
+
+def _clone_tool_block(tool_block: _ToolBlockState) -> _ToolBlockState:
+    return _ToolBlockState(
+        call_id=tool_block.call_id,
+        name=tool_block.name,
+        status=tool_block.status,
+        arguments=tool_block.arguments,
+        output=tool_block.output,
+    )
 
 
 def _update_tool_block(
@@ -396,7 +558,7 @@ def _update_tool_block(
         tool_block.output += event.content
     elif event.kind in ("tool_completed", "tool_failed"):
         tool_block.output = event.content
-    if event.kind == "tool_approval_requested":
+    if event.kind in ("tool_approval_requested", "run_suspended"):
         tool_block.status = "awaiting_approval"
         tool_block.output = event.content
     elif event.kind == "tool_approval_resolved":
@@ -428,6 +590,94 @@ def _render_tool_block(tool_block: _ToolBlockState) -> Text:
     text.append(tool_block.name, style=style)
     text.append(f"  {_tool_summary(tool_block)}", style=style)
     return text
+
+
+def _render_tool_activity_entries(
+    tool_activity: _ToolActivityState,
+    expanded_tool_activity_ids: set[str],
+) -> list[_StreamRenderable]:
+    blocks = list(tool_activity.blocks.values())
+    if len(blocks) == 1:
+        return [_StreamRenderable(renderable=_render_tool_block(blocks[0]))]
+    activity_id = _tool_activity_id(blocks)
+    expanded = activity_id in expanded_tool_activity_ids
+    entries = [
+        _StreamRenderable(
+            renderable=_render_tool_activity_header(blocks, expanded=expanded),
+            tool_activity_id=activity_id,
+        )
+    ]
+    if expanded:
+        for block in blocks:
+            entries.append(_StreamRenderable(renderable=_render_expanded_tool_block(block)))
+    return entries
+
+
+def _render_tool_activity_header(blocks: list[_ToolBlockState], *, expanded: bool) -> Text:
+    activity_id = _tool_activity_id(blocks)
+    event_kind = _tool_activity_event_kind(blocks)
+    style = EVENT_STYLES[event_kind]
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    text.append("[-]" if expanded else "[+]", style=EXPAND_MARK_STYLE)
+    text.append(" ")
+    text.append("tools", style=style)
+    text.append("  ", style=style)
+    if event_kind == "tool_approval_requested":
+        text.append(f"{len(blocks)} calls, waiting for approval", style=style)
+    else:
+        text.append(f"{len(blocks)} completed", style=style)
+    text.append("  ")
+    text.append("collapse" if expanded else "expand", style=EXPAND_MARK_STYLE)
+    text.stylize(_tool_activity_click_style(activity_id), 0, len(text))
+    return text
+
+
+def _render_expanded_tool_block(tool_block: _ToolBlockState) -> Text:
+    base = _render_tool_block(tool_block)
+    text = Text()
+    text.append("  ")
+    text.append(base)
+    return text
+
+
+def _tool_activity_id(blocks: list[_ToolBlockState]) -> str:
+    return "|".join(block.call_id for block in blocks)
+
+
+def _tool_activity_click_style(activity_id: str) -> Style:
+    return Style(meta={"tool_activity_id": activity_id})
+
+
+def _tool_activity_id_from_click(event: Click) -> str:
+    if event.style is None:
+        return ""
+    activity_id = event.style.meta.get("tool_activity_id")
+    if type(activity_id) is not str:
+        return ""
+    return activity_id
+
+
+def _tool_activity_event_kind(blocks: list[_ToolBlockState]) -> TUIEventKind:
+    for block in blocks:
+        if block.status == "awaiting_approval":
+            return "tool_approval_requested"
+    return "tool_completed"
+
+
+def _tool_activity_names_summary(blocks: list[_ToolBlockState]) -> str:
+    counts: dict[str, int] = {}
+    for block in blocks:
+        if block.name is None:
+            raise ValueError("tool block must include a tool name before rendering")
+        counts[block.name] = counts.get(block.name, 0) + 1
+    parts: list[str] = []
+    for name, count in counts.items():
+        if count == 1:
+            parts.append(name)
+        else:
+            parts.append(f"{name} x{count}")
+    return ", ".join(parts)
 
 
 def _tool_summary(tool_block: _ToolBlockState) -> str:
@@ -547,9 +797,23 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
         if event.content == "":
             return None
         return _render_assistant_block(event.content)
-    if event.kind in ("step_started", "step_completed", "run_completed"):
+    if event.kind in (
+        "step_started",
+        "step_completed",
+        "run_completed",
+        "run_suspended",
+    ):
         return None
-    return Text(f"{label}: {event.content}", style=style)
+    return None
+
+
+def _is_invisible_control_event(event: TUIEvent) -> bool:
+    return event.kind in (
+        "step_started",
+        "step_completed",
+        "run_completed",
+        "run_suspended",
+    )
 
 
 def _tool_title(label: str, event: TUIEvent) -> str:

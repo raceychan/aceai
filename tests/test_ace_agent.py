@@ -1,10 +1,25 @@
+from pathlib import Path
+
 import pytest
 
-from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR, build_ace_agent
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
 from aceai.core import ToolExecutionError, ToolExecutor
 from aceai.llm.interface import UNSET
+
+
+def write_skill(root: Path, name: str, description: str) -> None:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        "---\n"
+        f"# {name}\n",
+        encoding="utf-8",
+    )
 
 
 def test_default_agent_tools_are_product_capabilities() -> None:
@@ -16,30 +31,39 @@ def test_default_agent_tools_are_product_capabilities() -> None:
         "read_text_file",
         "write_text_file",
         "replace_text_in_file",
+        "preview_patch",
+        "apply_patch",
+        "git_status",
+        "git_diff",
         "run_shell_command",
         "search_text",
     }
     approval_policies = {tool.name: tool.metadata.approval_policy for tool in tools}
     assert approval_policies["write_text_file"] == "filesystem_write"
     assert approval_policies["replace_text_in_file"] == "filesystem_write"
+    assert approval_policies["apply_patch"] == "filesystem_patch"
     assert approval_policies["run_shell_command"] == "shell_command"
     assert {tool.name for tool in tools if tool.metadata.require_approval} == {
         "write_text_file",
         "replace_text_in_file",
+        "apply_patch",
         "run_shell_command",
     }
 
 
-def test_build_ace_agent_wires_app_tools_and_builtin_skills(
+def test_build_ace_agent_wires_app_tools_and_project_skills(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    write_skill(project / ".agent" / "skills", "aceai-release", "Release workflow.")
+    monkeypatch.chdir(project)
 
     agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
 
     assert agent.default_model == "gpt-5.5"
     assert agent.max_steps is UNSET
-    assert ACE_AGENT_SKILLS_DIR.exists()
+    assert ACE_AGENT_SKILL_PATH == "auto"
     assert isinstance(agent._executor, ToolExecutor)
     assert agent._hosted_tools[0].provider_name == "openai"
     assert agent._hosted_tools[0].native_name == "web_search"
@@ -48,12 +72,16 @@ def test_build_ace_agent_wires_app_tools_and_builtin_skills(
         "read_text_file",
         "write_text_file",
         "replace_text_in_file",
+        "preview_patch",
+        "apply_patch",
+        "git_status",
+        "git_diff",
         "run_shell_command",
         "search_text",
         "skills_list",
         "skill_view",
     }
-    assert "developer" in agent.skill_registry.skills
+    assert set(agent.skill_registry.skills) == {"aceai-release"}
 
 
 def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(

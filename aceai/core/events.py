@@ -38,6 +38,9 @@ class AgentLifecycleEvent(Record, kw_only=True):
 
     EVENT_TYPE: ClassVar[AgentEventType]
 
+    run_id: str = ""
+    """Stable identifier for one user-input-to-final-answer agent run."""
+
     step_index: int
     """0-based index of the reasoning step associated with this event."""
 
@@ -167,17 +170,23 @@ type AgentEvent = (
 class AgentEventBuilder:
     """Utility helper that stamps shared step metadata onto events."""
 
-    __slots__ = ("step_index", "step_id")
+    __slots__ = ("run_id", "step_index", "step_id")
 
-    def __init__(self, *, step_index: int, step_id: str):
+    def __init__(self, *, step_index: int, step_id: str, run_id: str = ""):
+        self.run_id = run_id
         self.step_index = step_index
         self.step_id = step_id
 
     def llm_started(self) -> LLMStartedEvent:
-        return LLMStartedEvent(step_index=self.step_index, step_id=self.step_id)
+        return LLMStartedEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+        )
 
     def llm_text_delta(self, *, text_delta: str) -> LLMOutputDeltaEvent:
         return LLMOutputDeltaEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             text_delta=text_delta,
@@ -187,6 +196,7 @@ class AgentEventBuilder:
         self, *, tool_call_delta: LLMToolCallDelta
     ) -> LLMToolCallDeltaEvent:
         return LLMToolCallDeltaEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call_delta=tool_call_delta,
@@ -195,6 +205,7 @@ class AgentEventBuilder:
 
     def llm_media(self, *, segments: list[LLMSegment]) -> LLMMediaEvent:
         return LLMMediaEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             segments=segments,
@@ -202,6 +213,7 @@ class AgentEventBuilder:
 
     def llm_reasoning(self, *, segment: LLMSegment) -> LLMReasoningEvent:
         return LLMReasoningEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             segment=segment,
@@ -209,6 +221,7 @@ class AgentEventBuilder:
 
     def llm_completed(self, *, step: AgentStep) -> LLMCompletedEvent:
         return LLMCompletedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,
@@ -216,6 +229,7 @@ class AgentEventBuilder:
 
     def tool_started(self, *, tool_call: LLMToolCall) -> ToolStartedEvent:
         return ToolStartedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
@@ -226,6 +240,7 @@ class AgentEventBuilder:
         self, *, tool_call: LLMToolCall, text_delta: str
     ) -> ToolOutputEvent:
         return ToolOutputEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
@@ -239,6 +254,7 @@ class AgentEventBuilder:
         request: ToolApprovalRequest,
     ) -> ToolApprovalRequestedEvent:
         return ToolApprovalRequestedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=request.call,
@@ -253,6 +269,7 @@ class AgentEventBuilder:
         decision: ToolApprovalDecision,
     ) -> ToolApprovalResolvedEvent:
         return ToolApprovalResolvedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=request.call,
@@ -268,6 +285,7 @@ class AgentEventBuilder:
         tool_result: ToolExecutionResult,
     ) -> ToolCompletedEvent:
         return ToolCompletedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
@@ -283,6 +301,7 @@ class AgentEventBuilder:
         error: str,
     ) -> ToolFailedEvent:
         return ToolFailedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             tool_call=tool_call,
@@ -293,6 +312,7 @@ class AgentEventBuilder:
 
     def step_completed(self, *, step: AgentStep) -> StepCompletedEvent:
         return StepCompletedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,
@@ -300,6 +320,7 @@ class AgentEventBuilder:
 
     def step_failed(self, *, step: AgentStep, error: str) -> StepFailedEvent:
         return StepFailedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,
@@ -308,6 +329,7 @@ class AgentEventBuilder:
 
     def run_suspended(self, *, request: ToolApprovalRequest) -> RunSuspendedEvent:
         return RunSuspendedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             request=request,
@@ -320,6 +342,7 @@ class AgentEventBuilder:
         final_answer: str,
     ) -> RunCompletedEvent:
         return RunCompletedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,
@@ -333,6 +356,7 @@ class AgentEventBuilder:
         error: str,
     ) -> RunFailedEvent:
         return RunFailedEvent(
+            run_id=self.run_id,
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,

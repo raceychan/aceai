@@ -7,6 +7,9 @@ from msgspec import Struct
 from aceai.core.executor import ToolExecutionError
 from aceai.core.tools import Annotated, Tool, spec, tool
 
+from .patch import apply_patch, preview_patch
+from .repo import git_diff, git_status
+
 
 class DirectoryEntry(Struct, frozen=True, kw_only=True):
     name: str
@@ -210,6 +213,10 @@ def default_agent_tools() -> list[Tool[Any, Any]]:
         read_text_file,
         write_text_file,
         replace_text_in_file,
+        preview_patch,
+        apply_patch,
+        git_status,
+        git_diff,
         run_shell_command,
         search_text,
     ]

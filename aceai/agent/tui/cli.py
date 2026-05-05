@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR, build_ace_agent
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.provider_catalog import (
     all_supported_models,
     api_key_env,
@@ -173,7 +173,7 @@ def resolve_initial_config(
                 api_key=os.environ[env_name],
                 model=selected_model,
                 default_model=default_model(provider),
-                skills=str(ACE_AGENT_SKILLS_DIR),
+                skills=ACE_AGENT_SKILL_PATH,
                 skill_selection_mode="all",
                 enabled_skills=[],
                 api_keys={provider: os.environ[env_name]},
@@ -249,7 +249,7 @@ def apply_session_state_to_initial_config(
                 api_key=os.environ[env_name],
                 model=model,
                 default_model=default_model(provider),
-                skills=config.skills if config is not None else str(ACE_AGENT_SKILLS_DIR),
+                skills=config.skills if config is not None else ACE_AGENT_SKILL_PATH,
                 skill_selection_mode=config.skill_selection_mode
                 if config is not None
                 else "all",

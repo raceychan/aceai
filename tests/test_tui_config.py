@@ -1,5 +1,6 @@
 from aceai.agent.config import (
     AceAITUIConfig,
+    LEGACY_AGENT_SKILLS_DIR,
     clear_config,
     config_schema,
     current_config,
@@ -38,6 +39,32 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
 
     assert loaded == config
     assert current_config() == config
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_save_config_replaces_config_without_backup_files(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    first = AceAITUIConfig(
+        provider="openai",
+        api_key="first",
+        model="gpt-4o-mini",
+        api_keys={"openai": "first"},
+    )
+    second = AceAITUIConfig(
+        provider="openai",
+        api_key="second",
+        model="gpt-5.5",
+        api_keys={"openai": "second"},
+    )
+
+    save_config(first, path)
+    first_inode = path.stat().st_ino
+    save_config(second, path)
+
+    assert load_config(path) == second
+    assert path.stat().st_ino != first_inode
+    assert list(tmp_path.glob("*.bak")) == []
+    assert list(tmp_path.glob(".config.yaml.*.tmp")) == []
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
 
@@ -128,6 +155,31 @@ def test_load_config_uses_provider_default_when_model_is_missing(tmp_path) -> No
         model="deepseek-v4-pro",
         default_model="deepseek-v4-pro",
         api_keys={"deepseek": "secret"},
+    )
+
+
+def test_load_config_replaces_legacy_builtin_skill_path_with_auto(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 2\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "default_model: gpt-5.5\n"
+        f"skills: {LEGACY_AGENT_SKILLS_DIR}\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_config(path)
+
+    assert loaded == AceAITUIConfig(
+        provider="openai",
+        api_key="secret",
+        model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "secret"},
     )
 
 

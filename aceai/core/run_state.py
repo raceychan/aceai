@@ -26,6 +26,7 @@ class ToolRunState(Struct, kw_only=True):
     """Tool execution bookkeeping for a single agent run."""
 
     call_counts: dict[str, int] = field(default_factory=dict[str, int])
+    approved_tool_names: set[str] = field(default_factory=set[str])
 
 
 class PendingToolApproval(Struct, kw_only=True):

@@ -1,8 +1,11 @@
 from datetime import datetime
 
 from aceai.agent.cost import estimate_usage_cost
+from aceai.agent.event_store import JsonlEventStore
 from aceai.agent.session import (
+    EventLog,
     SessionEvent,
+    SessionMetadata,
     SessionRecorder,
     SessionState,
     SessionStore,
@@ -54,6 +57,46 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     assert not path.exists()
 
 
+def test_jsonl_event_store_round_trips_session_events(tmp_path) -> None:
+    event_store = JsonlEventStore(tmp_path)
+    session_id = "session-1"
+    path = event_store.create_event_log(session_id)
+    metadata = SessionMetadata(
+        session_id=session_id,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+        title="Test",
+        path=str(tmp_path / path),
+    )
+
+    event_store.append_event(metadata, _user_message("hello"))
+    event_log = event_store.load_event_log(metadata)
+
+    assert (tmp_path / path).exists()
+    assert [event.kind for event in event_log.events] == ["user_message"]
+    assert event_log.events[0].session_id == session_id
+    assert event_log.events[0].payload["content"] == "hello"
+
+    event_store.delete_event_log(metadata)
+
+    assert not (tmp_path / path).exists()
+
+
+def test_session_store_delegates_event_log_operations_to_event_store(tmp_path) -> None:
+    event_store = StubEventStore()
+    store = SessionStore(tmp_path, event_store=event_store)
+
+    metadata = store.create_session()
+    store.append_event(metadata.session_id, _user_message("hello"))
+    event_log = store.load_event_log(metadata.session_id)
+    store.delete_session(metadata.session_id)
+
+    assert event_store.created == [metadata.session_id]
+    assert event_store.appended == ["hello"]
+    assert event_log.events[0].payload["content"] == "hello"
+    assert event_store.deleted == [metadata.session_id]
+
+
 def test_session_store_persists_session_state(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -72,6 +115,71 @@ def test_session_store_persists_session_state(tmp_path) -> None:
         selected_provider="deepseek",
         selected_model="deepseek-v4-pro",
     )
+
+
+def test_event_log_returns_full_run_by_run_id() -> None:
+    run_id = "run-1"
+    events = [
+        SessionEvent(
+            run_id=run_id,
+            kind="user_message",
+            payload={"content": "Question?"},
+        ),
+        SessionEvent(
+            run_id=run_id,
+            step_id="step-1",
+            step_index=0,
+            kind="assistant_tool_call",
+            payload={
+                "content": "checking",
+                "tool_calls": [
+                    LLMToolCall(
+                        name="list_directory",
+                        arguments='{"path":"."}',
+                        call_id="call-1",
+                    ).asdict()
+                ],
+            },
+        ),
+        SessionEvent(
+            run_id=run_id,
+            step_id="step-1",
+            step_index=0,
+            kind="tool_result",
+            payload={
+                "content": "completed - 1 entry",
+                "tool_name": "list_directory",
+                "tool_call_id": "call-1",
+                "tool_arguments": '{"path":"."}',
+                "output": '{"entries":["aceai"]}',
+                "status": "completed",
+            },
+        ),
+        SessionEvent(
+            run_id=run_id,
+            step_id="step-2",
+            step_index=1,
+            kind="run_completed",
+            payload={"content": "Answer."},
+        ),
+    ]
+    event_log = EventLog(events)
+
+    run_log = event_log.get_run(run_id)
+    summaries = event_log.list_runs()
+
+    assert run_log.question == "Question?"
+    assert run_log.status == "completed"
+    assert run_log.final_answer == "Answer."
+    assert [event.kind for event in run_log.events] == [
+        "user_message",
+        "assistant_tool_call",
+        "tool_result",
+        "run_completed",
+    ]
+    assert summaries[0].run_id == run_id
+    assert summaries[0].step_count == 2
+    assert summaries[0].tool_call_count == 1
 
 
 def test_session_store_finalize_uses_first_question_as_title(tmp_path) -> None:
@@ -257,6 +365,36 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
+def test_tool_call_assistant_content_is_not_recorded_or_replayed(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    call = LLMToolCall(
+        name="list_directory",
+        arguments='{"path":"."}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(call=call, output='{"entries":[]}')
+
+    recorder.record(_user_message("inspect"))
+    recorder.record(_assistant_delta("Need to inspect files."))
+    recorder.record(_llm_completed("Need to inspect files.", tool_calls=[call]))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
+
+    event_log = store.load_event_log(metadata.session_id)
+    assistant_tool_call = [
+        event for event in event_log.events if event.kind == "assistant_tool_call"
+    ][0]
+    history = event_log.replay_llm_history()
+    export_text = store.export_text(metadata.session_id)
+
+    assert assistant_tool_call.payload["content"] == ""
+    assert history[1].role == "assistant"
+    assert history[1].content == []
+    assert "Need to inspect files" not in export_text
+
+
 def test_event_log_omits_pending_tool_call_from_llm_history(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -345,6 +483,29 @@ def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
     assert "filesystem_write" in text
     assert "arguments:\n{\"path\":\"x\",\"content\":\"hello\"}" in text
     assert "## tool approval resolved: write_text_file\napproved" in text
+
+
+class StubEventStore:
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.appended: list[str] = []
+        self.events: list[SessionEvent] = []
+        self.deleted: list[str] = []
+
+    def create_event_log(self, session_id: str) -> str:
+        self.created.append(session_id)
+        return f"{session_id}.events.jsonl"
+
+    def append_event(self, metadata: SessionMetadata, event: SessionEvent) -> None:
+        persisted_event = event.with_session_defaults(session_id=metadata.session_id)
+        self.appended.append(persisted_event.payload["content"])
+        self.events.append(persisted_event)
+
+    def load_event_log(self, metadata: SessionMetadata) -> EventLog:
+        return EventLog(list(self.events))
+
+    def delete_event_log(self, metadata: SessionMetadata) -> None:
+        self.deleted.append(metadata.session_id)
 
 
 def _user_message(content: str) -> SessionEvent:

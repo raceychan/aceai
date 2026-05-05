@@ -3,6 +3,7 @@
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.events import Key
+from textual.timer import Timer
 from textual.widgets import Footer, Header
 
 from aceai.core.events import AgentEvent
@@ -26,7 +27,8 @@ from .widgets import (
     StreamWidget,
 )
 
-STREAM_DELTA_REFRESH_CHARS = 512
+STREAM_DELTA_REFRESH_CHARS = 32
+STREAM_DELTA_REFRESH_SECONDS = 0.02
 
 
 class AceAITUI(App[None]):
@@ -80,6 +82,7 @@ class AceAITUI(App[None]):
         model: str | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        record_events: bool = True,
     ) -> None:
         super().__init__()
         self._events = list(events or [])
@@ -87,8 +90,10 @@ class AceAITUI(App[None]):
         self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
+        self._record_events = record_events
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta: TUIEvent | None = None
+        self._pending_stream_delta_timer: Timer | None = None
         self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
 
     def compose(self) -> ComposeResult:
@@ -200,7 +205,7 @@ class AceAITUI(App[None]):
 
     def _append_event_to_state(self, event: TUIEvent) -> None:
         self._state = apply_tui_event(self._state, event)
-        if self._session_recorder is not None:
+        if self._record_events and self._session_recorder is not None:
             self._session_recorder.record(tui_event_to_session_event(event))
 
     def append_agent_event(self, event: AgentEvent) -> None:
@@ -313,31 +318,63 @@ class AceAITUI(App[None]):
             event,
         ):
             self._flush_pending_stream_delta()
+        if self._pending_stream_delta is None and not _same_as_last_stream_delta(
+            self._state.events,
+            event,
+        ):
+            self._append_event_to_state(event)
+            self._refresh_widgets()
+            return True
         self._pending_stream_delta_chars += len(event.content)
         self._pending_stream_delta = _merge_pending_stream_delta(
             self._pending_stream_delta,
             event,
         )
         if self._pending_stream_delta_chars < STREAM_DELTA_REFRESH_CHARS:
+            self._ensure_pending_stream_delta_timer()
             return True
         self._flush_pending_stream_delta()
         self._refresh_widgets()
         return True
 
-    def _flush_pending_stream_delta(self) -> None:
-        if self._pending_stream_delta is None:
+    def _ensure_pending_stream_delta_timer(self) -> None:
+        if not self.is_mounted:
             return
+        if self._pending_stream_delta_timer is not None:
+            return
+        self._pending_stream_delta_timer = self.set_timer(
+            STREAM_DELTA_REFRESH_SECONDS,
+            self._flush_pending_stream_delta_from_timer,
+            name="stream-delta-refresh",
+        )
+
+    def _flush_pending_stream_delta_from_timer(self) -> None:
+        if self._flush_pending_stream_delta():
+            self._refresh_widgets()
+
+    def _flush_pending_stream_delta(self) -> bool:
+        if self._pending_stream_delta is None:
+            self._clear_pending_stream_delta_timer()
+            return False
         pending = self._pending_stream_delta
         self._clear_pending_stream_delta()
         self._append_event_to_state(pending)
+        return True
 
     def _clear_pending_stream_delta(self) -> None:
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta = None
+        self._clear_pending_stream_delta_timer()
+
+    def _clear_pending_stream_delta_timer(self) -> None:
+        timer = self._pending_stream_delta_timer
+        self._pending_stream_delta_timer = None
+        if timer is not None:
+            timer.stop()
 
     def on_unmount(self) -> None:
         self._flush_pending_stream_delta()
-        if self._session_recorder is not None:
+        if self._record_events and self._session_recorder is not None:
             self._session_recorder.finalize()
 
 
@@ -378,6 +415,12 @@ def _same_stream_delta(previous: TUIEvent, event: TUIEvent) -> bool:
         and previous.step_index == event.step_index
         and previous.tool_call_id == event.tool_call_id
     )
+
+
+def _same_as_last_stream_delta(events: list[TUIEvent], event: TUIEvent) -> bool:
+    if not events:
+        return False
+    return _same_stream_delta(events[-1], event)
 
 
 def _format_tokens(value: int | None) -> str:

@@ -8,6 +8,7 @@ from aceai.core.models import AgentStep, ToolExecutionResult
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
+from aceai.agent.tui.app import STREAM_DELTA_REFRESH_SECONDS
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
@@ -230,7 +231,7 @@ async def test_static_tui_loads_fixture_events() -> None:
     events = static_demo_events()
     app = AceAITUI(events)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         assert app._state.status == "completed"
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
@@ -502,6 +503,100 @@ def test_trajectory_summarizes_shell_tool_result_output() -> None:
     assert '"exit_code"' not in rendered
 
 
+def test_trajectory_renders_plain_text_tool_result_output() -> None:
+    call = LLMToolCall(
+        name="replace_text_in_file",
+        arguments='{"path":"tests/test_ace_agent.py"}',
+        call_id="call-replace",
+    )
+    events = [
+        TUIEvent.user_message("patch file"),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-replace",
+            title="tool replace_text_in_file completed",
+            content=(
+                "the tool replace_text_in_file exceeds its max calls in this run, "
+                "do not call it again"
+            ),
+            tool_name="replace_text_in_file",
+            tool_call_id=call.call_id,
+            tool_call=call,
+            tool_result=ToolExecutionResult(
+                call=call,
+                output=(
+                    "the tool replace_text_in_file exceeds its max calls in this run, "
+                    "do not call it again"
+                ),
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "replace_text_in_file" in rendered
+    assert "exceeds its max calls" in rendered
+
+
+def test_trajectory_does_not_repeat_streamed_answer_on_llm_completion() -> None:
+    events = [
+        TUIEvent.user_message("explain it"),
+        TUIEvent(
+            kind="step_started",
+            step_index=0,
+            step_id="step-stream",
+            title="step started",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="assistant_delta",
+            step_index=0,
+            step_id="step-stream",
+            title="assistant",
+            content="streamed answer",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="llm_completed",
+            step_index=0,
+            step_id="step-stream",
+            title="llm completed",
+            content="streamed answer",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="step_completed",
+            step_index=0,
+            step_id="step-stream",
+            title="step completed",
+            raw_event=None,
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert rendered.count("streamed answer") == 1
+    assert "llm completed" in rendered
+
+
+def test_trajectory_renders_session_notices_without_running_step() -> None:
+    events = [
+        TUIEvent.session_notice("Resumed session abc"),
+        TUIEvent.session_notice("Switched model to gpt-5.5"),
+        TUIEvent.user_message("hello"),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert "session" in rendered
+    assert "Resumed session abc" in rendered
+    assert "Switched model to gpt-5.5" in rendered
+    assert "running" not in rendered
+    assert "▌ -" not in rendered
+
+
 def test_trajectory_marks_multiline_preview_as_truncated() -> None:
     events = [
         TUIEvent.user_message("show result"),
@@ -660,7 +755,7 @@ async def test_detail_renders_tool_arguments_and_output() -> None:
     )
     app = AceAITUI([tool_event])
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app._state = select_event(app._state, tool_event.event_id)
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
@@ -745,7 +840,7 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     app = AceAITUI([])
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         refreshes: list[int] = []
 
         def fake_refresh_widgets() -> None:
@@ -755,8 +850,14 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
         app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")))
         app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")))
 
-        assert refreshes == []
-        assert app._state.events == []
+        assert refreshes == [1]
+        assert len(app._state.events) == 1
+        assert app._state.events[0].content == "hello "
+
+        await pilot.pause(STREAM_DELTA_REFRESH_SECONDS * 2)
+
+        assert refreshes == [1, 1]
+        assert app._state.events[0].content == "hello world"
 
         app.append_event(
             TUIEvent.from_agent_event(
@@ -764,11 +865,29 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
             )
         )
 
-        assert refreshes == [1]
+        assert refreshes == [1, 1, 1]
         assert len(app._state.events) == 1
         assert app._state.events[0].content == "hello world" + (
             "x" * STREAM_DELTA_REFRESH_CHARS
         )
+
+
+@pytest.mark.anyio
+async def test_tui_refreshes_first_stream_delta_immediately() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    app = AceAITUI([])
+
+    async with app.run_test():
+        refreshes: list[int] = []
+
+        def fake_refresh_widgets() -> None:
+            refreshes.append(len(app._state.events))
+
+        app._refresh_widgets = fake_refresh_widgets
+        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="h")))
+
+        assert refreshes == [1]
+        assert app._state.events[0].content == "h"
 
 
 @pytest.mark.anyio
@@ -787,7 +906,7 @@ async def test_tui_flushes_pending_stream_delta_on_completion() -> None:
         app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="done")))
         app.append_event(TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")))
 
-        assert refreshes == [2]
+        assert refreshes == [1, 2]
 
 
 @pytest.mark.anyio

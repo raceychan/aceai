@@ -164,7 +164,7 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
         )
 
     def with_session_defaults(self, *, session_id: str) -> Self:
-        return SessionEvent(
+        return type(self)(
             version=self.version,
             event_id=self.event_id or uuid_str(),
             session_id=self.session_id or session_id,
@@ -197,6 +197,26 @@ class _ToolBuffer(Struct, kw_only=True):
     call: LLMToolCall | None = None
 
 
+AgentRunStatus = Literal["running", "suspended", "completed", "failed"]
+
+
+class AgentRunSummary(Struct, frozen=True, kw_only=True):
+    run_id: str
+    question: str
+    status: AgentRunStatus
+    final_answer: str
+    step_count: int
+    tool_call_count: int
+
+
+class AgentRunLog(Struct, frozen=True, kw_only=True):
+    run_id: str
+    question: str
+    status: AgentRunStatus
+    final_answer: str
+    events: list[SessionEvent]
+
+
 class EventLog:
     def __init__(self, events: list[SessionEvent]) -> None:
         self.events = events
@@ -215,6 +235,37 @@ class EventLog:
             ):
                 return True
         return False
+
+    def get_run(self, run_id: str) -> AgentRunLog:
+        if run_id == "":
+            raise ValueError("run_id cannot be empty")
+        events = [event for event in self.events if event.run_id == run_id]
+        if not events:
+            raise KeyError(run_id)
+        return _run_log_from_events(run_id, events)
+
+    def list_runs(self) -> list[AgentRunSummary]:
+        run_ids: list[str] = []
+        seen: set[str] = set()
+        for event in self.events:
+            if event.run_id == "" or event.run_id in seen:
+                continue
+            seen.add(event.run_id)
+            run_ids.append(event.run_id)
+        summaries: list[AgentRunSummary] = []
+        for run_id in run_ids:
+            run_log = self.get_run(run_id)
+            summaries.append(
+                AgentRunSummary(
+                    run_id=run_log.run_id,
+                    question=run_log.question,
+                    status=run_log.status,
+                    final_answer=run_log.final_answer,
+                    step_count=_step_count(run_log.events),
+                    tool_call_count=_tool_call_count(run_log.events),
+                )
+            )
+        return summaries
 
     def replay_llm_history(self) -> list[LLMMessage]:
         history: list[LLMMessage] = []
@@ -239,7 +290,9 @@ class EventLog:
             elif event.kind == "assistant_tool_call":
                 tool_calls = LLMToolCall.list_from_payload(event.payload)
                 pending_tool_call = LLMToolCallMessage.from_content(
-                    content=event.payload["content"],
+                    content=[]
+                    if event.payload["content"] == ""
+                    else event.payload["content"],
                     tool_calls=tool_calls,
                 )
                 pending_tool_call_ids = {call.call_id for call in tool_calls}
@@ -296,6 +349,9 @@ class EventLog:
         return "Empty session"
 
 
+from aceai.agent.event_store import EventStore, JsonlEventStore
+
+
 _metadata = MetaData()
 _sessions_table = Table(
     "sessions",
@@ -310,10 +366,15 @@ _sessions_table = Table(
 
 
 class SessionStore:
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | None = None,
+        event_store: EventStore | None = None,
+    ) -> None:
         self.root = root or default_session_root()
         self.db_path = self.root / "sessions.sqlite3"
         self.files_dir = self.root / "files"
+        self.event_store = event_store or JsonlEventStore(self.files_dir)
         self.engine = create_engine(f"sqlite:///{self.db_path}")
         self.root.mkdir(parents=True, exist_ok=True)
         self.files_dir.mkdir(parents=True, exist_ok=True)
@@ -322,8 +383,7 @@ class SessionStore:
     def create_session(self) -> SessionMetadata:
         session_id = uuid_str()
         now = _utc_now()
-        path = self.files_dir / f"{session_id}.events.jsonl"
-        path.write_text("", encoding="utf-8")
+        path = self.event_store.create_event_log(session_id)
         with self.engine.begin() as conn:
             conn.execute(
                 sql_insert(_sessions_table).values(
@@ -331,7 +391,7 @@ class SessionStore:
                     created_at=now,
                     updated_at=now,
                     title="New session",
-                    path=path.name,
+                    path=path,
                     state_json=json.dumps(SessionState.empty().as_json()),
                 )
             )
@@ -340,7 +400,7 @@ class SessionStore:
             created_at=now,
             updated_at=now,
             title="New session",
-            path=str(path),
+            path=str(self.files_dir / path),
         )
 
     def get_session(self, session_id: str) -> SessionMetadata:
@@ -401,7 +461,7 @@ class SessionStore:
                     _sessions_table.c.session_id == session_id
                 )
             )
-        Path(metadata.path).unlink()
+        self.event_store.delete_event_log(metadata)
 
     def finalize_session_title(self, session_id: str) -> str:
         title_source = self.load_event_log(session_id).title_source()
@@ -410,10 +470,7 @@ class SessionStore:
 
     def append_event(self, session_id: str, event: SessionEvent) -> None:
         metadata = self.get_session(session_id)
-        persisted_event = event.with_session_defaults(session_id=session_id)
-        with Path(metadata.path).open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(persisted_event.as_json(), ensure_ascii=False))
-            stream.write("\n")
+        self.event_store.append_event(metadata, event)
         with self.engine.begin() as conn:
             conn.execute(
                 sql_update(_sessions_table)
@@ -423,16 +480,7 @@ class SessionStore:
 
     def load_event_log(self, session_id: str) -> EventLog:
         metadata = self.get_session(session_id)
-        path = Path(metadata.path)
-        events: list[SessionEvent] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line == "":
-                continue
-            payload = json.loads(line)
-            if not isinstance(payload, dict):
-                raise TypeError("Session event must be a mapping")
-            events.append(SessionEvent.from_json(payload))
-        return EventLog(events)
+        return self.event_store.load_event_log(metadata)
 
     def export_text(self, session_id: str) -> str:
         metadata = self.get_session(session_id)
@@ -553,7 +601,7 @@ class SessionRecorder:
             self._append_event(
                 "assistant_tool_call",
                 {
-                    "content": content,
+                    "content": "",
                     "tool_calls": [call.asdict() for call in tool_calls],
                     **_usage_payload(_usage_from_event_payload(event.payload)),
                     **_cost_payload(_cost_from_event_payload(event.payload)),
@@ -689,6 +737,59 @@ def default_session_root() -> Path:
     return Path.home() / ".aceai" / "sessions"
 
 
+def _run_log_from_events(run_id: str, events: list[SessionEvent]) -> AgentRunLog:
+    return AgentRunLog(
+        run_id=run_id,
+        question=_run_question(events),
+        status=_run_status(events),
+        final_answer=_run_final_answer(events),
+        events=events,
+    )
+
+
+def _run_question(events: list[SessionEvent]) -> str:
+    for event in events:
+        if event.kind == "user_message":
+            return event.payload["content"]
+    return ""
+
+
+def _run_status(events: list[SessionEvent]) -> AgentRunStatus:
+    status: AgentRunStatus = "running"
+    for event in events:
+        if event.kind == "run_completed":
+            status = "completed"
+        elif event.kind in ("run_failed", "error"):
+            status = "failed"
+        elif event.kind == "run_suspended" and status != "completed":
+            status = "suspended"
+    return status
+
+
+def _run_final_answer(events: list[SessionEvent]) -> str:
+    for event in reversed(events):
+        if event.kind == "run_completed":
+            return event.payload["content"]
+    return ""
+
+
+def _step_count(events: list[SessionEvent]) -> int:
+    step_ids: set[str] = set()
+    for event in events:
+        if event.step_id is not None:
+            step_ids.add(event.step_id)
+    return len(step_ids)
+
+
+def _tool_call_count(events: list[SessionEvent]) -> int:
+    tool_call_ids: set[str] = set()
+    for event in events:
+        tool_call_id = event.payload.get("tool_call_id")
+        if type(tool_call_id) is str and tool_call_id != "":
+            tool_call_ids.add(tool_call_id)
+    return len(tool_call_ids)
+
+
 def _event_to_export_lines(event: SessionEvent) -> list[str]:
     if event.kind == "user_message":
         return ["## user", event.payload["content"]]
@@ -696,8 +797,6 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
         return ["## assistant", event.payload["content"]]
     if event.kind == "assistant_tool_call":
         lines = ["## assistant tool calls"]
-        if event.payload["content"] != "":
-            lines.append(event.payload["content"])
         for call in LLMToolCall.list_from_payload(event.payload):
             lines.extend([f"tool: {call.name}", "arguments:", call.arguments])
         return lines

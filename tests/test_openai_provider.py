@@ -18,6 +18,9 @@ from openai.types.responses.response_image_gen_call_partial_image_event import (
 from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
+from openai.types.responses.response_reasoning_summary_text_delta_event import (
+    ResponseReasoningSummaryTextDeltaEvent,
+)
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
 
 from aceai.llm.errors import (
@@ -274,6 +277,21 @@ def test_build_base_response_kwargs_accepts_reasoning_for_supported_model(
                 "model": "gpt-5.4",
                 "reasoning": {"summary": "auto"},
             },
+        }
+    )
+
+    params = payload.build_response_kwargs()
+
+    assert params["reasoning"] == {"summary": "auto"}
+
+
+def test_build_base_response_kwargs_defaults_reasoning_for_supported_model(
+    openai_provider: OpenAI,
+) -> None:
+    payload = OpenAIPayload.from_input(
+        {
+            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "metadata": {"model": "gpt-5.4"},
         }
     )
 
@@ -606,11 +624,28 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
     assert tool_chunk is not None
     assert tool_chunk.tool_call_delta.arguments_delta == '{"value":1}'
 
+    reasoning_event = ResponseReasoningSummaryTextDeltaEvent(
+        delta="checking",
+        item_id="rs-1",
+        output_index=0,
+        sequence_number=3,
+        summary_index=0,
+        type="response.reasoning_summary_text.delta",
+    )
+    reasoning_chunk = openai_provider._map_stream_event(
+        reasoning_event,
+        model_name="gpt-5.4",
+    )
+    assert reasoning_chunk is not None
+    assert reasoning_chunk.event_type == "response.reasoning.delta"
+    assert reasoning_chunk.segments[0].type == "reasoning"
+    assert reasoning_chunk.segments[0].content == "checking"
+
     error_event = ResponseErrorEvent(
         code=None,
         message="boom",
         param=None,
-        sequence_number=3,
+        sequence_number=4,
         type="error",
     )
     error_chunk = openai_provider._map_stream_event(error_event, model_name="gpt-4o")

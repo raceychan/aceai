@@ -1,6 +1,7 @@
 """Agent app configuration schema, singleton state, and persistence."""
 
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Literal
 
 import yaml
@@ -13,7 +14,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
-from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
@@ -25,6 +26,7 @@ DEFAULT_OPENAI_MODEL: OpenAIModel = default_model("openai")
 STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = stale_default_models("openai")
 OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = model_options("openai")
 SUPPORTED_OPENAI_MODELS: tuple[OpenAIModel, ...] = supported_models("openai")
+LEGACY_AGENT_SKILLS_DIR = Path(__file__).parent / "features" / "skills"
 
 
 class ConfigField(Record, kw_only=True):
@@ -44,7 +46,7 @@ class AgentAppConfig(Record, kw_only=True):
     api_key: str
     model: OpenAIModel
     default_model: OpenAIModel = DEFAULT_OPENAI_MODEL
-    skills: str = str(ACE_AGENT_SKILLS_DIR)
+    skills: str = ACE_AGENT_SKILL_PATH
     skill_selection_mode: SkillSelectionMode = "all"
     enabled_skills: list[str] = field(default_factory=list[str])
     api_keys: dict[str, str] = field(default_factory=dict[str, str])
@@ -178,11 +180,18 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
     configured_default_model = (
         data["default_model"] if "default_model" in data else model
     )
-    skills = data["skills"] if "skills" in data else str(ACE_AGENT_SKILLS_DIR)
+    skills = data["skills"] if "skills" in data else ACE_AGENT_SKILL_PATH
+    legacy_skill_path = False
+    if skills == str(LEGACY_AGENT_SKILLS_DIR):
+        skills = ACE_AGENT_SKILL_PATH
+        legacy_skill_path = True
     skill_selection_mode = (
         data["skill_selection_mode"] if "skill_selection_mode" in data else "all"
     )
     enabled_skills = _load_enabled_skills(data)
+    if legacy_skill_path:
+        skill_selection_mode = "all"
+        enabled_skills = []
     has_config_version = "config_version" in data
     if has_config_version and type(data["config_version"]) is not int:
         raise TypeError("AceAI config config_version must be int")
@@ -220,22 +229,31 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
     replace_config(config)
     target = path or default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        yaml.safe_dump(
-            {
-                "config_version": CONFIG_VERSION,
-                "provider": config.provider,
-                "api_keys": {**config.api_keys, config.provider: config.api_key},
-                "model": config.model,
-                "default_model": config.default_model,
-                "skills": config.skills,
-                "skill_selection_mode": config.skill_selection_mode,
-                "enabled_skills": config.enabled_skills,
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+    payload = yaml.safe_dump(
+        {
+            "config_version": CONFIG_VERSION,
+            "provider": config.provider,
+            "api_keys": {**config.api_keys, config.provider: config.api_key},
+            "model": config.model,
+            "default_model": config.default_model,
+            "skills": config.skills,
+            "skill_selection_mode": config.skill_selection_mode,
+            "enabled_skills": config.enabled_skills,
+        },
+        sort_keys=False,
     )
+    with NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as stream:
+        stream.write(payload)
+        temporary_path = Path(stream.name)
+    temporary_path.chmod(0o600)
+    temporary_path.replace(target)
     target.chmod(0o600)
 
 

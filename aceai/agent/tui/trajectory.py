@@ -1,6 +1,7 @@
 """Full trajectory screen for the AceAI TUI."""
 
 import json
+from json import JSONDecodeError
 
 from rich.console import RenderableType
 from rich.table import Table
@@ -193,7 +194,11 @@ def _turn_renderables(turn_index: int, events: list[TUIEvent]) -> list[Renderabl
 
 def _session_renderables(events: list[TUIEvent]) -> list[RenderableType]:
     step_events, outcome_events = _split_outcome_events(events)
+    session_events = [event for event in step_events if event.step_index < 0]
+    step_events = [event for event in step_events if event.step_index >= 0]
     renderables: list[RenderableType] = [_session_header()]
+    if len(session_events) > 0:
+        renderables.append(_event_table(session_events))
     renderables.extend(
         _step_renderables(
             step_events,
@@ -298,10 +303,19 @@ def _single_step_renderables(
     ]
     renderables: list[RenderableType] = [_step_header(events, is_suspended=is_suspended)]
     if len(body_events) > 0:
-        renderables.append(_event_table(body_events))
+        renderables.append(
+            _event_table(
+                body_events,
+                suppress_llm_completed_body=_has_assistant_delta(body_events),
+            )
+        )
     elif step_event.kind not in ("step_started", "step_completed", "step_failed"):
         renderables.append(_event_table([step_event]))
     return renderables
+
+
+def _has_assistant_delta(events: list[TUIEvent]) -> bool:
+    return any(event.kind == "assistant_delta" for event in events)
 
 
 def _step_header(events: list[TUIEvent], *, is_suspended: bool) -> Text:
@@ -340,7 +354,11 @@ def _step_status_style(status: str) -> str:
     return "bold #a3be8c"
 
 
-def _event_table(events: list[TUIEvent]) -> Table:
+def _event_table(
+    events: list[TUIEvent],
+    *,
+    suppress_llm_completed_body: bool = False,
+) -> Table:
     rejected_call_ids = _rejected_tool_call_ids(events)
     table = Table.grid(expand=True)
     table.add_column(width=6, style="#4c566a")
@@ -354,7 +372,12 @@ def _event_table(events: list[TUIEvent]) -> Table:
                 _event_label(event, rejected_call_ids),
                 style=_event_style(event, rejected_call_ids),
             ),
-            _event_summary(event),
+            _event_summary(
+                event,
+                include_body=not (
+                    suppress_llm_completed_body and event.kind == "llm_completed"
+                ),
+            ),
         )
     return table
 
@@ -397,14 +420,15 @@ def _event_style(event: TUIEvent, rejected_call_ids: set[str]) -> str:
     return EVENT_STYLES[event.kind]
 
 
-def _event_summary(event: TUIEvent) -> str:
+def _event_summary(event: TUIEvent, *, include_body: bool = True) -> str:
     parts: list[str] = []
     subject = _event_subject(event)
     if subject != "":
         parts.append(subject)
-    body = _event_body(event)
-    if body != "":
-        parts.append(body)
+    if include_body:
+        body = _event_body(event)
+        if body != "":
+            parts.append(body)
     return " - ".join(parts)
 
 
@@ -423,7 +447,9 @@ def _event_body(event: TUIEvent) -> str:
 def _tool_call_body(event: TUIEvent) -> str:
     if event.tool_call is None:
         return ""
-    payload = json.loads(event.tool_call.arguments)
+    payload = _json_payload_or_none(event.tool_call.arguments)
+    if payload is None:
+        return _preview(event.tool_call.arguments)
     if event.tool_name == "run_shell_command":
         return f"$ {payload['command']}"
     if event.tool_name in ("read_text_file", "write_text_file"):
@@ -436,7 +462,9 @@ def _tool_call_body(event: TUIEvent) -> str:
 def _tool_result_body(event: TUIEvent) -> str:
     if event.tool_result is None:
         return ""
-    payload = json.loads(event.tool_result.output)
+    payload = _json_payload_or_none(event.tool_result.output)
+    if payload is None:
+        return _preview_block(event.tool_result.output)
     if event.tool_name == "run_shell_command":
         return _command_result_body(payload)
     if event.tool_name == "read_text_file":
@@ -446,6 +474,14 @@ def _tool_result_body(event: TUIEvent) -> str:
     if event.tool_name == "search_text":
         return _preview_block(payload["matches"])
     return _preview(event.tool_result.output)
+
+
+def _json_payload_or_none(content: str):
+    try:
+        payload = json.loads(content)
+    except JSONDecodeError:
+        return None
+    return payload
 
 
 def _command_result_body(payload) -> str:

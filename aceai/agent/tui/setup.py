@@ -27,7 +27,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
-from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR
+from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
 from aceai.agent.config import config_schema
 from aceai.agent.session import SessionMetadata, SessionStore
 from aceai.core.skills import SkillLoader, SkillRegistry
@@ -225,7 +225,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         self._default_model = default_model
         self._provider = "openai"
         self._skill_items = _skill_config_items(
-            SkillLoader.load_registry(str(ACE_AGENT_SKILLS_DIR))
+            SkillLoader.load_registry(ACE_AGENT_SKILL_PATH)
         )
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
@@ -301,7 +301,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
             api_key=api_key,
             model=cast(OpenAIModel, model),
             default_model=cast(OpenAIModel, model),
-            skills=str(ACE_AGENT_SKILLS_DIR),
+            skills=ACE_AGENT_SKILL_PATH,
             skill_selection_mode="selected",
             enabled_skills=list(enabled_skills),
             api_keys={provider: api_key},

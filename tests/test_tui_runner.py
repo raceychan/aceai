@@ -179,6 +179,10 @@ async def test_interactive_tui_submits_question_from_input(
         assert app._session_id is not None
         event_log = tui_session_store.load_event_log(app._session_id)
         assert event_log.events[0].payload["content"] == "What now?"
+        run_ids = {session_event.run_id for session_event in event_log.events}
+        assert len(run_ids) == 1
+        assert "" not in run_ids
+        assert event_log.get_run(next(iter(run_ids))).question == "What now?"
 
 
 @pytest.mark.anyio
@@ -463,6 +467,9 @@ async def test_interactive_tui_model_command_updates_next_request_metadata() -> 
 async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
+    SessionRecorder(store, metadata.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("keep this session"))
+    )
     llm_service = StubLLMService([])
     agent = AgentBase(
         prompt="Prompt",
@@ -478,12 +485,35 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
 
     async with app.run_test():
         app.switch_model("gpt-5.5")
-        app.append_event(TUIEvent.user_message("keep this session"))
 
     assert store.get_session_state(metadata.session_id) == SessionState(
         selected_provider="openai",
         selected_model="gpt-5.5",
     )
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    llm_service = StubLLMService([])
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
+        app.switch_model("gpt-5.5")
+
+    assert store.list_sessions() == []
 
 
 @pytest.mark.anyio
@@ -680,6 +710,86 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
         app.on_input_submitted(Input.Submitted(command_input, "/config"))
 
     assert calls == ["config"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_info_command_uses_registered_alias() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.open_metadata_screen = lambda: calls.append("metadata")
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/info"))
+
+    assert calls == ["metadata"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_resume_command_uses_registered_arg_handler(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    second = store.create_session()
+    SessionRecorder(store, first.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("first"))
+    )
+    SessionRecorder(store, second.session_id).record(
+        tui_event_to_session_event(TUIEvent.user_message("second"))
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        initial_events=event_log_to_tui_events(store.load_event_log(first.session_id)),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, f"/resume {second.session_id}"))
+
+    assert app._session_id == second.session_id
+    assert app._state.events[0].content == "second"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_unknown_slash_input_runs_as_question() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/unknown command"))
+        await pilot.pause(0.1)
+
+    assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "/unknown command"
 
 
 @pytest.mark.anyio

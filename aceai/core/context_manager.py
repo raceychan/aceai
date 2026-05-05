@@ -106,7 +106,7 @@ class ContextManager:
 
     def add_tool_call(self, tool_call_resp: LLMResponse) -> None:
         assistant_msg = LLMToolCallMessage.from_content(
-            content=tool_call_resp.text,
+            content=[],
             tool_calls=tool_call_resp.tool_calls,
             reasoning_content=tool_call_resp.reasoning_content,
         )

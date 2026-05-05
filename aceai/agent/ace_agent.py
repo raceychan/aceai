@@ -24,7 +24,7 @@ When working in a repository, inspect the real files before changing behavior an
 run the repository's tests after meaningful code changes.
 """
 
-ACE_AGENT_SKILLS_DIR = Path(__file__).parent / "features" / "skills"
+ACE_AGENT_SKILL_PATH = "auto"
 ACE_AGENT_HOSTED_TOOLS = [
     LLMHostedToolSpec(
         provider_name="openai",
@@ -39,7 +39,7 @@ def build_ace_agent(
     model: OpenAIModel,
     provider_name: str = "openai",
     hosted_tools: list[LLMHostedToolSpec] | None = None,
-    skill_path: str | Path | Literal["auto", "disable"] = ACE_AGENT_SKILLS_DIR,
+    skill_path: str | Path | Literal["auto", "disable"] = ACE_AGENT_SKILL_PATH,
     enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
 ) -> AgentBase:
     if provider_name == "openai":

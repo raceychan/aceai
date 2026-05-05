@@ -1,4 +1,4 @@
-"""Live runner that bridges AgentBase events into the Textual app."""
+"""Live runner that bridges the AceAI app facade into the Textual app."""
 
 import os
 from typing import AsyncGenerator, Callable, cast
@@ -7,11 +7,12 @@ from opentelemetry.context import Context
 from textual.widgets import Input
 from textual.worker import Worker
 
+from aceai.agent.app import AceAgentApp
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
 from aceai.agent.config import AceAITUIConfig, replace_config
-from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
-from aceai.core.events import AgentEvent, RunCompletedEvent, RunSuspendedEvent
+from aceai.core import AgentBase
+from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.executor import ToolExecutor
 from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.models import LLMMessage
@@ -21,11 +22,30 @@ from aceai.llm.models import LLMRequestMeta
 from .app import AceAITUI
 from .events import TUIEvent
 from .metadata import MetadataSection
+from .session_replay import event_log_to_tui_events
 from .setup import ConfigSelection, ConfigScreen, ProviderSetupScreen, SkillConfigItem
 from .widgets import ApprovalWidget
 from .widgets import CommandInput
 
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
+CommandHandler = Callable[[str], None]
+COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
+
+
+def tui_command(*names: str):
+    if not names:
+        raise ValueError("TUI command must declare at least one name")
+    for name in names:
+        if name == "":
+            raise ValueError("TUI command name cannot be empty")
+        if name.startswith("/"):
+            raise ValueError("TUI command name must not include slash")
+
+    def decorate(handler):
+        setattr(handler, COMMAND_NAMES_ATTR, names)
+        return handler
+
+    return decorate
 
 
 def _as_model(provider_name: str, model: str) -> OpenAIModel:
@@ -68,40 +88,129 @@ def _system_prompt_text(agent: AgentBase) -> str:
     return "".join(parts)
 
 
+def _parse_command(text: str) -> tuple[str, str] | None:
+    if not text.startswith("/"):
+        return None
+    body = text.removeprefix("/")
+    if body == "":
+        return None
+    name, separator, arg = body.partition(" ")
+    if separator == "":
+        return name, ""
+    return name, arg
+
+
 class _RuntimeStreamMixin:
-    _active_runtime: AgentRuntime | None
+    _agent_app: AceAgentApp
+    _active_worker: Worker[None] | None
 
-    async def _stream_active_runtime(self) -> None:
-        runtime = self._current_runtime()
-        await self._consume_runtime_stream(runtime, runtime.execute())
+    async def _stream_agent_turn(self, question: str) -> None:
+        await self._consume_agent_stream(self._agent_app.start_turn(question))
 
-    async def _stream_approval_decision(
+    async def _stream_approval_decision(self, *, approved: bool, reason: str = "") -> None:
+        if approved:
+            stream = self._agent_app.approve_tool()
+        else:
+            stream = self._agent_app.reject_tool(reason)
+        await self._consume_agent_stream(stream)
+
+    async def _consume_agent_stream(
         self,
-        decision: ToolApprovalDecision,
-    ) -> None:
-        runtime = self._current_runtime()
-        await self._consume_runtime_stream(runtime, runtime.resume_approval(decision))
-
-    async def _consume_runtime_stream(
-        self,
-        runtime: AgentRuntime,
         stream: AsyncGenerator[AgentEvent, None],
     ) -> None:
         try:
             async for event in stream:
                 self.append_agent_event(event)
-                if isinstance(event, RunCompletedEvent):
-                    self._finish_runtime_turn(runtime, event.final_answer)
-                elif isinstance(event, RunSuspendedEvent):
+                if isinstance(event, RunSuspendedEvent):
                     self.show_pending_approval()
         finally:
             await stream.aclose()
+            self._sync_app_state()
 
-    def _current_runtime(self) -> AgentRuntime:
-        runtime = self._active_runtime
-        if runtime is None:
-            raise RuntimeError("AceAI runtime is not active")
-        return runtime
+    def _sync_app_state(self) -> None:
+        if self._agent_app is None:
+            return
+        self._session_recorder = self._agent_app.session_recorder
+        self._session_id = self._agent_app.session_id
+        self._llm_history = self._agent_app.llm_history
+        self._active_runtime = self._agent_app.active_runtime
+        if self._session_id is not None:
+            self.title = f"AceAI {self._session_id}"
+
+    def on_unmount(self) -> None:
+        agent_app = self._agent_app
+        if agent_app is not None:
+            agent_app.session_service.finalize()
+        super().on_unmount()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if not isinstance(event.input, CommandInput):
+            return
+        question = event.value
+        if question == "":
+            return
+        if self._dispatch_command(question):
+            self.exit_command_input(event.input)
+            return
+        self.start_run(question)
+        self.exit_command_input(event.input)
+
+    def _dispatch_command(self, text: str) -> bool:
+        parsed = _parse_command(text)
+        if parsed is None:
+            return False
+        name, arg = parsed
+        command = self._command_handlers().get(name)
+        if command is None:
+            return False
+        command(arg)
+        return True
+
+    def _command_handlers(self) -> dict[str, CommandHandler]:
+        handlers: dict[str, CommandHandler] = {}
+        for cls in reversed(type(self).mro()):
+            for value in cls.__dict__.values():
+                names = getattr(value, COMMAND_NAMES_ATTR, None)
+                if names is None:
+                    continue
+                bound = value.__get__(self, type(self))
+                for name in names:
+                    handlers[name] = bound
+        return handlers
+
+    @tui_command("quit")
+    def _command_quit(self, arg: str) -> None:
+        self.exit()
+
+    @tui_command("clear")
+    def _command_clear(self, arg: str) -> None:
+        self.load_events([])
+
+    @tui_command("sessions")
+    def _command_sessions(self, arg: str) -> None:
+        self.open_session_selector()
+
+    @tui_command("metadata", "info")
+    def _command_metadata(self, arg: str) -> None:
+        self.open_metadata_screen()
+
+    @tui_command("config")
+    def _command_config(self, arg: str) -> None:
+        self.open_config_screen()
+
+    @tui_command("resume")
+    def _command_resume(self, arg: str) -> None:
+        if arg == "":
+            self.append_event(TUIEvent.session_notice("Usage: /resume <session_id>"))
+            return
+        self.switch_session(arg)
+
+    @tui_command("model")
+    def _command_model(self, arg: str) -> None:
+        if arg == "":
+            self.open_config_screen()
+            return
+        self.switch_model(arg)
 
 
 class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
@@ -131,73 +240,40 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             model=self._selected_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            record_events=False,
         )
-        self._persist_session_state()
         self._agent = agent
         self._trace_ctx = trace_ctx
-        self._llm_history = list(initial_history or [])
+        self._agent_app = AceAgentApp(
+            agent,
+            provider_name=self._provider_name,
+            selected_model=self._selected_model,
+            initial_history=initial_history,
+            session_store=self._session_store(),
+            session_recorder=session_recorder,
+            session_id=session_id,
+            trace_ctx=trace_ctx,
+            request_meta=self._request_meta,
+        )
+        self._persist_session_state()
+        self._llm_history = self._agent_app.llm_history
         self._active_worker: Worker[None] | None = None
-        self._active_runtime: AgentRuntime | None = None
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if not isinstance(event.input, CommandInput):
-            return
-        question = event.value
-        if question == "/quit":
-            self.exit()
-            return
-        if question == "/clear":
-            self.load_events([])
-            self.exit_command_input(event.input)
-            return
-        if question == "/sessions":
-            self.open_session_selector()
-            self.exit_command_input(event.input)
-            return
-        if question in ("/metadata", "/info"):
-            self.open_metadata_screen()
-            self.exit_command_input(event.input)
-            return
-        if question == "/config":
-            self.open_config_screen()
-            self.exit_command_input(event.input)
-            return
-        if question.startswith("/resume "):
-            self.switch_session(question.removeprefix("/resume "))
-            self.exit_command_input(event.input)
-            return
-        if question == "/model":
-            self.open_config_screen()
-            self.exit_command_input(event.input)
-            return
-        if question.startswith("/model "):
-            self.switch_model(question.removeprefix("/model "))
-            self.exit_command_input(event.input)
-            return
-        if question == "":
-            return
-        self.start_run(question)
-        self.exit_command_input(event.input)
+        self._active_runtime = self._agent_app.active_runtime
 
     def start_run(self, question: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
-        if self._active_runtime is not None and self._active_runtime.status == "suspended":
+        if self._agent_app.is_running_suspended:
             self.append_event(
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self.ensure_session()
+        self._agent_app.ensure_session()
+        self._sync_app_state()
         self._persist_session_state()
         self.append_event(TUIEvent.user_message(question))
-        self._active_runtime = self._agent.create_resume_run(
-            question,
-            self._llm_history,
-            trace_ctx=self._trace_ctx,
-            **self._request_meta_for_run(),
-        )
         self._active_worker = self.run_worker(
-            self._stream_active_runtime(),
+            self._stream_agent_turn(question),
             name="aceai-agent",
             description="Run AceAI agent and stream events into the TUI",
             exit_on_error=True,
@@ -210,7 +286,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             return
         self.clear_approval_request()
         self._active_worker = self.run_worker(
-            self._stream_approval_decision(ToolApprovalDecision.approve(request)),
+            self._stream_approval_decision(approved=True),
             name="aceai-approval",
             description="Resume AceAI agent after tool approval",
             exit_on_error=True,
@@ -239,33 +315,27 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             reason = "rejected by caller"
         self.clear_approval_request()
         self._active_worker = self.run_worker(
-            self._stream_approval_decision(
-                ToolApprovalDecision.reject(request, reason=reason)
-            ),
+            self._stream_approval_decision(approved=False, reason=reason),
             name="aceai-approval",
             description="Resume AceAI agent after tool rejection",
             exit_on_error=True,
         )
 
     def _pending_approval_request(self):
-        runtime = self._active_runtime
-        if runtime is None:
-            return None
-        pending = runtime.run_state.pending_approval
-        if pending is None:
-            return None
-        return pending.request
+        return self._agent_app.pending_approval_request()
 
     def switch_session(self, session_id: str) -> None:
-        previous_session_id = self._session_id
-        super().switch_session(session_id)
-        if self._session_id != previous_session_id:
-            self._restore_session_state()
-        self._reload_llm_history()
-
-    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
-        self._llm_history = list(runtime.context.context[1:])
-        self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+        if session_id == self._session_id:
+            return
+        try:
+            snapshot = self._agent_app.switch_session(session_id)
+        except KeyError:
+            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.append_event(TUIEvent.session_notice(f"Resumed session {snapshot.metadata.session_id}"))
+        self._restore_session_state()
 
     def show_model(self) -> None:
         self.append_event(
@@ -321,7 +391,8 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             return
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
-        self._persist_session_state()
+        self._agent_app.switch_model(self._selected_model)
+        self._sync_app_state()
         self.set_status_model(self._selected_model)
         self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
 
@@ -334,20 +405,13 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         if self._session_recorder is None or self._session_id is None:
             self._llm_history = []
             return
-        event_log = self._session_recorder.store.load_event_log(self._session_id)
-        self._llm_history = event_log.replay_llm_history()
-        self._active_runtime = None
+        self._agent_app.restore_history_from_active_session()
+        self._sync_app_state()
 
     def _persist_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:
             return
-        self._session_recorder.store.update_session_state(
-            self._session_id,
-            SessionState(
-                selected_provider=self._provider_name,
-                selected_model=self._selected_model,
-            ),
-        )
+        self._agent_app.persist_session_state()
 
     def _restore_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:
@@ -361,6 +425,8 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             return
         self._selected_model = cast(OpenAIModel, state.selected_model)
         self._request_meta["model"] = self._selected_model
+        self._agent_app.switch_model(self._selected_model)
+        self._sync_app_state()
         self.set_status_model(self._selected_model)
 
     def _metadata_sections(self) -> list[MetadataSection]:
@@ -409,6 +475,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             model=initial_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            record_events=False,
         )
         self._agent_factory = agent_factory
         self._initial_config = initial_config
@@ -418,8 +485,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._selected_model: OpenAIModel = initial_model
         self._llm_history = list(initial_history or [])
         self._agent: AgentBase | None = None
+        self._agent_app: AceAgentApp | None = None
         self._active_worker: Worker[None] | None = None
-        self._active_runtime: AgentRuntime | None = None
+        self._active_runtime = None
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -443,50 +511,22 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._agent = self._agent_factory(next_config)
         self._selected_model = next_config.model
         self._request_meta["model"] = self._selected_model
+        self._agent_app = AceAgentApp(
+            self._agent,
+            provider_name=self._provider_name,
+            selected_model=self._selected_model,
+            initial_history=self._llm_history,
+            session_store=self._session_store(),
+            session_recorder=self._session_recorder,
+            session_id=self._session_id,
+            trace_ctx=self._trace_ctx,
+            request_meta=self._request_meta,
+        )
         self._persist_session_state()
+        self._sync_app_state()
         self.set_status_model(self._selected_model)
         if self._initial_question != "":
             self.start_run(self._initial_question)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if not isinstance(event.input, CommandInput):
-            return
-        question = event.value
-        if question == "/quit":
-            self.exit()
-            return
-        if question == "/clear":
-            self.load_events([])
-            self.exit_command_input(event.input)
-            return
-        if question == "/sessions":
-            self.open_session_selector()
-            self.exit_command_input(event.input)
-            return
-        if question in ("/metadata", "/info"):
-            self.open_metadata_screen()
-            self.exit_command_input(event.input)
-            return
-        if question == "/config":
-            self.open_config_screen()
-            self.exit_command_input(event.input)
-            return
-        if question.startswith("/resume "):
-            self.switch_session(question.removeprefix("/resume "))
-            self.exit_command_input(event.input)
-            return
-        if question == "/model":
-            self.open_config_screen()
-            self.exit_command_input(event.input)
-            return
-        if question.startswith("/model "):
-            self.switch_model(question.removeprefix("/model "))
-            self.exit_command_input(event.input)
-            return
-        if question == "":
-            return
-        self.start_run(question)
-        self.exit_command_input(event.input)
 
     def start_run(self, question: str) -> None:
         if self._agent is None:
@@ -494,37 +534,40 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             return
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
-        if self._active_runtime is not None and self._active_runtime.status == "suspended":
+        if self._agent_app is None:
+            raise RuntimeError("AceAI app is not configured")
+        if self._agent_app.is_running_suspended:
             self.append_event(
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self.ensure_session()
+        self._agent_app.ensure_session()
+        self._sync_app_state()
         self._persist_session_state()
         self.append_event(TUIEvent.user_message(question))
-        self._active_runtime = self._agent.create_resume_run(
-            question,
-            self._llm_history,
-            trace_ctx=self._trace_ctx,
-            **self._request_meta_for_run(),
-        )
         self._active_worker = self.run_worker(
-            self._stream_active_runtime(),
+            self._stream_agent_turn(question),
             name="aceai-agent",
             description="Run AceAI agent and stream events into the TUI",
             exit_on_error=True,
         )
 
     def switch_session(self, session_id: str) -> None:
-        previous_session_id = self._session_id
-        super().switch_session(session_id)
-        if self._session_id != previous_session_id:
-            self._restore_session_state()
-        self._reload_llm_history()
-
-    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
-        self._llm_history = list(runtime.context.context[1:])
-        self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
+        if self._agent_app is None:
+            super().switch_session(session_id)
+            self._reload_llm_history()
+            return
+        if session_id == self._session_id:
+            return
+        try:
+            snapshot = self._agent_app.switch_session(session_id)
+        except KeyError:
+            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.append_event(TUIEvent.session_notice(f"Resumed session {snapshot.metadata.session_id}"))
+        self._restore_session_state()
 
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()
@@ -533,7 +576,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             return
         self.clear_approval_request()
         self._active_worker = self.run_worker(
-            self._stream_approval_decision(ToolApprovalDecision.approve(request)),
+            self._stream_approval_decision(approved=True),
             name="aceai-approval",
             description="Resume AceAI agent after tool approval",
             exit_on_error=True,
@@ -562,22 +605,16 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             reason = "rejected by caller"
         self.clear_approval_request()
         self._active_worker = self.run_worker(
-            self._stream_approval_decision(
-                ToolApprovalDecision.reject(request, reason=reason)
-            ),
+            self._stream_approval_decision(approved=False, reason=reason),
             name="aceai-approval",
             description="Resume AceAI agent after tool rejection",
             exit_on_error=True,
         )
 
     def _pending_approval_request(self):
-        runtime = self._active_runtime
-        if runtime is None:
+        if self._agent_app is None:
             return None
-        pending = runtime.run_state.pending_approval
-        if pending is None:
-            return None
-        return pending.request
+        return self._agent_app.pending_approval_request()
 
     def show_model(self) -> None:
         self.append_event(
@@ -712,6 +749,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             )
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
+        if self._agent_app is not None:
+            self._agent_app.switch_model(self._selected_model)
+            self._sync_app_state()
         self._persist_session_state()
         self.set_status_model(self._selected_model)
         self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
@@ -731,20 +771,27 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         if self._session_recorder is None or self._session_id is None:
             self._llm_history = []
             return
-        event_log = self._session_recorder.store.load_event_log(self._session_id)
-        self._llm_history = event_log.replay_llm_history()
-        self._active_runtime = None
+        if self._agent_app is None:
+            event_log = self._session_recorder.store.load_event_log(self._session_id)
+            self._llm_history = event_log.replay_llm_history()
+            self._active_runtime = None
+            return
+        self._agent_app.restore_history_from_active_session()
+        self._sync_app_state()
 
     def _persist_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:
             return
-        self._session_recorder.store.update_session_state(
-            self._session_id,
-            SessionState(
-                selected_provider=self._provider_name,
-                selected_model=self._selected_model,
-            ),
-        )
+        if self._agent_app is None:
+            self._session_recorder.store.update_session_state(
+                self._session_id,
+                SessionState(
+                    selected_provider=self._provider_name,
+                    selected_model=self._selected_model,
+                ),
+            )
+            return
+        self._agent_app.persist_session_state()
 
     def _restore_session_state(self) -> None:
         if self._session_recorder is None or self._session_id is None:
