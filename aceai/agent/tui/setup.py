@@ -5,6 +5,7 @@ import os
 from typing import cast
 
 from rich.text import Text
+from msgspec import field
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
@@ -16,6 +17,7 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    Select,
     Static,
     TabbedContent,
     TabPane,
@@ -29,6 +31,7 @@ from aceai.agent.provider_catalog import (
 )
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
 from aceai.agent.config import config_schema
+from aceai.agent.permissions import TOOL_PERMISSION_OPTIONS, ToolPermission
 from aceai.agent.session import SessionMetadata, SessionStore
 from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.interface import Record
@@ -48,12 +51,21 @@ class ConfigSelection(Record, kw_only=True):
     skills: str
     skill_selection_mode: str = "all"
     enabled_skills: tuple[str, ...] = ()
+    tool_permissions: dict[str, ToolPermission] = field(
+        default_factory=dict[str, ToolPermission]
+    )
 
 
 class SkillConfigItem(Record, kw_only=True):
     name: str
     description: str
     location: str
+
+
+class ToolPermissionItem(Record, kw_only=True):
+    name: str
+    description: str
+    permission: ToolPermission
 
 
 def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
@@ -275,7 +287,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
             yield Label(_skills_field_label())
             with Container(id="setup-skills-list"):
                 yield from _skill_checkboxes(self._skill_items, self._skill_items)
-            yield Checkbox("Persist to ~/.aceai/config.yaml", id="persist")
+            yield Checkbox("Persist to .aceai/config.yml", id="persist")
             yield Static("", id="setup-error")
             with Horizontal(id="setup-actions"):
                 yield Button("Start", variant="primary", id="start")
@@ -459,7 +471,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #system-prompt-scroll {
+    #config-scroll, #tool-permissions-scroll, #system-prompt-scroll {
         width: 100%;
         height: 1fr;
     }
@@ -500,6 +512,35 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: auto;
     }
 
+    #tool-permissions-list {
+        height: auto;
+    }
+
+    .tool-permission-entry {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .tool-permission-row {
+        width: 100%;
+        height: auto;
+    }
+
+    .tool-permission-name {
+        width: 1fr;
+        height: auto;
+    }
+
+    .tool-permission-select {
+        width: 12;
+    }
+
+    .tool-permission-description {
+        color: #a7b1c2;
+        height: auto;
+    }
+
     .skill-entry {
         width: 100%;
         height: auto;
@@ -535,6 +576,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         skill_items: tuple[SkillConfigItem, ...] = (),
         skill_selection_mode: str = "all",
         enabled_skills: tuple[str, ...] = (),
+        tool_permission_items: tuple[ToolPermissionItem, ...] = (),
         system_prompt: str = "",
     ) -> None:
         super().__init__()
@@ -545,6 +587,17 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         self._skill_items = skill_items
         self._skill_selection_mode = skill_selection_mode
         self._enabled_skills = enabled_skills
+        self._tool_names = tuple(item.name for item in tool_permission_items)
+        self._tool_descriptions = {
+            item.name: item.description for item in tool_permission_items
+        }
+        self._tool_permissions = {
+            item.name: item.permission for item in tool_permission_items
+        }
+        self._tool_permission_button_names = {
+            f"tool-permission-{index}": item.name
+            for index, item in enumerate(tool_permission_items)
+        }
         self._api_keys = api_keys
         self._system_prompt = system_prompt
         self._provider_highlight = _highlight_for_value(
@@ -613,6 +666,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                                 self._checked_skill_items(),
                             )
                         yield Static("", id="config-error")
+                with TabPane("Tools", id="tool-permissions-tab"):
+                    with VerticalScroll(id="tool-permissions-scroll"):
+                        with Container(id="tool-permissions-list"):
+                            yield from self._tool_permission_controls()
                 with TabPane("System Prompt", id="system-prompt-tab"):
                     with VerticalScroll(id="system-prompt-scroll"):
                         yield Static(self._system_prompt, id="system-prompt")
@@ -757,6 +814,12 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
+        if event.button.id == "allow-all-tools":
+            self._set_all_tool_permissions("always")
+            return
+        if event.button.id == "disable-all-tools":
+            self._set_all_tool_permissions("never")
+            return
         if event.button.id != "apply":
             return
         provider = self.query_one("#provider", Input).value
@@ -780,6 +843,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if error is not None:
             self.query_one("#config-error", Static).update(error)
             return
+        self._sync_tool_permissions_from_controls()
         self.dismiss(
             ConfigSelection(
                 provider=provider,
@@ -789,6 +853,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 skills=self._skills,
                 skill_selection_mode="selected",
                 enabled_skills=enabled_skills,
+                tool_permissions=dict(self._tool_permissions),
             )
         )
 
@@ -800,6 +865,49 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def _selected_skill_names(self) -> tuple[str, ...]:
         return _selected_skill_names(self, self._skill_items)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id is None:
+            return
+        if not event.select.id.startswith("tool-permission-"):
+            return
+        if event.value not in TOOL_PERMISSION_OPTIONS:
+            raise ValueError("Unsupported tool permission")
+        tool_name = self._tool_permission_button_names[event.select.id]
+        self._tool_permissions[tool_name] = event.value
+
+    def _tool_permission_controls(self) -> ComposeResult:
+        with Horizontal(classes="tool-permission-row"):
+            yield Button("Allow all", id="allow-all-tools")
+            yield Button("Disable all", id="disable-all-tools")
+        for index, tool_name in enumerate(self._tool_names):
+            with Container(classes="tool-permission-entry"):
+                with Horizontal(classes="tool-permission-row"):
+                    yield Static(tool_name, classes="tool-permission-name")
+                    yield Select(
+                        tuple((option, option) for option in TOOL_PERMISSION_OPTIONS),
+                        value=self._tool_permissions[tool_name],
+                        allow_blank=False,
+                        id=f"tool-permission-{index}",
+                        classes="tool-permission-select",
+                    )
+                yield Static(
+                    self._tool_descriptions[tool_name],
+                    classes="tool-permission-description",
+                    id=f"tool-permission-description-{index}",
+                )
+
+    def _set_all_tool_permissions(self, permission: ToolPermission) -> None:
+        for index, tool_name in enumerate(self._tool_names):
+            self._tool_permissions[tool_name] = permission
+            self.query_one(f"#tool-permission-{index}", Select).value = permission
+
+    def _sync_tool_permissions_from_controls(self) -> None:
+        for index, tool_name in enumerate(self._tool_names):
+            value = self.query_one(f"#tool-permission-{index}", Select).value
+            if value not in TOOL_PERMISSION_OPTIONS:
+                raise ValueError("Unsupported tool permission")
+            self._tool_permissions[tool_name] = value
 
 
 def _config_selection_error(

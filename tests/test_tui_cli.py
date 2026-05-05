@@ -1,5 +1,6 @@
 import pytest
 
+from aceai.agent.config import AceAITUIConfig, clear_config, save_config
 from aceai.agent.tui import cli
 
 
@@ -24,6 +25,15 @@ class StubSessionState:
 class StubDeepSeekSessionState:
     selected_provider = "deepseek"
     selected_model = "deepseek-v4-flash"
+
+
+@pytest.fixture(autouse=True)
+def isolated_cli_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    yield
+    clear_config()
 
 
 def install_tui_extra_stub(monkeypatch) -> None:
@@ -130,6 +140,38 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     cli.main([])
 
     assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-pro"))
+
+
+def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
+        calls.append(("build", (provider, api_key, model)))
+        return agent
+
+    def run_interactive_tui(received_agent, **kwargs):
+        calls.append(("interactive", (received_agent, kwargs)))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ACEAI_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    monkeypatch.delenv("ACEAI_MODEL", raising=False)
+    save_config(
+        AceAITUIConfig(
+            provider="openai",
+            api_key="project-key",
+            model="gpt-4o-mini",
+            api_keys={"openai": "project-key"},
+        )
+    )
+    install_tui_extra_stub(monkeypatch)
+    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main([])
+
+    assert calls[0] == ("build", ("openai", "project-key", "gpt-4o-mini"))
 
 
 def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:

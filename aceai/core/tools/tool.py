@@ -93,6 +93,16 @@ class Tool[**P, R]:
         """Metadata associated with the tool."""
         return self._meta
 
+    def with_metadata(self, metadata: ToolMeta) -> "Tool[P, R]":
+        return Tool(
+            self.name,
+            self.signature,
+            self.func,
+            self._decoder,
+            metadata,
+            self._spec_cls,
+        )
+
     @property
     def description(self) -> str:
         return self._meta.description

@@ -51,6 +51,24 @@ def test_default_agent_tools_are_product_capabilities() -> None:
     }
 
 
+def test_default_agent_tools_apply_permission_overrides() -> None:
+    default_tool_map = {tool.name: tool for tool in default_agent_tools()}
+    tools = default_agent_tools(
+        {
+            "read_text_file": "ask",
+            "run_shell_command": "always",
+            "apply_patch": "never",
+        }
+    )
+    tool_names = {tool.name for tool in tools}
+    approval_required = {tool.name for tool in tools if tool.metadata.require_approval}
+
+    assert "apply_patch" not in tool_names
+    assert "read_text_file" in approval_required
+    assert "run_shell_command" not in approval_required
+    assert default_tool_map["run_shell_command"].metadata.require_approval
+
+
 def test_build_ace_agent_wires_app_tools_and_project_skills(
     tmp_path, monkeypatch
 ) -> None:

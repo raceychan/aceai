@@ -8,9 +8,10 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.app import AceAgentApp
+from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
-from aceai.agent.config import AceAITUIConfig, replace_config
+from aceai.agent.config import AceAITUIConfig, replace_config, save_config
 from aceai.core import AgentBase
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.executor import ToolExecutor
@@ -23,7 +24,13 @@ from .app import AceAITUI
 from .events import TUIEvent
 from .metadata import MetadataSection
 from .session_replay import event_log_to_tui_events
-from .setup import ConfigSelection, ConfigScreen, ProviderSetupScreen, SkillConfigItem
+from .setup import (
+    ConfigSelection,
+    ConfigScreen,
+    ProviderSetupScreen,
+    SkillConfigItem,
+    ToolPermissionItem,
+)
 from .widgets import ApprovalWidget
 from .widgets import CommandInput
 
@@ -646,6 +653,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 enabled_skills=tuple(self._current_config.enabled_skills)
                 if self._current_config is not None
                 else (),
+                tool_permission_items=self._available_tool_permission_items(),
                 api_keys=api_keys,
                 system_prompt=_system_prompt_text(self._agent),
             ),
@@ -669,7 +677,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     else self._current_config.api_key
                 )
                 api_keys[selection.provider] = api_key
-                self.apply_config(
+                self.apply_user_config(
                     AceAITUIConfig(
                         provider=selection.provider,
                         api_key=api_key,
@@ -679,6 +687,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                         skill_selection_mode=selection.skill_selection_mode,
                         enabled_skills=list(selection.enabled_skills),
                         api_keys=api_keys,
+                        tool_permissions=selection.tool_permissions,
                     )
                 )
                 self.append_event(
@@ -705,7 +714,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
         api_keys[selection.provider] = api_key
-        self.apply_config(
+        self.apply_user_config(
             AceAITUIConfig(
                 provider=selection.provider,
                 api_key=api_key,
@@ -715,6 +724,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode=selection.skill_selection_mode,
                 enabled_skills=list(selection.enabled_skills),
                 api_keys=api_keys,
+                tool_permissions=selection.tool_permissions,
             )
         )
         self.append_event(
@@ -722,6 +732,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 f"Switched provider to {selection.provider} and model to {selection.model}"
             )
         )
+
+    def apply_user_config(self, config: AceAITUIConfig) -> None:
+        self.apply_config(config)
+        save_config(config)
 
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
@@ -745,6 +759,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     skill_selection_mode=self._current_config.skill_selection_mode,
                     enabled_skills=self._current_config.enabled_skills,
                     api_keys=self._current_config.api_keys,
+                    tool_permissions=self._current_config.tool_permissions,
                 )
             )
         self._selected_model = cast(OpenAIModel, model)
@@ -761,6 +776,28 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             return _skill_config_items(self._agent.skill_registry)
         registry = SkillLoader.load_registry(self._current_config.skills)
         return _skill_config_items(registry)
+
+    def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:
+        configured_permissions = (
+            self._current_config.tool_permissions
+            if self._current_config is not None
+            else {}
+        )
+        items: list[ToolPermissionItem] = []
+        for configured_tool in default_agent_tools():
+            permission = configured_permissions.get(configured_tool.name)
+            if permission is None:
+                permission = (
+                    "ask" if configured_tool.metadata.require_approval else "always"
+                )
+            items.append(
+                ToolPermissionItem(
+                    name=configured_tool.name,
+                    description=configured_tool.description,
+                    permission=permission,
+                )
+            )
+        return tuple(items)
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta: LLMRequestMeta = dict(self._request_meta)

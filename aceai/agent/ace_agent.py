@@ -12,6 +12,7 @@ from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.service import LLMService
 
 from .features import default_agent_tools
+from .permissions import ToolPermission
 
 
 ACE_AGENT_SYSTEM_PROMPT = """
@@ -41,6 +42,7 @@ def build_ace_agent(
     hosted_tools: list[LLMHostedToolSpec] | None = None,
     skill_path: str | Path | Literal["auto", "disable"] = ACE_AGENT_SKILL_PATH,
     enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
+    tool_permissions: dict[str, ToolPermission] | None = None,
 ) -> AgentBase:
     if provider_name == "openai":
         provider = OpenAI(
@@ -55,7 +57,7 @@ def build_ace_agent(
     else:
         raise ValueError("Unsupported provider")
     llm_service = LLMService([provider], timeout_seconds=120.0)
-    executor = ToolExecutor(Graph(), default_agent_tools())
+    executor = ToolExecutor(Graph(), default_agent_tools(tool_permissions))
     if hosted_tools is None and provider_name == "openai":
         selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
     elif hosted_tools is None:

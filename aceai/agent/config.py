@@ -14,6 +14,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
+from aceai.agent.permissions import ToolPermission
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
@@ -50,6 +51,9 @@ class AgentAppConfig(Record, kw_only=True):
     skill_selection_mode: SkillSelectionMode = "all"
     enabled_skills: list[str] = field(default_factory=list[str])
     api_keys: dict[str, str] = field(default_factory=dict[str, str])
+    tool_permissions: dict[str, ToolPermission] = field(
+        default_factory=dict[str, ToolPermission]
+    )
 
 
 AceAITUIConfig = AgentAppConfig
@@ -105,6 +109,12 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             required=True,
             description="Provider-key mapping persisted for known providers.",
         ),
+        ConfigField(
+            name="tool_permissions",
+            value_type="mapping",
+            required=True,
+            description="Per-tool permission policy: always, ask, or never.",
+        ),
     ),
 )
 
@@ -155,14 +165,31 @@ def validate_config(config: AgentAppConfig) -> None:
         raise ValueError("AceAI config api_keys missing active provider")
     if config.api_keys[config.provider] != config.api_key:
         raise ValueError("AceAI config active api_key does not match api_keys")
+    for tool_name, permission in config.tool_permissions.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_permissions tool names must be str")
+        if permission not in ("always", "ask", "never"):
+            raise ValueError("AceAI config tool_permissions value is unsupported")
 
 
 def default_config_path() -> Path:
     return Path.home() / ".aceai" / "config.yaml"
 
 
+def project_config_path(project_dir: Path | None = None) -> Path:
+    root = project_dir if project_dir is not None else Path.cwd()
+    return root / ".aceai" / "config.yml"
+
+
+def effective_config_path(project_dir: Path | None = None) -> Path:
+    project_path = project_config_path(project_dir)
+    if project_path.exists():
+        return project_path
+    return default_config_path()
+
+
 def load_config(path: Path | None = None) -> AgentAppConfig | None:
-    target = path or default_config_path()
+    target = path if path is not None else effective_config_path()
     if not target.exists():
         clear_config()
         return None
@@ -189,6 +216,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
         data["skill_selection_mode"] if "skill_selection_mode" in data else "all"
     )
     enabled_skills = _load_enabled_skills(data)
+    tool_permissions = _load_tool_permissions(data)
     if legacy_skill_path:
         skill_selection_mode = "all"
         enabled_skills = []
@@ -220,6 +248,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
             skill_selection_mode=skill_selection_mode,
             enabled_skills=enabled_skills,
             api_keys=api_keys,
+            tool_permissions=tool_permissions,
         )
     )
 
@@ -227,7 +256,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
 def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
     validate_config(config)
     replace_config(config)
-    target = path or default_config_path()
+    target = path if path is not None else project_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = yaml.safe_dump(
         {
@@ -239,6 +268,7 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
             "skills": config.skills,
             "skill_selection_mode": config.skill_selection_mode,
             "enabled_skills": config.enabled_skills,
+            "tool_permissions": config.tool_permissions,
         },
         sort_keys=False,
     )
@@ -287,3 +317,19 @@ def _load_enabled_skills(data: dict[object, object]) -> list[str]:
             raise TypeError("AceAI config enabled_skills values must be str")
         enabled_skills.append(skill_name)
     return enabled_skills
+
+
+def _load_tool_permissions(data: dict[object, object]) -> dict[str, ToolPermission]:
+    if "tool_permissions" not in data:
+        return {}
+    raw_permissions = data["tool_permissions"]
+    if not isinstance(raw_permissions, dict):
+        raise TypeError("AceAI config tool_permissions must be a mapping")
+    permissions: dict[str, ToolPermission] = {}
+    for tool_name, permission in raw_permissions.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_permissions tool names must be str")
+        if permission not in ("always", "ask", "never"):
+            raise ValueError("AceAI config tool_permissions value is unsupported")
+        permissions[tool_name] = permission
+    return permissions

@@ -4,7 +4,9 @@ from aceai.agent.config import (
     clear_config,
     config_schema,
     current_config,
+    effective_config_path,
     load_config,
+    project_config_path,
     replace_config,
     save_config,
 )
@@ -23,6 +25,7 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["skill_selection_mode"].value_type == "string"
     assert fields["enabled_skills"].value_type == "list"
     assert fields["api_keys"].value_type == "mapping"
+    assert fields["tool_permissions"].value_type == "mapping"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
@@ -32,6 +35,7 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         api_key="secret",
         model="gpt-4o-mini",
         api_keys={"openai": "secret"},
+        tool_permissions={"run_shell_command": "never"},
     )
 
     save_config(config, path)
@@ -39,6 +43,71 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
 
     assert loaded == config
     assert current_config() == config
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    global_path = tmp_path / "home" / ".aceai" / "config.yaml"
+    project_path = tmp_path / "project" / ".aceai" / "config.yml"
+    global_path.parent.mkdir(parents=True)
+    project_path.parent.mkdir(parents=True)
+    save_config(
+        AceAITUIConfig(
+            provider="openai",
+            api_key="global",
+            model="gpt-4o-mini",
+            api_keys={"openai": "global"},
+        ),
+        global_path,
+    )
+    project_config = AceAITUIConfig(
+        provider="openai",
+        api_key="project",
+        model="gpt-5.5",
+        api_keys={"openai": "project"},
+    )
+    save_config(project_config, project_path)
+
+    assert effective_config_path() == project_path
+    assert load_config() == project_config
+
+
+def test_load_config_falls_back_to_global_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    global_path = tmp_path / "home" / ".aceai" / "config.yaml"
+    global_config = AceAITUIConfig(
+        provider="openai",
+        api_key="global",
+        model="gpt-4o-mini",
+        api_keys={"openai": "global"},
+    )
+    save_config(global_config, global_path)
+
+    assert effective_config_path() == global_path
+    assert load_config() == global_config
+
+
+def test_save_config_defaults_to_project_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = AceAITUIConfig(
+        provider="openai",
+        api_key="secret",
+        model="gpt-5.5",
+        api_keys={"openai": "secret"},
+    )
+
+    save_config(config)
+
+    path = project_config_path()
+    assert path == tmp_path / ".aceai" / "config.yml"
+    assert load_config(path) == config
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
 
@@ -196,3 +265,24 @@ def test_load_config_rejects_top_level_api_key(tmp_path) -> None:
         assert str(exc) == "AceAI config api_keys missing active provider"
     else:
         raise AssertionError("load_config accepted legacy top-level api_key")
+
+
+def test_load_config_rejects_unknown_tool_permission(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 2\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "tool_permissions:\n"
+        "  run_shell_command: maybe\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_config(path)
+    except ValueError as exc:
+        assert str(exc) == "AceAI config tool_permissions value is unsupported"
+    else:
+        raise AssertionError("load_config accepted unknown tool permission")

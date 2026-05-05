@@ -14,10 +14,15 @@ from aceai.agent.config import clear_config, current_config
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
-from aceai.agent.tui.setup import ConfigScreen, ConfigSelection, SkillConfigItem
+from aceai.agent.tui.setup import (
+    ConfigScreen,
+    ConfigSelection,
+    SkillConfigItem,
+    ToolPermissionItem,
+)
 from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Button, Checkbox, Input, RichLog, Static, TabbedContent
+from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, TabbedContent
 
 
 @pytest.fixture(autouse=True)
@@ -958,6 +963,105 @@ async def test_config_screen_is_fullscreen_and_splits_system_prompt_tab() -> Non
 
 
 @pytest.mark.anyio
+async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> None:
+    tool_items = (
+        ToolPermissionItem(
+            name="run_shell_command",
+            description="Run a shell command.",
+            permission="ask",
+        ),
+        ToolPermissionItem(
+            name="read_text_file",
+            description="Read a file.",
+            permission="always",
+        ),
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=tool_items,
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        tabs = screen.query_one("#config-tabs", TabbedContent)
+        tool_select = screen.query_one("#tool-permission-0", Select)
+
+        assert screen.query_one("#tool-permissions-tab") in tabs.query("*")
+        assert tool_select.value == "ask"
+
+        tool_select.value = "never"
+        _press_config_apply(screen)
+
+        assert selections[-1].tool_permissions == {
+            "run_shell_command": "never",
+            "read_text_file": "always",
+        }
+
+
+@pytest.mark.anyio
+async def test_config_screen_can_allow_or_disable_all_tools() -> None:
+    tool_items = (
+        ToolPermissionItem(
+            name="run_shell_command",
+            description="Run a shell command.",
+            permission="ask",
+        ),
+        ToolPermissionItem(
+            name="read_text_file",
+            description="Read a file.",
+            permission="always",
+        ),
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=tool_items,
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+
+        class DisablePressed:
+            button = screen.query_one("#disable-all-tools", Button)
+
+        screen.on_button_pressed(DisablePressed())
+        assert screen.query_one("#tool-permission-0", Select).value == "never"
+        assert screen.query_one("#tool-permission-1", Select).value == "never"
+
+        class AllowPressed:
+            button = screen.query_one("#allow-all-tools", Button)
+
+        screen.on_button_pressed(AllowPressed())
+        _press_config_apply(screen)
+
+        assert selections[-1].tool_permissions == {
+            "run_shell_command": "always",
+            "read_text_file": "always",
+        }
+
+
+@pytest.mark.anyio
 async def test_config_screen_can_disable_current_agent_skill() -> None:
     skill_item = SkillConfigItem(
         name="developer",
@@ -1112,6 +1216,7 @@ async def test_config_screen_hides_candidates_for_empty_input() -> None:
 
 @pytest.mark.anyio
 async def test_configured_tui_switches_provider_without_reusing_current_key(
+    tmp_path,
     monkeypatch,
 ) -> None:
     calls: list[AceAITUIConfig] = []
@@ -1126,6 +1231,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         )
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.chdir(tmp_path)
     app = AceAIConfiguredTUI(
         agent_factory,
         initial_config=AceAITUIConfig(
@@ -1163,6 +1269,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
     )
     assert current_config() == calls[-1]
+    assert (tmp_path / ".aceai" / "config.yml").exists()
 
 
 @pytest.mark.anyio

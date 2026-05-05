@@ -40,8 +40,16 @@ model.
 
 If no API key is available from the environment or saved config, the TUI opens a
 provider setup screen. The user can choose the provider, enter the API key,
-choose the model, and decide whether to persist the config. Persisted config is
-stored at `~/.aceai/config.yaml` with file mode `0600`.
+choose the model, and decide whether to persist the config. AceAI reads
+`.aceai/config.yml` in the current project first, then falls back to
+`~/.aceai/config.yaml`. Persisted config is stored at `.aceai/config.yml` with
+file mode `0600`.
+
+The runtime config page has separate tabs for provider settings, local tool
+permissions, and the system prompt. Each app tool can be set to `always`, `ask`,
+or `never`: `always` exposes the tool without approval, `ask` routes execution
+through the approval strip, and `never` removes the tool from the model-visible
+tool list.
 
 ## Event Model
 

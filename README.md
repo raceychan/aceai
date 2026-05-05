@@ -17,7 +17,11 @@ aceai
 
 Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
 If no API key is available, the TUI asks for provider settings and lets you
-choose whether to persist them to `~/.aceai/config.yaml`.
+choose whether to persist them to `.aceai/config.yml`. On startup AceAI reads
+project config first, then falls back to `~/.aceai/config.yaml`.
+The config screen also includes per-tool permissions: `always` runs without
+approval, `ask` uses the approval flow, and `never` hides the tool from the
+model.
 
 ## Architecture layers
 

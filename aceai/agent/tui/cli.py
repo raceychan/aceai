@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
+from aceai.agent.permissions import ToolPermission
 from aceai.agent.provider_catalog import (
     all_supported_models,
     api_key_env,
@@ -83,6 +84,7 @@ def build_default_agent(
     skills: str | None = None,
     skill_selection_mode: str = "all",
     enabled_skills: list[str] | None = None,
+    tool_permissions: dict[str, ToolPermission] | None = None,
 ) -> AgentBase:
     agent_model = model if default_model is None else default_model
     skill_path = skills if skills is not None else None
@@ -97,12 +99,14 @@ def build_default_agent(
                 api_key=api_key,
                 model=agent_model,
                 enabled_skill_names=enabled_skill_names,
+                tool_permissions=tool_permissions,
             )
         return build_ace_agent(
             api_key=api_key,
             model=agent_model,
             skill_path=skill_path,
             enabled_skill_names=enabled_skill_names,
+            tool_permissions=tool_permissions,
         )
     if skill_path is None:
         return build_ace_agent(
@@ -110,6 +114,7 @@ def build_default_agent(
             model=agent_model,
             provider_name=provider,
             enabled_skill_names=enabled_skill_names,
+            tool_permissions=tool_permissions,
         )
     return build_ace_agent(
         api_key=api_key,
@@ -117,6 +122,7 @@ def build_default_agent(
         provider_name=provider,
         skill_path=skill_path,
         enabled_skill_names=enabled_skill_names,
+        tool_permissions=tool_permissions,
     )
 
 
@@ -131,6 +137,7 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
             skills=config.skills,
             skill_selection_mode=config.skill_selection_mode,
             enabled_skills=config.enabled_skills,
+            tool_permissions=config.tool_permissions,
         )
     return build_default_agent(
         api_key=config.api_key,
@@ -140,6 +147,7 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
         skills=config.skills,
         skill_selection_mode=config.skill_selection_mode,
         enabled_skills=config.enabled_skills,
+        tool_permissions=config.tool_permissions,
     )
 
 
@@ -162,6 +170,24 @@ def resolve_initial_config(
     model: OpenAIModel,
     model_from_env: bool,
 ) -> AceAITUIConfig | None:
+    stored = load_config()
+    if stored is not None:
+        if model_from_env:
+            selected_model = resolve_model(stored.provider, model)
+            return replace_config(
+                AceAITUIConfig(
+                    provider=stored.provider,
+                    api_key=stored.api_key,
+                    model=selected_model,
+                    default_model=stored.default_model,
+                    skills=stored.skills,
+                    skill_selection_mode=stored.skill_selection_mode,
+                    enabled_skills=stored.enabled_skills,
+                    api_keys=stored.api_keys,
+                    tool_permissions=stored.tool_permissions,
+                )
+            )
+        return stored
     env_name = api_key_env(provider)
     if env_name in os.environ:
         selected_model = model
@@ -177,26 +203,10 @@ def resolve_initial_config(
                 skill_selection_mode="all",
                 enabled_skills=[],
                 api_keys={provider: os.environ[env_name]},
+                tool_permissions={},
             )
         )
-    stored = load_config()
-    if stored is None:
-        return None
-    if model_from_env:
-        selected_model = resolve_model(stored.provider, model)
-        return replace_config(
-            AceAITUIConfig(
-                provider=stored.provider,
-                api_key=stored.api_key,
-                model=selected_model,
-                default_model=stored.default_model,
-                skills=stored.skills,
-                skill_selection_mode=stored.skill_selection_mode,
-                enabled_skills=stored.enabled_skills,
-                api_keys=stored.api_keys,
-            )
-        )
-    return stored
+    return None
 
 
 def apply_session_state_to_initial_config(
@@ -222,6 +232,7 @@ def apply_session_state_to_initial_config(
                 skill_selection_mode=config.skill_selection_mode,
                 enabled_skills=config.enabled_skills,
                 api_keys=config.api_keys,
+                tool_permissions=config.tool_permissions,
             )
         )
     if config is not None and provider in config.api_keys:
@@ -235,6 +246,7 @@ def apply_session_state_to_initial_config(
                 skill_selection_mode=config.skill_selection_mode,
                 enabled_skills=config.enabled_skills,
                 api_keys=config.api_keys,
+                tool_permissions=config.tool_permissions,
             )
         )
     env_name = api_key_env(provider)
@@ -255,6 +267,7 @@ def apply_session_state_to_initial_config(
                 else "all",
                 enabled_skills=config.enabled_skills if config is not None else [],
                 api_keys=api_keys,
+                tool_permissions=config.tool_permissions if config is not None else {},
             )
         )
     return config
