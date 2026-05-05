@@ -11,12 +11,20 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.config import clear_config, current_config
+from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
 from aceai.agent.tui.setup import ConfigScreen, ConfigSelection, SkillConfigItem
 from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
-from textual.widgets import Button, Checkbox, Input, RichLog, Static
+from textual.widgets import Button, Checkbox, Input, RichLog, Static, TabbedContent
+
+
+@pytest.fixture(autouse=True)
+def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
+    store = SessionStore(tmp_path / "sessions")
+    monkeypatch.setattr(tui_app_module, "SessionStore", lambda: store)
+    return store
 
 
 class StubExecutor:
@@ -133,7 +141,9 @@ async def test_live_tui_streams_agent_events_into_state() -> None:
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_submits_question_from_input() -> None:
+async def test_interactive_tui_submits_question_from_input(
+    tui_session_store: SessionStore,
+) -> None:
     llm_service = StubLLMService(
         [
             LLMStreamEvent(
@@ -153,6 +163,8 @@ async def test_interactive_tui_submits_question_from_input() -> None:
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent)
+    assert app._session_recorder is None
+    assert app._session_id is None
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -163,6 +175,10 @@ async def test_interactive_tui_submits_question_from_input() -> None:
         assert app._state.final_answer == "answer"
         assert command_input.value == ""
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "What now?"
+        assert app._session_recorder is not None
+        assert app._session_id is not None
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert event_log.events[0].payload["content"] == "What now?"
 
 
 @pytest.mark.anyio
@@ -776,20 +792,13 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
 
         screen.dismiss = dismiss
         screen.query_one("#model", Input).value = "gpt-4o"
-        panel_child_ids = [
-            child.id
-            for child in screen.query_one("#config-panel").children
-            if child.id is not None
-        ]
+        screen_ids = {node.id for node in screen.query("*") if node.id is not None}
         _press_config_apply(screen)
 
-        assert "default-model" not in panel_child_ids
-        assert panel_child_ids.index("api-key") < panel_child_ids.index(
-            "config-divider"
-        )
-        assert panel_child_ids.index("config-divider") < panel_child_ids.index(
-            "config-skills-list"
-        )
+        assert "default-model" not in screen_ids
+        assert screen.query_one("#api-key", Input).region.y < screen.query_one(
+            "#config-skills-list"
+        ).region.y
         assert str(screen.query_one("#skill-0", Checkbox).label) == "developer"
         assert (
             "Practical software development workflow"
@@ -806,6 +815,36 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
                 enabled_skills=("developer",),
             )
         ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_is_fullscreen_and_splits_system_prompt_tab() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        system_prompt="You are AceAI.\n\nSkill instructions are active.",
+    )
+
+    async with AceAITUI([]).run_test(size=(100, 30)) as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        panel = screen.query_one("#config-panel")
+        tabs = screen.query_one("#config-tabs", TabbedContent)
+        settings_tab = screen.query_one("#settings-tab")
+        prompt_tab = screen.query_one("#system-prompt-tab")
+        prompt = screen.query_one("#system-prompt", Static)
+
+        assert panel.region.width == 100
+        assert panel.region.height == 30
+        assert tabs.active == "settings-tab"
+        assert screen.query_one("#provider", Input) in settings_tab.query("*")
+        assert prompt in prompt_tab.query("*")
+        assert "You are AceAI" in str(prompt.render())
+        assert "Skill instructions are active" in str(prompt.render())
 
 
 @pytest.mark.anyio

@@ -60,6 +60,14 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
     )
 
 
+def _system_prompt_text(agent: AgentBase) -> str:
+    parts: list[str] = []
+    for part in agent.system_message.content:
+        if part["type"] == "text":
+            parts.append(part["data"])
+    return "".join(parts)
+
+
 class _RuntimeStreamMixin:
     _active_runtime: AgentRuntime | None
 
@@ -179,6 +187,8 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
+        self.ensure_session()
+        self._persist_session_state()
         self.append_event(TUIEvent.user_message(question))
         self._active_runtime = self._agent.create_resume_run(
             question,
@@ -278,6 +288,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
+                system_prompt=_system_prompt_text(self._agent),
             ),
             self._handle_config_selection,
         )
@@ -488,6 +499,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
+        self.ensure_session()
+        self._persist_session_state()
         self.append_event(TUIEvent.user_message(question))
         self._active_runtime = self._agent.create_resume_run(
             question,
@@ -597,6 +610,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 if self._current_config is not None
                 else (),
                 api_keys=api_keys,
+                system_prompt=_system_prompt_text(self._agent),
             ),
             self._handle_config_selection,
         )

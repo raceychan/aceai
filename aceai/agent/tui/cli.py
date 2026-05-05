@@ -36,8 +36,8 @@ TUI_EXTRA_INSTALL_HINT = (
     "  pip install 'aceai[tui]'"
 )
 
-SessionRecorder = None
 SessionStore = None
+SessionRecorder = None
 event_log_to_tui_events = None
 run_configured_tui = None
 run_interactive_tui = None
@@ -52,8 +52,8 @@ class SessionStoreLike(Protocol):
 
 
 def require_tui_extra() -> None:
-    global SessionRecorder
     global SessionStore
+    global SessionRecorder
     global event_log_to_tui_events
     global run_configured_tui
     global run_interactive_tui
@@ -67,8 +67,8 @@ def require_tui_extra() -> None:
         if exc.name in TUI_EXTRA_MODULES:
             raise SystemExit(TUI_EXTRA_INSTALL_HINT) from None
         raise
-    SessionRecorder = session_module.SessionRecorder
     SessionStore = session_module.SessionStore
+    SessionRecorder = session_module.SessionRecorder
     event_log_to_tui_events = replay_module.event_log_to_tui_events
     run_configured_tui = runner_module.run_configured_tui
     run_interactive_tui = runner_module.run_interactive_tui
@@ -260,23 +260,20 @@ def apply_session_state_to_initial_config(
     return config
 
 
-def create_session_context(
+def load_session_context(
     *,
-    resume_session_id: str | None,
+    session_id: str,
 ) -> tuple[object, object, list[object], list[LLMMessage], object]:
     require_tui_extra()
     store = SessionStore()
-    if resume_session_id is None:
-        metadata = store.create_session()
-        return store, metadata, [], [], store.get_session_state(metadata.session_id)
-    metadata = store.get_session(resume_session_id)
-    event_log = store.load_event_log(resume_session_id)
+    metadata = store.get_session(session_id)
+    event_log = store.load_event_log(session_id)
     return (
         store,
         metadata,
         event_log_to_tui_events(event_log),
         event_log.replay_llm_history(),
-        store.get_session_state(resume_session_id),
+        store.get_session_state(session_id),
     )
 
 
@@ -370,11 +367,19 @@ def run_main(args: argparse.Namespace) -> None:
         model=selected_model,
         model_from_env=model_from_env,
     )
-    store, metadata, initial_events, initial_history, session_state = create_session_context(
-        resume_session_id=resume_session_id,
-    )
-    config = apply_session_state_to_initial_config(config, session_state)
-    recorder = SessionRecorder(store, metadata.session_id)
+    require_tui_extra()
+    if resume_session_id is None:
+        initial_events = []
+        initial_history = []
+        recorder = None
+        session_id = None
+    else:
+        store, metadata, initial_events, initial_history, session_state = load_session_context(
+            session_id=resume_session_id,
+        )
+        config = apply_session_state_to_initial_config(config, session_state)
+        recorder = SessionRecorder(store, metadata.session_id)
+        session_id = metadata.session_id
     if config is None:
         run_configured_tui(
             build_agent_from_config,
@@ -384,10 +389,10 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
-        if recorder.saved:
-            print(f"Session saved: {metadata.session_id}")
+        if recorder is not None and recorder.saved:
+            print(f"Session saved: {session_id}")
         return
     if run_configured_tui is None:
         agent = build_agent_from_config(config)
@@ -396,7 +401,7 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
     else:
         run_configured_tui(
@@ -407,7 +412,7 @@ def run_main(args: argparse.Namespace) -> None:
             initial_events=initial_events,
             initial_history=initial_history,
             session_recorder=recorder,
-            session_id=metadata.session_id,
+            session_id=session_id,
         )
-    if recorder.saved:
-        print(f"Session saved: {metadata.session_id}")
+    if recorder is not None and recorder.saved:
+        print(f"Session saved: {session_id}")

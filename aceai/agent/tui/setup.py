@@ -7,10 +7,19 @@ from typing import cast
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.events import Key
-from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, DataTable, Input, Label, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Input,
+    Label,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from aceai.agent.provider_catalog import (
     api_key_env,
@@ -424,21 +433,35 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         return _selected_skill_names(self, self._skill_items)
 
 
-class ConfigScreen(ModalScreen[ConfigSelection]):
+class ConfigScreen(Screen[ConfigSelection | None]):
     """Collect runtime app configuration changes for future TUI runs."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
 
     DEFAULT_CSS = """
     ConfigScreen {
-        align: center middle;
+        layout: vertical;
+        background: #2e3440;
+        color: #e5e9f0;
     }
 
     #config-panel {
-        width: 72;
-        height: auto;
-        border: solid #88c0d0;
-        padding: 1 2;
+        width: 100%;
+        height: 1fr;
+        padding: 1 3;
         background: #2e3440;
         color: #e5e9f0;
+    }
+
+    #config-tabs {
+        height: 1fr;
+    }
+
+    #config-scroll, #system-prompt-scroll {
+        width: 100%;
+        height: 1fr;
     }
 
     #config-title {
@@ -457,10 +480,20 @@ class ConfigScreen(ModalScreen[ConfigSelection]):
         height: 1;
     }
 
-    #config-divider {
+    .config-divider {
         height: 1;
         margin: 1 0;
         border-top: solid #4c566a;
+    }
+
+    #system-prompt {
+        height: auto;
+        min-height: 20;
+        margin-bottom: 1;
+        padding: 1 2;
+        border: solid #4c566a;
+        background: #3b4252;
+        color: #eceff4;
     }
 
     #config-skills-list {
@@ -502,6 +535,7 @@ class ConfigScreen(ModalScreen[ConfigSelection]):
         skill_items: tuple[SkillConfigItem, ...] = (),
         skill_selection_mode: str = "all",
         enabled_skills: tuple[str, ...] = (),
+        system_prompt: str = "",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -512,6 +546,7 @@ class ConfigScreen(ModalScreen[ConfigSelection]):
         self._skill_selection_mode = skill_selection_mode
         self._enabled_skills = enabled_skills
         self._api_keys = api_keys
+        self._system_prompt = system_prompt
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
             self._provider_name,
@@ -524,52 +559,69 @@ class ConfigScreen(ModalScreen[ConfigSelection]):
     def compose(self) -> ComposeResult:
         with Container(id="config-panel"):
             yield Label("AceAI configuration", id="config-title")
-            yield Label(_field_label("provider"))
-            yield Input(
-                value=self._provider_name,
-                placeholder="Provider",
-                id="provider",
-            )
-            yield Static(
-                _candidate_text(
-                    _matching_candidates(supported_provider_names(), self._provider_name),
-                    self._provider_highlight,
-                ),
-                id="provider-options",
-            )
-            yield Label(_field_label("model"))
-            yield Input(
-                value=self._current_model,
-                placeholder="Model",
-                id="model",
-            )
-            yield Static(
-                _candidate_text(
-                    _matching_candidates(
-                        supported_models(self._provider_name),
-                        self._current_model,
-                    ),
-                    self._model_highlight,
-                ),
-                id="model-options",
-            )
-            yield Label(_field_label("api_key"))
-            yield Input(
-                value=_masked_api_key(self._api_key_for_provider(self._provider_name)),
-                placeholder=api_key_env(self._provider_name),
-                id="api-key",
-            )
-            yield Static("", id="config-divider")
-            yield Label(_skills_field_label())
-            with Container(id="config-skills-list"):
-                yield from _skill_checkboxes(
-                    self._skill_items,
-                    self._checked_skill_items(),
-                )
-            yield Static("", id="config-error")
+            with TabbedContent(initial="settings-tab", id="config-tabs"):
+                with TabPane("Settings", id="settings-tab"):
+                    with VerticalScroll(id="config-scroll"):
+                        yield Label(_field_label("provider"))
+                        yield Input(
+                            value=self._provider_name,
+                            placeholder="Provider",
+                            id="provider",
+                        )
+                        yield Static(
+                            _candidate_text(
+                                _matching_candidates(
+                                    supported_provider_names(), self._provider_name
+                                ),
+                                self._provider_highlight,
+                            ),
+                            id="provider-options",
+                        )
+                        yield Label(_field_label("model"))
+                        yield Input(
+                            value=self._current_model,
+                            placeholder="Model",
+                            id="model",
+                        )
+                        yield Static(
+                            _candidate_text(
+                                _matching_candidates(
+                                    supported_models(self._provider_name),
+                                    self._current_model,
+                                ),
+                                self._model_highlight,
+                            ),
+                            id="model-options",
+                        )
+                        yield Label(_field_label("api_key"))
+                        yield Input(
+                            value=_masked_api_key(
+                                self._api_key_for_provider(self._provider_name)
+                            ),
+                            placeholder=api_key_env(self._provider_name),
+                            id="api-key",
+                        )
+                        yield Static(
+                            "",
+                            classes="config-divider",
+                            id="config-skills-divider",
+                        )
+                        yield Label(_skills_field_label())
+                        with Container(id="config-skills-list"):
+                            yield from _skill_checkboxes(
+                                self._skill_items,
+                                self._checked_skill_items(),
+                            )
+                        yield Static("", id="config-error")
+                with TabPane("System Prompt", id="system-prompt-tab"):
+                    with VerticalScroll(id="system-prompt-scroll"):
+                        yield Static(self._system_prompt, id="system-prompt")
             with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "provider":

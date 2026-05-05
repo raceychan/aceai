@@ -1,14 +1,13 @@
 """Read-only Textual application for AceAI event streams."""
 
 from textual.app import App, ComposeResult
-from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.widgets import Footer, Header
 
 from aceai.core.events import AgentEvent
 
-from aceai.agent.session import SessionRecorder
+from aceai.agent.session import SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
 from .events import TUIEvent
@@ -30,37 +29,8 @@ from .widgets import (
 STREAM_DELTA_REFRESH_CHARS = 512
 
 
-class AceAICommandProvider(Provider):
-    """Command palette entries for AceAI application actions."""
-
-    async def search(self, query: str) -> Hits:
-        matcher = self.matcher(query)
-        for command_name in ("Switch session", "Resume session"):
-            match = matcher.match(command_name)
-            if match > 0:
-                yield Hit(
-                    match,
-                    matcher.highlight(command_name),
-                    self._open_session_selector,
-                    text=command_name,
-                    help="Browse saved sessions and switch the current TUI session.",
-                )
-
-    async def discover(self) -> Hits:
-        yield DiscoveryHit(
-            "Switch session",
-            self._open_session_selector,
-            help="Browse saved sessions and switch the current TUI session.",
-        )
-
-    def _open_session_selector(self) -> None:
-        self.app.open_session_selector()
-
-
 class AceAITUI(App[None]):
     """Read-only TUI prototype backed by normalized TUI events."""
-
-    COMMANDS = {*App.COMMANDS, AceAICommandProvider}
 
     CSS = """
     Screen {
@@ -100,6 +70,7 @@ class AceAITUI(App[None]):
         ("c", "config", "Config"),
         ("t", "trajectory", "Trajectory"),
         ("i", "metadata", "Info"),
+        ("s", "session_switcher", "Sessions"),
     ]
 
     def __init__(
@@ -151,14 +122,12 @@ class AceAITUI(App[None]):
         self._refresh_widgets()
 
     def show_sessions(self) -> None:
-        if self._session_recorder is None:
-            self.append_event(TUIEvent.session_notice("No session store is configured."))
-            return
-        sessions = self._session_recorder.store.list_sessions()
+        store = self._session_store()
+        sessions = store.list_sessions()
         if not sessions:
             self.append_event(TUIEvent.session_notice("No sessions found."))
             return
-        total_cost = self._session_recorder.store.total_cost_usd()
+        total_cost = store.total_cost_usd()
         lines = [f"Total cost: {format_usd(total_cost)}", "", "Sessions:"]
         for session in sessions:
             marker = "*" if session.session_id == self._session_id else "-"
@@ -171,16 +140,14 @@ class AceAITUI(App[None]):
         self.append_event(TUIEvent.session_notice("\n".join(lines)))
 
     def open_session_selector(self) -> None:
-        if self._session_recorder is None:
-            self.append_event(TUIEvent.session_notice("No session store is configured."))
-            return
-        sessions = self._session_recorder.store.list_sessions()
+        store = self._session_store()
+        sessions = store.list_sessions()
         if not sessions:
             self.append_event(TUIEvent.session_notice("No sessions found."))
             return
         self.push_screen(
             SessionSelectScreen(
-                store=self._session_recorder.store,
+                store=store,
                 sessions=sessions,
                 current_session_id=self._session_id,
             ),
@@ -193,24 +160,36 @@ class AceAITUI(App[None]):
         self.switch_session(session_id)
 
     def switch_session(self, session_id: str) -> None:
-        if self._session_recorder is None:
-            self.append_event(TUIEvent.session_notice("No session store is configured."))
-            return
         if session_id == self._session_id:
             return
-        store = self._session_recorder.store
+        store = self._session_store()
         try:
             metadata = store.get_session(session_id)
         except KeyError:
             self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
             return
-        self._session_recorder.finalize()
+        if self._session_recorder is not None:
+            self._session_recorder.finalize()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
         event_log = store.load_event_log(metadata.session_id)
         self.load_events(event_log_to_tui_events(event_log))
         self.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
+
+    def ensure_session(self) -> None:
+        if self._session_recorder is not None:
+            return
+        store = SessionStore()
+        metadata = store.create_session()
+        self._session_recorder = SessionRecorder(store, metadata.session_id)
+        self._session_id = metadata.session_id
+        self.title = f"AceAI {metadata.session_id}"
+
+    def _session_store(self) -> SessionStore:
+        if self._session_recorder is not None:
+            return self._session_recorder.store
+        return SessionStore()
 
     def append_event(self, event: TUIEvent) -> None:
         if self._should_buffer_stream_delta(event):
@@ -260,6 +239,9 @@ class AceAITUI(App[None]):
         self.append_event(
             TUIEvent.session_notice("Configuration is only available in live TUI runs.")
         )
+
+    def action_session_switcher(self) -> None:
+        self.open_session_selector()
 
     def action_metadata(self) -> None:
         self.open_metadata_screen()
