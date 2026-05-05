@@ -561,6 +561,7 @@ class AgentBase:
         executor: IExecutor | None = None,
         tracer: trace.Tracer | None = None,
         skill_path: str | Path | Literal["auto", "disable"] = "auto",
+        enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
         hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
@@ -570,6 +571,8 @@ class AgentBase:
             skill_path,
             loader_factory=skill_loader_factory,
         )
+        if is_set(enabled_skill_names):
+            self._skill_registry = self._skill_registry.select(enabled_skill_names)
         skill_prompt = format_skills_for_prompt(self._skill_registry)
         self._default_model = default_model
         self._llm_service = llm_service

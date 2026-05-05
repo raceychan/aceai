@@ -13,9 +13,10 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import initial_state, reduce_events, select_event
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
-from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget, TimelineWidget
+from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget
 from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
 from rich.console import Console, Group
+from textual.events import Click
 from textual.widgets import DataTable, Footer, Static
 
 
@@ -230,25 +231,23 @@ async def test_static_tui_loads_fixture_events() -> None:
 
     async with app.run_test():
         assert app._state.status == "completed"
-        timeline = app.query_one(TimelineWidget)
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
-        assert timeline.can_focus
         assert stream.can_focus
         assert detail.can_focus
-        assert timeline.has_class("collapsed")
+        assert not stream.debug_mode
         assert detail.has_class("collapsed")
 
 
 @pytest.mark.anyio
-async def test_timeline_selection_opens_tool_result_detail() -> None:
+async def test_debug_mode_stream_selection_opens_tool_result_detail() -> None:
     events = static_demo_events()
     tool_event = _first_event(events, "tool_completed")
     app = AceAITUI(events)
 
     async with app.run_test() as pilot:
-        timeline = app.query_one(TimelineWidget)
-        timeline.post_message(TimelineWidget.EventSelected(tool_event.event_id))
+        stream = app.query_one(StreamWidget)
+        stream.post_message(StreamWidget.EventSelected(tool_event.event_id))
         await pilot.pause()
 
         detail = app.query_one(DetailWidget)
@@ -258,15 +257,63 @@ async def test_timeline_selection_opens_tool_result_detail() -> None:
 
 
 @pytest.mark.anyio
-async def test_timeline_accepts_step_and_tool_rows_for_same_event() -> None:
+async def test_debug_mode_reuses_message_panel_and_opens_selected_detail() -> None:
     app = AceAITUI(static_demo_events())
 
     async with app.run_test() as pilot:
-        timeline = app.query_one(TimelineWidget)
-        timeline.set_state(app._state)
+        stream = app.query_one(StreamWidget)
+        detail = app.query_one(DetailWidget)
+
+        await pilot.press("d")
+
+        assert stream.debug_mode
+        assert stream.has_focus
+        assert not detail.has_class("collapsed")
+        assert app._state.selected_event_id is not None
+
+
+@pytest.mark.anyio
+async def test_debug_mode_can_move_selection_inside_message_panel() -> None:
+    app = AceAITUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        stream = app.query_one(StreamWidget)
+
+        await pilot.press("d")
+        first_selected = app._state.selected_event_id
+        await pilot.press("down")
+
+        assert stream.debug_mode
+        assert app._state.selected_event_id != first_selected
+
+
+@pytest.mark.anyio
+async def test_debug_mode_click_selects_message_in_main_stream() -> None:
+    app = AceAITUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        stream = app.query_one(StreamWidget)
+
+        await pilot.press("d")
+        assert len(stream._debug_line_spans) >= 2
+        target = stream._debug_line_spans[1]
+        stream.on_click(
+            Click(
+                stream,
+                x=1,
+                y=target.start_line - stream.scroll_y,
+                delta_x=0,
+                delta_y=0,
+                button=1,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
         await pilot.pause()
 
-        assert timeline.option_count > 0
+        assert app._state.selected_event_id == target.event_id
+        assert not app.query_one(DetailWidget).has_class("collapsed")
 
 
 @pytest.mark.anyio
@@ -541,8 +588,8 @@ def test_trajectory_distinguishes_rejected_approval_from_tool_failure() -> None:
 
     rendered = _render_to_text(Group(*_trajectory_renderables(events)))
 
-    assert "rejected      1" in rendered
-    assert "failures      0" in rendered
+    assert "rejected    1" in rendered
+    assert "failures    0" in rendered
     assert "rejected" in rendered
 
 

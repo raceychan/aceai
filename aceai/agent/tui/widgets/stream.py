@@ -3,9 +3,11 @@
 from msgspec import Struct
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from textual.events import Resize
+from textual.events import Click, Key, Resize
+from textual.message import Message
 from textual.widgets import RichLog
 
 from aceai.agent.tui.events import TUIEvent, TUIEventKind
@@ -21,6 +23,11 @@ TRANSCRIPT_GUTTER = "  "
 
 class StreamWidget(RichLog):
     """Render the readable event transcript."""
+
+    class EventSelected(Message):
+        def __init__(self, event_id: str) -> None:
+            self.event_id = event_id
+            super().__init__()
 
     DEFAULT_CSS = """
     StreamWidget {
@@ -43,16 +50,106 @@ class StreamWidget(RichLog):
     ) -> None:
         super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
+        self._debug_mode = False
+        self._selected_debug_index = 0
+        self._debug_line_spans: list[_DebugLineSpan] = []
+
+    @property
+    def debug_mode(self) -> bool:
+        return self._debug_mode
+
+    def set_debug_mode(self, enabled: bool) -> str | None:
+        self._debug_mode = enabled
+        selectable_events = _selectable_debug_events(self._state.events)
+        if enabled and selectable_events:
+            self._selected_debug_index = min(
+                self._selected_debug_index,
+                len(selectable_events) - 1,
+            )
+            selected_event_id = selectable_events[self._selected_debug_index].event_id
+        else:
+            selected_event_id = None
+        self.set_state(self._state)
+        return selected_event_id
 
     def set_state(self, state: TUIRunState) -> None:
         self._state = state
         self.clear()
         if not self._state.events:
             self.write(Text("No events yet", style="#d8dee9"))
+        elif self._debug_mode:
+            self._write_debug_stream()
         else:
             for renderable in _render_events(self._state.events):
                 self._write_stream_renderable(renderable)
         self.call_after_refresh(self.scroll_end, animate=False)
+
+    def on_key(self, event: Key) -> None:
+        if not self._debug_mode:
+            return
+        if event.key in ("up", "k"):
+            self._select_debug_event(self._selected_debug_index - 1)
+            event.stop()
+            return
+        if event.key in ("down", "j"):
+            self._select_debug_event(self._selected_debug_index + 1)
+            event.stop()
+            return
+        if event.key == "home":
+            self._select_debug_event(0)
+            event.stop()
+            return
+        if event.key == "end":
+            self._select_debug_event(len(_selectable_debug_events(self._state.events)) - 1)
+            event.stop()
+
+    def on_click(self, event: Click) -> None:
+        if not self._debug_mode:
+            return
+        line_index = self.scroll_y + event.y
+        for span in self._debug_line_spans:
+            if span.start_line <= line_index < span.end_line:
+                self._select_debug_event(span.index)
+                event.stop()
+                return
+
+    def _select_debug_event(self, index: int) -> None:
+        selectable_events = _selectable_debug_events(self._state.events)
+        if not selectable_events:
+            return
+        self._selected_debug_index = max(0, min(index, len(selectable_events) - 1))
+        self.set_state(self._state)
+        self.post_message(
+            self.EventSelected(selectable_events[self._selected_debug_index].event_id)
+        )
+
+    def _write_debug_stream(self) -> None:
+        self._debug_line_spans = []
+        selectable_events = _selectable_debug_events(self._state.events)
+        if not selectable_events:
+            self.write(Text("No inspectable messages yet", style="#d8dee9"))
+            return
+        self._selected_debug_index = min(
+            self._selected_debug_index,
+            len(selectable_events) - 1,
+        )
+        selected_event_id = selectable_events[self._selected_debug_index].event_id
+        for index, entry in enumerate(_render_debug_events(selectable_events)):
+            renderable = entry.renderable
+            if entry.event_id == selected_event_id:
+                renderable = _selected_debug_panel(renderable)
+            elif index > 0:
+                self.write(Text(""))
+            start_line = len(self.lines)
+            self._write_stream_renderable(renderable)
+            self._debug_line_spans.append(
+                _DebugLineSpan(
+                    index=index,
+                    event_id=entry.event_id,
+                    start_line=start_line,
+                    end_line=len(self.lines),
+                )
+            )
 
     def on_resize(self, event: Resize) -> None:
         if self._state.events:
@@ -71,6 +168,18 @@ class _ToolBlockState(Struct, kw_only=True):
     arguments: str = ""
     output: str = ""
     status: str = "running"
+
+
+class _DebugRenderable(Struct, kw_only=True):
+    event_id: str
+    renderable: RenderableType
+
+
+class _DebugLineSpan(Struct, kw_only=True):
+    index: int
+    event_id: str
+    start_line: int
+    end_line: int
 
 
 def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
@@ -177,6 +286,46 @@ def _render_events(events: list[TUIEvent]) -> list[RenderableType]:
             continue
         renderables.append(_render_tool_block(tool_block))
     return renderables
+
+
+def _render_debug_events(events: list[TUIEvent]) -> list[_DebugRenderable]:
+    renderables: list[_DebugRenderable] = []
+    for event in events:
+        rendered = _render_debug_event(event)
+        if rendered is None:
+            continue
+        renderables.append(
+            _DebugRenderable(event_id=event.event_id, renderable=rendered)
+        )
+    return renderables
+
+
+def _render_debug_event(event: TUIEvent) -> RenderableType | None:
+    if event.kind == "tool_started":
+        return _render_text_block(
+            event.tool_name or EVENT_LABELS[event.kind],
+            "running",
+            event_kind=event.kind,
+        )
+    return _render_event(event)
+
+
+def _selectable_debug_events(events: list[TUIEvent]) -> list[TUIEvent]:
+    selectable: list[TUIEvent] = []
+    for event in events:
+        if _render_debug_event(event) is None:
+            continue
+        selectable.append(event)
+    return selectable
+
+
+def _selected_debug_panel(renderable: RenderableType) -> RenderableType:
+    return Panel(
+        renderable,
+        border_style="#88c0d0",
+        style="on #3b4252",
+        padding=(0, 0),
+    )
 
 
 def _flush_pending_reasoning(

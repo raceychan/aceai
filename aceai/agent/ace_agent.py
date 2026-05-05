@@ -1,9 +1,11 @@
 from pathlib import Path
+from typing import Literal
 
 from ididi import Graph
 from openai import AsyncOpenAI
 
 from aceai.core import AgentBase, ToolExecutor
+from aceai.llm.interface import UNSET, Unset
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
@@ -37,6 +39,8 @@ def build_ace_agent(
     model: OpenAIModel,
     provider_name: str = "openai",
     hosted_tools: list[LLMHostedToolSpec] | None = None,
+    skill_path: str | Path | Literal["auto", "disable"] = ACE_AGENT_SKILLS_DIR,
+    enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
 ) -> AgentBase:
     if provider_name == "openai":
         provider = OpenAI(
@@ -63,6 +67,7 @@ def build_ace_agent(
         default_model=model,
         llm_service=llm_service,
         executor=executor,
-        skill_path=ACE_AGENT_SKILLS_DIR,
+        skill_path=skill_path,
+        enabled_skill_names=enabled_skill_names,
         hosted_tools=selected_hosted_tools,
     )

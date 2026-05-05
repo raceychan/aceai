@@ -147,15 +147,14 @@ def _summary(events: list[TUIEvent], groups: list[list[TUIEvent]]) -> Table:
         and not _is_rejected_tool_failure(event, rejected_call_ids)
     )
     table = Table.grid(expand=True)
-    table.add_column(width=14, style="#9aa3b2")
+    table.add_column(width=12, style="#9aa3b2")
+    table.add_column(width=8, style="#eceff4")
+    table.add_column(width=12, style="#9aa3b2")
     table.add_column(ratio=1, style="#eceff4")
-    table.add_row("turns", str(turn_count))
-    table.add_row("steps", str(step_count))
-    table.add_row("events", str(len(events)))
-    table.add_row("tool calls", str(tool_call_count))
-    table.add_row("approvals", str(approval_count))
-    table.add_row("rejected", str(len(rejected_call_ids)))
-    table.add_row("failures", str(failure_count))
+    table.add_row("turns", str(turn_count), "tool calls", str(tool_call_count))
+    table.add_row("steps", str(step_count), "approvals", str(approval_count))
+    table.add_row("events", str(len(events)), "rejected", str(len(rejected_call_ids)))
+    table.add_row("", "", "failures", str(failure_count))
     return table
 
 

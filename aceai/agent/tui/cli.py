@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from aceai.agent.ace_agent import build_ace_agent
+from aceai.agent.ace_agent import ACE_AGENT_SKILLS_DIR, build_ace_agent
 from aceai.agent.provider_catalog import (
     all_supported_models,
     api_key_env,
@@ -16,12 +16,14 @@ from aceai.agent.provider_catalog import (
     supported_provider_names,
 )
 from aceai.core import AgentBase
+from aceai.llm.interface import UNSET
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 
-from .config import (
+from aceai.agent.config import (
     AceAITUIConfig,
     load_config,
+    replace_config,
 )
 from aceai.agent.cost import format_usd
 
@@ -76,22 +78,68 @@ def build_default_agent(
     *,
     api_key: str,
     model: OpenAIModel,
+    default_model: OpenAIModel | None = None,
     provider: str = "openai",
+    skills: str | None = None,
+    skill_selection_mode: str = "all",
+    enabled_skills: list[str] | None = None,
 ) -> AgentBase:
+    agent_model = model if default_model is None else default_model
+    skill_path = skills if skills is not None else None
+    enabled_skill_names = (
+        tuple(enabled_skills or [])
+        if skill_selection_mode == "selected"
+        else UNSET
+    )
     if provider == "openai":
-        return build_ace_agent(api_key=api_key, model=model)
-    return build_ace_agent(api_key=api_key, model=model, provider_name=provider)
+        if skill_path is None:
+            return build_ace_agent(
+                api_key=api_key,
+                model=agent_model,
+                enabled_skill_names=enabled_skill_names,
+            )
+        return build_ace_agent(
+            api_key=api_key,
+            model=agent_model,
+            skill_path=skill_path,
+            enabled_skill_names=enabled_skill_names,
+        )
+    if skill_path is None:
+        return build_ace_agent(
+            api_key=api_key,
+            model=agent_model,
+            provider_name=provider,
+            enabled_skill_names=enabled_skill_names,
+        )
+    return build_ace_agent(
+        api_key=api_key,
+        model=agent_model,
+        provider_name=provider,
+        skill_path=skill_path,
+        enabled_skill_names=enabled_skill_names,
+    )
 
 
 def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
     if config.provider not in supported_provider_names():
         raise ValueError("Unsupported provider")
     if config.provider == "openai":
-        return build_default_agent(api_key=config.api_key, model=config.model)
+        return build_default_agent(
+            api_key=config.api_key,
+            model=config.model,
+            default_model=config.default_model,
+            skills=config.skills,
+            skill_selection_mode=config.skill_selection_mode,
+            enabled_skills=config.enabled_skills,
+        )
     return build_default_agent(
         api_key=config.api_key,
         model=config.model,
+        default_model=config.default_model,
         provider=config.provider,
+        skills=config.skills,
+        skill_selection_mode=config.skill_selection_mode,
+        enabled_skills=config.enabled_skills,
     )
 
 
@@ -119,22 +167,34 @@ def resolve_initial_config(
         selected_model = model
         if not model_from_env:
             selected_model = default_model(provider)
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=os.environ[env_name],
-            model=selected_model,
-            api_keys={provider: os.environ[env_name]},
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=os.environ[env_name],
+                model=selected_model,
+                default_model=default_model(provider),
+                skills=str(ACE_AGENT_SKILLS_DIR),
+                skill_selection_mode="all",
+                enabled_skills=[],
+                api_keys={provider: os.environ[env_name]},
+            )
         )
     stored = load_config()
     if stored is None:
         return None
     if model_from_env:
         selected_model = resolve_model(stored.provider, model)
-        return AceAITUIConfig(
-            provider=stored.provider,
-            api_key=stored.api_key,
-            model=selected_model,
-            api_keys=stored.api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=stored.provider,
+                api_key=stored.api_key,
+                model=selected_model,
+                default_model=stored.default_model,
+                skills=stored.skills,
+                skill_selection_mode=stored.skill_selection_mode,
+                enabled_skills=stored.enabled_skills,
+                api_keys=stored.api_keys,
+            )
         )
     return stored
 
@@ -152,18 +212,30 @@ def apply_session_state_to_initial_config(
         provider = config.provider
     model = resolve_model(provider, state.selected_model)
     if config is not None and config.provider == provider:
-        return AceAITUIConfig(
-            provider=config.provider,
-            api_key=config.api_key,
-            model=model,
-            api_keys=config.api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=config.provider,
+                api_key=config.api_key,
+                model=model,
+                default_model=config.default_model,
+                skills=config.skills,
+                skill_selection_mode=config.skill_selection_mode,
+                enabled_skills=config.enabled_skills,
+                api_keys=config.api_keys,
+            )
         )
     if config is not None and provider in config.api_keys:
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=config.api_keys[provider],
-            model=model,
-            api_keys=config.api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=config.api_keys[provider],
+                model=model,
+                default_model=default_model(provider),
+                skills=config.skills,
+                skill_selection_mode=config.skill_selection_mode,
+                enabled_skills=config.enabled_skills,
+                api_keys=config.api_keys,
+            )
         )
     env_name = api_key_env(provider)
     if env_name in os.environ:
@@ -171,11 +243,19 @@ def apply_session_state_to_initial_config(
         if config is not None:
             api_keys.update(config.api_keys)
         api_keys[provider] = os.environ[env_name]
-        return AceAITUIConfig(
-            provider=provider,
-            api_key=os.environ[env_name],
-            model=model,
-            api_keys=api_keys,
+        return replace_config(
+            AceAITUIConfig(
+                provider=provider,
+                api_key=os.environ[env_name],
+                model=model,
+                default_model=default_model(provider),
+                skills=config.skills if config is not None else str(ACE_AGENT_SKILLS_DIR),
+                skill_selection_mode=config.skill_selection_mode
+                if config is not None
+                else "all",
+                enabled_skills=config.enabled_skills if config is not None else [],
+                api_keys=api_keys,
+            )
         )
     return config
 

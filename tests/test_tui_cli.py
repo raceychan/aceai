@@ -49,7 +49,7 @@ def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
 def test_cli_rejects_direct_question_without_creating_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
-    def build_default_agent(*, api_key, model):
+    def build_default_agent(*, api_key, model, **kwargs):
         calls.append(("build", (api_key, model)))
         return StubAgent()
 
@@ -71,7 +71,7 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model):
+    def build_default_agent(*, api_key, model, **kwargs):
         calls.append(("build", (api_key, model)))
         return agent
 
@@ -119,7 +119,7 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, provider="openai"):
+    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
         calls.append(("build", (provider, api_key, model)))
         return agent
 
@@ -154,7 +154,7 @@ def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, provider="openai"):
+    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
         calls.append(("build", (provider, api_key, model)))
         return agent
 
@@ -240,7 +240,7 @@ def test_build_default_agent_uses_main_ace_agent(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
     agent = StubAgent()
 
-    def build_ace_agent(*, api_key, model):
+    def build_ace_agent(*, api_key, model, **kwargs):
         calls.append((api_key, model))
         return agent
 
@@ -256,7 +256,7 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model):
+    def build_default_agent(*, api_key, model, **kwargs):
         calls.append(("build", (api_key, model)))
         return agent
 
@@ -305,7 +305,7 @@ def test_cli_resume_without_session_id_loads_latest_updated_session(monkeypatch)
 
             return [LatestMetadata()]
 
-    def build_default_agent(*, api_key, model):
+    def build_default_agent(*, api_key, model, **kwargs):
         calls.append(("build", (api_key, model)))
         return agent
 
@@ -370,7 +370,7 @@ def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys)
         recorder.saved = False
 
     monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.setattr(cli, "build_default_agent", lambda *, api_key, model: agent)
+    monkeypatch.setattr(cli, "build_default_agent", lambda *, api_key, model, **kwargs: agent)
     monkeypatch.setattr(
         cli,
         "create_session_context",

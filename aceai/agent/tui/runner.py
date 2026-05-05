@@ -9,18 +9,19 @@ from textual.worker import Worker
 
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
+from aceai.agent.config import AceAITUIConfig, replace_config
 from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
 from aceai.core.events import AgentEvent, RunCompletedEvent, RunSuspendedEvent
 from aceai.core.executor import ToolExecutor
+from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
-from .config import AceAITUIConfig
 from .events import TUIEvent
 from .metadata import MetadataSection
-from .setup import ModelSelection, ModelSelectScreen, ProviderSetupScreen
+from .setup import ConfigSelection, ConfigScreen, ProviderSetupScreen, SkillConfigItem
 from .widgets import ApprovalWidget
 from .widgets import CommandInput
 
@@ -46,6 +47,17 @@ def _model_from_request_meta(
     if "model" in request_meta:
         return _as_model(provider_name, request_meta["model"])
     return _as_model(provider_name, default_model)
+
+
+def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
+    return tuple(
+        SkillConfigItem(
+            name=skill.name,
+            description=skill.description,
+            location=str(skill.skill_file),
+        )
+        for skill in registry.get_skills()
+    )
 
 
 class _RuntimeStreamMixin:
@@ -134,8 +146,12 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             self.open_session_selector()
             self.exit_command_input(event.input)
             return
-        if question in ("/config", "/metadata", "/info"):
+        if question in ("/metadata", "/info"):
             self.open_metadata_screen()
+            self.exit_command_input(event.input)
+            return
+        if question == "/config":
+            self.open_config_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/resume "):
@@ -143,7 +159,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             self.exit_command_input(event.input)
             return
         if question == "/model":
-            self.open_model_selector()
+            self.open_config_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/model "):
@@ -248,20 +264,25 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             )
         )
 
-    def action_model_switcher(self) -> None:
-        self.open_model_selector()
+    def action_config(self) -> None:
+        self.open_config_screen()
 
-    def open_model_selector(self) -> None:
+    def open_config_screen(self) -> None:
         self.push_screen(
-            ModelSelectScreen(
+            ConfigScreen(
                 provider_name=self._provider_name,
                 current_model=self._selected_model,
+                default_model=cast(OpenAIModel, self._agent.default_model),
+                skills="auto",
+                skill_items=_skill_config_items(self._agent.skill_registry),
+                skill_selection_mode="all",
+                enabled_skills=(),
                 api_keys={},
             ),
-            self._handle_model_selection,
+            self._handle_config_selection,
         )
 
-    def _handle_model_selection(self, selection: ModelSelection | None) -> None:
+    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
         if selection is None:
             return
         if type(selection) is str:
@@ -405,10 +426,11 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self.apply_config(config)
 
     def apply_config(self, config: AceAITUIConfig) -> None:
-        self._provider_name = config.provider
-        self._current_config = config
-        self._agent = self._agent_factory(config)
-        self._selected_model = config.model
+        next_config = replace_config(config)
+        self._provider_name = next_config.provider
+        self._current_config = next_config
+        self._agent = self._agent_factory(next_config)
+        self._selected_model = next_config.model
         self._request_meta["model"] = self._selected_model
         self._persist_session_state()
         self.set_status_model(self._selected_model)
@@ -430,8 +452,12 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self.open_session_selector()
             self.exit_command_input(event.input)
             return
-        if question in ("/config", "/metadata", "/info"):
+        if question in ("/metadata", "/info"):
             self.open_metadata_screen()
+            self.exit_command_input(event.input)
+            return
+        if question == "/config":
+            self.open_config_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/resume "):
@@ -439,7 +465,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self.exit_command_input(event.input)
             return
         if question == "/model":
-            self.open_model_selector()
+            self.open_config_screen()
             self.exit_command_input(event.input)
             return
         if question.startswith("/model "):
@@ -547,40 +573,60 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             )
         )
 
-    def action_model_switcher(self) -> None:
-        self.open_model_selector()
+    def action_config(self) -> None:
+        self.open_config_screen()
 
-    def open_model_selector(self) -> None:
+    def open_config_screen(self) -> None:
         api_keys: dict[str, str] = {}
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
             api_keys[self._current_config.provider] = self._current_config.api_key
         self.push_screen(
-            ModelSelectScreen(
+            ConfigScreen(
                 provider_name=self._provider_name,
                 current_model=self._selected_model,
+                default_model=self._current_config.default_model
+                if self._current_config is not None
+                else self._selected_model,
+                skills=self._current_config.skills if self._current_config is not None else "",
+                skill_items=self._available_skill_items(),
+                skill_selection_mode=self._current_config.skill_selection_mode
+                if self._current_config is not None
+                else "all",
+                enabled_skills=tuple(self._current_config.enabled_skills)
+                if self._current_config is not None
+                else (),
                 api_keys=api_keys,
             ),
-            self._handle_model_selection,
+            self._handle_config_selection,
         )
 
-    def _handle_model_selection(self, selection: ModelSelection | None) -> None:
+    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
         if selection is None:
             return
         if type(selection) is str:
             self.switch_model(selection)
             return
         if selection.provider == self._provider_name:
-            if selection.api_key != "":
+            if selection.api_key != "" or self._current_config is not None:
                 api_keys = {}
                 if self._current_config is not None:
                     api_keys.update(self._current_config.api_keys)
-                api_keys[selection.provider] = selection.api_key
+                api_key = (
+                    selection.api_key
+                    if selection.api_key != ""
+                    else self._current_config.api_key
+                )
+                api_keys[selection.provider] = api_key
                 self.apply_config(
                     AceAITUIConfig(
                         provider=selection.provider,
-                        api_key=selection.api_key,
+                        api_key=api_key,
                         model=selection.model,
+                        default_model=selection.default_model,
+                        skills=selection.skills,
+                        skill_selection_mode=selection.skill_selection_mode,
+                        enabled_skills=list(selection.enabled_skills),
                         api_keys=api_keys,
                     )
                 )
@@ -613,6 +659,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 provider=selection.provider,
                 api_key=api_key,
                 model=selection.model,
+                default_model=selection.default_model,
+                skills=selection.skills,
+                skill_selection_mode=selection.skill_selection_mode,
+                enabled_skills=list(selection.enabled_skills),
                 api_keys=api_keys,
             )
         )
@@ -633,11 +683,30 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
+        if self._current_config is not None:
+            self._current_config = replace_config(
+                AceAITUIConfig(
+                    provider=self._current_config.provider,
+                    api_key=self._current_config.api_key,
+                    model=cast(OpenAIModel, model),
+                    default_model=self._current_config.default_model,
+                    skills=self._current_config.skills,
+                    skill_selection_mode=self._current_config.skill_selection_mode,
+                    enabled_skills=self._current_config.enabled_skills,
+                    api_keys=self._current_config.api_keys,
+                )
+            )
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         self._persist_session_state()
         self.set_status_model(self._selected_model)
         self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
+
+    def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
+        if self._current_config is None:
+            return _skill_config_items(self._agent.skill_registry)
+        registry = SkillLoader.load_registry(self._current_config.skills)
+        return _skill_config_items(registry)
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta: LLMRequestMeta = dict(self._request_meta)

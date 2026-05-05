@@ -24,7 +24,6 @@ from .widgets import (
     DetailWidget,
     StatusBarWidget,
     StreamWidget,
-    TimelineWidget,
 )
 
 STREAM_DELTA_REFRESH_CHARS = 512
@@ -54,11 +53,7 @@ class AceAITUI(App[None]):
         min-width: 40;
     }
 
-    TimelineWidget.collapsed {
-        display: none;
-    }
-
-        DetailWidget.collapsed {
+    DetailWidget.collapsed {
         display: none;
     }
 
@@ -71,11 +66,10 @@ class AceAITUI(App[None]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("ctrl+c", "quit", "Quit"),
-        ("e", "toggle_events", "Events"),
-        ("d", "toggle_detail", "Raw Log"),
+        ("d", "toggle_debug_mode", "Debug"),
+        ("c", "config", "Config"),
         ("t", "trajectory", "Trajectory"),
         ("i", "metadata", "Info"),
-        ("m", "model_switcher", "Model"),
         ("s", "session_switcher", "Sessions"),
     ]
 
@@ -100,7 +94,6 @@ class AceAITUI(App[None]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main"):
-            yield TimelineWidget(id="timeline", classes="collapsed")
             yield StreamWidget(id="stream")
             yield DetailWidget(id="detail", classes="collapsed")
         yield ApprovalWidget(id="approval", classes="collapsed")
@@ -223,29 +216,20 @@ class AceAITUI(App[None]):
     def exit_command_input(self, command_input: CommandInput) -> None:
         command_input.value = ""
         command_input.blur()
-        self.query_one("#stream").focus()
+        self._focus_message_panel()
 
-    def action_toggle_detail(self) -> None:
-        detail = self.query_one(DetailWidget)
-        if detail.has_class("collapsed"):
-            detail.remove_class("collapsed")
-            detail.focus()
-        else:
-            detail.add_class("collapsed")
-            self.query_one(StreamWidget).focus()
+    def action_toggle_debug_mode(self) -> None:
+        stream = self.query_one(StreamWidget)
+        selected_event_id = stream.set_debug_mode(not stream.debug_mode)
+        stream.focus()
+        if selected_event_id is None:
+            self.query_one(DetailWidget).add_class("collapsed")
+            return
+        self._select_debug_event(selected_event_id)
 
-    def action_toggle_events(self) -> None:
-        timeline = self.query_one(TimelineWidget)
-        if timeline.has_class("collapsed"):
-            timeline.remove_class("collapsed")
-            timeline.focus()
-        else:
-            timeline.add_class("collapsed")
-            self.query_one(StreamWidget).focus()
-
-    def action_model_switcher(self) -> None:
+    def action_config(self) -> None:
         self.append_event(
-            TUIEvent.session_notice("Model selection is only available in live TUI runs.")
+            TUIEvent.session_notice("Configuration is only available in live TUI runs.")
         )
 
     def action_session_switcher(self) -> None:
@@ -284,17 +268,19 @@ class AceAITUI(App[None]):
             MetadataSection(title="Usage", lines=cost_lines),
         ]
 
-    def on_timeline_widget_event_selected(
+    def on_stream_widget_event_selected(
         self,
-        event: TimelineWidget.EventSelected,
+        event: StreamWidget.EventSelected,
     ) -> None:
-        self._state = select_event(self._state, event.event_id)
-        self.query_one(DetailWidget).remove_class("collapsed")
-        self.query_one(DetailWidget).set_state(self._state)
+        self._select_debug_event(event.event_id)
         event.stop()
 
+    def _select_debug_event(self, event_id: str) -> None:
+        self._state = select_event(self._state, event_id)
+        self.query_one(DetailWidget).remove_class("collapsed")
+        self.query_one(DetailWidget).set_state(self._state)
+
     def _refresh_widgets(self) -> None:
-        self.query_one(TimelineWidget).set_state(self._state)
         self.query_one(StreamWidget).set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
         self.query_one(StatusBarWidget).set_status(
@@ -307,6 +293,9 @@ class AceAITUI(App[None]):
             command_input.placeholder = "Choose Approve or Reject"
         else:
             command_input.placeholder = "Ask AceAI or type /quit"
+
+    def _focus_message_panel(self) -> None:
+        self.query_one(StreamWidget).focus()
 
     def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
         if event.kind not in ("assistant_delta", "thinking_delta"):
