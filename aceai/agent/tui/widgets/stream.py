@@ -1045,7 +1045,7 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind in ("thinking_delta", "reasoning_summary"):
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "llm_retrying":
-        return _render_text_block(label, event.content, event_kind=event.kind)
+        return None
     if event.kind in (
         "tool_started",
         "tool_approval_requested",

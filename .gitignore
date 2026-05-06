@@ -25,5 +25,6 @@ lab/
 # Local AceAI user config and secrets
 .aceai/
 
-# Local agent skills
-.agent/skills/aceai-release/
+# Project release skill
+!.agent/skills/aceai-release/
+!.agent/skills/aceai-release/**

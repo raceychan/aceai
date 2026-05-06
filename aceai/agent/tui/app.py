@@ -4,10 +4,11 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.timer import Timer
-from textual.widgets import Footer, Header
+from textual.widgets import Footer, Header, TextArea
 
 from aceai.core.events import AgentEvent
 
+from aceai.agent.ideas import IdeaStore
 from aceai.agent.session import SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
@@ -21,6 +22,7 @@ from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, s
 from .trajectory import TrajectoryScreen
 from .widgets import (
     ApprovalWidget,
+    CommandCompletionWidget,
     CommandInput,
     DetailWidget,
     StatusBarWidget,
@@ -63,6 +65,7 @@ class AceAITUI(App[None]):
         background: #3b4252;
         color: #eceff4;
     }
+
     """
 
     BINDINGS = [
@@ -82,6 +85,7 @@ class AceAITUI(App[None]):
         model: str | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        idea_store: IdeaStore | None = None,
         record_events: bool = True,
     ) -> None:
         super().__init__()
@@ -90,6 +94,7 @@ class AceAITUI(App[None]):
         self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
+        self._idea_store = idea_store or IdeaStore()
         self._record_events = record_events
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta: TUIEvent | None = None
@@ -103,6 +108,7 @@ class AceAITUI(App[None]):
             yield DetailWidget(id="detail", classes="collapsed")
         yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
+        yield CommandCompletionWidget(id="command-completions", classes="hidden")
         yield CommandInput(id="input")
         yield Footer()
 
@@ -209,10 +215,19 @@ class AceAITUI(App[None]):
             self._session_recorder.record(tui_event_to_session_event(event))
 
     def append_agent_event(self, event: AgentEvent) -> None:
-        self.append_event(TUIEvent.from_agent_event(event))
+        tui_event = TUIEvent.from_agent_event(event)
+        if tui_event.kind == "llm_retrying":
+            self.notify(
+                tui_event.content,
+                title="Retrying LLM",
+                severity="warning",
+                timeout=3.0,
+            )
+            return
+        self.append_event(tui_event)
 
     def notify_session(self, content: str) -> None:
-        self.query_one(StatusBarWidget).show_notice(content)
+        self.notify(content, title="AceAI", severity="information", timeout=3.0)
 
     def set_status_model(self, model: str | None) -> None:
         self._status_model = model
@@ -231,8 +246,57 @@ class AceAITUI(App[None]):
 
     def exit_command_input(self, command_input: CommandInput) -> None:
         command_input.value = ""
+        self._hide_command_completions()
         command_input.blur()
         self._focus_message_panel()
+
+    def command_names(self) -> tuple[str, ...]:
+        return ()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if not isinstance(event.text_area, CommandInput):
+            return
+        self._refresh_command_completions(event.text_area.value)
+
+    def on_command_input_completion_requested(
+        self,
+        event: CommandInput.CompletionRequested,
+    ) -> None:
+        matches = self._matching_command_names(event.input.value)
+        if not matches:
+            return
+        event.input.value = f"/{matches[0]} "
+        self._refresh_command_completions(event.input.value)
+
+    def _refresh_command_completions(self, value: str) -> None:
+        completions = self._command_completion_widget()
+        if completions is None:
+            return
+        matches = self._matching_command_names(value)
+        if not matches:
+            completions.hide()
+            return
+        completions.show_commands(list(matches))
+
+    def _matching_command_names(self, value: str) -> tuple[str, ...]:
+        if not value.startswith("/"):
+            return ()
+        body = value.removeprefix("/")
+        if " " in body or "\n" in body:
+            return ()
+        return tuple(name for name in self.command_names() if name.startswith(body))
+
+    def _hide_command_completions(self) -> None:
+        completions = self._command_completion_widget()
+        if completions is None:
+            return
+        completions.hide()
+
+    def _command_completion_widget(self) -> CommandCompletionWidget | None:
+        matches = list(self.query(CommandCompletionWidget))
+        if not matches:
+            return None
+        return matches[0]
 
     def action_toggle_debug_mode(self) -> None:
         stream = self.query_one(StreamWidget)

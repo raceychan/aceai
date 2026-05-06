@@ -11,6 +11,7 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.app import AceAgentApp, UpdateCheckResult
+from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
@@ -115,8 +116,9 @@ def _parse_command(text: str) -> tuple[str, str] | None:
 
 
 class _RuntimeStreamMixin:
-    _agent_app: AceAgentApp
+    _agent_app: AceAgentApp | None
     _active_worker: Worker[None] | None
+    _idea_store: IdeaStore
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -180,14 +182,24 @@ class _RuntimeStreamMixin:
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if not isinstance(event.input, CommandInput):
             return
-        question = event.value
+        self._handle_command_input_submitted(event.input, event.value)
+
+    def on_command_input_submitted(self, event: CommandInput.Submitted) -> None:
+        self._handle_command_input_submitted(event.input, event.value)
+
+    def _handle_command_input_submitted(
+        self,
+        command_input: CommandInput,
+        value: str,
+    ) -> None:
+        question = value
         if question == "":
             return
         if self._dispatch_command(question):
-            self.exit_command_input(event.input)
+            self.exit_command_input(command_input)
             return
         self.start_run(question)
-        self.exit_command_input(event.input)
+        self.exit_command_input(command_input)
 
     def _dispatch_command(self, text: str) -> bool:
         parsed = _parse_command(text)
@@ -211,6 +223,9 @@ class _RuntimeStreamMixin:
                 for name in names:
                     handlers[name] = bound
         return handlers
+
+    def command_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._command_handlers()))
 
     @tui_command("quit")
     def _command_quit(self, arg: str) -> None:
@@ -246,12 +261,59 @@ class _RuntimeStreamMixin:
             exit_on_error=False,
         )
 
+    @tui_command("idea")
+    def _command_idea(self, arg: str) -> None:
+        if arg == "":
+            self.append_event(TUIEvent.session_notice(_ideas_notice(self._list_ideas())))
+            return
+        try:
+            delete_index = _idea_delete_index(arg)
+        except ValueError:
+            self.append_event(TUIEvent.session_notice("Usage: /idea delete <number>"))
+            return
+        if delete_index is not None:
+            self._delete_idea(delete_index)
+            return
+        idea = self._capture_idea(arg)
+        self.append_event(
+            TUIEvent.session_notice(
+                f"Saved idea from {idea.created_at.strftime('%Y-%m-%d %H:%M')}."
+            )
+        )
+
     @tui_command("resume")
     def _command_resume(self, arg: str) -> None:
         if arg == "":
             self.append_event(TUIEvent.session_notice("Usage: /resume <session_id>"))
             return
         self.switch_session(arg)
+
+    def _capture_idea(self, content: str) -> Idea:
+        agent_app = self._agent_app
+        if agent_app is None:
+            return self._idea_store.capture(
+                content,
+                source_session_id=self._session_id,
+            )
+        return agent_app.capture_idea(content)
+
+    def _list_ideas(self) -> list[Idea]:
+        agent_app = self._agent_app
+        if agent_app is None:
+            return self._idea_store.list_recent()
+        return agent_app.list_ideas()
+
+    def _delete_idea(self, index: int) -> None:
+        try:
+            agent_app = self._agent_app
+            if agent_app is None:
+                idea = self._idea_store.delete_recent(index)
+            else:
+                idea = agent_app.delete_idea(index)
+        except IndexError:
+            self.append_event(TUIEvent.session_notice(f"No idea found at {index}."))
+            return
+        self.append_event(TUIEvent.session_notice(f"Deleted idea {index}: {idea.content}"))
 
     @tui_command("model")
     def _command_model(self, arg: str) -> None:
@@ -280,6 +342,25 @@ def _update_available_notice(result: UpdateCheckResult) -> str:
         f"(current {result.current_version}).\n"
         f"{UPDATE_INSTRUCTIONS}"
     )
+
+
+def _ideas_notice(ideas: list[Idea]) -> str:
+    if not ideas:
+        return "No saved ideas for this workspace."
+    lines = ["Saved ideas:"]
+    for index, idea in enumerate(ideas, start=1):
+        created_at = idea.created_at.strftime("%Y-%m-%d %H:%M")
+        lines.append(f"{index}. {created_at}  {idea.content}")
+    lines.append("")
+    lines.append("Delete with /idea delete <number>.")
+    return "\n".join(lines)
+
+
+def _idea_delete_index(arg: str) -> int | None:
+    prefix = "delete "
+    if not arg.startswith(prefix):
+        return None
+    return int(arg.removeprefix(prefix))
 
 
 class UpdateCommandResult(Struct, frozen=True, kw_only=True):
@@ -325,6 +406,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         initial_history: list[LLMMessage] | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
@@ -341,6 +423,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             model=self._selected_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            idea_store=idea_store,
             record_events=False,
         )
         self._agent = agent
@@ -353,6 +436,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             session_store=self._session_store(),
             session_recorder=session_recorder,
             session_id=session_id,
+            idea_store=self._idea_store,
             trace_ctx=trace_ctx,
             request_meta=self._request_meta,
         )
@@ -555,6 +639,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         initial_history: list[LLMMessage] | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
@@ -576,6 +661,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             model=initial_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            idea_store=idea_store,
             record_events=False,
         )
         self._agent_factory = agent_factory
@@ -620,6 +706,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             session_store=self._session_store(),
             session_recorder=self._session_recorder,
             session_id=self._session_id,
+            idea_store=self._idea_store,
             trace_ctx=self._trace_ctx,
             request_meta=self._request_meta,
         )

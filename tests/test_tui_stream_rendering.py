@@ -81,7 +81,7 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     assert block.plain == "  Hi!"
 
 
-def test_llm_retry_progress_renders() -> None:
+def test_llm_retry_progress_is_hidden_from_stream() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
         TUIEvent.from_agent_event(
@@ -96,10 +96,7 @@ def test_llm_retry_progress_renders() -> None:
 
     renderables = _render_events(events)
 
-    assert len(renderables) == 1
-    block = renderables[0]
-    assert isinstance(block, Text)
-    assert "Retrying LLM request 1/2 in 0.5s" in block.plain
+    assert renderables == []
 
 
 def test_main_stream_renders_question_before_answer() -> None:

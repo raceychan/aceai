@@ -5,6 +5,11 @@ on:
     branches:
       - master
       - "version/**"
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
 
 env:
