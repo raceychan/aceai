@@ -9,6 +9,7 @@ from aceai.core.events import (
     LLMMediaEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
+    LLMRetryingEvent,
     LLMStartedEvent,
     LLMToolCallDeltaEvent,
     RunCompletedEvent,
@@ -643,6 +644,38 @@ async def test_agent_emits_function_call_argument_deltas() -> None:
     assert tool_deltas[0].text_delta == '{"a":'
     assert isinstance(events[-1], RunCompletedEvent)
     assert events[-1].final_answer == "hello world"
+
+
+@pytest.mark.anyio
+async def test_agent_emits_llm_retry_progress() -> None:
+    stream = [
+        LLMStreamEvent(
+            event_type="response.retrying",
+            error="RemoteProtocolError: peer closed",
+            retry_count=1,
+            retry_max=2,
+            retry_delay_seconds=0.5,
+        ),
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(text="recovered"),
+        ),
+    ]
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=SimpleLLMService(stream),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question?")
+    retry_events = [event for event in events if isinstance(event, LLMRetryingEvent)]
+
+    assert len(retry_events) == 1
+    assert retry_events[0].retry_count == 1
+    assert retry_events[0].retry_max == 2
+    assert retry_events[0].retry_delay_seconds == 0.5
+    assert retry_events[0].error == "RemoteProtocolError: peer closed"
 
 
 @pytest.mark.anyio

@@ -1,5 +1,31 @@
 # Changelog
 
+## AceAI v0.2.8
+
+### Features
+
+- `tui`: Add automatic update checks against PyPI on startup so users are notified when a newer AceAI release is available.
+- `tui`: Add `/update` self-upgrade flow that runs `uv tool upgrade aceai` and restarts the current AceAI process after a successful upgrade.
+
+### Improvements
+
+- `llm`: Add exponential retry for retryable provider transport, timeout, rate-limit, and 5xx failures, with structured retry progress events for streaming runs.
+- `tui`: Render LLM retry progress in the transcript so interrupted provider streams show visible recovery attempts instead of appearing stuck.
+- `tui`: Improve session replay and tool work history rendering so restored sessions preserve more of the original execution timeline.
+- `sessions`: Persist and replay LLM retry events so transient provider failures remain visible in saved transcripts.
+
+### Fixes
+
+- `llm`: Recover from incomplete streamed HTTP responses such as `RemoteProtocolError: peer closed connection without sending complete message body` by retrying the stream request.
+- `llm`: Treat stalled streaming reads as retryable after a 3-second per-event timeout so network disconnects do not wait indefinitely for the next provider chunk.
+- `tui`: Show a final "please try again later" assistant message after retry exhaustion instead of letting provider transport failures crash the TUI with a traceback.
+- `tui`: Report self-update command failures in the transcript instead of silently failing when `uv` or the upgrade command cannot run.
+
+### Breaking Changes
+
+- `llm`: `LLMStreamEvent.event_type` now includes `response.retrying`; stream consumers with exhaustive event handling must handle or ignore this new event type.
+- `core`: Agent event consumers may now receive `agent.llm.retrying` events during streaming runs.
+
 ## AceAI v0.2.7
 
 ### Features

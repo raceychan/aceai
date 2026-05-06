@@ -187,6 +187,15 @@ class AgentRuntime:
                         if isinstance(stream_event.error, str):
                             raise AceAIRuntimeError(stream_event.error)
                         raise AceAIRuntimeError("LLM streaming error")
+                    case "response.retrying":
+                        if not isinstance(stream_event.error, str):
+                            raise AceAIRuntimeError("LLM retry event missing error")
+                        yield event_builder.llm_retrying(
+                            retry_count=stream_event.retry_count,
+                            retry_max=stream_event.retry_max,
+                            retry_delay_seconds=stream_event.retry_delay_seconds,
+                            error=stream_event.error,
+                        )
                     case "response.completed":
                         response = stream_event.response
                         if not isinstance(response, LLMResponse):

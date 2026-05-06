@@ -1,13 +1,28 @@
 """LLM Service - Provider-agnostic LLM interface with clean responsibilities."""
 
 import asyncio
-from typing import AsyncGenerator, BinaryIO, Protocol, Type, TypeVar, Unpack
+from typing import (
+    AsyncGenerator,
+    AsyncIterator,
+    BinaryIO,
+    Protocol,
+    Type,
+    TypeVar,
+    Unpack,
+)
 
+import httpx
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from aceai.llm.errors import AceAIConfigurationError, AceAIValidationError, LLMProviderError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+
+from aceai.llm.errors import (
+    AceAIConfigurationError,
+    AceAIValidationError,
+    LLMProviderError,
+)
 
 from .models import (
     LLMInput,
@@ -19,6 +34,15 @@ from .models import (
 )
 
 JSONDecodeErrors = (ValidationError, DecodeError)
+LLM_RETRY_EXHAUSTED_MESSAGE = "LLM request failed after retries. Please try again later."
+RetryableProviderErrors = (
+    TimeoutError,
+    httpx.TransportError,
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    APIStatusError,
+)
 
 T = TypeVar("T")
 
@@ -82,7 +106,10 @@ class LLMService:
         self,
         providers: list[LLMProviderBase],
         timeout_seconds: float,
-        max_retries: int = 2,
+        max_retries: int = 5,
+        retry_initial_delay_seconds: float = 0.5,
+        retry_backoff_factor: float = 2.0,
+        stream_event_timeout_seconds: float = 3.0,
     ):
         if not providers:
             raise AceAIConfigurationError("At least one provider is required")
@@ -90,6 +117,9 @@ class LLMService:
         self._current_provider_index = 0
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        self._retry_initial_delay_seconds = retry_initial_delay_seconds
+        self._retry_backoff_factor = retry_backoff_factor
+        self._stream_event_timeout_seconds = stream_event_timeout_seconds
 
     def _get_current_provider(self) -> LLMProviderBase:
         """Get the current provider (round-robin)."""
@@ -154,7 +184,7 @@ class LLMService:
         attempts = max(1, retries)
         last_error: Exception | None = None
         for attempt in range(attempts):
-            raw_response = await self._complete_request(llm_input)
+            raw_response = await self._complete_request_with_retry(llm_input)
             raw_text = raw_response.text
             try:
                 return decode(raw_text, type=schema)
@@ -183,7 +213,20 @@ class LLMService:
         self, **request: Unpack[LLMInput]
     ) -> LLMResponse:
         """Complete using a unified LLMInput or raw messages."""
-        return await self._complete_request(request)
+        return await self._complete_request_with_retry(request)
+
+    async def _complete_request_with_retry(self, request: LLMInput) -> LLMResponse:
+        retries_remaining = self._max_retries
+        retry_count = 0
+        while True:
+            try:
+                return await self._complete_request(request)
+            except RetryableProviderErrors as err:
+                if not _is_retryable_provider_error(err) or retries_remaining == 0:
+                    raise
+                retry_count += 1
+                retries_remaining -= 1
+                await asyncio.sleep(self._retry_delay_seconds(retry_count))
 
     async def _complete_request(self, request: LLMInput) -> LLMResponse:
         provider = self._get_current_provider()
@@ -230,7 +273,7 @@ class LLMService:
         retries = retries or self._max_retries
 
         if retries <= 0:
-            raw_response = await self._complete_request(request)
+            raw_response = await self._complete_request_with_retry(request)
             return decode(raw_response.text, type=schema)
 
         return await self._complete_json_with_retry(
@@ -262,15 +305,72 @@ class LLMService:
     async def stream(
         self, **request: Unpack[LLMInput]
     ) -> AsyncGenerator[LLMStreamEvent, None]:
-        """Provider passthrough streaming.
+        """Provider passthrough streaming with bounded retry on transport failures.
 
         Business logic (e.g., output sanitization/formatting) must be handled at
         higher layers such as ContextManager or agents, not here.
         """
-        provider = self._get_current_provider()
-        stream_resp = provider.stream(request)
-        try:
-            async for event in stream_resp:
-                yield event
-        finally:
-            await stream_resp.aclose()
+        retry_count = 0
+        while True:
+            provider = self._get_current_provider()
+            stream_resp: AsyncGenerator[LLMStreamEvent, None] | None = None
+            try:
+                stream_resp = provider.stream(request)
+                while True:
+                    event = await _next_stream_event(
+                        stream_resp,
+                        timeout_seconds=self._stream_event_timeout_seconds,
+                    )
+                    yield event
+            except StopAsyncIteration:
+                return
+            except RetryableProviderErrors as err:
+                if (
+                    not _is_retryable_provider_error(err)
+                    or retry_count == self._max_retries
+                ):
+                    yield LLMStreamEvent(
+                        event_type="response.completed",
+                        response=LLMResponse(
+                            text=LLM_RETRY_EXHAUSTED_MESSAGE,
+                            status="failed",
+                        ),
+                        segments=[],
+                    )
+                    return
+                retry_count += 1
+                delay_seconds = self._retry_delay_seconds(retry_count)
+                yield LLMStreamEvent(
+                    event_type="response.retrying",
+                    error=_provider_error_message(err),
+                    retry_count=retry_count,
+                    retry_max=self._max_retries,
+                    retry_delay_seconds=delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
+            finally:
+                if stream_resp is not None:
+                    await stream_resp.aclose()
+
+    def _retry_delay_seconds(self, retry_count: int) -> float:
+        return self._retry_initial_delay_seconds * (
+            self._retry_backoff_factor ** (retry_count - 1)
+        )
+
+
+def _provider_error_message(err: BaseException) -> str:
+    return f"{type(err).__name__}: {err}"
+
+
+async def _next_stream_event(
+    stream: AsyncIterator[LLMStreamEvent],
+    *,
+    timeout_seconds: float,
+) -> LLMStreamEvent:
+    return await asyncio.wait_for(stream.__anext__(), timeout=timeout_seconds)
+
+
+def _is_retryable_provider_error(err: BaseException) -> bool:
+    if isinstance(err, APIStatusError):
+        return err.status_code == 429 or 500 <= err.status_code
+    return True

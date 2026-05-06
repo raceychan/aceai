@@ -1,4 +1,7 @@
+import asyncio
+
 import pytest
+import httpx
 from msgspec import DecodeError, Struct
 from openai import OpenAIError
 from types import SimpleNamespace
@@ -18,7 +21,7 @@ from aceai.llm.models import (
     LLMResponse,
     LLMStreamEvent,
 )
-from aceai.llm.service import LLMService
+from aceai.llm.service import LLMService, LLM_RETRY_EXHAUSTED_MESSAGE
 
 
 class AttrMessagePart(dict):
@@ -105,6 +108,72 @@ class ErroringProvider(LLMProviderBase):
         return ""
 
 
+class FlakyCompleteProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__(responses=[LLMResponse(text="recovered")])
+        self.failures_remaining = 1
+
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        self.complete_requests.append(request)
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise httpx.ConnectError("connection dropped")
+        return self._responses.pop(0)
+
+
+class FlakyStreamProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message body"
+                )
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="recovered"),
+            )
+
+        return iterator()
+
+
+class HangingStreamProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hangs_remaining = 1
+
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            if self.hangs_remaining > 0:
+                self.hangs_remaining -= 1
+                await asyncio.sleep(60.0)
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="recovered"),
+            )
+
+        return iterator()
+
+
+class AlwaysFailingStreamProvider(RecordingProvider):
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            raise httpx.RemoteProtocolError("connection still down")
+            yield LLMStreamEvent(event_type="response.completed")
+
+        return iterator()
+
+
 def test_llm_service_requires_providers() -> None:
     with pytest.raises(AceAIConfigurationError):
         LLMService([], timeout_seconds=1.0)
@@ -148,6 +217,21 @@ async def test_llm_service_complete_updates_last_response() -> None:
 
 
 @pytest.mark.anyio
+async def test_llm_service_complete_retries_retryable_provider_errors() -> None:
+    provider = FlakyCompleteProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    response = await service.complete(messages=[LLMMessage.build("system", "Prompt")])
+
+    assert response.text == "recovered"
+    assert len(provider.complete_requests) == 2
+
+
+@pytest.mark.anyio
 async def test_llm_service_stream_preserves_request_metadata() -> None:
     event = LLMStreamEvent(
         event_type="response.output_text.delta",
@@ -166,6 +250,85 @@ async def test_llm_service_stream_preserves_request_metadata() -> None:
 
     assert received == ["hello"]
     assert provider.stream_requests[0]["metadata"] is metadata
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_emits_retry_progress() -> None:
+    provider = FlakyStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    events: list[LLMStreamEvent] = []
+    async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+        events.append(event)
+
+    assert [event.event_type for event in events] == [
+        "response.retrying",
+        "response.completed",
+    ]
+    retry_event = events[0]
+    assert retry_event.retry_count == 1
+    assert retry_event.retry_max == 5
+    assert retry_event.retry_delay_seconds == 0.0
+    assert retry_event.error == (
+        "RemoteProtocolError: peer closed connection without sending complete message body"
+    )
+    assert len(provider.stream_requests) == 2
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_retries_when_next_event_times_out() -> None:
+    provider = HangingStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+        stream_event_timeout_seconds=0.01,
+    )
+
+    events: list[LLMStreamEvent] = []
+    async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+        events.append(event)
+
+    assert [event.event_type for event in events] == [
+        "response.retrying",
+        "response.completed",
+    ]
+    retry_event = events[0]
+    assert retry_event.retry_count == 1
+    assert retry_event.error == "TimeoutError: "
+    assert len(provider.stream_requests) == 2
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_completes_with_user_message_after_retries_exhausted() -> (
+    None
+):
+    provider = AlwaysFailingStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        max_retries=2,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    events: list[LLMStreamEvent] = []
+    async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+        events.append(event)
+
+    assert [event.event_type for event in events] == [
+        "response.retrying",
+        "response.retrying",
+        "response.completed",
+    ]
+    final_response = events[-1].response
+    assert isinstance(final_response, LLMResponse)
+    assert final_response.text == LLM_RETRY_EXHAUSTED_MESSAGE
+    assert final_response.status == "failed"
+    assert len(provider.stream_requests) == 3
 
 
 @pytest.mark.anyio

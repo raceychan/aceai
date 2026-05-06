@@ -544,6 +544,7 @@ class LLMStreamEvent(Record):
         "response.completed",
         "response.error",
         "response.media",
+        "response.retrying",
     ]
     """Explicit event type mirroring the provider's semantic intent."""
 
@@ -564,6 +565,15 @@ class LLMStreamEvent(Record):
 
     provider_meta: list[LLMProviderMeta] = field(default_factory=list[LLMProviderMeta])
     """Provider attempt metadata as of this event emission."""
+
+    retry_count: int = 0
+    """1-based retry counter for response.retrying events."""
+
+    retry_max: int = 0
+    """Maximum retry count for response.retrying events."""
+
+    retry_delay_seconds: float = 0.0
+    """Delay before the next provider attempt for response.retrying events."""
 
 
 class LLMProviderBase(ABC):

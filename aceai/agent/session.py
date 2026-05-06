@@ -32,6 +32,7 @@ SessionEventKind = Literal[
     "assistant_tool_call",
     "error",
     "llm_completed",
+    "llm_retrying",
     "llm_started",
     "media",
     "reasoning_summary",
@@ -129,6 +130,7 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "assistant_tool_call",
             "error",
             "llm_completed",
+            "llm_retrying",
             "llm_started",
             "media",
             "reasoning_summary",
@@ -561,7 +563,12 @@ class SessionRecorder:
             self._record_tool_approval_resolved(event)
         elif event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
             self._append_event(event.kind, dict(event.payload), event)
-        elif event.kind in ("media", "reasoning_summary", "thinking_delta"):
+        elif event.kind in (
+            "llm_retrying",
+            "media",
+            "reasoning_summary",
+            "thinking_delta",
+        ):
             self._append_event(event.kind, dict(event.payload), event)
 
     def flush_assistant(
