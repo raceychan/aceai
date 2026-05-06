@@ -837,6 +837,8 @@ def _usage_payload(usage: LLMUsage | None) -> dict[str, Any]:
         "usage": {
             "input_tokens": usage.input_tokens,
             "cached_input_tokens": usage.cached_input_tokens,
+            "cache_miss_input_tokens": usage.cache_miss_input_tokens,
+            "input_cache_hit_rate": usage.input_cache_hit_rate,
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
         }

@@ -26,12 +26,14 @@ def test_tui_event_to_session_event_keeps_storage_fields() -> None:
         step_index=0,
         payload={
             "content": "answer",
-            "usage": {
-                "input_tokens": 1,
-                "cached_input_tokens": None,
-                "output_tokens": 2,
-                "total_tokens": 3,
-            },
+                "usage": {
+                    "input_tokens": 1,
+                    "cached_input_tokens": None,
+                    "cache_miss_input_tokens": None,
+                    "input_cache_hit_rate": None,
+                    "output_tokens": 2,
+                    "total_tokens": 3,
+                },
         },
     )
 
@@ -48,6 +50,8 @@ def test_event_log_to_tui_events_restores_display_transcript() -> None:
                         "usage": {
                             "input_tokens": 1,
                             "cached_input_tokens": None,
+                            "cache_miss_input_tokens": None,
+                            "input_cache_hit_rate": None,
                             "output_tokens": 2,
                             "total_tokens": 3,
                         },
@@ -78,6 +82,36 @@ def test_event_log_to_tui_events_restores_display_transcript() -> None:
     )
     assert events[1].cost is not None
     assert events[1].cost.total_cost_usd == 0.3
+
+
+def test_event_log_to_tui_events_migrates_legacy_usage_payload() -> None:
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(
+                    kind="assistant_message",
+                    payload={
+                        "content": "answer",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 4,
+                            "output_tokens": 2,
+                            "total_tokens": 12,
+                        },
+                    },
+                ),
+            ]
+        )
+    )
+
+    assert events[0].usage == LLMUsage(
+        input_tokens=10,
+        cached_input_tokens=4,
+        cache_miss_input_tokens=6,
+        input_cache_hit_rate=0.4,
+        output_tokens=2,
+        total_tokens=12,
+    )
 
 
 def test_event_log_to_tui_events_restores_reasoning_events() -> None:

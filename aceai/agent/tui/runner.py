@@ -431,11 +431,11 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         try:
             snapshot = self._agent_app.switch_session(session_id)
         except KeyError:
-            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            self.notify_session(f"Session not found: {session_id}")
             return
         self._sync_app_state()
         self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.append_event(TUIEvent.session_notice(f"Resumed session {snapshot.metadata.session_id}"))
+        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
         self._restore_session_state()
 
     def show_model(self) -> None:
@@ -495,7 +495,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         self._agent_app.switch_model(self._selected_model)
         self._sync_app_state()
         self.set_status_model(self._selected_model)
-        self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
+        self.notify_session(f"Switched model to {self._selected_model}")
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta: LLMRequestMeta = dict(self._request_meta)
@@ -664,11 +664,11 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         try:
             snapshot = self._agent_app.switch_session(session_id)
         except KeyError:
-            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            self.notify_session(f"Session not found: {session_id}")
             return
         self._sync_app_state()
         self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.append_event(TUIEvent.session_notice(f"Resumed session {snapshot.metadata.session_id}"))
+        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
         self._restore_session_state()
 
     def approve_pending_tool(self) -> None:
@@ -785,10 +785,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                         tool_permissions=selection.tool_permissions,
                     )
                 )
-                self.append_event(
-                    TUIEvent.session_notice(
-                        f"Updated provider credentials and switched model to {selection.model}"
-                    )
+                self.notify_session(
+                    f"Updated provider credentials and switched model to {selection.model}"
                 )
                 return
             self.switch_model(selection.model)
@@ -822,10 +820,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 tool_permissions=selection.tool_permissions,
             )
         )
-        self.append_event(
-            TUIEvent.session_notice(
-                f"Switched provider to {selection.provider} and model to {selection.model}"
-            )
+        self.notify_session(
+            f"Switched provider to {selection.provider} and model to {selection.model}"
         )
 
     def apply_user_config(self, config: AceAITUIConfig) -> None:
@@ -864,7 +860,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self._sync_app_state()
         self._persist_session_state()
         self.set_status_model(self._selected_model)
-        self.append_event(TUIEvent.session_notice(f"Switched model to {self._selected_model}"))
+        self.notify_session(f"Switched model to {self._selected_model}")
 
     def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
         if self._current_config is None:

@@ -215,7 +215,7 @@ async def test_interactive_tui_clear_command_resets_state() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app.load_events([])
         app._state = app._state.__class__(
             status="completed",
@@ -502,7 +502,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
         session_id=metadata.session_id,
     )
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app.switch_model("gpt-5.5")
 
     assert store.get_session_state(metadata.session_id) == SessionState(
@@ -546,12 +546,31 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         status = app.query_one(StatusBarWidget)
 
         assert "model: gpt-4o" in status.current_text
 
+        event_count = len(app._state.events)
         app.switch_model("gpt-5.5")
+
+        assert status.current_text == "Switched model to gpt-5.5"
+        assert len(app._state.events) == event_count
+
+        await pilot.pause(3.1)
+
+        assert "model: gpt-5.5" in status.current_text
+
+        status.show_notice("First notice", timeout=0.1)
+        status.show_notice("Second notice", timeout=1.0)
+
+        assert status.current_text == "First notice"
+
+        await pilot.pause(0.2)
+
+        assert status.current_text == "Second notice"
+
+        await pilot.pause(1.1)
 
         assert "model: gpt-5.5" in status.current_text
 
@@ -568,6 +587,8 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
                     usage=LLMUsage(
                         input_tokens=1_200,
                         cached_input_tokens=200,
+                        cache_miss_input_tokens=1_000,
+                        input_cache_hit_rate=200 / 1_200,
                         output_tokens=300,
                         total_tokens=1_500,
                     ),
@@ -589,7 +610,8 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
         await pilot.pause(0.1)
 
         status = app.query_one(StatusBarWidget)
-        assert "ctx: 1,200" in status.current_text
+        assert "context: 1,200" in status.current_text
+        assert "cache rate: 16.7%" in status.current_text
         assert "cost: $0.0141" in status.current_text
 
 

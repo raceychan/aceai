@@ -169,12 +169,10 @@ class DeepSeek(OpenAI):
     def _usage_from_chat(self, usage: Any) -> Unset[LLMUsage]:
         if usage is None:
             return UNSET
-        cached_input_tokens: int | None = None
-        if usage.prompt_tokens_details is not None:
-            cached_input_tokens = usage.prompt_tokens_details.cached_tokens
-        return LLMUsage(
+        return self.build_usage(
             input_tokens=usage.prompt_tokens,
-            cached_input_tokens=cached_input_tokens,
+            cached_input_tokens=usage.prompt_cache_hit_tokens,
+            cache_miss_input_tokens=usage.prompt_cache_miss_tokens,
             output_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
         )

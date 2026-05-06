@@ -171,7 +171,7 @@ class AceAITUI(App[None]):
         try:
             metadata = store.get_session(session_id)
         except KeyError:
-            self.append_event(TUIEvent.session_notice(f"Session not found: {session_id}"))
+            self.notify_session(f"Session not found: {session_id}")
             return
         if self._session_recorder is not None:
             self._session_recorder.finalize()
@@ -180,7 +180,7 @@ class AceAITUI(App[None]):
         self.title = f"AceAI {metadata.session_id}"
         event_log = store.load_event_log(metadata.session_id)
         self.load_events(event_log_to_tui_events(event_log))
-        self.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
+        self.notify_session(f"Resumed session {metadata.session_id}")
 
     def ensure_session(self) -> None:
         if self._session_recorder is not None:
@@ -210,6 +210,9 @@ class AceAITUI(App[None]):
 
     def append_agent_event(self, event: AgentEvent) -> None:
         self.append_event(TUIEvent.from_agent_event(event))
+
+    def notify_session(self, content: str) -> None:
+        self.query_one(StatusBarWidget).show_notice(content)
 
     def set_status_model(self, model: str | None) -> None:
         self._status_model = model
