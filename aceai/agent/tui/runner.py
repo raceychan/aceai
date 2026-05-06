@@ -1,20 +1,16 @@
 """Live runner that bridges the AceAI app facade into the Textual app."""
 
 import asyncio
-import json
 import os
 import sys
 from typing import AsyncGenerator, Callable, cast
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from msgspec import Struct
 from opentelemetry.context import Context
 from textual.widgets import Input
 from textual.worker import Worker
 
-import aceai
-from aceai.agent.app import AceAgentApp
+from aceai.agent.app import AceAgentApp, UpdateCheckResult
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
@@ -48,18 +44,6 @@ UPDATE_INSTRUCTIONS = (
     "Run /update to upgrade AceAI and restart."
 )
 UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
-PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/aceai/json"
-
-
-class UpdateCheckResult(Struct, frozen=True, kw_only=True):
-    current_version: str
-    latest_version: str
-
-    @property
-    def has_update(self) -> bool:
-        return _version_parts(self.latest_version) > _version_parts(
-            self.current_version
-        )
 
 
 def tui_command(*names: str):
@@ -136,6 +120,11 @@ class _RuntimeStreamMixin:
 
     def on_mount(self) -> None:
         super().on_mount()
+        self._start_update_check()
+
+    def _start_update_check(self) -> None:
+        if self._agent_app is None:
+            return
         self.run_worker(
             self._check_for_updates(),
             name="aceai-update-check",
@@ -144,8 +133,8 @@ class _RuntimeStreamMixin:
         )
 
     async def _check_for_updates(self) -> None:
-        result = await check_for_updates()
-        if result is None or not result.has_update:
+        result = await self._agent_app.check_for_updates()
+        if result is None:
             return
         self.append_event(TUIEvent.session_notice(_update_available_notice(result)))
 
@@ -283,45 +272,6 @@ class _RuntimeStreamMixin:
             return
         self.append_event(TUIEvent.session_notice("AceAI updated. Restarting..."))
         restart_current_process()
-
-
-async def check_for_updates() -> UpdateCheckResult | None:
-    current_version = aceai.__version__
-    latest_version = await _fetch_latest_package_version()
-    if latest_version is None:
-        return None
-    return UpdateCheckResult(
-        current_version=current_version,
-        latest_version=latest_version,
-    )
-
-
-async def _fetch_latest_package_version() -> str | None:
-    return await asyncio.to_thread(_fetch_latest_package_version_sync)
-
-
-def _fetch_latest_package_version_sync() -> str | None:
-    try:
-        with urlopen(PYPI_PROJECT_JSON_URL, timeout=2.0) as response:
-            payload = json.loads(response.read().decode())
-    except (URLError, TimeoutError):
-        return None
-    if type(payload) is not dict:
-        raise TypeError("PyPI project payload must be a mapping")
-    info = payload["info"]
-    if type(info) is not dict:
-        raise TypeError("PyPI project info must be a mapping")
-    version = info["version"]
-    if type(version) is not str:
-        raise TypeError("PyPI project version must be str")
-    return version
-
-
-def _version_parts(version: str) -> tuple[int, int, int]:
-    parts = version.split(".")
-    if len(parts) != 3:
-        raise ValueError("AceAI version must use x.y.z format")
-    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def _update_available_notice(result: UpdateCheckResult) -> str:
@@ -676,6 +626,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._persist_session_state()
         self._sync_app_state()
         self.set_status_model(self._selected_model)
+        self._start_update_check()
         if self._initial_question != "":
             self.start_run(self._initial_question)
 

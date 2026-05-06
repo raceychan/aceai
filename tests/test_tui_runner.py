@@ -11,6 +11,8 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.config import clear_config, current_config
+from aceai.agent import app as agent_app_module
+from aceai.agent.app import UpdateCheckResult
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui import runner as tui_runner_module
 from aceai.agent.tui.app import AceAITUI
@@ -20,7 +22,6 @@ from aceai.agent.tui.runner import (
     AceAIInteractiveTUI,
     AceAILiveTUI,
     UpdateCommandResult,
-    UpdateCheckResult,
 )
 from aceai.agent.tui.setup import (
     ConfigScreen,
@@ -41,7 +42,7 @@ def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
     async def no_update() -> None:
         return None
 
-    monkeypatch.setattr(tui_runner_module, "check_for_updates", no_update)
+    monkeypatch.setattr(agent_app_module, "check_for_updates", no_update)
     return store
 
 
@@ -802,7 +803,7 @@ async def test_interactive_tui_automatically_reports_available_update(monkeypatc
             latest_version="0.2.8",
         )
 
-    monkeypatch.setattr(tui_runner_module, "check_for_updates", available_update)
+    monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -819,6 +820,61 @@ async def test_interactive_tui_automatically_reports_available_update(monkeypatc
         "AceAI 0.2.8 is available (current 0.2.7).\n"
         f"{UPDATE_INSTRUCTIONS}"
     )
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_reports_available_update_once(monkeypatch) -> None:
+    async def available_update() -> UpdateCheckResult:
+        return UpdateCheckResult(
+            current_version="0.2.7",
+            latest_version="0.2.8",
+        )
+
+    monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        app._start_update_check()
+        await pilot.pause(0.1)
+
+    notices = [
+        event
+        for event in app._state.events
+        if event.kind == "session_notice"
+        and "is available" in event.content
+    ]
+    assert len(notices) == 1
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monkeypatch) -> None:
+    calls = 0
+
+    async def no_update() -> None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setattr(agent_app_module, "check_for_updates", no_update)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        app.on_mount()
+        await pilot.pause(0.1)
+
+    assert calls == 1
 
 
 @pytest.mark.anyio

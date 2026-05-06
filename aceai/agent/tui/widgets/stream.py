@@ -260,6 +260,12 @@ def _render_event_entries(
     collapse_tool_activity: bool,
     expanded_tool_activity_ids: set[str],
 ) -> list[_StreamRenderable]:
+    if collapse_tool_activity:
+        return _render_completed_event_entries(
+            events,
+            expanded_tool_activity_ids,
+        )
+
     entries: list[_StreamRenderable] = []
     assistant_buffer = ""
     assistant_buffer_step_id = ""
@@ -293,66 +299,36 @@ def _render_event_entries(
             "tool_failed",
             "run_suspended",
         ):
-            if collapse_tool_activity:
-                pending_working_history = _flush_thinking_buffer_to_working_history(
-                    pending_working_history,
-                    thinking_buffer,
-                )
-                thinking_buffer = ""
-                pending_working_history = _flush_pending_reasoning_to_working_history(
-                    pending_working_history,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
-            else:
-                thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
-                _flush_pending_reasoning(
-                    entries,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
-            if not collapse_tool_activity:
-                assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
-                    entries,
-                    assistant_buffer,
-                    assistant_buffer_step_id,
-                    assistant_step_ids,
-                )
+            thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
+            _flush_pending_reasoning(
+                entries,
+                event.step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
+            assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
+                entries,
+                assistant_buffer,
+                assistant_buffer_step_id,
+                assistant_step_ids,
+            )
             _update_tool_block(tool_blocks, event)
             if event.kind in ("tool_completed", "tool_failed", "tool_approval_requested"):
-                if collapse_tool_activity:
-                    pending_working_history = _append_tool_block(
-                        entries,
-                        pending_working_history,
-                        tool_blocks[event.tool_call_id],
-                        expanded_tool_activity_ids,
+                entries.append(
+                    _StreamRenderable(
+                        renderable=_render_tool_block(tool_blocks[event.tool_call_id])
                     )
-                else:
-                    entries.append(
-                        _StreamRenderable(
-                            renderable=_render_tool_block(tool_blocks[event.tool_call_id])
-                        )
-                    )
+                )
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
         if event.kind == "llm_completed":
-            if collapse_tool_activity:
-                pending_working_history = _flush_pending_reasoning_to_working_history(
-                    pending_working_history,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
-            else:
-                _flush_pending_reasoning(
-                    entries,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
+            _flush_pending_reasoning(
+                entries,
+                event.step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
             if event.tool_calls:
                 if assistant_buffer_step_id == event.step_id:
                     assistant_buffer = ""
@@ -360,14 +336,7 @@ def _render_event_entries(
                 continue
         if _is_invisible_control_event(event):
             continue
-        if collapse_tool_activity:
-            pending_working_history = _flush_thinking_buffer_to_working_history(
-                pending_working_history,
-                thinking_buffer,
-            )
-            thinking_buffer = ""
-        else:
-            thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
+        thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
         assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
             entries,
             assistant_buffer,
@@ -385,63 +354,32 @@ def _render_event_entries(
 
         rendered = _render_event(event)
         if rendered is not None:
-            if collapse_tool_activity:
-                pending_working_history = _flush_pending_reasoning_to_working_history(
-                    pending_working_history,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
-            else:
-                _flush_pending_reasoning(
-                    entries,
-                    event.step_id,
-                    pending_reasoning,
-                    rendered_reasoning_step_ids,
-                )
+            _flush_pending_reasoning(
+                entries,
+                event.step_id,
+                pending_reasoning,
+                rendered_reasoning_step_ids,
+            )
             if event.kind == "user_message" and entries:
                 entries.append(_StreamRenderable(renderable=Text("")))
             if event.kind == "llm_completed":
                 assistant_step_ids.add(event.step_id)
             entries.append(_StreamRenderable(renderable=rendered))
 
-    if collapse_tool_activity:
-        pending_working_history = _flush_thinking_buffer_to_working_history(
-            pending_working_history,
-            thinking_buffer,
-        )
-        thinking_buffer = ""
-    else:
-        thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
+    thinking_buffer = _flush_thinking_buffer(entries, thinking_buffer)
     for step_id in pending_reasoning:
-        if collapse_tool_activity:
-            pending_working_history = _flush_pending_reasoning_to_working_history(
-                pending_working_history,
-                step_id,
-                pending_reasoning,
-                rendered_reasoning_step_ids,
-            )
-        else:
-            _flush_pending_reasoning(
-                entries,
-                step_id,
-                pending_reasoning,
-                rendered_reasoning_step_ids,
-            )
+        _flush_pending_reasoning(
+            entries,
+            step_id,
+            pending_reasoning,
+            rendered_reasoning_step_ids,
+        )
     for call_id, tool_block in tool_blocks.items():
         if call_id in rendered_tool_call_ids:
             continue
         if tool_block.name is None:
             continue
-        if collapse_tool_activity:
-            pending_working_history = _append_tool_block(
-                entries,
-                pending_working_history,
-                tool_block,
-                expanded_tool_activity_ids,
-            )
-        else:
-            entries.append(_StreamRenderable(renderable=_render_tool_block(tool_block)))
+        entries.append(_StreamRenderable(renderable=_render_tool_block(tool_block)))
     _flush_tool_activity(
         entries,
         pending_working_history,
@@ -454,6 +392,173 @@ def _render_event_entries(
         assistant_step_ids,
     )
     return entries
+
+
+def _render_completed_event_entries(
+    events: list[TUIEvent],
+    expanded_tool_activity_ids: set[str],
+) -> list[_StreamRenderable]:
+    entries: list[_StreamRenderable] = []
+    assistant_buffer = ""
+    assistant_buffer_step_id = ""
+    assistant_step_ids: set[str] = set()
+    thinking_buffer = ""
+    pending_working_history: _ToolActivityState | None = None
+    tool_blocks: dict[str, _ToolBlockState] = {}
+    rendered_tool_call_ids: set[str] = set()
+
+    for event in events:
+        if event.kind == "user_message":
+            pending_working_history = _flush_thinking_buffer_to_working_history(
+                pending_working_history,
+                thinking_buffer,
+            )
+            thinking_buffer = ""
+            pending_working_history, assistant_buffer, assistant_buffer_step_id = (
+                _flush_completed_turn(
+                    entries,
+                    pending_working_history,
+                    assistant_buffer,
+                    assistant_buffer_step_id,
+                    assistant_step_ids,
+                    expanded_tool_activity_ids,
+                )
+            )
+            if entries:
+                entries.append(_StreamRenderable(renderable=Text("")))
+            rendered = _render_event(event)
+            if rendered is not None:
+                entries.append(_StreamRenderable(renderable=rendered))
+            continue
+
+        if event.kind == "thinking_delta":
+            thinking_buffer += event.content
+            continue
+
+        if event.kind == "reasoning_summary":
+            rendered = _render_event(event)
+            if rendered is not None:
+                pending_working_history = _append_working_history_renderable(
+                    pending_working_history,
+                    rendered,
+                )
+            continue
+
+        if event.kind == "assistant_delta":
+            assistant_buffer_step_id = event.step_id
+            assistant_buffer += event.content
+            continue
+
+        if event.kind == "llm_completed":
+            if event.tool_calls:
+                if assistant_buffer_step_id == event.step_id:
+                    assistant_buffer = ""
+                    assistant_buffer_step_id = ""
+                continue
+            if assistant_buffer == "" and event.content != "":
+                assistant_buffer_step_id = event.step_id
+                assistant_buffer = event.content
+            continue
+
+        if event.kind == "run_completed":
+            if assistant_buffer == "" and event.content != "":
+                assistant_buffer_step_id = event.step_id
+                assistant_buffer = event.content
+            continue
+
+        if event.tool_call_id is not None and event.kind in (
+            "tool_call_delta",
+            "tool_started",
+            "tool_output",
+            "tool_approval_requested",
+            "tool_approval_resolved",
+            "tool_completed",
+            "tool_failed",
+            "run_suspended",
+        ):
+            pending_working_history = _flush_thinking_buffer_to_working_history(
+                pending_working_history,
+                thinking_buffer,
+            )
+            thinking_buffer = ""
+            _update_tool_block(tool_blocks, event)
+            if event.kind in ("tool_completed", "tool_failed", "tool_approval_requested"):
+                pending_working_history = _append_tool_block(
+                    entries,
+                    pending_working_history,
+                    tool_blocks[event.tool_call_id],
+                    expanded_tool_activity_ids,
+                )
+                rendered_tool_call_ids.add(event.tool_call_id)
+            continue
+
+        if event.kind == "session_notice":
+            pending_working_history = _flush_thinking_buffer_to_working_history(
+                pending_working_history,
+                thinking_buffer,
+            )
+            thinking_buffer = ""
+            pending_working_history, assistant_buffer, assistant_buffer_step_id = (
+                _flush_completed_turn(
+                    entries,
+                    pending_working_history,
+                    assistant_buffer,
+                    assistant_buffer_step_id,
+                    assistant_step_ids,
+                    expanded_tool_activity_ids,
+                )
+            )
+            rendered = _render_event(event)
+            if rendered is not None:
+                entries.append(_StreamRenderable(renderable=rendered))
+
+    pending_working_history = _flush_thinking_buffer_to_working_history(
+        pending_working_history,
+        thinking_buffer,
+    )
+    thinking_buffer = ""
+    for call_id, tool_block in tool_blocks.items():
+        if call_id in rendered_tool_call_ids:
+            continue
+        if tool_block.name is None:
+            continue
+        pending_working_history = _append_tool_block(
+            entries,
+            pending_working_history,
+            tool_block,
+            expanded_tool_activity_ids,
+        )
+    _flush_completed_turn(
+        entries,
+        pending_working_history,
+        assistant_buffer,
+        assistant_buffer_step_id,
+        assistant_step_ids,
+        expanded_tool_activity_ids,
+    )
+    return entries
+
+
+def _flush_completed_turn(
+    entries: list[_StreamRenderable],
+    pending_working_history: _ToolActivityState | None,
+    assistant_buffer: str,
+    assistant_buffer_step_id: str,
+    assistant_step_ids: set[str],
+    expanded_tool_activity_ids: set[str],
+) -> tuple[_ToolActivityState | None, str, str]:
+    pending_working_history = _flush_tool_activity(
+        entries,
+        pending_working_history,
+        expanded_tool_activity_ids,
+    )
+    assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
+        entries,
+        assistant_buffer,
+        assistant_buffer_step_id,
+        assistant_step_ids,
+    )
+    return pending_working_history, assistant_buffer, assistant_buffer_step_id
 
 
 def _render_debug_events(events: list[TUIEvent]) -> list[_DebugRenderable]:
@@ -626,7 +731,10 @@ def _flush_tool_activity(
     pending_tool_activity: _ToolActivityState | None,
     expanded_tool_activity_ids: set[str],
 ) -> None:
-    if pending_tool_activity is not None:
+    if (
+        pending_tool_activity is not None
+        and _working_history_tool_blocks(pending_tool_activity)
+    ):
         renderables.extend(
             _render_tool_activity_entries(
                 pending_tool_activity,
@@ -639,7 +747,7 @@ def _flush_tool_activity(
 def _tool_block_belongs_to_activity(tool_block: _ToolBlockState) -> bool:
     if tool_block.name is None:
         raise ValueError("tool block must include a tool name before rendering")
-    return tool_block.status in ("awaiting_approval", "completed")
+    return tool_block.status in ("awaiting_approval", "completed", "failed")
 
 
 def _clone_tool_block(tool_block: _ToolBlockState) -> _ToolBlockState:
@@ -810,6 +918,9 @@ def _tool_activity_event_kind(blocks: list[_ToolBlockState]) -> TUIEventKind:
     for block in blocks:
         if block.status == "awaiting_approval":
             return "tool_approval_requested"
+    for block in blocks:
+        if block.status == "failed":
+            return "tool_failed"
     return "tool_completed"
 
 
