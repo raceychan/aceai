@@ -313,12 +313,13 @@ def _render_event_entries(
                     pending_reasoning,
                     rendered_reasoning_step_ids,
                 )
-            assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
-                entries,
-                assistant_buffer,
-                assistant_buffer_step_id,
-                assistant_step_ids,
-            )
+            if not collapse_tool_activity:
+                assistant_buffer, assistant_buffer_step_id = _flush_assistant_buffer(
+                    entries,
+                    assistant_buffer,
+                    assistant_buffer_step_id,
+                    assistant_step_ids,
+                )
             _update_tool_block(tool_blocks, event)
             if event.kind in ("tool_completed", "tool_failed", "tool_approval_requested"):
                 if collapse_tool_activity:

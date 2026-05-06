@@ -1,5 +1,15 @@
 # Changelog
 
+## AceAI v0.2.10
+
+### Fixes
+
+- `tui`: Keep collapsed work history directly below the user input and above the assistant answer after a run completes, including replay orders where assistant text is seen before the tool activity.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.9
 
 ### Fixes

@@ -525,6 +525,41 @@ def test_completed_working_history_renders_between_question_and_answer() -> None
     assert renderables[2].plain == "  answer"
 
 
+def test_completed_working_history_stays_before_answer_when_tool_replays_late() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    events = [
+        TUIEvent.user_message("what changed?"),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=call,
+                tool_result=ToolExecutionResult(call=call, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="answer")),
+                final_answer="answer",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 3
+    assert isinstance(renderables[0], Table)
+    assert isinstance(renderables[1], Text)
+    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert isinstance(renderables[2], Text)
+    assert renderables[2].plain == "  answer"
+
+
 def test_completed_replayed_approval_cycles_collapse() -> None:
     call = {
         "type": "function_call",
