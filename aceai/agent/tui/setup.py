@@ -2,8 +2,11 @@
 
 from datetime import datetime
 import os
-from typing import cast
+from typing import Callable, cast
 
+from rich.console import Group
+from rich.cells import set_cell_size
+from rich.panel import Panel
 from rich.text import Text
 from msgspec import field
 from textual.app import ComposeResult
@@ -21,8 +24,10 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
+from aceai.agent.ideas import Idea
 from aceai.agent.provider_catalog import (
     api_key_env,
     default_model,
@@ -70,6 +75,10 @@ class ToolPermissionItem(Record, kw_only=True):
     permission: ToolPermission
     enabled: bool = True
     max_calls_per_run: int | None = None
+
+
+IdeaSaveHandler = Callable[[int, str], list[Idea]]
+IdeaDeleteHandler = Callable[[int], list[Idea]]
 
 
 def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
@@ -1313,6 +1322,306 @@ class SessionSelectScreen(ModalScreen[str]):
         if type(session_id) is not str:
             raise TypeError("Selected session id must be str")
         return session_id
+
+
+class IdeaPickerScreen(ModalScreen[str | None]):
+    """Pick, reference, or edit saved ideas."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("up", "cursor_up", "Up", priority=True),
+        Binding("k", "cursor_up", "Up"),
+        Binding("down", "cursor_down", "Down", priority=True),
+        Binding("j", "cursor_down", "Down"),
+        Binding("enter", "reference_idea", "Reference"),
+        Binding("e", "edit_idea", "Edit"),
+        Binding("d", "delete_idea", "Delete"),
+    ]
+
+    DEFAULT_CSS = """
+    IdeaPickerScreen {
+        align: center middle;
+    }
+
+    #idea-panel {
+        width: 92%;
+        height: 88%;
+        background: #2e3440;
+        border: solid #81a1c1;
+        padding: 1 2;
+    }
+
+    #idea-title {
+        height: 1;
+        color: #8fbcbb;
+        text-style: bold;
+    }
+
+    #idea-list-scroll {
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #idea-status {
+        height: 1;
+        margin-top: 1;
+        color: #9aa3b2;
+    }
+    """
+
+    def __init__(
+        self,
+        *,
+        ideas: list[Idea],
+        save_idea: IdeaSaveHandler,
+        delete_idea: IdeaDeleteHandler,
+    ) -> None:
+        super().__init__()
+        self._ideas = ideas
+        self._save_idea = save_idea
+        self._delete_idea = delete_idea
+
+    def compose(self) -> ComposeResult:
+        with Container(id="idea-panel"):
+            yield Label(f"Ideas  {len(self._ideas)}", id="idea-title")
+            with VerticalScroll(id="idea-list-scroll"):
+                yield IdeaListWidget(self._ideas, id="idea-list")
+            yield Static(
+                "Enter references the highlighted idea. Press e to edit or d to delete.",
+                id="idea-status",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#idea-list", IdeaListWidget).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#idea-list", IdeaListWidget).move_selection(-1)
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#idea-list", IdeaListWidget).move_selection(1)
+
+    def action_reference_idea(self) -> None:
+        if not self._ideas:
+            self.query_one("#idea-status", Static).update("No idea selected.")
+            return
+        self.dismiss(self._selected_idea().content)
+
+    def action_edit_idea(self) -> None:
+        if not self._ideas:
+            self.query_one("#idea-status", Static).update("No idea selected.")
+            return
+        idea = self._selected_idea()
+        self.app.push_screen(
+            IdeaEditScreen(index=self._selected_index(), content=idea.content),
+            self._after_edit,
+        )
+
+    def action_delete_idea(self) -> None:
+        if not self._ideas:
+            self.query_one("#idea-status", Static).update("No idea selected.")
+            return
+        idea_list = self.query_one("#idea-list", IdeaListWidget)
+        selected_row = idea_list.selected_index
+        index = self._selected_index()
+        self._ideas = self._delete_idea(index)
+        next_row = min(selected_row, len(self._ideas) - 1)
+        idea_list.set_ideas(self._ideas, selected_index=max(0, next_row))
+        idea_list.focus()
+        self.query_one("#idea-status", Static).update("Idea deleted.")
+
+    def _after_edit(self, edited: tuple[int, str] | None) -> None:
+        if edited is None:
+            self.query_one("#idea-list", IdeaListWidget).focus()
+            return
+        index, content = edited
+        self._ideas = self._save_idea(index, content)
+        idea_list = self.query_one("#idea-list", IdeaListWidget)
+        selected_row = min(index - 1, len(self._ideas) - 1)
+        idea_list.set_ideas(self._ideas, selected_index=selected_row)
+        idea_list.focus()
+        self.query_one("#idea-status", Static).update("Idea updated.")
+
+    def _selected_index(self) -> int:
+        return self.query_one("#idea-list", IdeaListWidget).selected_index + 1
+
+    def _selected_idea(self) -> Idea:
+        return self._ideas[self._selected_index() - 1]
+
+
+class IdeaListWidget(Static):
+    """Panel-rendered idea list with a single highlighted selection."""
+
+    can_focus = True
+
+    def __init__(self, ideas: list[Idea], *, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._ideas = ideas
+        self.selected_index = 0
+
+    def on_mount(self) -> None:
+        self._refresh_renderable()
+
+    def set_ideas(self, ideas: list[Idea], *, selected_index: int) -> None:
+        self._ideas = ideas
+        self.selected_index = self._clamp_index(selected_index)
+        self._refresh_renderable()
+
+    def move_selection(self, delta: int) -> None:
+        if not self._ideas:
+            return
+        self.selected_index = self._clamp_index(self.selected_index + delta)
+        self._refresh_renderable()
+
+    def _clamp_index(self, index: int) -> int:
+        if not self._ideas:
+            return 0
+        return max(0, min(index, len(self._ideas) - 1))
+
+    def _refresh_renderable(self) -> None:
+        if not self._ideas:
+            self.update(
+                Panel(
+                    Text("No saved ideas for this workspace.", style="#d8dee9"),
+                    border_style="#4c566a",
+                    padding=(0, 1),
+                )
+            )
+            return
+        self.update(
+            Group(
+                *[
+                    _idea_panel(
+                        idea,
+                        index=index,
+                        selected=index == self.selected_index,
+                    )
+                    for index, idea in enumerate(self._ideas)
+                ]
+            )
+        )
+
+
+class IdeaEditScreen(ModalScreen[tuple[int, str] | None]):
+    """Edit a saved idea."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "save", "Save"),
+    ]
+
+    DEFAULT_CSS = """
+    IdeaEditScreen {
+        align: center middle;
+    }
+
+    #idea-edit-panel {
+        width: 82%;
+        height: 64%;
+        background: #2e3440;
+        border: solid #81a1c1;
+        padding: 1 2;
+    }
+
+    #idea-edit-title {
+        height: 1;
+        color: #8fbcbb;
+        text-style: bold;
+    }
+
+    #idea-editor {
+        height: 1fr;
+        margin-top: 1;
+        border: solid #88c0d0;
+        background: #3b4252;
+        color: #eceff4;
+    }
+
+    #idea-edit-actions {
+        height: 3;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, *, index: int, content: str) -> None:
+        super().__init__()
+        self._index = index
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Container(id="idea-edit-panel"):
+            yield Label(f"Edit idea {self._index}", id="idea-edit-title")
+            yield TextArea(
+                self._content,
+                id="idea-editor",
+                show_line_numbers=False,
+                soft_wrap=True,
+            )
+            with Horizontal(id="idea-edit-actions"):
+                yield Button("Save", variant="primary", id="save")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#idea-editor", TextArea).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.action_cancel()
+            return
+        if event.button.id == "save":
+            self.action_save()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        self.dismiss((self._index, self.query_one("#idea-editor", TextArea).text))
+
+
+def _idea_title(idea: Idea) -> str:
+    for line in idea.content.splitlines():
+        if line != "":
+            return line
+    return ""
+
+
+def _idea_body(idea: Idea) -> str:
+    lines = idea.content.splitlines()
+    body_lines: list[str] = []
+    found_title = False
+    for line in lines:
+        if not found_title and line != "":
+            found_title = True
+            continue
+        if found_title:
+            body_lines.append(line)
+    body = "\n".join(body_lines)
+    return body if body != "" else " "
+
+
+def _idea_panel(idea: Idea, *, index: int, selected: bool) -> Panel:
+    created_at = idea.created_at.strftime("%Y-%m-%d %H:%M")
+    title = Text()
+    marker = "> " if selected else "  "
+    title.append(marker, style="#88c0d0" if selected else "#4c566a")
+    title.append(f"{index + 1:>2}. ", style="bold #9aa3b2")
+    title.append(_fixed_width(_idea_title(idea), width=48), style="bold #eceff4")
+    title.append("  ")
+    title.append(created_at, style="#9aa3b2")
+    return Panel(
+        Text(_idea_body(idea), style="#d8dee9"),
+        title=title,
+        title_align="left",
+        border_style="#88c0d0" if selected else "#4c566a",
+        style="on #3b4252" if selected else "",
+        padding=(0, 1),
+    )
+
+
+def _fixed_width(value: str, *, width: int) -> str:
+    return set_cell_size(value, width)
 
 
 class DeleteSessionConfirmScreen(ModalScreen[bool]):

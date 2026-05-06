@@ -1,5 +1,25 @@
 # Changelog
 
+## AceAI v0.2.15
+
+### Features
+
+- `tui`: Replace `/idea` list output with an interactive idea picker that supports keyboard selection, Enter-to-reference, `e` editing, and `d` deletion from the highlighted idea.
+
+### Improvements
+
+- `ideas`: List, search, edit, and delete ideas in FIFO order so the oldest saved idea remains first and picker numbering stays stable.
+- `tui`: Render ideas as bordered panels in the picker while keeping creation timestamps aligned with terminal-cell-aware title truncation.
+
+### Fixes
+
+- `tui`: Intercept TextArea Enter handling before it inserts a newline so normal prompts submit, slash-command candidates complete, and completed slash commands execute.
+- `tui`: Intercept slash-command up/down keys before TextArea cursor movement so command candidates can be selected with the keyboard.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.14
 
 ### Features

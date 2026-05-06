@@ -31,6 +31,9 @@ from aceai.agent.tui.runner import (
 from aceai.agent.tui.setup import (
     ConfigScreen,
     ConfigSelection,
+    IdeaEditScreen,
+    IdeaListWidget,
+    IdeaPickerScreen,
     SkillConfigItem,
     ToolPermissionItem,
 )
@@ -47,11 +50,13 @@ from textual.events import Key
 from textual.widgets import (
     Button,
     Checkbox,
+    DataTable,
     Input,
     RichLog,
     Select,
     Static,
     TabbedContent,
+    TextArea,
 )
 
 
@@ -246,6 +251,65 @@ async def test_interactive_tui_submits_question_from_input(
         assert len(run_ids) == 1
         assert "" not in run_ids
         assert event_log.get_run(next(iter(run_ids))).question == "What now?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_enter_key_submits_question() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta="answer",
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        command_input.value = "What now?"
+        command_input.focus()
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+        assert command_input.value == ""
+        assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "What now?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_enter_key_completes_then_submits_slash_command() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        command_input.value = "/st"
+        command_input.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert command_input.value == "/stats "
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert command_input.value == ""
+        assert app.screen.__class__.__name__ == "MetadataScreen"
 
 
 @pytest.mark.anyio
@@ -1028,13 +1092,60 @@ async def test_tui_clickable_chrome_routes_to_simplified_entries() -> None:
     assert calls == ["config", "metadata", "debug"]
 
 
-def test_command_input_shift_enter_inserts_newline() -> None:
+@pytest.mark.anyio
+async def test_command_input_shift_enter_inserts_newline() -> None:
     command_input = CommandInput()
     command_input.value = "/idea first"
 
-    command_input.on_key(Key("shift+enter", None))
+    await command_input._on_key(Key("shift+enter", None))
 
     assert command_input.value == "/idea first\n"
+
+
+def test_command_input_enter_completes_only_unfinished_slash_command(monkeypatch) -> None:
+    command_input = CommandInput()
+    messages: list[object] = []
+    monkeypatch.setattr(command_input, "post_message", messages.append)
+
+    command_input.value = "/"
+    command_input.action_submit_or_complete()
+
+    assert isinstance(messages.pop(), CommandInput.CompletionRequested)
+
+    command_input.value = "/config "
+    command_input.action_submit_or_complete()
+
+    submitted = messages.pop()
+    assert isinstance(submitted, CommandInput.Submitted)
+    assert submitted.value == "/config "
+
+
+@pytest.mark.anyio
+async def test_command_input_enter_key_does_not_insert_newline(monkeypatch) -> None:
+    command_input = CommandInput()
+    messages: list[object] = []
+    monkeypatch.setattr(command_input, "post_message", messages.append)
+    command_input.value = "/config "
+    messages.clear()
+
+    await command_input._on_key(Key("enter", None))
+
+    assert command_input.value == "/config "
+    submitted = messages.pop()
+    assert isinstance(submitted, CommandInput.Submitted)
+    assert submitted.value == "/config "
+
+
+def test_command_input_tab_does_not_complete_slash_command(monkeypatch) -> None:
+    command_input = CommandInput()
+    messages: list[object] = []
+    monkeypatch.setattr(command_input, "post_message", messages.append)
+    command_input.value = "/tr"
+    messages.clear()
+
+    command_input.on_key(Key("tab", None))
+
+    assert messages == []
 
 
 @pytest.mark.anyio
@@ -1125,6 +1236,36 @@ async def test_interactive_tui_navigates_slash_command_completion() -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(CommandCompletionWidget)
+        command_input.value = "/"
+        command_input.focus()
+        app._refresh_command_completions(command_input.value)
+
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert completions.selected_index == 1
+        assert "> /config" in completions.display_text
+
+        await pilot.press("up")
+        await pilot.pause()
+
+        assert completions.selected_index == 0
+        assert "> /clear" in completions.display_text
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> None:
     ideas_path = tmp_path / "ideas.md"
     agent = AgentBase(
@@ -1168,7 +1309,7 @@ async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> No
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_idea_command_lists_recent_ideas(tmp_path) -> None:
+async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
     ideas_path = tmp_path / "ideas.md"
     idea_store = IdeaStore(ideas_path)
     idea_store.capture("first idea")
@@ -1181,15 +1322,104 @@ async def test_interactive_tui_idea_command_lists_recent_ideas(tmp_path) -> None
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
 
-    assert app._state.events[-1].kind == "idea_list"
-    assert [item.title for item in app._state.events[-1].idea_items] == [
-        "second idea",
-        "first idea",
-    ]
+        screen = app.screen
+        assert isinstance(screen, IdeaPickerScreen)
+        idea_list = screen.query_one("#idea-list", IdeaListWidget)
+        assert idea_list.selected_index == 0
+        assert [idea.content for idea in idea_list._ideas] == [
+            "first idea",
+            "second idea",
+        ]
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert command_input.value == "first idea"
+        assert command_input.has_focus
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    idea_store.capture("second idea")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+
+        edit_screen = app.screen
+        assert isinstance(edit_screen, IdeaEditScreen)
+        editor = edit_screen.query_one("#idea-editor", TextArea)
+        editor.load_text("edited first idea")
+        edit_screen.action_save()
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        idea_list = picker.query_one("#idea-list", IdeaListWidget)
+        assert idea_list.selected_index == 0
+        assert [idea.content for idea in idea_list._ideas] == [
+            "edited first idea",
+            "second idea",
+        ]
+        assert [idea.content for idea in idea_store.list_recent()] == [
+            "edited first idea",
+            "second idea",
+        ]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    idea_store.capture("second idea")
+    idea_store.capture("third idea")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("d")
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        idea_list = picker.query_one("#idea-list", IdeaListWidget)
+        assert idea_list.selected_index == 1
+        assert [idea.content for idea in idea_list._ideas] == [
+            "first idea",
+            "third idea",
+        ]
+        assert [idea.content for idea in idea_store.list_recent()] == [
+            "first idea",
+            "third idea",
+        ]
 
 
 @pytest.mark.anyio
@@ -1211,8 +1441,8 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
         app.on_input_submitted(Input.Submitted(command_input, "/idea delete 1"))
 
     assert app._state.events[-1].kind == "idea_list"
-    assert [item.title for item in app._state.events[-1].idea_items] == ["first idea"]
-    assert [idea.content for idea in idea_store.list_recent()] == ["first idea"]
+    assert [item.title for item in app._state.events[-1].idea_items] == ["second idea"]
+    assert [idea.content for idea in idea_store.list_recent()] == ["second idea"]
 
 
 @pytest.mark.anyio
