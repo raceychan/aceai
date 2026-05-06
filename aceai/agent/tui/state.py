@@ -323,7 +323,11 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
 
 
 def _is_restored_transcript_event(event: TUIEvent) -> bool:
-    return event.raw_event is None and event.step_index == -1
+    return (
+        event.raw_event is None
+        and event.step_index == -1
+        and event.kind not in ("run_completed", "run_failed", "run_suspended")
+    )
 
 
 def _next_step_status(status: TUIStepStatus, event: TUIEvent) -> TUIStepStatus:

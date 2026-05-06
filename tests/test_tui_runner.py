@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from aceai.core.base import AgentBase
@@ -31,7 +33,12 @@ from aceai.agent.tui.setup import (
     ToolPermissionItem,
 )
 from aceai.agent.tui.widgets import ApprovalWidget
-from aceai.agent.tui.widgets import CommandCompletionWidget, CommandInput, StatusBarWidget
+from aceai.agent.tui.widgets import (
+    CommandCompletionWidget,
+    CommandInput,
+    QueuedTurnsWidget,
+    StatusBarWidget,
+)
 from textual.events import Key
 from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, TabbedContent
 
@@ -127,6 +134,29 @@ class MultiRunLLMService:
         events = self._streams.pop(0)
         for event in events:
             yield event
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("live TUI should use streaming")
+
+
+class GatedMultiRunLLMService:
+    def __init__(
+        self,
+        streams: list[list[LLMStreamEvent]],
+        *,
+        gate: asyncio.Event,
+    ) -> None:
+        self._streams = [list(stream) for stream in streams]
+        self._gate = gate
+        self.calls: list[dict] = []
+
+    async def stream(self, **request):
+        self.calls.append(request)
+        events = self._streams.pop(0)
+        for index, event in enumerate(events):
+            yield event
+            if len(self.calls) == 1 and index == 0:
+                await self._gate.wait()
 
     async def complete(self, **request) -> LLMResponse:
         raise AssertionError("live TUI should use streaming")
@@ -279,6 +309,231 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
         assert app._state.final_answer == "second"
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "First?"
         assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
+    gate = asyncio.Event()
+    llm_service = GatedMultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="first",
+                ),
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="first"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="second"),
+                ),
+            ],
+        ],
+        gate=gate,
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "First?"))
+        await pilot.pause(0.1)
+
+        app.on_input_submitted(Input.Submitted(command_input, "Second?"))
+        await pilot.pause(0.1)
+
+        assert len(llm_service.calls) == 1
+        assert app._agent_app.queued_questions == ("Second?",)
+        queued_turns = app.query_one(QueuedTurnsWidget)
+        assert not queued_turns.has_class("hidden")
+        assert queued_turns.renderable == (
+            "queued - click a line to steer\n"
+            "1. Second?"
+        )
+
+        gate.set()
+        await pilot.pause(0.2)
+
+        assert len(llm_service.calls) == 2
+        assert app._agent_app.queued_questions == ()
+        assert queued_turns.has_class("hidden")
+        assert app._state.final_answer == "second"
+        assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
+    gate = asyncio.Event()
+    llm_service = GatedMultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="active",
+                ),
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="active"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="second"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="first"),
+                ),
+            ],
+        ],
+        gate=gate,
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Active"))
+        await pilot.pause(0.1)
+        app.on_input_submitted(Input.Submitted(command_input, "First queued"))
+        app.on_input_submitted(Input.Submitted(command_input, "Second queued"))
+        await pilot.pause(0.1)
+
+        queued_turns = app.query_one(QueuedTurnsWidget)
+        assert app._agent_app.queued_questions == ("First queued", "Second queued")
+        queued_turns.post_message(QueuedTurnsWidget.Selected(index=1))
+        await pilot.pause(0.3)
+
+        assert len(llm_service.calls) == 3
+        assert app._agent_app.queued_questions == ()
+        assert app._state.final_answer == "first"
+        assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second queued"
+        assert llm_service.calls[2]["messages"][-1].content[0]["data"] == "First queued"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_steer_cancels_active_run_and_keeps_queue() -> None:
+    gate = asyncio.Event()
+    llm_service = GatedMultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="old",
+                ),
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="old"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="new"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="queued"),
+                ),
+            ],
+        ],
+        gate=gate,
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Old plan"))
+        await pilot.pause(0.1)
+        app.on_input_submitted(Input.Submitted(command_input, "Queued plan"))
+        await pilot.pause(0.1)
+
+        app.on_input_submitted(Input.Submitted(command_input, "/steer New plan"))
+        await pilot.pause(0.3)
+
+        assert len(llm_service.calls) == 3
+        assert app._agent_app.queued_questions == ()
+        assert app._state.final_answer == "queued"
+        assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "New plan"
+        assert llm_service.calls[2]["messages"][-1].content[0]["data"] == "Queued plan"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> None:
+    gate = asyncio.Event()
+    llm_service = GatedMultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="long answer",
+                ),
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="long answer"),
+                ),
+            ],
+        ],
+        gate=gate,
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Explain slowly"))
+        await pilot.pause(0.1)
+        app.on_input_submitted(Input.Submitted(command_input, "Next queued"))
+        await pilot.pause(0.1)
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+
+        assert len(llm_service.calls) == 1
+        assert app._active_worker is not None
+        assert app._active_worker.is_running
+        assert app._agent_app.queued_questions == ("Next queued",)
+        assert app.query_one(StatusBarWidget).current_text == "Esc again stops response"
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+
+        assert len(llm_service.calls) == 1
+        assert app._active_worker is None
+        assert app._active_runtime is None
+        assert app._agent_app.queued_questions == ("Next queued",)
+        assert app._state.status == "failed"
+        assert app._state.error == "Cancelled current response."
 
 
 @pytest.mark.anyio

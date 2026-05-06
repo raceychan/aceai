@@ -128,6 +128,18 @@ class TUIEvent(Record, kw_only=True):
         )
 
     @classmethod
+    def run_cancelled(cls, content: str) -> Self:
+        return cls(
+            kind="run_failed",
+            step_index=-1,
+            step_id=uuid_str(),
+            title="run cancelled",
+            content=content,
+            error=content,
+            raw_event=None,
+        )
+
+    @classmethod
     def from_agent_event(cls, event: AgentEvent) -> "TUIEvent":
         return _agent_event_to_tui_event(event)
 

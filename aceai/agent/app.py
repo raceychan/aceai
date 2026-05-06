@@ -62,6 +62,7 @@ class AceAgentApp:
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
         self._active_runtime: AgentRuntime | None = None
+        self._queued_questions: list[str] = []
         self._idea_store = idea_store or IdeaStore()
         self._approved_tool_names: set[str] = set()
         self._update_check_completed = False
@@ -107,6 +108,10 @@ class AceAgentApp:
         return self._active_runtime
 
     @property
+    def queued_questions(self) -> tuple[str, ...]:
+        return tuple(self._queued_questions)
+
+    @property
     def is_running_suspended(self) -> bool:
         runtime = self._active_runtime
         return runtime is not None and runtime.status == "suspended"
@@ -118,6 +123,7 @@ class AceAgentApp:
         snapshot = self._session_service.attach_session(session_id)
         self._llm_history = list(snapshot.history)
         self._active_runtime = None
+        self._queued_questions = []
         self._approved_tool_names = _approved_tool_names_from_event_log(
             snapshot.event_log
         )
@@ -128,9 +134,25 @@ class AceAgentApp:
         if session_id is None:
             self._llm_history = []
             self._active_runtime = None
+            self._queued_questions = []
             return
         self._llm_history = self._session_service.snapshot(session_id).history
         self._active_runtime = None
+
+    def cancel_active_turn(self) -> None:
+        self._active_runtime = None
+
+    def enqueue_turn(self, question: str) -> int:
+        self._queued_questions.append(question)
+        return len(self._queued_questions)
+
+    def pop_queued_turn(self) -> str | None:
+        if not self._queued_questions:
+            return None
+        return self._queued_questions.pop(0)
+
+    def take_queued_turn(self, index: int) -> str:
+        return self._queued_questions.pop(index)
 
     def switch_model(self, model: str) -> None:
         self._selected_model = model

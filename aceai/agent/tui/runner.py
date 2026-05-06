@@ -7,6 +7,7 @@ from typing import AsyncGenerator, Callable, cast
 
 from msgspec import Struct
 from opentelemetry.context import Context
+from textual.timer import Timer
 from textual.widgets import Input
 from textual.worker import Worker
 
@@ -37,6 +38,8 @@ from .setup import (
 )
 from .widgets import ApprovalWidget
 from .widgets import CommandInput
+from .widgets import QueuedTurnsWidget
+from .widgets import StatusBarWidget
 
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
 CommandHandler = Callable[[str], None]
@@ -119,6 +122,8 @@ class _RuntimeStreamMixin:
     _agent_app: AceAgentApp | None
     _active_worker: Worker[None] | None
     _idea_store: IdeaStore
+    _cancel_armed: bool
+    _cancel_arm_timer: Timer | None
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -141,7 +146,10 @@ class _RuntimeStreamMixin:
         self.append_event(TUIEvent.session_notice(_update_available_notice(result)))
 
     async def _stream_agent_turn(self, question: str) -> None:
+        if self._agent_app is None:
+            raise RuntimeError("AceAI app is not configured")
         await self._consume_agent_stream(self._agent_app.start_turn(question))
+        self._start_next_queued_run()
 
     async def _stream_approval_decision(self, *, approved: bool, reason: str = "") -> None:
         if approved:
@@ -149,6 +157,7 @@ class _RuntimeStreamMixin:
         else:
             stream = self._agent_app.reject_tool(reason)
         await self._consume_agent_stream(stream)
+        self._start_next_queued_run()
 
     async def _consume_agent_stream(
         self,
@@ -170,6 +179,7 @@ class _RuntimeStreamMixin:
         self._session_id = self._agent_app.session_id
         self._llm_history = self._agent_app.llm_history
         self._active_runtime = self._agent_app.active_runtime
+        self._refresh_queued_turns()
         if self._session_id is not None:
             self.title = f"AceAI {self._session_id}"
 
@@ -200,6 +210,40 @@ class _RuntimeStreamMixin:
             return
         self.start_run(question)
         self.exit_command_input(command_input)
+
+    def cancel_active_run(self) -> bool:
+        if self._active_worker is None or not self._active_worker.is_running:
+            self._clear_cancel_arm()
+            return False
+        if not self._cancel_armed:
+            self._arm_cancel()
+            return True
+        self._clear_cancel_arm()
+        self._active_worker.cancel()
+        self._active_worker = None
+        if self._agent_app is not None:
+            self._agent_app.cancel_active_turn()
+        self.clear_approval_request()
+        self._sync_app_state()
+        self.append_event(TUIEvent.run_cancelled("Cancelled current response."))
+        return True
+
+    def _arm_cancel(self) -> None:
+        self._cancel_armed = True
+        if self._cancel_arm_timer is not None:
+            self._cancel_arm_timer.stop()
+        self.query_one(StatusBarWidget).show_notice(
+            "Esc again stops response",
+            timeout=1.4,
+        )
+        self._cancel_arm_timer = self.set_timer(1.4, self._clear_cancel_arm)
+
+    def _clear_cancel_arm(self) -> None:
+        self._cancel_armed = False
+        timer = self._cancel_arm_timer
+        self._cancel_arm_timer = None
+        if timer is not None:
+            timer.stop()
 
     def _dispatch_command(self, text: str) -> bool:
         parsed = _parse_command(text)
@@ -261,6 +305,13 @@ class _RuntimeStreamMixin:
             exit_on_error=False,
         )
 
+    @tui_command("steer")
+    def _command_steer(self, arg: str) -> None:
+        if arg == "":
+            self.append_event(TUIEvent.session_notice("Usage: /steer <message>"))
+            return
+        self.steer_run(arg)
+
     @tui_command("idea")
     def _command_idea(self, arg: str) -> None:
         if arg == "":
@@ -285,6 +336,101 @@ class _RuntimeStreamMixin:
             self.append_event(TUIEvent.session_notice("Usage: /resume <session_id>"))
             return
         self.switch_session(arg)
+
+    def enqueue_run(self, question: str) -> None:
+        self._clear_cancel_arm()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(TUIEvent.session_notice("Configure AceAI before enqueueing a run."))
+            return
+        if (
+            (self._active_worker is None or not self._active_worker.is_running)
+            and not agent_app.is_running_suspended
+        ):
+            self._start_run_now(question)
+            return
+        agent_app.enqueue_turn(question)
+        self._refresh_queued_turns()
+
+    def steer_run(self, question: str) -> None:
+        self._clear_cancel_arm()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(TUIEvent.session_notice("Configure AceAI before steering a run."))
+            return
+        if agent_app.is_running_suspended:
+            self.append_event(
+                TUIEvent.session_notice("Choose Approve or Reject before steering this run.")
+            )
+            return
+        if self._active_worker is not None and self._active_worker.is_running:
+            self._active_worker.cancel()
+        self._start_run_now(question)
+
+    def steer_queued_run(self, index: int) -> None:
+        self._clear_cancel_arm()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(TUIEvent.session_notice("Configure AceAI before steering a run."))
+            return
+        if agent_app.is_running_suspended:
+            self.append_event(
+                TUIEvent.session_notice("Choose Approve or Reject before steering this run.")
+            )
+            return
+        try:
+            question = agent_app.take_queued_turn(index)
+        except IndexError:
+            self._refresh_queued_turns()
+            return
+        self._refresh_queued_turns()
+        if self._active_worker is not None and self._active_worker.is_running:
+            self._active_worker.cancel()
+        self._start_run_now(question)
+
+    def _start_run_now(self, question: str) -> None:
+        self._clear_cancel_arm()
+        if self._agent_app is None:
+            raise RuntimeError("AceAI app is not configured")
+        self._agent_app.ensure_session()
+        self._sync_app_state()
+        self._persist_session_state()
+        self.append_event(TUIEvent.user_message(question))
+        self._active_worker = self.run_worker(
+            self._stream_agent_turn(question),
+            name="aceai-agent",
+            description="Run AceAI agent and stream events into the TUI",
+            exit_on_error=True,
+        )
+
+    def _start_next_queued_run(self) -> None:
+        agent_app = self._agent_app
+        if agent_app is None:
+            return
+        if agent_app.is_running_suspended:
+            return
+        question = agent_app.pop_queued_turn()
+        if question is None:
+            return
+        self._refresh_queued_turns()
+        self.call_after_refresh(lambda: self._start_run_now(question))
+
+    def _refresh_queued_turns(self) -> None:
+        if not self.is_mounted:
+            return
+        agent_app = self._agent_app
+        questions = () if agent_app is None else agent_app.queued_questions
+        widgets = list(self.query(QueuedTurnsWidget))
+        if not widgets:
+            return
+        widgets[0].set_questions(questions)
+
+    def on_queued_turns_widget_selected(
+        self,
+        event: QueuedTurnsWidget.Selected,
+    ) -> None:
+        event.stop()
+        self.steer_queued_run(event.index)
 
     def _capture_idea(self, content: str) -> Idea:
         agent_app = self._agent_app
@@ -457,25 +603,19 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         self._llm_history = self._agent_app.llm_history
         self._active_worker: Worker[None] | None = None
         self._active_runtime = self._agent_app.active_runtime
+        self._cancel_armed = False
+        self._cancel_arm_timer: Timer | None = None
 
     def start_run(self, question: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
-            self._active_worker.cancel()
+            self.enqueue_run(question)
+            return
         if self._agent_app.is_running_suspended:
             self.append_event(
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self._agent_app.ensure_session()
-        self._sync_app_state()
-        self._persist_session_state()
-        self.append_event(TUIEvent.user_message(question))
-        self._active_worker = self.run_worker(
-            self._stream_agent_turn(question),
-            name="aceai-agent",
-            description="Run AceAI agent and stream events into the TUI",
-            exit_on_error=True,
-        )
+        self._start_run_now(question)
 
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()
@@ -688,6 +828,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._agent_app: AceAgentApp | None = None
         self._active_worker: Worker[None] | None = None
         self._active_runtime = None
+        self._cancel_armed = False
+        self._cancel_arm_timer: Timer | None = None
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -735,7 +877,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self.query_one(CommandInput).value = question
             return
         if self._active_worker is not None and self._active_worker.is_running:
-            self._active_worker.cancel()
+            self.enqueue_run(question)
+            return
         if self._agent_app is None:
             raise RuntimeError("AceAI app is not configured")
         if self._agent_app.is_running_suspended:
@@ -743,16 +886,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self._agent_app.ensure_session()
-        self._sync_app_state()
-        self._persist_session_state()
-        self.append_event(TUIEvent.user_message(question))
-        self._active_worker = self.run_worker(
-            self._stream_agent_turn(question),
-            name="aceai-agent",
-            description="Run AceAI agent and stream events into the TUI",
-            exit_on_error=True,
-        )
+        self._start_run_now(question)
 
     def switch_session(self, session_id: str) -> None:
         if self._agent_app is None:
