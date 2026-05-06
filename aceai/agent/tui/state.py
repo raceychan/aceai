@@ -198,7 +198,7 @@ def _apply_step_event(
     steps: list[TUIStepState],
     event: TUIEvent,
 ) -> list[TUIStepState]:
-    if event.kind in ("user_message", "session_notice"):
+    if event.kind in ("user_message", "session_notice", "idea_list"):
         return steps
     if event.raw_event is None and event.step_index == -1:
         return steps
@@ -299,7 +299,7 @@ def _update_tool(tool_state: TUIToolState, event: TUIEvent) -> TUIToolState:
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if _is_restored_transcript_event(event):
         return status
-    if event.kind in ("user_message", "session_notice"):
+    if event.kind in ("user_message", "session_notice", "idea_list"):
         return status
     if event.raw_event is None and event.kind not in (
         "run_completed",
@@ -323,7 +323,11 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
 
 
 def _is_restored_transcript_event(event: TUIEvent) -> bool:
-    return event.raw_event is None and event.step_index == -1
+    return (
+        event.raw_event is None
+        and event.step_index == -1
+        and event.kind not in ("run_completed", "run_failed", "run_suspended")
+    )
 
 
 def _next_step_status(status: TUIStepStatus, event: TUIEvent) -> TUIStepStatus:

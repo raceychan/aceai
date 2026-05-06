@@ -25,6 +25,7 @@ from .widgets import (
     CommandCompletionWidget,
     CommandInput,
     DetailWidget,
+    QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
 )
@@ -109,6 +110,7 @@ class AceAITUI(App[None]):
         yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
         yield CommandCompletionWidget(id="command-completions", classes="hidden")
+        yield QueuedTurnsWidget(id="queued-turns", classes="hidden")
         yield CommandInput(id="input")
         yield Footer()
 
@@ -117,6 +119,9 @@ class AceAITUI(App[None]):
         self.query_one(StreamWidget).focus()
 
     def on_key(self, event: Key) -> None:
+        if event.key == "escape" and self.cancel_active_run():
+            event.stop()
+            return
         if event.key != "enter":
             return
         command_input = self.query_one(CommandInput)
@@ -228,6 +233,9 @@ class AceAITUI(App[None]):
 
     def notify_session(self, content: str) -> None:
         self.notify(content, title="AceAI", severity="information", timeout=3.0)
+
+    def cancel_active_run(self) -> bool:
+        return False
 
     def set_status_model(self, model: str | None) -> None:
         self._status_model = model

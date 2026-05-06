@@ -13,7 +13,7 @@ from textual.events import Click, Key, Resize
 from textual.message import Message
 from textual.widgets import RichLog
 
-from aceai.agent.tui.events import TUIEvent, TUIEventKind
+from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
@@ -492,7 +492,7 @@ def _render_completed_event_entries(
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
-        if event.kind == "session_notice":
+        if event.kind in ("session_notice", "idea_list"):
             pending_working_history = _flush_thinking_buffer_to_working_history(
                 pending_working_history,
                 thinking_buffer,
@@ -818,7 +818,6 @@ def _render_tool_activity_entries(
     tool_activity: _ToolActivityState,
     expanded_tool_activity_ids: set[str],
 ) -> list[_StreamRenderable]:
-    blocks = _working_history_tool_blocks(tool_activity)
     activity_id = _tool_activity_id(tool_activity)
     expanded = activity_id in expanded_tool_activity_ids
     entries = [
@@ -1031,13 +1030,51 @@ def _render_reasoning_line(label: str, content: str, *, style: str) -> Text:
     return text
 
 
+def _render_idea_list(items: list[TUIIdeaItem]) -> RenderableType:
+    if not items:
+        return _render_text_block(
+            "ideas",
+            "No saved ideas for this workspace.",
+            event_kind="idea_list",
+        )
+    renderables: list[RenderableType] = [_render_idea_header(len(items))]
+    for item in items:
+        renderables.append(_render_idea_item(item))
+    return Group(*renderables)
+
+
+def _render_idea_header(count: int) -> Text:
+    text = Text()
+    text.append(TRANSCRIPT_GUTTER)
+    text.append("Ideas", style=f"bold {EVENT_STYLES['idea_list']}")
+    text.append(f"  {count}", style=SUBTLE_BULLET_STYLE)
+    return text
+
+
+def _render_idea_item(item: TUIIdeaItem) -> Panel:
+    title = Text()
+    title.append(f"{item.index}. ", style=SUBTLE_BULLET_STYLE)
+    title.append(item.title, style="bold #eceff4")
+    title.append(f"  {item.created_at}", style="#9aa3b2")
+    body = Text()
+    body.append(item.body if item.body != "" else " ", style="#d8dee9")
+    return Panel(
+        body,
+        title=title,
+        title_align="left",
+        border_style="#4c566a",
+        padding=(0, 1),
+    )
+
+
 def _render_event(event: TUIEvent) -> RenderableType | None:
     label = EVENT_LABELS[event.kind]
-    style = EVENT_STYLES[event.kind]
     if event.kind == "user_message":
         return _render_user_message(event.content, label=label, event_kind=event.kind)
     if event.kind == "session_notice":
         return _render_text_block(label, event.content, event_kind=event.kind)
+    if event.kind == "idea_list":
+        return _render_idea_list(event.idea_items)
     if event.kind == "tool_call_delta":
         return None
     if event.kind == "assistant_delta":

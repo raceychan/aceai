@@ -22,6 +22,7 @@ NORD_PURPLE = "#b48ead"
 EVENT_LABELS: dict[TUIEventKind, str] = {
     "user_message": "you",
     "session_notice": "session",
+    "idea_list": "ideas",
     "run_completed": "completed",
     "run_failed": "failed",
     "run_suspended": "approval",
@@ -46,6 +47,7 @@ EVENT_LABELS: dict[TUIEventKind, str] = {
 EVENT_STYLES: dict[TUIEventKind, str] = {
     "user_message": f"bold {NORD_FROST_1}",
     "session_notice": f"bold {NORD_FROST_0}",
+    "idea_list": f"bold {NORD_FROST_0}",
     "run_completed": f"bold {NORD_GREEN}",
     "run_failed": f"bold {NORD_RED}",
     "run_suspended": f"bold {NORD_YELLOW}",

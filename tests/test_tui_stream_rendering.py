@@ -1,5 +1,6 @@
 from rich.console import Group
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -18,7 +19,7 @@ from aceai.llm.models import (
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolApprovalRequest
 from aceai.core.models import ToolExecutionResult
-from aceai.agent.tui.events import TUIEvent
+from aceai.agent.tui.events import TUIEvent, TUIIdeaItem
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import TUIRunState, reduce_events
 from aceai.agent.tui.widgets.stream import (
@@ -162,6 +163,38 @@ def test_user_messages_after_answers_get_turn_spacing() -> None:
     question_text = question.columns[0]._cells[0]
     assert isinstance(question_text, Text)
     assert question_text.plain == "▌ next question"
+
+
+def test_idea_list_renders_as_separate_items_with_title_and_body() -> None:
+    renderables = _render_events(
+        [
+            TUIEvent.idea_list(
+                [
+                    TUIIdeaItem(
+                        index=1,
+                        created_at="2026-05-06 11:13",
+                        title="Add a Learn button",
+                        body="Select failed trajectories by default.",
+                    ),
+                    TUIIdeaItem(
+                        index=2,
+                        created_at="2026-05-06 11:39",
+                        title="Use obsidian as external knowledge base",
+                    ),
+                ]
+            )
+        ]
+    )
+
+    assert len(renderables) == 1
+    group = renderables[0]
+    assert isinstance(group, Group)
+    assert len(group.renderables) == 3
+    first_item = group.renderables[1]
+    assert isinstance(first_item, Panel)
+    assert isinstance(first_item.title, Text)
+    assert "Add a Learn button" in first_item.title.plain
+    assert "Select failed trajectories by default." in first_item.renderable.plain
 
 
 def test_stream_writes_user_message_rows_expanded() -> None:

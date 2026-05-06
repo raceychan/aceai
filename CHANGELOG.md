@@ -1,5 +1,48 @@
 # Changelog
 
+## AceAI v0.2.13
+
+### Features
+
+- `tui`: Add queued-turn workflow — type a new question while the agent is running and it automatically runs after the current turn completes, with a clickable queue widget above the input bar.
+- `tui`: Add escape-to-cancel with a two-press arming pattern — first Escape arms the cancel, second Escape cancels the running turn, with a status-bar notice during the arm window.
+- `tui`: Add `/steer <message>` command to cancel the active run in-place and replace it with a new prompt while preserving the queued turn backlog.
+
+### Improvements
+
+- `tui`: Render saved ideas as a formatted idea list with title, creation date, and body panel instead of a plain-text session notice.
+- `tui`: Show `/idea` output as a dedicated `idea_list` transcript entry with styled group rendering instead of a single `session_notice` line.
+- `agent`: Expose `cancel_active_turn`, `enqueue_turn`, `pop_queued_turn`, and `take_queued_turn` on `AceAgentApp` so TUI layer can manage active-run lifecycle with a typed contract.
+
+### Fixes
+
+- `tui`: Keep terminal run-control events (`run_completed`, `run_failed`, `run_suspended`) from being treated as restored-transcript events so they correctly update the run status in state transitions.
+
+### Breaking Changes
+
+- None.
+
+## AceAI v0.2.12
+
+### Features
+
+- `ideas`: Add persistent idea capture with `IdeaStore` and `/idea` commands — agents and users can save, list, and delete ideas scoped to the current workspace, with ideas surfaced in the TUI transcript.
+- `release`: Add project-local `aceai-release` skill with the release sequence, PR message template, category rules, tag timing, and PyPI publishing verification.
+
+### Improvements
+
+- `tui`: Add `/idea` command with `save`, `list`, and `delete` sub-commands, including idea capture from agent runs.
+- `ci`: Restrict GitHub Pages deployment to `master` so version branches can build docs without attempting protected Pages deployments.
+- `ci`: Add `v*` tag-push trigger for the PyPI publish job.
+
+### Fixes
+
+- `repo`: Remove `.cache/plugin/social` from git tracking and ignore local plugin cache files.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.11
 
 ### Improvements

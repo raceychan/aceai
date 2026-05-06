@@ -42,6 +42,7 @@ from aceai.agent.session import EventLog, SessionEvent
 TUIEventKind = Literal[
     "user_message",
     "session_notice",
+    "idea_list",
     "run_completed",
     "run_failed",
     "run_suspended",
@@ -64,6 +65,13 @@ TUIEventKind = Literal[
 ]
 
 
+class TUIIdeaItem(Record, kw_only=True):
+    index: int
+    created_at: str
+    title: str
+    body: str = ""
+
+
 class TUIEvent(Record, kw_only=True):
     """Normalized event shape consumed by future TUI widgets."""
 
@@ -84,6 +92,7 @@ class TUIEvent(Record, kw_only=True):
     usage: LLMUsage | None = None
     cost: CostEstimate | None = None
     error: str | None = None
+    idea_items: list[TUIIdeaItem] = field(default_factory=list[TUIIdeaItem])
 
     @classmethod
     def user_message(cls, question: str) -> Self:
@@ -102,8 +111,31 @@ class TUIEvent(Record, kw_only=True):
             kind="session_notice",
             step_index=-1,
             step_id=uuid_str(),
-            title="notice",
+            title="session",
             content=content,
+            raw_event=None,
+        )
+
+    @classmethod
+    def idea_list(cls, items: list["TUIIdeaItem"]) -> Self:
+        return cls(
+            kind="idea_list",
+            step_index=-1,
+            step_id=uuid_str(),
+            title="ideas",
+            raw_event=None,
+            idea_items=items,
+        )
+
+    @classmethod
+    def run_cancelled(cls, content: str) -> Self:
+        return cls(
+            kind="run_failed",
+            step_index=-1,
+            step_id=uuid_str(),
+            title="run cancelled",
+            content=content,
+            error=content,
             raw_event=None,
         )
 
