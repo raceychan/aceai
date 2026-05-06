@@ -1,6 +1,8 @@
 import asyncio
+from io import StringIO
 
 import pytest
+from rich.console import Console
 
 from aceai.core.base import AgentBase
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
@@ -38,9 +40,19 @@ from aceai.agent.tui.widgets import (
     CommandInput,
     QueuedTurnsWidget,
     StatusBarWidget,
+    StreamWidget,
+    TopBarWidget,
 )
 from textual.events import Key
-from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, TabbedContent
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    RichLog,
+    Select,
+    Static,
+    TabbedContent,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -524,6 +536,7 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
         assert app._active_worker.is_running
         assert app._agent_app.queued_questions == ("Next queued",)
         assert app.query_one(StatusBarWidget).current_text == "Esc again stops response"
+        assert app.query_one(StatusBarWidget).current_style == "bold #bf616a"
 
         await pilot.press("escape")
         await pilot.pause(0.1)
@@ -707,39 +720,6 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_model_command_updates_next_request_metadata() -> None:
-    llm_service = StubLLMService(
-        [
-            LLMStreamEvent(
-                event_type="response.output_text.delta",
-                text_delta="answer",
-            ),
-            LLMStreamEvent(
-                event_type="response.completed",
-                response=LLMResponse(text="answer"),
-            ),
-        ]
-    )
-    agent = AgentBase(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=llm_service,  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-
-    async with app.run_test() as pilot:
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/model gpt-5.5"))
-        app.on_input_submitted(Input.Submitted(command_input, "What now?"))
-        await pilot.pause(0.1)
-
-        assert app._selected_model == "gpt-5.5"
-        assert app._status_model == "gpt-5.5"
-        assert llm_service.calls[0]["metadata"]["model"] == "gpt-5.5"
-
-
-@pytest.mark.anyio
 async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -830,6 +810,9 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         await pilot.pause(1.1)
 
         assert "model: gpt-5.5" in status.current_text
+        assert "context:" not in status.current_text
+        assert "cache rate:" not in status.current_text
+        assert "cost:" not in status.current_text
 
 
 @pytest.mark.anyio
@@ -1010,6 +993,41 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
     assert calls == ["config"]
 
 
+@pytest.mark.anyio
+async def test_interactive_tui_trajectory_command_opens_trajectory_screen() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.open_trajectory_screen = lambda: calls.append("trajectory")
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/trajectory"))
+
+    assert calls == ["trajectory"]
+
+
+@pytest.mark.anyio
+async def test_tui_clickable_chrome_routes_to_simplified_entries() -> None:
+    app = AceAITUI([])
+    calls: list[str] = []
+    app.action_config = lambda: calls.append("config")
+    app.open_metadata_screen = lambda: calls.append("metadata")
+    app.action_toggle_debug_mode = lambda: calls.append("debug")
+
+    async with app.run_test():
+        app.on_top_bar_widget_config_requested(TopBarWidget.ConfigRequested())
+        app.on_status_bar_widget_metadata_requested(StatusBarWidget.MetadataRequested())
+        app.on_top_bar_widget_debug_requested(TopBarWidget.DebugRequested())
+
+    assert calls == ["config", "metadata", "debug"]
+
+
 def test_command_input_shift_enter_inserts_newline() -> None:
     command_input = CommandInput()
     command_input.value = "/idea first"
@@ -1036,8 +1054,15 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
         app._refresh_command_completions(command_input.value)
 
         assert not completions.has_class("hidden")
+        assert completions.selected_index == 0
+        assert "> /clear" in completions.display_text
         assert "/clear" in completions.display_text
-        assert "/model" in completions.display_text
+        assert "Clear the visible transcript" in completions.display_text
+        assert "/trajectory" in completions.display_text
+        assert "/update" in completions.display_text
+        assert "/model" not in completions.display_text
+        assert "/resume" not in completions.display_text
+        assert "/metadata" not in completions.display_text
 
 
 @pytest.mark.anyio
@@ -1053,17 +1078,50 @@ async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> No
     async with app.run_test():
         command_input = app.query_one(CommandInput)
         completions = app.query_one(CommandCompletionWidget)
-        command_input.value = "/mo"
+        command_input.value = "/tr"
         app._refresh_command_completions(command_input.value)
 
-        assert completions.display_text == "/model"
+        assert completions.selected_index == 0
+        assert "> /trajectory" in completions.display_text
+        assert "/trajectory" in completions.display_text
+        assert "Open the event trajectory view" in completions.display_text
 
         app.on_command_input_completion_requested(
             CommandInput.CompletionRequested(command_input)
         )
 
-        assert command_input.value == "/model "
+        assert command_input.value == "/trajectory "
         assert completions.has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_navigates_slash_command_completion() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(CommandCompletionWidget)
+        command_input.value = "/"
+        app._refresh_command_completions(command_input.value)
+
+        app.on_command_input_completion_navigation_requested(
+            CommandInput.CompletionNavigationRequested(direction=1)
+        )
+
+        assert completions.selected_index == 1
+        assert "> /config" in completions.display_text
+
+        app.on_command_input_completion_requested(
+            CommandInput.CompletionRequested(command_input)
+        )
+
+        assert command_input.value == "/config "
 
 
 @pytest.mark.anyio
@@ -1304,7 +1362,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monk
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_info_command_uses_registered_alias() -> None:
+async def test_interactive_tui_stats_command_opens_metadata() -> None:
     agent = AgentBase(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1317,44 +1375,9 @@ async def test_interactive_tui_info_command_uses_registered_alias() -> None:
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/info"))
+        app.on_input_submitted(Input.Submitted(command_input, "/stats"))
 
     assert calls == ["metadata"]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_resume_command_uses_registered_arg_handler(
-    tmp_path,
-) -> None:
-    store = SessionStore(tmp_path)
-    first = store.create_session()
-    second = store.create_session()
-    SessionRecorder(store, first.session_id).record(
-        tui_event_to_session_event(TUIEvent.user_message("first"))
-    )
-    SessionRecorder(store, second.session_id).record(
-        tui_event_to_session_event(TUIEvent.user_message("second"))
-    )
-    agent = AgentBase(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(
-        agent,
-        initial_events=event_log_to_tui_events(store.load_event_log(first.session_id)),
-        initial_history=[],
-        session_recorder=SessionRecorder(store, first.session_id),
-        session_id=first.session_id,
-    )
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, f"/resume {second.session_id}"))
-
-    assert app._session_id == second.session_id
-    assert app._state.events[0].content == "second"
 
 
 @pytest.mark.anyio
@@ -1409,6 +1432,30 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
 
         assert not command_input.has_focus
         assert app.query_one("#stream").has_focus
+
+
+@pytest.mark.anyio
+async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
+    async with AceAITUI([]).run_test() as pilot:
+        await pilot.pause()
+
+        stream = pilot.app.query_one(StreamWidget)
+        console = Console(width=80, record=True, file=StringIO())
+        console.print(stream._render_empty_state())
+        text = console.export_text()
+        assert "Ask AceAI Anything" in text
+        assert "██" in text
+        assert "No events yet" not in text
+
+
+@pytest.mark.anyio
+async def test_tui_stops_empty_labrador_when_events_are_loaded() -> None:
+    app = AceAITUI([TUIEvent.session_notice("Welcome back")])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert app.query_one(StreamWidget)._empty_state_timer is None
 
 
 @pytest.mark.anyio
@@ -1519,14 +1566,13 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
 
 
 @pytest.mark.anyio
-async def test_config_screen_is_fullscreen_and_splits_system_prompt_tab() -> None:
+async def test_config_screen_is_fullscreen_without_system_prompt_tab() -> None:
     screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
         default_model="gpt-5.5",
         skills="auto",
         api_keys={"openai": "sk-test-ending"},
-        system_prompt="You are AceAI.\n\nSkill instructions are active.",
     )
 
     async with AceAITUI([]).run_test(size=(100, 30)) as pilot:
@@ -1536,16 +1582,14 @@ async def test_config_screen_is_fullscreen_and_splits_system_prompt_tab() -> Non
         panel = screen.query_one("#config-panel")
         tabs = screen.query_one("#config-tabs", TabbedContent)
         settings_tab = screen.query_one("#settings-tab")
-        prompt_tab = screen.query_one("#system-prompt-tab")
-        prompt = screen.query_one("#system-prompt", Static)
+        screen_ids = {node.id for node in screen.query("*") if node.id is not None}
 
         assert panel.region.width == 100
         assert panel.region.height == 30
         assert tabs.active == "settings-tab"
         assert screen.query_one("#provider", Input) in settings_tab.query("*")
-        assert prompt in prompt_tab.query("*")
-        assert "You are AceAI" in str(prompt.render())
-        assert "Skill instructions are active" in str(prompt.render())
+        assert "system-prompt-tab" not in screen_ids
+        assert "system-prompt" not in screen_ids
 
 
 @pytest.mark.anyio
@@ -1555,11 +1599,13 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
             name="run_shell_command",
             description="Run a shell command.",
             permission="ask",
+            max_calls_per_run=5,
         ),
         ToolPermissionItem(
             name="read_text_file",
             description="Read a file.",
             permission="always",
+            enabled=False,
         ),
     )
     screen = ConfigScreen(
@@ -1582,17 +1628,92 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
         screen.dismiss = dismiss
         tabs = screen.query_one("#config-tabs", TabbedContent)
         tool_select = screen.query_one("#tool-permission-0", Select)
+        enabled_toggle = screen.query_one("#tool-enabled-1", Checkbox)
+        max_calls_input = screen.query_one("#tool-max-calls-0", Input)
 
         assert screen.query_one("#tool-permissions-tab") in tabs.query("*")
+        header_cells = list(screen.query(".tool-permission-header Static"))
+        assert [str(cell.render()) for cell in header_cells] == [
+            "On",
+            "Tool",
+            "Permission",
+            "Max calls",
+            "Description",
+        ]
+        assert screen.query_one("#tool-enabled-0", Checkbox).has_class(
+            "tool-enabled-toggle"
+        )
+        assert str(screen.query_one("#tool-permission-description-1", Static).render()) == (
+            "Read a file."
+        )
+        assert screen.query_one("#tool-permission-description-1", Static).has_class(
+            "tool-disabled"
+        )
         assert tool_select.value == "ask"
+        assert not enabled_toggle.value
+        assert max_calls_input.value == "5"
 
-        tool_select.value = "never"
+        enabled_toggle.value = True
+        await pilot.pause()
+        assert str(screen.query_one("#tool-permission-description-0", Static).render()) == (
+            "Run a shell command."
+        )
+        assert str(screen.query_one("#tool-permission-description-1", Static).render()) == (
+            "Read a file."
+        )
+        tool_select = screen.query_one("#tool-permission-0", Select)
+        max_calls_input = screen.query_one("#tool-max-calls-0", Input)
+        tool_select.value = "always"
+        max_calls_input.value = "2"
         _press_config_apply(screen)
 
         assert selections[-1].tool_permissions == {
-            "run_shell_command": "never",
+            "run_shell_command": "always",
             "read_text_file": "always",
         }
+        assert selections[-1].tool_enabled == {
+            "run_shell_command": True,
+            "read_text_file": True,
+        }
+        assert selections[-1].tool_max_calls == {
+            "run_shell_command": 2,
+        }
+
+
+@pytest.mark.anyio
+async def test_config_screen_rejects_invalid_tool_max_calls() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=(
+            ToolPermissionItem(
+                name="run_shell_command",
+                description="Run a shell command.",
+                permission="ask",
+            ),
+        ),
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        screen.query_one("#tool-max-calls-0", Input).value = "0"
+        _press_config_apply(screen)
+
+        assert selections == []
+        assert (
+            str(screen.query_one("#config-error", Static).render())
+            == "Max calls must be empty or a positive integer"
+        )
 
 
 @pytest.mark.anyio
@@ -1632,8 +1753,9 @@ async def test_config_screen_can_allow_or_disable_all_tools() -> None:
             button = screen.query_one("#disable-all-tools", Button)
 
         screen.on_button_pressed(DisablePressed())
-        assert screen.query_one("#tool-permission-0", Select).value == "never"
-        assert screen.query_one("#tool-permission-1", Select).value == "never"
+        await pilot.pause()
+        assert not screen.query_one("#tool-enabled-0", Checkbox).value
+        assert not screen.query_one("#tool-enabled-1", Checkbox).value
 
         class AllowPressed:
             button = screen.query_one("#allow-all-tools", Button)
@@ -1641,10 +1763,15 @@ async def test_config_screen_can_allow_or_disable_all_tools() -> None:
         screen.on_button_pressed(AllowPressed())
         _press_config_apply(screen)
 
+        assert selections[-1].tool_enabled == {
+            "run_shell_command": False,
+            "read_text_file": False,
+        }
         assert selections[-1].tool_permissions == {
             "run_shell_command": "always",
             "read_text_file": "always",
         }
+        assert selections[-1].tool_max_calls == {}
 
 
 @pytest.mark.anyio
@@ -1806,13 +1933,21 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
     monkeypatch,
 ) -> None:
     calls: list[AceAITUIConfig] = []
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done"),
+            )
+        ]
+    )
 
     def agent_factory(config: AceAITUIConfig) -> AgentBase:
         calls.append(config)
         return AgentBase(
             prompt="Prompt",
             default_model=config.model,
-            llm_service=StubLLMService([]),  # type: ignore[arg-type]
+            llm_service=llm_service,  # type: ignore[arg-type]
             executor=StubExecutor(),  # type: ignore[arg-type]
         )
 
@@ -1831,7 +1966,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
     )
 
     clear_config()
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app._handle_config_selection(
             ConfigSelection(
                 provider="deepseek",
@@ -1843,18 +1978,24 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
                 enabled_skills=(),
             )
         )
+        expected_config = AceAITUIConfig(
+            provider="deepseek",
+            api_key="deepseek-key",
+            model="deepseek-v4-flash",
+            default_model="deepseek-v4-pro",
+            skills="auto",
+            skill_selection_mode="selected",
+            enabled_skills=[],
+            api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
+        )
 
-    assert calls[-1] == AceAITUIConfig(
-        provider="deepseek",
-        api_key="deepseek-key",
-        model="deepseek-v4-flash",
-        default_model="deepseek-v4-pro",
-        skills="auto",
-        skill_selection_mode="selected",
-        enabled_skills=[],
-        api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
-    )
-    assert current_config() == calls[-1]
+        assert calls == []
+        assert current_config() == expected_config
+
+        app.start_run("hello")
+        await pilot.pause(0.1)
+
+    assert calls == [expected_config]
     assert (tmp_path / ".aceai" / "config.yml").exists()
 
 

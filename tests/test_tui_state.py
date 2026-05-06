@@ -23,7 +23,7 @@ from aceai.agent.tui.widgets import (
 from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
 from rich.console import Console, Group
 from textual.events import Click
-from textual.widgets import DataTable, Footer, Static
+from textual.widgets import DataTable, Static
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -282,7 +282,7 @@ async def test_static_tui_loads_fixture_events() -> None:
     events = static_demo_events()
     app = AceAITUI(events)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         assert app._state.status == "completed"
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
@@ -464,7 +464,7 @@ async def test_trajectory_screen_renders_event_trajectory() -> None:
     app = AceAITUI(events)
 
     async with app.run_test() as pilot:
-        await pilot.press("t")
+        app.open_trajectory_screen()
         await pilot.pause()
 
         screen = app.screen
@@ -806,7 +806,7 @@ async def test_detail_renders_tool_arguments_and_output() -> None:
     )
     app = AceAITUI([tool_event])
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._state = select_event(app._state, tool_event.event_id)
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
@@ -1041,15 +1041,15 @@ async def test_enter_from_main_view_focuses_input() -> None:
 
 
 @pytest.mark.anyio
-async def test_input_sits_above_footer_without_overlap() -> None:
+async def test_input_sits_at_bottom_without_footer() -> None:
     app = AceAITUI([])
 
     async with app.run_test(size=(80, 20)) as pilot:
         await pilot.pause(0.1)
         command_input = app.query_one(CommandInput)
-        footer = app.query_one(Footer)
 
-        assert command_input.region.y + command_input.region.height <= footer.region.y
+        assert command_input.region.height == 4
+        assert command_input.region.y + command_input.region.height <= app.size.height
 
 
 @pytest.mark.anyio

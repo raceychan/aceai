@@ -85,6 +85,8 @@ def build_default_agent(
     skill_selection_mode: str = "all",
     enabled_skills: list[str] | None = None,
     tool_permissions: dict[str, ToolPermission] | None = None,
+    tool_enabled: dict[str, bool] | None = None,
+    tool_max_calls: dict[str, int] | None = None,
 ) -> AgentBase:
     agent_model = model if default_model is None else default_model
     skill_path = skills if skills is not None else None
@@ -100,6 +102,8 @@ def build_default_agent(
                 model=agent_model,
                 enabled_skill_names=enabled_skill_names,
                 tool_permissions=tool_permissions,
+                tool_enabled=tool_enabled,
+                tool_max_calls=tool_max_calls,
             )
         return build_ace_agent(
             api_key=api_key,
@@ -107,6 +111,8 @@ def build_default_agent(
             skill_path=skill_path,
             enabled_skill_names=enabled_skill_names,
             tool_permissions=tool_permissions,
+            tool_enabled=tool_enabled,
+            tool_max_calls=tool_max_calls,
         )
     if skill_path is None:
         return build_ace_agent(
@@ -115,6 +121,8 @@ def build_default_agent(
             provider_name=provider,
             enabled_skill_names=enabled_skill_names,
             tool_permissions=tool_permissions,
+            tool_enabled=tool_enabled,
+            tool_max_calls=tool_max_calls,
         )
     return build_ace_agent(
         api_key=api_key,
@@ -123,6 +131,8 @@ def build_default_agent(
         skill_path=skill_path,
         enabled_skill_names=enabled_skill_names,
         tool_permissions=tool_permissions,
+        tool_enabled=tool_enabled,
+        tool_max_calls=tool_max_calls,
     )
 
 
@@ -138,6 +148,8 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
             skill_selection_mode=config.skill_selection_mode,
             enabled_skills=config.enabled_skills,
             tool_permissions=config.tool_permissions,
+            tool_enabled=config.tool_enabled,
+            tool_max_calls=config.tool_max_calls,
         )
     return build_default_agent(
         api_key=config.api_key,
@@ -148,6 +160,8 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
         skill_selection_mode=config.skill_selection_mode,
         enabled_skills=config.enabled_skills,
         tool_permissions=config.tool_permissions,
+        tool_enabled=config.tool_enabled,
+        tool_max_calls=config.tool_max_calls,
     )
 
 
@@ -185,6 +199,8 @@ def resolve_initial_config(
                     enabled_skills=stored.enabled_skills,
                     api_keys=stored.api_keys,
                     tool_permissions=stored.tool_permissions,
+                    tool_enabled=stored.tool_enabled,
+                    tool_max_calls=stored.tool_max_calls,
                 )
             )
         return stored
@@ -204,6 +220,8 @@ def resolve_initial_config(
                 enabled_skills=[],
                 api_keys={provider: os.environ[env_name]},
                 tool_permissions={},
+                tool_enabled={},
+                tool_max_calls={},
             )
         )
     return None
@@ -233,6 +251,8 @@ def apply_session_state_to_initial_config(
                 enabled_skills=config.enabled_skills,
                 api_keys=config.api_keys,
                 tool_permissions=config.tool_permissions,
+                tool_enabled=config.tool_enabled,
+                tool_max_calls=config.tool_max_calls,
             )
         )
     if config is not None and provider in config.api_keys:
@@ -247,6 +267,8 @@ def apply_session_state_to_initial_config(
                 enabled_skills=config.enabled_skills,
                 api_keys=config.api_keys,
                 tool_permissions=config.tool_permissions,
+                tool_enabled=config.tool_enabled,
+                tool_max_calls=config.tool_max_calls,
             )
         )
     env_name = api_key_env(provider)
@@ -268,6 +290,8 @@ def apply_session_state_to_initial_config(
                 enabled_skills=config.enabled_skills if config is not None else [],
                 api_keys=api_keys,
                 tool_permissions=config.tool_permissions if config is not None else {},
+                tool_enabled=config.tool_enabled if config is not None else {},
+                tool_max_calls=config.tool_max_calls if config is not None else {},
             )
         )
     return config

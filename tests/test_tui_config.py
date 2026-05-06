@@ -26,6 +26,8 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["enabled_skills"].value_type == "list"
     assert fields["api_keys"].value_type == "mapping"
     assert fields["tool_permissions"].value_type == "mapping"
+    assert fields["tool_enabled"].value_type == "mapping"
+    assert fields["tool_max_calls"].value_type == "mapping"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
@@ -35,7 +37,9 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         api_key="secret",
         model="gpt-4o-mini",
         api_keys={"openai": "secret"},
-        tool_permissions={"run_shell_command": "never"},
+        tool_permissions={"run_shell_command": "ask"},
+        tool_enabled={"read_text_file": False},
+        tool_max_calls={"search_text": 4},
     )
 
     save_config(config, path)
@@ -267,16 +271,16 @@ def test_load_config_rejects_top_level_api_key(tmp_path) -> None:
         raise AssertionError("load_config accepted legacy top-level api_key")
 
 
-def test_load_config_rejects_unknown_tool_permission(tmp_path) -> None:
+def test_load_config_rejects_disabled_as_tool_permission(tmp_path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
-        "config_version: 2\n"
+        "config_version: 3\n"
         "provider: openai\n"
         "api_keys:\n"
         "  openai: secret\n"
         "model: gpt-5.5\n"
         "tool_permissions:\n"
-        "  run_shell_command: maybe\n",
+        "  run_shell_command: never\n",
         encoding="utf-8",
     )
 
@@ -285,4 +289,25 @@ def test_load_config_rejects_unknown_tool_permission(tmp_path) -> None:
     except ValueError as exc:
         assert str(exc) == "AceAI config tool_permissions value is unsupported"
     else:
-        raise AssertionError("load_config accepted unknown tool permission")
+        raise AssertionError("load_config accepted disabled permission policy")
+
+
+def test_load_config_rejects_invalid_tool_max_calls(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 3\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "tool_max_calls:\n"
+        "  run_shell_command: 0\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_config(path)
+    except ValueError as exc:
+        assert str(exc) == "AceAI config tool_max_calls values must be positive"
+    else:
+        raise AssertionError("load_config accepted non-positive tool max calls")

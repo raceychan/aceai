@@ -22,7 +22,7 @@ from aceai.llm.openai import OpenAIModel
 ProviderName = str
 ConfigValueType = Literal["string", "mapping", "list"]
 SkillSelectionMode = Literal["all", "selected"]
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 DEFAULT_OPENAI_MODEL: OpenAIModel = default_model("openai")
 STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = stale_default_models("openai")
 OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = model_options("openai")
@@ -54,6 +54,8 @@ class AgentAppConfig(Record, kw_only=True):
     tool_permissions: dict[str, ToolPermission] = field(
         default_factory=dict[str, ToolPermission]
     )
+    tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
+    tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
 
 
 AceAITUIConfig = AgentAppConfig
@@ -113,7 +115,19 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             name="tool_permissions",
             value_type="mapping",
             required=True,
-            description="Per-tool permission policy: always, ask, or never.",
+            description="Per-tool permission policy: always or ask.",
+        ),
+        ConfigField(
+            name="tool_enabled",
+            value_type="mapping",
+            required=True,
+            description="Per-tool enabled state. Disabled tools are not loaded.",
+        ),
+        ConfigField(
+            name="tool_max_calls",
+            value_type="mapping",
+            required=True,
+            description="Per-tool maximum call count. Missing tools are unlimited.",
         ),
     ),
 )
@@ -168,8 +182,20 @@ def validate_config(config: AgentAppConfig) -> None:
     for tool_name, permission in config.tool_permissions.items():
         if type(tool_name) is not str:
             raise TypeError("AceAI config tool_permissions tool names must be str")
-        if permission not in ("always", "ask", "never"):
+        if permission not in ("always", "ask"):
             raise ValueError("AceAI config tool_permissions value is unsupported")
+    for tool_name, enabled in config.tool_enabled.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_enabled tool names must be str")
+        if type(enabled) is not bool:
+            raise TypeError("AceAI config tool_enabled values must be bool")
+    for tool_name, max_calls in config.tool_max_calls.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_max_calls tool names must be str")
+        if type(max_calls) is not int:
+            raise TypeError("AceAI config tool_max_calls values must be int")
+        if max_calls < 1:
+            raise ValueError("AceAI config tool_max_calls values must be positive")
 
 
 def default_config_path() -> Path:
@@ -217,6 +243,8 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
     )
     enabled_skills = _load_enabled_skills(data)
     tool_permissions = _load_tool_permissions(data)
+    tool_enabled = _load_tool_enabled(data)
+    tool_max_calls = _load_tool_max_calls(data)
     if legacy_skill_path:
         skill_selection_mode = "all"
         enabled_skills = []
@@ -249,6 +277,8 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
             enabled_skills=enabled_skills,
             api_keys=api_keys,
             tool_permissions=tool_permissions,
+            tool_enabled=tool_enabled,
+            tool_max_calls=tool_max_calls,
         )
     )
 
@@ -269,6 +299,8 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
             "skill_selection_mode": config.skill_selection_mode,
             "enabled_skills": config.enabled_skills,
             "tool_permissions": config.tool_permissions,
+            "tool_enabled": config.tool_enabled,
+            "tool_max_calls": config.tool_max_calls,
         },
         sort_keys=False,
     )
@@ -329,7 +361,41 @@ def _load_tool_permissions(data: dict[object, object]) -> dict[str, ToolPermissi
     for tool_name, permission in raw_permissions.items():
         if type(tool_name) is not str:
             raise TypeError("AceAI config tool_permissions tool names must be str")
-        if permission not in ("always", "ask", "never"):
+        if permission not in ("always", "ask"):
             raise ValueError("AceAI config tool_permissions value is unsupported")
         permissions[tool_name] = permission
     return permissions
+
+
+def _load_tool_enabled(data: dict[object, object]) -> dict[str, bool]:
+    if "tool_enabled" not in data:
+        return {}
+    raw_enabled = data["tool_enabled"]
+    if not isinstance(raw_enabled, dict):
+        raise TypeError("AceAI config tool_enabled must be a mapping")
+    enabled_by_tool: dict[str, bool] = {}
+    for tool_name, enabled in raw_enabled.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_enabled tool names must be str")
+        if type(enabled) is not bool:
+            raise TypeError("AceAI config tool_enabled values must be bool")
+        enabled_by_tool[tool_name] = enabled
+    return enabled_by_tool
+
+
+def _load_tool_max_calls(data: dict[object, object]) -> dict[str, int]:
+    if "tool_max_calls" not in data:
+        return {}
+    raw_max_calls = data["tool_max_calls"]
+    if not isinstance(raw_max_calls, dict):
+        raise TypeError("AceAI config tool_max_calls must be a mapping")
+    max_calls_by_tool: dict[str, int] = {}
+    for tool_name, max_calls in raw_max_calls.items():
+        if type(tool_name) is not str:
+            raise TypeError("AceAI config tool_max_calls tool names must be str")
+        if type(max_calls) is not int:
+            raise TypeError("AceAI config tool_max_calls values must be int")
+        if max_calls < 1:
+            raise ValueError("AceAI config tool_max_calls values must be positive")
+        max_calls_by_tool[tool_name] = max_calls
+    return max_calls_by_tool

@@ -6,7 +6,7 @@ from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
 from aceai.core import ToolExecutionError, ToolExecutor
-from aceai.llm.interface import UNSET
+from aceai.llm.interface import UNSET, is_present
 
 
 def write_skill(root: Path, name: str, description: str) -> None:
@@ -49,16 +49,19 @@ def test_default_agent_tools_are_product_capabilities() -> None:
         "apply_patch",
         "run_shell_command",
     }
+    assert not {
+        tool.name for tool in tools if is_present(tool.metadata.max_calls_per_run)
+    }
 
 
 def test_default_agent_tools_apply_permission_overrides() -> None:
     default_tool_map = {tool.name: tool for tool in default_agent_tools()}
     tools = default_agent_tools(
-        {
+        tool_permissions={
             "read_text_file": "ask",
             "run_shell_command": "always",
-            "apply_patch": "never",
-        }
+        },
+        tool_enabled={"apply_patch": False},
     )
     tool_names = {tool.name for tool in tools}
     approval_required = {tool.name for tool in tools if tool.metadata.require_approval}
@@ -67,6 +70,17 @@ def test_default_agent_tools_apply_permission_overrides() -> None:
     assert "read_text_file" in approval_required
     assert "run_shell_command" not in approval_required
     assert default_tool_map["run_shell_command"].metadata.require_approval
+
+
+def test_default_agent_tools_apply_max_call_overrides() -> None:
+    tools = default_agent_tools(
+        tool_permissions={"run_shell_command": "always"},
+        tool_max_calls={"run_shell_command": 3},
+    )
+    tool_map = {tool.name: tool for tool in tools}
+
+    assert tool_map["run_shell_command"].metadata.max_calls_per_run == 3
+    assert not tool_map["run_shell_command"].metadata.require_approval
 
 
 def test_build_ace_agent_wires_app_tools_and_project_skills(
@@ -100,6 +114,20 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
         "skill_view",
     }
     assert set(agent.skill_registry.skills) == {"aceai-release"}
+
+
+def test_build_ace_agent_excludes_disabled_app_tools(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    agent = build_ace_agent(
+        api_key="test-key",
+        model="gpt-5.5",
+        tool_enabled={"run_shell_command": False},
+    )
+
+    assert "run_shell_command" not in agent._executor.tools
+    assert "read_text_file" in agent._executor.tools
 
 
 def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(

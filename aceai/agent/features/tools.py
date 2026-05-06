@@ -99,7 +99,6 @@ def read_text_file(
 
 @tool(
     tags=["agent_app", "filesystem"],
-    max_calls_per_run=8,
     require_approval=True,
     approval_policy="filesystem_write",
 )
@@ -119,7 +118,6 @@ def write_text_file(
 
 @tool(
     tags=["agent_app", "filesystem"],
-    max_calls_per_run=12,
     require_approval=True,
     approval_policy="filesystem_write",
 )
@@ -151,7 +149,6 @@ def replace_text_in_file(
 
 @tool(
     tags=["agent_app", "shell"],
-    max_calls_per_run=8,
     require_approval=True,
     approval_policy="shell_command",
 )
@@ -184,7 +181,7 @@ def run_shell_command(
     )
 
 
-@tool(tags=["agent_app", "search"], max_calls_per_run=12)
+@tool(tags=["agent_app", "search"])
 def search_text(
     query: Annotated[str, spec(description="ripgrep search pattern")],
     path: Annotated[str, spec(description="File or directory path to search")] = ".",
@@ -210,6 +207,8 @@ def search_text(
 
 def default_agent_tools(
     tool_permissions: dict[str, ToolPermission] | None = None,
+    tool_enabled: dict[str, bool] | None = None,
+    tool_max_calls: dict[str, int] | None = None,
 ) -> list[Tool[Any, Any]]:
     tools = [
         list_directory,
@@ -223,29 +222,47 @@ def default_agent_tools(
         run_shell_command,
         search_text,
     ]
-    if tool_permissions is None:
+    if tool_permissions is None and tool_enabled is None and tool_max_calls is None:
         return tools
-    return _apply_tool_permissions(tools, tool_permissions)
+    return _configure_tools(
+        tools,
+        tool_permissions or {},
+        tool_enabled or {},
+        tool_max_calls or {},
+    )
 
 
-def _apply_tool_permissions(
+def _configure_tools(
     tools: list[Tool[Any, Any]],
     tool_permissions: dict[str, ToolPermission],
+    tool_enabled: dict[str, bool],
+    tool_max_calls: dict[str, int],
 ) -> list[Tool[Any, Any]]:
     configured_tools: list[Tool[Any, Any]] = []
     for configured_tool in tools:
-        if configured_tool.name not in tool_permissions:
+        if configured_tool.name in tool_enabled and not tool_enabled[configured_tool.name]:
+            continue
+        permission = tool_permissions.get(configured_tool.name)
+        has_permission_override = permission is not None
+        has_max_call_override = configured_tool.name in tool_max_calls
+        if not has_permission_override and not has_max_call_override:
             configured_tools.append(configured_tool)
             continue
-        permission = tool_permissions[configured_tool.name]
-        if permission == "never":
-            continue
-        require_approval = permission == "ask"
+        require_approval = (
+            permission == "ask"
+            if has_permission_override
+            else configured_tool.metadata.require_approval
+        )
+        max_calls_per_run = (
+            tool_max_calls[configured_tool.name]
+            if has_max_call_override
+            else configured_tool.metadata.max_calls_per_run
+        )
         configured_tools.append(
             configured_tool.with_metadata(
                 ToolMeta(
                     description=configured_tool.metadata.description,
-                    max_calls_per_run=configured_tool.metadata.max_calls_per_run,
+                    max_calls_per_run=max_calls_per_run,
                     record_in_history=configured_tool.metadata.record_in_history,
                     require_approval=require_approval,
                     approval_policy=configured_tool.metadata.approval_policy,

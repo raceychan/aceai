@@ -1,8 +1,17 @@
 """Command input widget for the read-only TUI prototype."""
 
+from dataclasses import dataclass
+from typing import Any, cast
+
 from textual.events import Click, Key
 from textual.message import Message
 from textual.widgets import Static, TextArea
+
+
+@dataclass(frozen=True)
+class CommandCompletionItem:
+    command: str
+    description: str
 
 
 class CommandInput(TextArea):
@@ -19,13 +28,20 @@ class CommandInput(TextArea):
             self.input = input
             super().__init__()
 
+    class CompletionNavigationRequested(Message):
+        def __init__(self, *, direction: int) -> None:
+            self.direction = direction
+            super().__init__()
+
     BINDINGS = [
         ("escape", "exit_input_mode", "Exit input"),
+        ("enter", "submit_or_complete", "Submit"),
+        ("ctrl+m", "submit_or_complete", "Submit"),
     ]
 
     DEFAULT_CSS = """
     CommandInput {
-        height: 3;
+        height: 4;
         background: #3b4252;
         color: #eceff4;
         border: solid #88c0d0;
@@ -58,23 +74,30 @@ class CommandInput(TextArea):
             self.insert("\n")
             event.stop()
             return
-        if event.key == "enter":
-            self.post_message(self.Submitted(self, self.text))
+        if self.text.startswith("/") and event.key in ("up", "down"):
+            direction = -1 if event.key == "up" else 1
+            self.post_message(self.CompletionNavigationRequested(direction=direction))
             event.stop()
             return
         if event.key == "tab" and self.text.startswith("/"):
             self.post_message(self.CompletionRequested(self))
             event.stop()
             return
-        if event.key == "escape" and self.app.cancel_active_run():
+        if event.key == "escape" and cast(Any, self.app).cancel_active_run():
             event.stop()
 
     def action_exit_input_mode(self) -> None:
         """Return focus to the main stream so app-level shortcuts work."""
-        if self.app.cancel_active_run():
+        if cast(Any, self.app).cancel_active_run():
             return
         self.blur()
         self.app.query_one("#stream").focus()
+
+    def action_submit_or_complete(self) -> None:
+        if self.text.startswith("/"):
+            self.post_message(self.CompletionRequested(self))
+            return
+        self.post_message(self.Submitted(self, self.text))
 
 
 class CommandCompletionWidget(Static):
@@ -83,7 +106,7 @@ class CommandCompletionWidget(Static):
     DEFAULT_CSS = """
     CommandCompletionWidget {
         height: auto;
-        max-height: 4;
+        max-height: 16;
         padding: 0 1;
         background: #2e3440;
         color: #d8dee9;
@@ -98,20 +121,35 @@ class CommandCompletionWidget(Static):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.display_text = ""
+        self.selected_index = 0
 
-    def show_commands(self, commands: list[str]) -> None:
-        if not commands:
+    def show_commands(
+        self,
+        items: list[CommandCompletionItem],
+        *,
+        selected_index: int = 0,
+    ) -> None:
+        if not items:
             self.add_class("hidden")
             self.display_text = ""
+            self.selected_index = 0
             self.update("")
             return
         self.remove_class("hidden")
-        self.display_text = "  ".join(f"/{command}" for command in commands)
+        self.selected_index = max(0, min(selected_index, len(items) - 1))
+        command_width = max(len(f"/{item.command}") for item in items)
+        lines: list[str] = []
+        for index, item in enumerate(items):
+            command = f"/{item.command}".ljust(command_width)
+            marker = ">" if index == self.selected_index else " "
+            lines.append(f"{marker} {command}  {item.description}")
+        self.display_text = "\n".join(lines)
         self.update(self.display_text)
 
     def hide(self) -> None:
         self.add_class("hidden")
         self.display_text = ""
+        self.selected_index = 0
         self.update("")
 
     @property

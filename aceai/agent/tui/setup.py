@@ -54,6 +54,8 @@ class ConfigSelection(Record, kw_only=True):
     tool_permissions: dict[str, ToolPermission] = field(
         default_factory=dict[str, ToolPermission]
     )
+    tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
+    tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
 
 
 class SkillConfigItem(Record, kw_only=True):
@@ -66,6 +68,8 @@ class ToolPermissionItem(Record, kw_only=True):
     name: str
     description: str
     permission: ToolPermission
+    enabled: bool = True
+    max_calls_per_run: int | None = None
 
 
 def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
@@ -471,7 +475,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #tool-permissions-scroll, #system-prompt-scroll {
+    #config-scroll, #tool-permissions-scroll {
         width: 100%;
         height: 1fr;
     }
@@ -498,16 +502,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         border-top: solid #4c566a;
     }
 
-    #system-prompt {
-        height: auto;
-        min-height: 20;
-        margin-bottom: 1;
-        padding: 1 2;
-        border: solid #4c566a;
-        background: #3b4252;
-        color: #eceff4;
-    }
-
     #config-skills-list {
         height: auto;
     }
@@ -516,29 +510,98 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: auto;
     }
 
-    .tool-permission-entry {
+    .tool-permission-table {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        background: #343b49;
+        border: solid #4c566a;
     }
 
     .tool-permission-row {
         width: 100%;
         height: auto;
+        min-height: 3;
+        margin-bottom: 1;
+        align: center middle;
+    }
+
+    .tool-permission-header {
+        height: 2;
+        min-height: 2;
+        margin-bottom: 0;
+        background: #3b4252;
+        color: #a7b1c2;
+        text-style: bold;
+    }
+
+    .tool-permission-cell {
+        height: 100%;
+        padding: 0 1;
+        content-align: left middle;
+    }
+
+    .tool-enabled-cell {
+        width: 7;
+        padding: 0 0;
+        content-align: center middle;
+    }
+
+    .tool-enabled-toggle {
+        width: 5;
+        height: 3;
+        background: transparent;
+        border: none;
+        padding: 0 1;
+        color: #a3be8c;
     }
 
     .tool-permission-name {
-        width: 1fr;
-        height: auto;
+        width: 24;
+        text-style: bold;
+        color: #eceff4;
+        content-align: left middle;
+    }
+
+    .tool-permission-policy-cell {
+        width: 20;
+        content-align: left middle;
     }
 
     .tool-permission-select {
-        width: 12;
+        width: 19;
+    }
+
+    .tool-max-calls-cell {
+        width: 18;
+        content-align: left middle;
+    }
+
+    .tool-max-calls-input {
+        width: 17;
     }
 
     .tool-permission-description {
-        color: #a7b1c2;
+        width: 1fr;
         height: auto;
+        color: #a7b1c2;
+        content-align: left top;
+    }
+
+    .tool-disabled {
+        color: #6f7888;
+        text-style: dim;
+    }
+
+    #tool-permission-actions {
+        height: auto;
+        margin-bottom: 1;
+        padding: 0 1;
+        align: center middle;
+    }
+
+    #tool-permission-help {
+        width: 1fr;
+        color: #a7b1c2;
     }
 
     .skill-entry {
@@ -577,7 +640,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         skill_selection_mode: str = "all",
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
-        system_prompt: str = "",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -587,19 +649,21 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         self._skill_items = skill_items
         self._skill_selection_mode = skill_selection_mode
         self._enabled_skills = enabled_skills
-        self._tool_names = tuple(item.name for item in tool_permission_items)
+        self._tool_order = tuple(item.name for item in tool_permission_items)
         self._tool_descriptions = {
             item.name: item.description for item in tool_permission_items
         }
+        self._tool_enabled = {item.name: item.enabled for item in tool_permission_items}
         self._tool_permissions = {
             item.name: item.permission for item in tool_permission_items
         }
-        self._tool_permission_button_names = {
-            f"tool-permission-{index}": item.name
-            for index, item in enumerate(tool_permission_items)
+        self._tool_max_calls = {
+            item.name: item.max_calls_per_run
+            for item in tool_permission_items
+            if item.max_calls_per_run is not None
         }
+        self._sync_tool_order()
         self._api_keys = api_keys
-        self._system_prompt = system_prompt
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
             self._provider_name,
@@ -670,9 +734,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                     with VerticalScroll(id="tool-permissions-scroll"):
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
-                with TabPane("System Prompt", id="system-prompt-tab"):
-                    with VerticalScroll(id="system-prompt-scroll"):
-                        yield Static(self._system_prompt, id="system-prompt")
             with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
@@ -818,7 +879,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self._set_all_tool_permissions("always")
             return
         if event.button.id == "disable-all-tools":
-            self._set_all_tool_permissions("never")
+            self._set_all_tools_enabled(False)
+            return
+        if event.button.id == "enable-all-tools":
+            self._set_all_tools_enabled(True)
             return
         if event.button.id != "apply":
             return
@@ -843,7 +907,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if error is not None:
             self.query_one("#config-error", Static).update(error)
             return
-        self._sync_tool_permissions_from_controls()
+        try:
+            self._sync_tool_settings_from_controls()
+        except ValueError as exc:
+            self.query_one("#config-error", Static).update(str(exc))
+            return
         self.dismiss(
             ConfigSelection(
                 provider=provider,
@@ -854,6 +922,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 skill_selection_mode="selected",
                 enabled_skills=enabled_skills,
                 tool_permissions=dict(self._tool_permissions),
+                tool_enabled=dict(self._tool_enabled),
+                tool_max_calls=dict(self._tool_max_calls),
             )
         )
 
@@ -873,41 +943,171 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             return
         if event.value not in TOOL_PERMISSION_OPTIONS:
             raise ValueError("Unsupported tool permission")
-        tool_name = self._tool_permission_button_names[event.select.id]
+        tool_name = self._tool_control_names[event.select.id]
         self._tool_permissions[tool_name] = event.value
 
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id is None:
+            return
+        if not event.checkbox.id.startswith("tool-enabled-"):
+            return
+        self._sync_tool_settings_from_controls()
+        tool_name = self._tool_enabled_control_names[event.checkbox.id]
+        self._tool_enabled[tool_name] = event.value
+        self._sync_tool_order()
+        self.run_worker(
+            self._refresh_tool_permission_controls(),
+            group="tool-permission-refresh",
+            exclusive=True,
+        )
+
     def _tool_permission_controls(self) -> ComposeResult:
-        with Horizontal(classes="tool-permission-row"):
+        with Horizontal(id="tool-permission-actions"):
+            yield Static(
+                "Tool access and per-run limits. Empty max calls means unlimited.",
+                id="tool-permission-help",
+            )
+            yield Button("Enable all", id="enable-all-tools")
             yield Button("Allow all", id="allow-all-tools")
             yield Button("Disable all", id="disable-all-tools")
-        for index, tool_name in enumerate(self._tool_names):
-            with Container(classes="tool-permission-entry"):
-                with Horizontal(classes="tool-permission-row"):
-                    yield Static(tool_name, classes="tool-permission-name")
-                    yield Select(
-                        tuple((option, option) for option in TOOL_PERMISSION_OPTIONS),
-                        value=self._tool_permissions[tool_name],
-                        allow_blank=False,
-                        id=f"tool-permission-{index}",
-                        classes="tool-permission-select",
-                    )
-                yield Static(
-                    self._tool_descriptions[tool_name],
-                    classes="tool-permission-description",
-                    id=f"tool-permission-description-{index}",
-                )
+        with Container(id="tool-permission-table", classes="tool-permission-table"):
+            yield from self._tool_permission_table_widgets()
 
     def _set_all_tool_permissions(self, permission: ToolPermission) -> None:
         for index, tool_name in enumerate(self._tool_names):
             self._tool_permissions[tool_name] = permission
             self.query_one(f"#tool-permission-{index}", Select).value = permission
 
-    def _sync_tool_permissions_from_controls(self) -> None:
+    def _set_all_tools_enabled(self, enabled: bool) -> None:
+        for tool_name in self._tool_names:
+            self._tool_enabled[tool_name] = enabled
+        self._sync_tool_order()
+        self.run_worker(
+            self._refresh_tool_permission_controls(),
+            group="tool-permission-refresh",
+            exclusive=True,
+        )
+
+    def _sync_tool_settings_from_controls(self) -> None:
         for index, tool_name in enumerate(self._tool_names):
+            self._tool_enabled[tool_name] = self.query_one(
+                f"#tool-enabled-{index}", Checkbox
+            ).value
             value = self.query_one(f"#tool-permission-{index}", Select).value
             if value not in TOOL_PERMISSION_OPTIONS:
                 raise ValueError("Unsupported tool permission")
             self._tool_permissions[tool_name] = value
+            max_calls_value = self.query_one(f"#tool-max-calls-{index}", Input).value
+            if max_calls_value == "":
+                if tool_name in self._tool_max_calls:
+                    del self._tool_max_calls[tool_name]
+                continue
+            if not max_calls_value.isdecimal():
+                raise ValueError("Max calls must be empty or a positive integer")
+            max_calls = int(max_calls_value)
+            if max_calls < 1:
+                raise ValueError("Max calls must be empty or a positive integer")
+            self._tool_max_calls[tool_name] = max_calls
+
+    def _tool_max_calls_value(self, tool_name: str) -> str:
+        if tool_name not in self._tool_max_calls:
+            return ""
+        return f"{self._tool_max_calls[tool_name]}"
+
+    def _sync_tool_order(self) -> None:
+        self._tool_names = tuple(
+            sorted(self._tool_order, key=lambda tool_name: not self._tool_enabled[tool_name])
+        )
+        self._tool_control_names = {
+            f"tool-permission-{index}": tool_name
+            for index, tool_name in enumerate(self._tool_names)
+        }
+        self._tool_enabled_control_names = {
+            f"tool-enabled-{index}": tool_name
+            for index, tool_name in enumerate(self._tool_names)
+        }
+
+    async def _refresh_tool_permission_controls(self) -> None:
+        table = self.query_one("#tool-permission-table", Container)
+        await table.remove_children()
+        await table.mount(*self._tool_permission_table_widgets())
+
+    def _tool_permission_table_widgets(self) -> tuple[Horizontal, ...]:
+        return (
+            Horizontal(
+                Static("On", classes="tool-permission-cell tool-enabled-cell"),
+                Static("Tool", classes="tool-permission-cell tool-permission-name"),
+                Static(
+                    "Permission",
+                    classes="tool-permission-cell tool-permission-policy-cell",
+                ),
+                Static(
+                    "Max calls",
+                    classes="tool-permission-cell tool-max-calls-cell",
+                ),
+                Static(
+                    "Description",
+                    classes="tool-permission-cell tool-permission-description",
+                ),
+                classes="tool-permission-row tool-permission-header",
+            ),
+            *self._tool_permission_rows(),
+        )
+
+    def _tool_permission_rows(self) -> tuple[Horizontal, ...]:
+        rows: list[Horizontal] = []
+        for index, tool_name in enumerate(self._tool_names):
+            disabled_class = "" if self._tool_enabled[tool_name] else " tool-disabled"
+            rows.append(
+                Horizontal(
+                    Checkbox(
+                        "",
+                        value=self._tool_enabled[tool_name],
+                        id=f"tool-enabled-{index}",
+                        classes=(
+                            "tool-permission-cell "
+                            "tool-enabled-cell "
+                            f"tool-enabled-toggle{disabled_class}"
+                        ),
+                    ),
+                    Static(
+                        tool_name,
+                        classes=f"tool-permission-cell tool-permission-name{disabled_class}",
+                    ),
+                    Select(
+                        tuple((option, option) for option in TOOL_PERMISSION_OPTIONS),
+                        value=self._tool_permissions[tool_name],
+                        allow_blank=False,
+                        id=f"tool-permission-{index}",
+                        classes=(
+                            "tool-permission-cell "
+                            "tool-permission-policy-cell "
+                            f"tool-permission-select{disabled_class}"
+                        ),
+                    ),
+                    Input(
+                        value=self._tool_max_calls_value(tool_name),
+                        placeholder="no limit",
+                        id=f"tool-max-calls-{index}",
+                        classes=(
+                            "tool-permission-cell "
+                            "tool-max-calls-cell "
+                            f"tool-max-calls-input{disabled_class}"
+                        ),
+                    ),
+                    Static(
+                        self._tool_descriptions[tool_name],
+                        classes=(
+                            "tool-permission-cell "
+                            f"tool-permission-description{disabled_class}"
+                        ),
+                        id=f"tool-permission-description-{index}",
+                    ),
+                    classes=f"tool-permission-row{disabled_class}",
+                    id=f"tool-row-{index}",
+                )
+            )
+        return tuple(rows)
 
 
 def _config_selection_error(
@@ -932,17 +1132,17 @@ def _config_selection_error(
 
 
 def _field_label(name: str) -> str:
-    for field in config_schema().fields:
-        if field.name == name:
-            marker = " *" if field.required else ""
-            return f"{field.name}{marker}"
+    for config_field in config_schema().fields:
+        if config_field.name == name:
+            marker = " *" if config_field.required else ""
+            return f"{config_field.name}{marker}"
     raise ValueError("Unknown config field")
 
 
 def _skills_field_label() -> str:
-    for field in config_schema().fields:
-        if field.name == "skills":
-            marker = " *" if field.required else ""
+    for config_field in config_schema().fields:
+        if config_field.name == "skills":
+            marker = " *" if config_field.required else ""
             return f"skills for current model{marker}"
     raise ValueError("Unknown config field")
 
