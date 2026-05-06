@@ -1,5 +1,16 @@
 # Changelog
 
+## AceAI v0.2.9
+
+### Fixes
+
+- `tui`: Remove the `packaging` runtime import from the update checker so `aceai` can start in the published `uv tool` environment.
+- `packaging`: Move `httpx` into runtime dependencies because `aceai.llm.service` imports it directly for provider transport retry handling.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.8
 
 ### Features
