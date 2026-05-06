@@ -13,7 +13,12 @@ from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.config import clear_config, current_config
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui.app import AceAITUI
-from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
+from aceai.agent.tui.runner import (
+    UPDATE_INSTRUCTIONS,
+    AceAIConfiguredTUI,
+    AceAIInteractiveTUI,
+    AceAILiveTUI,
+)
 from aceai.agent.tui.setup import (
     ConfigScreen,
     ConfigSelection,
@@ -715,6 +720,24 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
         app.on_input_submitted(Input.Submitted(command_input, "/config"))
 
     assert calls == ["config"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_update_command_shows_uv_upgrade_prompt() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/update"))
+
+    assert app._state.events[-1].kind == "session_notice"
+    assert app._state.events[-1].content == UPDATE_INSTRUCTIONS
 
 
 @pytest.mark.anyio

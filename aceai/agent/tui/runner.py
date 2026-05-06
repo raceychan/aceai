@@ -37,6 +37,11 @@ from .widgets import CommandInput
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
 CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
+UPDATE_INSTRUCTIONS = (
+    "Update AceAI with uv:\n"
+    "  uv tool upgrade aceai\n"
+    "Then restart the aceai command."
+)
 
 
 def tui_command(*names: str):
@@ -204,6 +209,10 @@ class _RuntimeStreamMixin:
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
         self.open_config_screen()
+
+    @tui_command("update")
+    def _command_update(self, arg: str) -> None:
+        self.append_event(TUIEvent.session_notice(UPDATE_INSTRUCTIONS))
 
     @tui_command("resume")
     def _command_resume(self, arg: str) -> None:

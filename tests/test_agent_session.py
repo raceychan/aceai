@@ -1,7 +1,6 @@
 from datetime import datetime
 
 from aceai.agent.cost import estimate_usage_cost
-from aceai.agent.event_store import JsonlEventStore
 from aceai.agent.session import (
     EventLog,
     SessionEvent,
@@ -10,6 +9,7 @@ from aceai.agent.session import (
     SessionState,
     SessionStore,
 )
+from aceai.agent.event_store import JsonlEventStore
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
@@ -234,6 +234,28 @@ def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
 
     assert [event.kind for event in events] == ["user_message", "assistant_message"]
     assert events[1].payload["content"] == "hello"
+
+
+def test_session_recorder_persists_reasoning_events(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+
+    recorder.record(_user_message("hello"))
+    recorder.record(_thinking_delta("checking code"))
+    recorder.record(_reasoning_summary("Found the session replay path."))
+    recorder.record(_llm_completed("answer"))
+
+    events = store.load_event_log(metadata.session_id).events
+
+    assert [event.kind for event in events] == [
+        "user_message",
+        "thinking_delta",
+        "reasoning_summary",
+        "assistant_message",
+    ]
+    assert events[1].payload["content"] == "checking code"
+    assert events[2].payload["content"] == "Found the session replay path."
 
 
 def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
@@ -514,6 +536,14 @@ def _user_message(content: str) -> SessionEvent:
 
 def _assistant_delta(content: str) -> SessionEvent:
     return SessionEvent(kind="assistant_delta", payload={"content": content})
+
+
+def _thinking_delta(content: str) -> SessionEvent:
+    return SessionEvent(kind="thinking_delta", payload={"content": content})
+
+
+def _reasoning_summary(content: str) -> SessionEvent:
+    return SessionEvent(kind="reasoning_summary", payload={"content": content})
 
 
 def _llm_completed(

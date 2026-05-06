@@ -125,6 +125,8 @@ class TUIEvent(Record, kw_only=True):
             return cls._from_session_tool_result_event(event)
         if event.kind == "error":
             return cls._from_session_error_event(event)
+        if event.kind in ("reasoning_summary", "thinking_delta"):
+            return cls._from_session_reasoning_event(event)
         if event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
             return cls._from_session_control_event(event)
         return None
@@ -214,6 +216,24 @@ class TUIEvent(Record, kw_only=True):
             title="run failed",
             content=event.payload["content"],
             error=event.payload["content"],
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_reasoning_event(cls, event: SessionEvent) -> Self:
+        kind: TUIEventKind
+        if event.kind == "reasoning_summary":
+            kind = "reasoning_summary"
+        elif event.kind == "thinking_delta":
+            kind = "thinking_delta"
+        else:
+            raise ValueError("unsupported session reasoning event")
+        return cls(
+            kind=kind,
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title="reasoning",
+            content=event.payload["content"],
             raw_event=None,
         )
 

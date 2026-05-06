@@ -80,6 +80,32 @@ def test_event_log_to_tui_events_restores_display_transcript() -> None:
     assert events[1].cost.total_cost_usd == 0.3
 
 
+def test_event_log_to_tui_events_restores_reasoning_events() -> None:
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(
+                    kind="thinking_delta",
+                    step_id="step-1",
+                    step_index=0,
+                    payload={"content": "checking code"},
+                ),
+                SessionEvent(
+                    kind="reasoning_summary",
+                    step_id="step-1",
+                    step_index=0,
+                    payload={"content": "Found the session replay path."},
+                ),
+            ]
+        )
+    )
+
+    assert [event.kind for event in events] == ["thinking_delta", "reasoning_summary"]
+    assert events[0].title == "reasoning"
+    assert events[0].content == "checking code"
+    assert events[1].content == "Found the session replay path."
+
+
 def test_event_log_to_tui_events_restores_tool_message() -> None:
     events = event_log_to_tui_events(
         EventLog(
