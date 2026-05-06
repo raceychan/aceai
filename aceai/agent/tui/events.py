@@ -102,7 +102,7 @@ class TUIEvent(Record, kw_only=True):
             kind="session_notice",
             step_index=-1,
             step_id=uuid_str(),
-            title="session",
+            title="notice",
             content=content,
             raw_event=None,
         )

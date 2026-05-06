@@ -8,6 +8,7 @@ import aceai
 from msgspec import Struct
 from opentelemetry.context import Context
 
+from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
@@ -44,6 +45,7 @@ class AceAgentApp:
         session_store: SessionStore | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
@@ -60,6 +62,7 @@ class AceAgentApp:
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
         self._active_runtime: AgentRuntime | None = None
+        self._idea_store = idea_store or IdeaStore()
         self._approved_tool_names: set[str] = set()
         self._update_check_completed = False
         self._update_check_lock = asyncio.Lock()
@@ -145,6 +148,18 @@ class AceAgentApp:
                 selected_model=self._selected_model,
             ),
         )
+
+    def capture_idea(self, content: str) -> Idea:
+        return self._idea_store.capture(
+            content,
+            source_session_id=self.session_id,
+        )
+
+    def list_ideas(self) -> list[Idea]:
+        return self._idea_store.list_recent()
+
+    def delete_idea(self, index: int) -> Idea:
+        return self._idea_store.delete_recent(index)
 
     def pending_approval_request(self) -> ToolApprovalRequest | None:
         runtime = self._active_runtime

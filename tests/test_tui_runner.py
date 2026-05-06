@@ -13,6 +13,7 @@ from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.config import clear_config, current_config
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
+from aceai.agent.ideas import IdeaStore
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui import runner as tui_runner_module
 from aceai.agent.tui.app import AceAITUI
@@ -30,7 +31,8 @@ from aceai.agent.tui.setup import (
     ToolPermissionItem,
 )
 from aceai.agent.tui.widgets import ApprovalWidget
-from aceai.agent.tui.widgets import CommandInput, StatusBarWidget
+from aceai.agent.tui.widgets import CommandCompletionWidget, CommandInput, StatusBarWidget
+from textual.events import Key
 from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, TabbedContent
 
 
@@ -215,7 +217,7 @@ async def test_interactive_tui_clear_command_resets_state() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.load_events([])
         app._state = app._state.__class__(
             status="completed",
@@ -502,7 +504,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
         session_id=metadata.session_id,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.switch_model("gpt-5.5")
 
     assert store.get_session_state(metadata.session_id) == SessionState(
@@ -554,10 +556,10 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         event_count = len(app._state.events)
         app.switch_model("gpt-5.5")
 
-        assert status.current_text == "Switched model to gpt-5.5"
+        assert "model: gpt-5.5" in status.current_text
         assert len(app._state.events) == event_count
 
-        await pilot.pause(3.1)
+        await pilot.pause()
 
         assert "model: gpt-5.5" in status.current_text
 
@@ -751,6 +753,154 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
         app.on_input_submitted(Input.Submitted(command_input, "/config"))
 
     assert calls == ["config"]
+
+
+def test_command_input_shift_enter_inserts_newline() -> None:
+    command_input = CommandInput()
+    command_input.value = "/idea first"
+
+    command_input.on_key(Key("shift+enter", None))
+
+    assert command_input.value == "/idea first\n"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_shows_slash_command_completions() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(CommandCompletionWidget)
+        command_input.value = "/"
+        app._refresh_command_completions(command_input.value)
+
+        assert not completions.has_class("hidden")
+        assert "/clear" in completions.display_text
+        assert "/model" in completions.display_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(CommandCompletionWidget)
+        command_input.value = "/mo"
+        app._refresh_command_completions(command_input.value)
+
+        assert completions.display_text == "/model"
+
+        app.on_command_input_completion_requested(
+            CommandInput.CompletionRequested(command_input)
+        )
+
+        assert command_input.value == "/model "
+        assert completions.has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=IdeaStore(ideas_path))
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(
+            Input.Submitted(command_input, "/idea 修一下 resume 默认 session")
+        )
+
+    markdown = ideas_path.read_text(encoding="utf-8")
+    assert "修一下 resume 默认 session" in markdown
+    assert app._state.events[-1].kind == "session_notice"
+    assert app._state.events[-1].content.startswith("Saved idea from ")
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=IdeaStore(ideas_path))
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_command_input_submitted(
+            CommandInput.Submitted(command_input, "/idea first line\nsecond line")
+        )
+
+    markdown = ideas_path.read_text(encoding="utf-8")
+    assert "first line\nsecond line" in markdown
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_command_lists_recent_ideas(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    idea_store.capture("second idea")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+
+    assert app._state.events[-1].kind == "session_notice"
+    assert app._state.events[-1].content.splitlines()[0] == "Saved ideas:"
+    assert "1." in app._state.events[-1].content
+    assert "second idea" in app._state.events[-1].content
+    assert "first idea" in app._state.events[-1].content
+    assert "Delete with /idea delete <number>." in app._state.events[-1].content
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    idea_store.capture("second idea")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea delete 1"))
+
+    assert "Deleted idea 1: second idea" == app._state.events[-1].content
+    assert [idea.content for idea in idea_store.list_recent()] == ["first idea"]
 
 
 @pytest.mark.anyio

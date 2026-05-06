@@ -15,7 +15,11 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import initial_state, reduce_events, select_event
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
-from aceai.agent.tui.widgets import CommandInput, DetailWidget, StreamWidget
+from aceai.agent.tui.widgets import (
+    CommandInput,
+    DetailWidget,
+    StreamWidget,
+)
 from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
 from rich.console import Console, Group
 from textual.events import Click
@@ -224,6 +228,53 @@ def test_reduce_events_keeps_missing_usage_unknown() -> None:
     assert state.usage.session_input_tokens is None
     assert state.usage.session_output_tokens is None
     assert state.usage.session_total_tokens is None
+
+
+def test_session_notification_uses_native_toast() -> None:
+    app = AceAITUI([])
+    calls: list[tuple[str, dict[str, object]]] = []
+    app.notify = lambda message, **kwargs: calls.append((message, kwargs))
+
+    app.notify_session("Resumed session abc")
+
+    assert calls == [
+        (
+            "Resumed session abc",
+            {
+                "title": "AceAI",
+                "severity": "information",
+                "timeout": 3.0,
+            },
+        )
+    ]
+
+
+def test_llm_retrying_uses_native_notification_without_stream_event() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    app = AceAITUI([])
+    calls: list[tuple[str, dict[str, object]]] = []
+    app.notify = lambda message, **kwargs: calls.append((message, kwargs))
+
+    app.append_agent_event(
+        builder.llm_retrying(
+            retry_count=1,
+            retry_max=2,
+            retry_delay_seconds=0.5,
+            error="RemoteProtocolError: peer closed",
+        )
+    )
+
+    assert app._state.events == []
+    assert calls == [
+        (
+            "Retrying LLM request 1/2 in 0.5s after RemoteProtocolError: peer closed",
+            {
+                "title": "Retrying LLM",
+                "severity": "warning",
+                "timeout": 3.0,
+            },
+        )
+    ]
 
 
 @pytest.mark.anyio
