@@ -21,10 +21,10 @@ def test_idea_store_appends_markdown_and_lists_current_workspace(tmp_path) -> No
 
     ideas = store.list_recent(workspace=workspace)
 
-    assert [idea.created_at for idea in ideas] == [second.created_at, first.created_at]
+    assert [idea.created_at for idea in ideas] == [first.created_at, second.created_at]
     assert [idea.content for idea in ideas] == [
-        "add idea command",
         "fix resume default session",
+        "add idea command",
     ]
 
 
@@ -49,8 +49,24 @@ def test_idea_store_deletes_recent_idea_by_one_based_workspace_index(tmp_path) -
 
     deleted = store.delete_recent(1, workspace=workspace)
 
-    assert deleted.content == "second idea"
+    assert deleted.content == "first idea"
     assert [idea.content for idea in store.list_recent(workspace=workspace)] == [
-        first.content
+        "second idea"
     ]
-    assert "second idea" not in (tmp_path / "ideas.md").read_text(encoding="utf-8")
+    assert first.content not in (tmp_path / "ideas.md").read_text(encoding="utf-8")
+
+
+def test_idea_store_updates_fifo_idea_by_one_based_workspace_index(tmp_path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    store = IdeaStore(tmp_path / "ideas.md")
+    first = store.capture("first idea", workspace=workspace)
+    store.capture("second idea", workspace=workspace)
+
+    updated = store.update_recent(1, "edited first idea", workspace=workspace)
+
+    assert updated.created_at == first.created_at
+    assert [idea.content for idea in store.list_recent(workspace=workspace)] == [
+        "edited first idea",
+        "second idea",
+    ]

@@ -183,6 +183,9 @@ class AceAgentApp:
     def delete_idea(self, index: int) -> Idea:
         return self._idea_store.delete_recent(index)
 
+    def update_idea(self, index: int, content: str) -> Idea:
+        return self._idea_store.update_recent(index, content)
+
     def pending_approval_request(self) -> ToolApprovalRequest | None:
         runtime = self._active_runtime
         if runtime is None:

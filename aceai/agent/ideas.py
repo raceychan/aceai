@@ -47,7 +47,7 @@ class IdeaStore:
             for idea in self._read_all()
             if idea.workspace == workspace_text
         ]
-        ideas.sort(key=lambda idea: idea.created_at, reverse=True)
+        ideas.sort(key=lambda idea: idea.created_at)
         return ideas[:limit]
 
     def search(
@@ -63,7 +63,7 @@ class IdeaStore:
             for idea in self._read_all()
             if idea.workspace == workspace_text and query in idea.content
         ]
-        ideas.sort(key=lambda idea: idea.created_at, reverse=True)
+        ideas.sort(key=lambda idea: idea.created_at)
         return ideas[:limit]
 
     def delete_recent(self, index: int, *, workspace: Path | None = None) -> Idea:
@@ -76,6 +76,29 @@ class IdeaStore:
         remaining = [stored for stored in self._read_all() if stored != idea]
         self._write_all(remaining)
         return idea
+
+    def update_recent(
+        self,
+        index: int,
+        content: str,
+        *,
+        workspace: Path | None = None,
+    ) -> Idea:
+        if index < 1:
+            raise IndexError("Idea index must be one-based")
+        ideas = self.list_recent(workspace=workspace)
+        if index > len(ideas):
+            raise IndexError("Idea index is out of range")
+        idea = ideas[index - 1]
+        updated = Idea(
+            created_at=idea.created_at,
+            workspace=idea.workspace,
+            source_session_id=idea.source_session_id,
+            content=content,
+        )
+        stored_ideas = [updated if stored == idea else stored for stored in self._read_all()]
+        self._write_all(stored_ideas)
+        return updated
 
     def _read_all(self) -> list[Idea]:
         if not self.path.exists():

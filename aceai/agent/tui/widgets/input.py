@@ -69,20 +69,26 @@ class CommandInput(TextArea):
             return
         self.cursor_location = (len(lines) - 1, len(lines[-1]))
 
-    def on_key(self, event: Key) -> None:
+    async def _on_key(self, event: Key) -> None:
         if event.key == "shift+enter":
             self.insert("\n")
             event.stop()
+            event.prevent_default()
             return
-        if self.text.startswith("/") and event.key in ("up", "down"):
+        if event.key in ("enter", "ctrl+m"):
+            self._submit_or_complete()
+            event.stop()
+            event.prevent_default()
+            return
+        if _is_slash_command_selection(self.text) and event.key in ("up", "down"):
             direction = -1 if event.key == "up" else 1
             self.post_message(self.CompletionNavigationRequested(direction=direction))
             event.stop()
+            event.prevent_default()
             return
-        if event.key == "tab" and self.text.startswith("/"):
-            self.post_message(self.CompletionRequested(self))
-            event.stop()
-            return
+        await super()._on_key(event)
+
+    def on_key(self, event: Key) -> None:
         if event.key == "escape" and cast(Any, self.app).cancel_active_run():
             event.stop()
 
@@ -94,7 +100,10 @@ class CommandInput(TextArea):
         self.app.query_one("#stream").focus()
 
     def action_submit_or_complete(self) -> None:
-        if self.text.startswith("/"):
+        self._submit_or_complete()
+
+    def _submit_or_complete(self) -> None:
+        if _is_slash_command_selection(self.text):
             self.post_message(self.CompletionRequested(self))
             return
         self.post_message(self.Submitted(self, self.text))
@@ -225,3 +234,10 @@ def _queued_button_label(index: int, question: str) -> str:
     if len(first_line) > 96:
         first_line = f"{first_line[:93]}..."
     return f"{index + 1}. {first_line}"
+
+
+def _is_slash_command_selection(value: str) -> bool:
+    if not value.startswith("/"):
+        return False
+    body = value.removeprefix("/")
+    return " " not in body and "\n" not in body

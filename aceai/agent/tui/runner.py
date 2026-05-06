@@ -32,6 +32,7 @@ from .session_replay import event_log_to_tui_events
 from .setup import (
     ConfigSelection,
     ConfigScreen,
+    IdeaPickerScreen,
     ProviderSetupScreen,
     SkillConfigItem,
     ToolPermissionItem,
@@ -462,8 +463,38 @@ class _RuntimeStreamMixin:
         return agent_app.list_ideas()
 
     def _show_ideas(self) -> None:
-        self.append_event(TUIEvent.idea_list(_idea_items(self._list_ideas())))
-        self.notify_session("Delete an idea with /idea delete <number>.")
+        self.push_screen(
+            IdeaPickerScreen(
+                ideas=self._list_ideas(),
+                save_idea=self._update_idea_and_list,
+                delete_idea=self._delete_idea_and_list,
+            ),
+            self._reference_idea,
+        )
+
+    def _reference_idea(self, content: str | None) -> None:
+        if content is None:
+            self.query_one(CommandInput).focus()
+            return
+        command_input = self.query_one(CommandInput)
+        command_input.value = content
+        command_input.focus()
+
+    def _update_idea_and_list(self, index: int, content: str) -> list[Idea]:
+        agent_app = self._agent_app
+        if agent_app is None:
+            self._idea_store.update_recent(index, content)
+            return self._idea_store.list_recent()
+        agent_app.update_idea(index, content)
+        return agent_app.list_ideas()
+
+    def _delete_idea_and_list(self, index: int) -> list[Idea]:
+        agent_app = self._agent_app
+        if agent_app is None:
+            self._idea_store.delete_recent(index)
+            return self._idea_store.list_recent()
+        agent_app.delete_idea(index)
+        return agent_app.list_ideas()
 
     def _delete_idea(self, index: int) -> None:
         try:
