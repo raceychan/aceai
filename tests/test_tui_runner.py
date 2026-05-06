@@ -12,8 +12,16 @@ from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AceAITUIConfig
 from aceai.agent.config import clear_config, current_config
 from aceai.agent.tui import app as tui_app_module
+from aceai.agent.tui import runner as tui_runner_module
 from aceai.agent.tui.app import AceAITUI
-from aceai.agent.tui.runner import AceAIConfiguredTUI, AceAIInteractiveTUI, AceAILiveTUI
+from aceai.agent.tui.runner import (
+    UPDATE_INSTRUCTIONS,
+    AceAIConfiguredTUI,
+    AceAIInteractiveTUI,
+    AceAILiveTUI,
+    UpdateCommandResult,
+    UpdateCheckResult,
+)
 from aceai.agent.tui.setup import (
     ConfigScreen,
     ConfigSelection,
@@ -29,6 +37,11 @@ from textual.widgets import Button, Checkbox, Input, RichLog, Select, Static, Ta
 def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
     store = SessionStore(tmp_path / "sessions")
     monkeypatch.setattr(tui_app_module, "SessionStore", lambda: store)
+
+    async def no_update() -> None:
+        return None
+
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", no_update)
     return store
 
 
@@ -715,6 +728,97 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
         app.on_input_submitted(Input.Submitted(command_input, "/config"))
 
     assert calls == ["config"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_update_command_runs_upgrade_and_restarts(monkeypatch) -> None:
+    async def update_command() -> UpdateCommandResult:
+        return UpdateCommandResult(return_code=0, output="updated")
+
+    restart_calls: list[str] = []
+    monkeypatch.setattr(tui_runner_module, "run_update_command", update_command)
+    monkeypatch.setattr(
+        tui_runner_module,
+        "restart_current_process",
+        lambda: restart_calls.append("restart"),
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/update"))
+        await pilot.pause(0.1)
+
+    assert [event.content for event in app._state.events[-2:]] == [
+        "Updating AceAI with uv tool upgrade aceai...",
+        "AceAI updated. Restarting...",
+    ]
+    assert restart_calls == ["restart"]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_update_command_reports_upgrade_failure(monkeypatch) -> None:
+    async def update_command() -> UpdateCommandResult:
+        return UpdateCommandResult(return_code=1, output="network failed")
+
+    restart_calls: list[str] = []
+    monkeypatch.setattr(tui_runner_module, "run_update_command", update_command)
+    monkeypatch.setattr(
+        tui_runner_module,
+        "restart_current_process",
+        lambda: restart_calls.append("restart"),
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/update"))
+        await pilot.pause(0.1)
+
+    assert app._state.events[-1].kind == "session_notice"
+    assert app._state.events[-1].content == (
+        "AceAI update failed with exit code 1.\nnetwork failed"
+    )
+    assert restart_calls == []
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_automatically_reports_available_update(monkeypatch) -> None:
+    async def available_update() -> UpdateCheckResult:
+        return UpdateCheckResult(
+            current_version="0.2.7",
+            latest_version="0.2.8",
+        )
+
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", available_update)
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+
+    assert app._state.events[-1].kind == "session_notice"
+    assert app._state.events[-1].content == (
+        "AceAI 0.2.8 is available (current 0.2.7).\n"
+        f"{UPDATE_INSTRUCTIONS}"
+    )
 
 
 @pytest.mark.anyio

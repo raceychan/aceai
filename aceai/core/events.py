@@ -18,6 +18,7 @@ AgentEventType = Literal[
     "agent.llm.tool_call.delta",
     "agent.llm.media",
     "agent.llm.reasoning",
+    "agent.llm.retrying",
     "agent.llm.completed",
     "agent.tool.started",
     "agent.tool.output",
@@ -75,6 +76,14 @@ class LLMMediaEvent(AgentLifecycleEvent):
 class LLMReasoningEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.llm.reasoning"
     segment: LLMSegment
+
+
+class LLMRetryingEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.llm.retrying"
+    retry_count: int
+    retry_max: int
+    retry_delay_seconds: float
+    error: str
 
 
 class LLMCompletedEvent(AgentLifecycleEvent):
@@ -152,6 +161,7 @@ type AgentEvent = (
     | LLMToolCallDeltaEvent
     | LLMMediaEvent
     | LLMReasoningEvent
+    | LLMRetryingEvent
     | LLMCompletedEvent
     | ToolStartedEvent
     | ToolOutputEvent
@@ -217,6 +227,24 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             segment=segment,
+        )
+
+    def llm_retrying(
+        self,
+        *,
+        retry_count: int,
+        retry_max: int,
+        retry_delay_seconds: float,
+        error: str,
+    ) -> LLMRetryingEvent:
+        return LLMRetryingEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            retry_count=retry_count,
+            retry_max=retry_max,
+            retry_delay_seconds=retry_delay_seconds,
+            error=error,
         )
 
     def llm_completed(self, *, step: AgentStep) -> LLMCompletedEvent:

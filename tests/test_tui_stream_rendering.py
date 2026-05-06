@@ -81,6 +81,27 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     assert block.plain == "  Hi!"
 
 
+def test_llm_retry_progress_renders() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.from_agent_event(
+            builder.llm_retrying(
+                retry_count=1,
+                retry_max=2,
+                retry_delay_seconds=0.5,
+                error="RemoteProtocolError: peer closed",
+            )
+        )
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    block = renderables[0]
+    assert isinstance(block, Text)
+    assert "Retrying LLM request 1/2 in 0.5s" in block.plain
+
+
 def test_main_stream_renders_question_before_answer() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
@@ -273,7 +294,7 @@ def test_stream_collapses_tool_activity_only_after_completion() -> None:
         "  ● read_text_file  completed - result ready",
     ]
     assert [text.plain for text in completed_writes] == [
-        "  [+] tools  2 completed  expand",
+        "  ─ [+] work history · 2 tool calls",
     ]
 
 
@@ -334,7 +355,7 @@ def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
     )
 
     assert [text.plain for text in writes] == [
-        "  [-] tools  2 completed  collapse",
+        "  ─ [-] work history · 2 tool calls",
         "    ● read_text_file  completed - result ready",
         "    ● read_text_file  completed - result ready",
     ]
@@ -355,8 +376,153 @@ def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
     )
 
     assert [text.plain for text in writes] == [
-        "  [+] tools  2 completed  expand",
+        "  ─ [+] work history · 2 tool calls",
     ]
+
+
+def test_expanded_working_history_preserves_reasoning_tool_order() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="search_text",
+        arguments='{"query":"needle"}',
+        call_id="call-2",
+    )
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(
+                builder.llm_reasoning(
+                    segment=LLMSegment(
+                        type="reasoning",
+                        content="think first",
+                        meta=LLMReasoningSegmentMeta(
+                            item_id="reasoning-1",
+                            kind="content",
+                            index=0,
+                            is_delta=True,
+                        ),
+                    )
+                )
+            ),
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=first)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=first,
+                    tool_result=ToolExecutionResult(call=first, output='{"content":"a"}'),
+                )
+            ),
+            TUIEvent.from_agent_event(
+                builder.llm_reasoning(
+                    segment=LLMSegment(
+                        type="reasoning",
+                        content="think second",
+                        meta=LLMReasoningSegmentMeta(
+                            item_id="reasoning-2",
+                            kind="content",
+                            index=0,
+                            is_delta=True,
+                        ),
+                    )
+                )
+            ),
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=second)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=second,
+                    tool_result=ToolExecutionResult(call=second, output='{"matches":[]}'),
+                )
+            ),
+            TUIEvent.from_agent_event(
+                builder.run_completed(
+                    step=AgentStep(llm_response=LLMResponse(text="done")),
+                    final_answer="done",
+                )
+            ),
+        ]
+    )
+    stream = StreamWidget()
+    writes: list[Text] = []
+    _capture_stream_writes(stream, writes)
+    stream.set_state(state)
+
+    stream.on_click(
+        Click(
+            stream,
+            0,
+            0,
+            0,
+            0,
+            1,
+            False,
+            False,
+            False,
+            style=Style(meta={"tool_activity_id": "call-1|call-2"}),
+        )
+    )
+
+    assert [text.plain for text in writes] == [
+        "  ─ [-] work history · 2 tool calls",
+        "    * reasoning  think first",
+        "    ● read_text_file  completed - result ready",
+        "    * reasoning  think second",
+        "    ● search_text  completed - search finished",
+    ]
+
+
+def test_completed_working_history_renders_between_question_and_answer() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    events = [
+        TUIEvent.user_message("what changed?"),
+        TUIEvent.from_agent_event(
+            builder.llm_reasoning(
+                segment=LLMSegment(
+                    type="reasoning",
+                    content="inspect first",
+                    meta=LLMReasoningSegmentMeta(
+                        item_id="reasoning-1",
+                        kind="content",
+                        index=0,
+                        is_delta=True,
+                    ),
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=call,
+                tool_result=ToolExecutionResult(call=call, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="answer")),
+                final_answer="answer",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 3
+    assert isinstance(renderables[0], Table)
+    question = renderables[0].columns[0]._cells[0]
+    assert isinstance(question, Text)
+    assert question.plain == "▌ what changed?"
+    assert isinstance(renderables[1], Text)
+    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert isinstance(renderables[2], Text)
+    assert renderables[2].plain == "  answer"
 
 
 def test_completed_replayed_approval_cycles_collapse() -> None:
@@ -415,7 +581,7 @@ def test_completed_replayed_approval_cycles_collapse() -> None:
     writes = _stream_set_state_writes(reduce_events(events))
 
     assert [text.plain for text in writes] == [
-        "  ● replace_text_in_file  completed - result ready",
+        "  ─ [+] work history · 1 tool call",
     ]
 
 
@@ -476,7 +642,7 @@ def test_completed_tool_activity_ignores_invisible_control_events() -> None:
     writes = _stream_set_state_writes(reduce_events(events))
 
     assert [text.plain for text in writes] == [
-        "  [+] tools  2 completed  expand",
+        "  ─ [+] work history · 2 tool calls",
     ]
 
 
@@ -739,7 +905,7 @@ def test_consecutive_completed_tools_compact_by_tool_name() -> None:
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == "  [+] tools  2 completed  expand"
+    assert text.plain == "  ─ [+] work history · 2 tool calls"
 
 
 def test_consecutive_completed_tool_activity_compacts_across_tool_names() -> None:
@@ -788,7 +954,7 @@ def test_consecutive_completed_tool_activity_compacts_across_tool_names() -> Non
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == "  [+] tools  3 completed  expand"
+    assert text.plain == "  ─ [+] work history · 3 tool calls"
 
 
 def test_failed_tools_do_not_compact_into_completed_group() -> None:
@@ -891,7 +1057,7 @@ def test_repeated_approval_cycles_compact_by_tool_name() -> None:
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == "  [+] tools  2 completed  expand"
+    assert text.plain == "  ─ [+] work history · 2 tool calls"
 
 
 def test_pending_approval_group_stays_visible() -> None:
@@ -935,7 +1101,7 @@ def test_pending_approval_group_stays_visible() -> None:
     text = renderables[0]
     assert isinstance(text, Text)
     assert text.plain == (
-        "  [+] tools  2 calls, waiting for approval  expand"
+        "  ─ [+] work history · 2 tool calls"
     )
 
 
@@ -964,7 +1130,7 @@ def test_run_suspended_does_not_render_separate_approval_line() -> None:
     text = renderables[0]
     assert isinstance(text, Text)
     assert text.plain == (
-        "  ● replace_text_in_file  waiting for approval"
+        "  ─ [+] work history · 1 tool call"
     )
 
 

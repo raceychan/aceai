@@ -16,6 +16,7 @@ from aceai.core.events import (
     LLMCompletedEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
+    LLMRetryingEvent,
     LLMStartedEvent,
     LLMToolCallDeltaEvent,
     LLMMediaEvent,
@@ -156,6 +157,8 @@ def _kind_for_agent_event(event: AgentEvent):
         ):
             return "thinking_delta"
         return "reasoning_summary"
+    if isinstance(event, LLMRetryingEvent):
+        return "llm_retrying"
     if isinstance(event, LLMToolCallDeltaEvent):
         return "tool_call_delta"
     if isinstance(event, LLMMediaEvent):
@@ -192,6 +195,14 @@ def _payload_for_agent_event(event: AgentEvent) -> dict[str, Any]:
         return {"content": event.text_delta}
     if isinstance(event, LLMReasoningEvent):
         return {"content": event.segment.content}
+    if isinstance(event, LLMRetryingEvent):
+        return {
+            "content": _retrying_content(event),
+            "error": event.error,
+            "retry_count": event.retry_count,
+            "retry_max": event.retry_max,
+            "retry_delay_seconds": event.retry_delay_seconds,
+        }
     if isinstance(event, LLMToolCallDeltaEvent):
         return {
             "content": event.text_delta,
@@ -271,3 +282,10 @@ def _tool_payload(event) -> dict[str, Any]:
         "tool_call_id": event.tool_call.call_id,
         "tool_call": event.tool_call.asdict(),
     }
+
+
+def _retrying_content(event: LLMRetryingEvent) -> str:
+    return (
+        f"Retrying LLM request {event.retry_count}/{event.retry_max} "
+        f"in {event.retry_delay_seconds:.1f}s after {event.error}"
+    )

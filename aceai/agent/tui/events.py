@@ -10,6 +10,7 @@ from aceai.core.events import (
     LLMCompletedEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
+    LLMRetryingEvent,
     LLMStartedEvent,
     LLMToolCallDeltaEvent,
     LLMMediaEvent,
@@ -51,6 +52,7 @@ TUIEventKind = Literal[
     "assistant_delta",
     "thinking_delta",
     "reasoning_summary",
+    "llm_retrying",
     "tool_call_delta",
     "tool_started",
     "tool_output",
@@ -125,6 +127,10 @@ class TUIEvent(Record, kw_only=True):
             return cls._from_session_tool_result_event(event)
         if event.kind == "error":
             return cls._from_session_error_event(event)
+        if event.kind in ("reasoning_summary", "thinking_delta"):
+            return cls._from_session_reasoning_event(event)
+        if event.kind == "llm_retrying":
+            return cls._from_session_retrying_event(event)
         if event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
             return cls._from_session_control_event(event)
         return None
@@ -218,6 +224,36 @@ class TUIEvent(Record, kw_only=True):
         )
 
     @classmethod
+    def _from_session_reasoning_event(cls, event: SessionEvent) -> Self:
+        kind: TUIEventKind
+        if event.kind == "reasoning_summary":
+            kind = "reasoning_summary"
+        elif event.kind == "thinking_delta":
+            kind = "thinking_delta"
+        else:
+            raise ValueError("unsupported session reasoning event")
+        return cls(
+            kind=kind,
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title="reasoning",
+            content=event.payload["content"],
+            raw_event=None,
+        )
+
+    @classmethod
+    def _from_session_retrying_event(cls, event: SessionEvent) -> Self:
+        return cls(
+            kind="llm_retrying",
+            step_index=_session_step_index(event),
+            step_id=event.step_id or uuid_str(),
+            title="llm retrying",
+            content=event.payload["content"],
+            error=event.payload["error"],
+            raw_event=None,
+        )
+
+    @classmethod
     def _from_session_control_event(cls, event: SessionEvent) -> Self:
         kind: TUIEventKind
         if event.kind == "run_completed":
@@ -277,6 +313,19 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             title="reasoning",
             content=event.segment.content,
             segment=event.segment,
+            raw_event=event,
+        )
+    if isinstance(event, LLMRetryingEvent):
+        return TUIEvent(
+            kind="llm_retrying",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title="llm retrying",
+            content=(
+                f"Retrying LLM request {event.retry_count}/{event.retry_max} "
+                f"in {event.retry_delay_seconds:.1f}s after {event.error}"
+            ),
+            error=event.error,
             raw_event=event,
         )
     if isinstance(event, LLMToolCallDeltaEvent):

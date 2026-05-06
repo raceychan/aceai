@@ -1,12 +1,18 @@
 """Live runner that bridges the AceAI app facade into the Textual app."""
 
+import asyncio
 import os
+import sys
 from typing import AsyncGenerator, Callable, cast
 
+import httpx
+from msgspec import Struct
 from opentelemetry.context import Context
+from packaging.version import Version
 from textual.widgets import Input
 from textual.worker import Worker
 
+import aceai
 from aceai.agent.app import AceAgentApp
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
@@ -37,6 +43,20 @@ from .widgets import CommandInput
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
 CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
+UPDATE_INSTRUCTIONS = (
+    "Run /update to upgrade AceAI and restart."
+)
+UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
+PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/aceai/json"
+
+
+class UpdateCheckResult(Struct, frozen=True, kw_only=True):
+    current_version: str
+    latest_version: str
+
+    @property
+    def has_update(self) -> bool:
+        return Version(self.latest_version) > Version(self.current_version)
 
 
 def tui_command(*names: str):
@@ -110,6 +130,21 @@ def _parse_command(text: str) -> tuple[str, str] | None:
 class _RuntimeStreamMixin:
     _agent_app: AceAgentApp
     _active_worker: Worker[None] | None
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.run_worker(
+            self._check_for_updates(),
+            name="aceai-update-check",
+            description="Check whether a newer AceAI release is available",
+            exit_on_error=False,
+        )
+
+    async def _check_for_updates(self) -> None:
+        result = await check_for_updates()
+        if result is None or not result.has_update:
+            return
+        self.append_event(TUIEvent.session_notice(_update_available_notice(result)))
 
     async def _stream_agent_turn(self, question: str) -> None:
         await self._consume_agent_stream(self._agent_app.start_turn(question))
@@ -205,6 +240,20 @@ class _RuntimeStreamMixin:
     def _command_config(self, arg: str) -> None:
         self.open_config_screen()
 
+    @tui_command("update")
+    def _command_update(self, arg: str) -> None:
+        if self._active_worker is not None and self._active_worker.is_running:
+            self._active_worker.cancel()
+        self.append_event(
+            TUIEvent.session_notice("Updating AceAI with uv tool upgrade aceai...")
+        )
+        self.run_worker(
+            self._run_update_and_restart(),
+            name="aceai-self-update",
+            description="Upgrade AceAI and restart this process",
+            exit_on_error=False,
+        )
+
     @tui_command("resume")
     def _command_resume(self, arg: str) -> None:
         if arg == "":
@@ -218,6 +267,89 @@ class _RuntimeStreamMixin:
             self.open_config_screen()
             return
         self.switch_model(arg)
+
+    async def _run_update_and_restart(self) -> None:
+        result = await run_update_command()
+        if result.return_code != 0:
+            self.append_event(
+                TUIEvent.session_notice(
+                    f"AceAI update failed with exit code {result.return_code}.\n"
+                    f"{result.output}"
+                )
+            )
+            return
+        self.append_event(TUIEvent.session_notice("AceAI updated. Restarting..."))
+        restart_current_process()
+
+
+async def check_for_updates() -> UpdateCheckResult | None:
+    current_version = aceai.__version__
+    latest_version = await _fetch_latest_package_version()
+    if latest_version is None:
+        return None
+    return UpdateCheckResult(
+        current_version=current_version,
+        latest_version=latest_version,
+    )
+
+
+async def _fetch_latest_package_version() -> str | None:
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(PYPI_PROJECT_JSON_URL)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    payload = response.json()
+    if type(payload) is not dict:
+        raise TypeError("PyPI project payload must be a mapping")
+    info = payload["info"]
+    if type(info) is not dict:
+        raise TypeError("PyPI project info must be a mapping")
+    version = info["version"]
+    if type(version) is not str:
+        raise TypeError("PyPI project version must be str")
+    return version
+
+
+def _update_available_notice(result: UpdateCheckResult) -> str:
+    return (
+        f"AceAI {result.latest_version} is available "
+        f"(current {result.current_version}).\n"
+        f"{UPDATE_INSTRUCTIONS}"
+    )
+
+
+class UpdateCommandResult(Struct, frozen=True, kw_only=True):
+    return_code: int
+    output: str
+
+
+async def run_update_command() -> UpdateCommandResult:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *UPDATE_COMMAND,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as err:
+        return UpdateCommandResult(return_code=127, output=str(err))
+    output, _ = await process.communicate()
+    if process.returncode is None:
+        raise RuntimeError("uv update process did not report an exit code")
+    return UpdateCommandResult(
+        return_code=process.returncode,
+        output=output.decode(errors="replace"),
+    )
+
+
+def restart_current_process() -> None:
+    if not sys.argv:
+        os.execv(sys.executable, [sys.executable])
+    executable = sys.argv[0]
+    if executable == "":
+        os.execv(sys.executable, [sys.executable])
+    os.execvp(executable, sys.argv)
 
 
 class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
