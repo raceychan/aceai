@@ -1,14 +1,15 @@
 """Live runner that bridges the AceAI app facade into the Textual app."""
 
 import asyncio
+import json
 import os
 import sys
 from typing import AsyncGenerator, Callable, cast
+from urllib.error import URLError
+from urllib.request import urlopen
 
-import httpx
 from msgspec import Struct
 from opentelemetry.context import Context
-from packaging.version import Version
 from textual.widgets import Input
 from textual.worker import Worker
 
@@ -56,7 +57,9 @@ class UpdateCheckResult(Struct, frozen=True, kw_only=True):
 
     @property
     def has_update(self) -> bool:
-        return Version(self.latest_version) > Version(self.current_version)
+        return _version_parts(self.latest_version) > _version_parts(
+            self.current_version
+        )
 
 
 def tui_command(*names: str):
@@ -294,13 +297,15 @@ async def check_for_updates() -> UpdateCheckResult | None:
 
 
 async def _fetch_latest_package_version() -> str | None:
+    return await asyncio.to_thread(_fetch_latest_package_version_sync)
+
+
+def _fetch_latest_package_version_sync() -> str | None:
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(PYPI_PROJECT_JSON_URL)
-        response.raise_for_status()
-    except httpx.HTTPError:
+        with urlopen(PYPI_PROJECT_JSON_URL, timeout=2.0) as response:
+            payload = json.loads(response.read().decode())
+    except (URLError, TimeoutError):
         return None
-    payload = response.json()
     if type(payload) is not dict:
         raise TypeError("PyPI project payload must be a mapping")
     info = payload["info"]
@@ -310,6 +315,13 @@ async def _fetch_latest_package_version() -> str | None:
     if type(version) is not str:
         raise TypeError("PyPI project version must be str")
     return version
+
+
+def _version_parts(version: str) -> tuple[int, int, int]:
+    parts = version.split(".")
+    if len(parts) != 3:
+        raise ValueError("AceAI version must use x.y.z format")
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def _update_available_notice(result: UpdateCheckResult) -> str:
