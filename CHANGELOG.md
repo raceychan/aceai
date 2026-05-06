@@ -1,5 +1,30 @@
 # Changelog
 
+## AceAI v0.2.14
+
+### Features
+
+- `tui`: Add a compact custom top bar with dedicated quit, config, debug, and clock controls while removing the default footer shortcut strip.
+- `tui`: Add a Labrador pixel-art empty state in the main stream pane so new sessions start with a centered visual prompt instead of `No events yet`.
+- `tui`: Add an interactive slash-command palette with one command per row, descriptions, keyboard navigation, and Enter/Tab selection.
+- `tools`: Add per-tool enabled-state and maximum-call configuration so app tools can be disabled or capped independently from approval policy.
+
+### Improvements
+
+- `tui`: Simplify command names by keeping `/config`, `/sessions`, and `/stats` as the primary configuration, session, and usage commands.
+- `tui`: Move runtime statistics behind `/stats` and clickable usage/cost chrome while keeping model display read-only in the status bar.
+- `config`: Remove the System Prompt tab from the TUI config screen and focus configuration on provider, model, skills, and app tool controls.
+- `tools`: Remove built-in max-call defaults from app tools so limits are explicit user configuration instead of hidden tool metadata.
+
+### Fixes
+
+- `tui`: Avoid startup layout artifacts where empty-state text or top-bar controls could collapse into unreadable vertical or ellipsized fragments.
+- `tui`: Ensure Enter in slash-command mode completes the selected command instead of inserting a newline.
+
+### Breaking Changes
+
+- `config`: `tool_permissions` now accepts only `always` or `ask`; disable tools with `tool_enabled: {tool_name: false}` instead of `tool_permissions: {tool_name: never}`.
+
 ## AceAI v0.2.13
 
 ### Features

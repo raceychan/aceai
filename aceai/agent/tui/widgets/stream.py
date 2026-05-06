@@ -2,6 +2,7 @@
 
 from hashlib import sha1
 
+from rich.align import Align
 from msgspec import Struct
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
@@ -11,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 from textual.events import Click, Key, Resize
 from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import RichLog
 
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
@@ -23,6 +25,48 @@ SUBTLE_BULLET_STYLE = "bold #9aa3b2"
 REASONING_MARK_STYLE = "bold #d08770"
 EXPAND_MARK_STYLE = "bold #88c0d0"
 TRANSCRIPT_GUTTER = "  "
+EMPTY_STATE_FRAME_SECONDS = 0.2
+EMPTY_STATE_DOG_PIXELS: tuple[tuple[str, ...], ...] = (
+    (
+        "  oo    oo  ",
+        "  oooooooo  ",
+        " oodoooodoo ",
+        " oooonoooo  ",
+        "  oooooooo  ",
+        "    oooo    ",
+        "   oooooo   ",
+        "  oo    oo  ",
+    ),
+    (
+        "  oo    oo  ",
+        "  oooooooo  ",
+        " oodoooodoo ",
+        " oooonoooo  ",
+        "  oooooooo  ",
+        "    oooo  oo",
+        "   oooooooo ",
+        "  oo    oo  ",
+    ),
+    (
+        "  oo    oo  ",
+        "  oooooooo  ",
+        " oodoooodoo ",
+        " oooonoooo  ",
+        "  oooooooo  ",
+        "oo  oooo    ",
+        " oooooooo   ",
+        "  oo    oo  ",
+    ),
+)
+EMPTY_STATE_DOG_HEIGHT = len(EMPTY_STATE_DOG_PIXELS[0])
+EMPTY_STATE_DOG_WIDTH = max(len(row) for row in EMPTY_STATE_DOG_PIXELS[0]) * 2
+EMPTY_STATE_MIN_WIDTH = EMPTY_STATE_DOG_WIDTH + 4
+EMPTY_STATE_CONTENT_HEIGHT = EMPTY_STATE_DOG_HEIGHT + 2
+EMPTY_STATE_PIXEL_STYLES: dict[str, str] = {
+    "o": "#e5b86f",
+    "n": "#111827",
+    "d": "#2e3440",
+}
 
 
 class StreamWidget(RichLog):
@@ -56,6 +100,8 @@ class StreamWidget(RichLog):
         self._state = state or TUIRunState()
         self._debug_mode = False
         self._selected_debug_index = 0
+        self._empty_state_frame_index = 0
+        self._empty_state_timer: Timer | None = None
         self._debug_line_spans: list[_DebugLineSpan] = []
         self._expanded_tool_activity_ids: set[str] = set()
         self._tool_activity_line_spans: list[_ToolActivityLineSpan] = []
@@ -82,10 +128,13 @@ class StreamWidget(RichLog):
         self._state = state
         self.clear()
         if not self._state.events:
-            self.write(Text("No events yet", style="#d8dee9"))
+            self._ensure_empty_state_timer()
+            self._write_empty_state()
         elif self._debug_mode:
+            self._stop_empty_state_timer()
             self._write_debug_stream()
         else:
+            self._stop_empty_state_timer()
             self._tool_activity_line_spans = []
             for entry in _render_event_entries(
                 self._state.events,
@@ -189,14 +238,60 @@ class StreamWidget(RichLog):
             )
 
     def on_resize(self, event: Resize) -> None:
-        if self._state.events:
-            self.set_state(self._state)
+        self.set_state(self._state)
 
     def _write_stream_renderable(self, renderable: RenderableType) -> None:
         if isinstance(renderable, Table):
             self.write(renderable, expand=True)
             return
         self.write(renderable, width=_available_stream_width(self))
+
+    def _ensure_empty_state_timer(self) -> None:
+        if self._empty_state_timer is not None:
+            return
+        self._empty_state_timer = self.set_interval(
+            EMPTY_STATE_FRAME_SECONDS,
+            self._advance_empty_state,
+            name="stream-empty-labrador",
+        )
+
+    def _stop_empty_state_timer(self) -> None:
+        timer = self._empty_state_timer
+        self._empty_state_timer = None
+        if timer is not None:
+            timer.stop()
+
+    def _advance_empty_state(self) -> None:
+        if self._state.events:
+            self._stop_empty_state_timer()
+            return
+        self._empty_state_frame_index += 1
+        self.clear()
+        self._write_empty_state()
+
+    def _write_empty_state(self) -> None:
+        if _available_stream_width(self) < EMPTY_STATE_MIN_WIDTH:
+            return
+        self._write_stream_renderable(self._render_empty_state())
+
+    def _render_empty_state(self) -> RenderableType:
+        dog = _render_empty_state_dog(
+            EMPTY_STATE_DOG_PIXELS[
+                self._empty_state_frame_index % len(EMPTY_STATE_DOG_PIXELS)
+            ]
+        )
+        prompt = _center_empty_state_text(
+            "Ask AceAI Anything",
+            style="bold #8fbcbb",
+        )
+        content = Align.center(Group(dog, Text(""), prompt), vertical="middle")
+        top_padding = _empty_state_top_padding(self)
+        if top_padding == 0:
+            return content
+        return Group(*[Text("") for _ in range(top_padding)], content)
+
+    def on_unmount(self) -> None:
+        self._stop_empty_state_timer()
 
 
 class _ToolBlockState(Struct, kw_only=True):
@@ -1154,6 +1249,37 @@ def _looks_like_markdown(content: str) -> bool:
         if line[:2].isdigit() and line[2:4] == ". ":
             return True
     return "`" in content or "**" in content or "__" in content
+
+
+def _render_empty_state_dog(frame: tuple[str, ...]) -> RenderableType:
+    lines: list[Text] = []
+    for row in frame:
+        line = Text()
+        for pixel in row:
+            style = EMPTY_STATE_PIXEL_STYLES.get(pixel)
+            if style is None:
+                line.append("  ")
+            else:
+                line.append("██", style=style)
+        lines.append(line)
+    return Group(*lines)
+
+
+def _center_empty_state_text(value: str, *, style: str) -> Text:
+    left_padding = max(0, (EMPTY_STATE_DOG_WIDTH - len(value)) // 2)
+    return Text(f"{' ' * left_padding}{value}", style=style)
+
+
+def _empty_state_top_padding(stream: StreamWidget) -> int:
+    heights = (
+        stream.scrollable_content_region.height,
+        stream.content_size.height,
+        stream.size.height,
+    )
+    for height in heights:
+        if height > EMPTY_STATE_CONTENT_HEIGHT:
+            return (height - EMPTY_STATE_CONTENT_HEIGHT) // 2
+    return 0
 
 
 def _available_stream_width(stream: StreamWidget) -> int:

@@ -43,6 +43,8 @@ def build_ace_agent(
     skill_path: str | Path | Literal["auto", "disable"] = ACE_AGENT_SKILL_PATH,
     enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
     tool_permissions: dict[str, ToolPermission] | None = None,
+    tool_enabled: dict[str, bool] | None = None,
+    tool_max_calls: dict[str, int] | None = None,
 ) -> AgentBase:
     if provider_name == "openai":
         provider = OpenAI(
@@ -57,7 +59,14 @@ def build_ace_agent(
     else:
         raise ValueError("Unsupported provider")
     llm_service = LLMService([provider], timeout_seconds=120.0)
-    executor = ToolExecutor(Graph(), default_agent_tools(tool_permissions))
+    executor = ToolExecutor(
+        Graph(),
+        default_agent_tools(
+            tool_permissions=tool_permissions,
+            tool_enabled=tool_enabled,
+            tool_max_calls=tool_max_calls,
+        ),
+    )
     if hosted_tools is None and provider_name == "openai":
         selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
     elif hosted_tools is None:

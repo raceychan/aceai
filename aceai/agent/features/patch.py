@@ -84,7 +84,6 @@ def preview_patch(
 
 @tool(
     tags=["agent_app", "filesystem", "patch"],
-    max_calls_per_run=8,
     require_approval=True,
     approval_policy="filesystem_patch",
 )

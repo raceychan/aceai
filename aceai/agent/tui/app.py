@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.timer import Timer
-from textual.widgets import Footer, Header, TextArea
+from textual.widgets import TextArea
 
 from aceai.core.events import AgentEvent
 
@@ -22,12 +22,14 @@ from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, s
 from .trajectory import TrajectoryScreen
 from .widgets import (
     ApprovalWidget,
+    CommandCompletionItem,
     CommandCompletionWidget,
     CommandInput,
     DetailWidget,
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
+    TopBarWidget,
 )
 
 STREAM_DELTA_REFRESH_CHARS = 32
@@ -44,12 +46,6 @@ class AceAITUI(App[None]):
         color: #e5e9f0;
     }
 
-    Header {
-        background: #3b4252;
-        color: #eceff4;
-        text-style: bold;
-    }
-
     #main {
         height: 1fr;
     }
@@ -62,11 +58,6 @@ class AceAITUI(App[None]):
         display: none;
     }
 
-    Footer {
-        background: #3b4252;
-        color: #eceff4;
-    }
-
     """
 
     BINDINGS = [
@@ -74,7 +65,6 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("d", "toggle_debug_mode", "Debug"),
         ("c", "config", "Config"),
-        ("t", "trajectory", "Trajectory"),
         ("i", "metadata", "Info"),
         ("s", "session_switcher", "Sessions"),
     ]
@@ -100,10 +90,11 @@ class AceAITUI(App[None]):
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta: TUIEvent | None = None
         self._pending_stream_delta_timer: Timer | None = None
+        self._command_completion_selected_index = 0
         self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield TopBarWidget(id="topbar")
         with Horizontal(id="main"):
             yield StreamWidget(id="stream")
             yield DetailWidget(id="detail", classes="collapsed")
@@ -112,7 +103,6 @@ class AceAITUI(App[None]):
         yield CommandCompletionWidget(id="command-completions", classes="hidden")
         yield QueuedTurnsWidget(id="queued-turns", classes="hidden")
         yield CommandInput(id="input")
-        yield Footer()
 
     def on_mount(self) -> None:
         self.load_events(self._events)
@@ -152,7 +142,7 @@ class AceAITUI(App[None]):
                 f"{session_display_title(session.title)}  {session.updated_at}"
             )
         lines.append("")
-        lines.append("Use /resume <session_id> to switch sessions.")
+        lines.append("Use the session picker to switch sessions.")
         self.append_event(TUIEvent.session_notice("\n".join(lines)))
 
     def open_session_selector(self) -> None:
@@ -201,6 +191,8 @@ class AceAITUI(App[None]):
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
         self.title = f"AceAI {metadata.session_id}"
+        if self.is_mounted:
+            self.query_one(TopBarWidget).set_title(self.title)
 
     def _session_store(self) -> SessionStore:
         if self._session_recorder is not None:
@@ -246,6 +238,34 @@ class AceAITUI(App[None]):
                 usage=self._state.usage,
             )
 
+    def on_top_bar_widget_quit_requested(
+        self,
+        event: TopBarWidget.QuitRequested,
+    ) -> None:
+        event.stop()
+        self.exit()
+
+    def on_top_bar_widget_debug_requested(
+        self,
+        event: TopBarWidget.DebugRequested,
+    ) -> None:
+        event.stop()
+        self.action_toggle_debug_mode()
+
+    def on_top_bar_widget_config_requested(
+        self,
+        event: TopBarWidget.ConfigRequested,
+    ) -> None:
+        event.stop()
+        self.action_config()
+
+    def on_status_bar_widget_metadata_requested(
+        self,
+        event: StatusBarWidget.MetadataRequested,
+    ) -> None:
+        event.stop()
+        self.open_metadata_screen()
+
     def show_approval_request(self, request) -> None:
         self.query_one(ApprovalWidget).show_request(request)
 
@@ -261,38 +281,70 @@ class AceAITUI(App[None]):
     def command_names(self) -> tuple[str, ...]:
         return ()
 
+    def command_completion_items(self) -> tuple[CommandCompletionItem, ...]:
+        return tuple(
+            CommandCompletionItem(command=name, description="Run command")
+            for name in self.command_names()
+        )
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if not isinstance(event.text_area, CommandInput):
             return
+        self._command_completion_selected_index = 0
         self._refresh_command_completions(event.text_area.value)
 
     def on_command_input_completion_requested(
         self,
         event: CommandInput.CompletionRequested,
     ) -> None:
-        matches = self._matching_command_names(event.input.value)
+        matches = self._matching_command_items(event.input.value)
         if not matches:
             return
-        event.input.value = f"/{matches[0]} "
+        index = min(self._command_completion_selected_index, len(matches) - 1)
+        event.input.value = f"/{matches[index].command} "
+        self._command_completion_selected_index = 0
         self._refresh_command_completions(event.input.value)
+
+    def on_command_input_completion_navigation_requested(
+        self,
+        event: CommandInput.CompletionNavigationRequested,
+    ) -> None:
+        command_input = self.query_one(CommandInput)
+        matches = self._matching_command_items(command_input.value)
+        if not matches:
+            return
+        self._command_completion_selected_index = (
+            self._command_completion_selected_index + event.direction
+        ) % len(matches)
+        self._refresh_command_completions(command_input.value)
+        event.stop()
 
     def _refresh_command_completions(self, value: str) -> None:
         completions = self._command_completion_widget()
         if completions is None:
             return
-        matches = self._matching_command_names(value)
+        matches = self._matching_command_items(value)
         if not matches:
             completions.hide()
             return
-        completions.show_commands(list(matches))
+        if self._command_completion_selected_index >= len(matches):
+            self._command_completion_selected_index = 0
+        completions.show_commands(
+            list(matches),
+            selected_index=self._command_completion_selected_index,
+        )
 
-    def _matching_command_names(self, value: str) -> tuple[str, ...]:
+    def _matching_command_items(self, value: str) -> tuple[CommandCompletionItem, ...]:
         if not value.startswith("/"):
             return ()
         body = value.removeprefix("/")
         if " " in body or "\n" in body:
             return ()
-        return tuple(name for name in self.command_names() if name.startswith(body))
+        return tuple(
+            item
+            for item in self.command_completion_items()
+            if item.command.startswith(body)
+        )
 
     def _hide_command_completions(self) -> None:
         completions = self._command_completion_widget()
@@ -369,6 +421,7 @@ class AceAITUI(App[None]):
         self.query_one(DetailWidget).set_state(self._state)
 
     def _refresh_widgets(self) -> None:
+        self.query_one(TopBarWidget).set_title(self.title)
         self.query_one(StreamWidget).set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
         self.query_one(StatusBarWidget).set_status(

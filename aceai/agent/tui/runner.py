@@ -37,9 +37,11 @@ from .setup import (
     ToolPermissionItem,
 )
 from .widgets import ApprovalWidget
+from .widgets import CommandCompletionItem
 from .widgets import CommandInput
 from .widgets import QueuedTurnsWidget
 from .widgets import StatusBarWidget
+from .widgets import TopBarWidget
 
 AgentFactory = Callable[[AceAITUIConfig], AgentBase]
 CommandHandler = Callable[[str], None]
@@ -48,6 +50,17 @@ UPDATE_INSTRUCTIONS = (
     "Run /update to upgrade AceAI and restart."
 )
 UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
+COMMAND_DESCRIPTIONS: dict[str, str] = {
+    "clear": "Clear the visible transcript",
+    "config": "Open provider, model, skill, and tool settings",
+    "idea": "Show ideas, save an idea, or delete one",
+    "quit": "Exit AceAI",
+    "sessions": "Open the session picker",
+    "stats": "Open runtime and usage details",
+    "steer": "Interrupt or redirect the current run",
+    "trajectory": "Open the event trajectory view",
+    "update": "Upgrade AceAI and restart",
+}
 
 
 def tui_command(*names: str):
@@ -96,14 +109,6 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
         )
         for skill in registry.get_skills()
     )
-
-
-def _system_prompt_text(agent: AgentBase) -> str:
-    parts: list[str] = []
-    for part in agent.system_message.content:
-        if part["type"] == "text":
-            parts.append(part["data"])
-    return "".join(parts)
 
 
 def _parse_command(text: str) -> tuple[str, str] | None:
@@ -182,6 +187,8 @@ class _RuntimeStreamMixin:
         self._refresh_queued_turns()
         if self._session_id is not None:
             self.title = f"AceAI {self._session_id}"
+            if self.is_mounted:
+                self.query_one(TopBarWidget).set_title(self.title)
 
     def on_unmount(self) -> None:
         agent_app = self._agent_app
@@ -235,6 +242,7 @@ class _RuntimeStreamMixin:
         self.query_one(StatusBarWidget).show_notice(
             "Esc again stops response",
             timeout=1.4,
+            style="bold #bf616a",
         )
         self._cancel_arm_timer = self.set_timer(1.4, self._clear_cancel_arm)
 
@@ -271,6 +279,15 @@ class _RuntimeStreamMixin:
     def command_names(self) -> tuple[str, ...]:
         return tuple(sorted(self._command_handlers()))
 
+    def command_completion_items(self) -> tuple[CommandCompletionItem, ...]:
+        return tuple(
+            CommandCompletionItem(
+                command=name,
+                description=COMMAND_DESCRIPTIONS[name],
+            )
+            for name in self.command_names()
+        )
+
     @tui_command("quit")
     def _command_quit(self, arg: str) -> None:
         self.exit()
@@ -283,13 +300,17 @@ class _RuntimeStreamMixin:
     def _command_sessions(self, arg: str) -> None:
         self.open_session_selector()
 
-    @tui_command("metadata", "info")
+    @tui_command("stats")
     def _command_metadata(self, arg: str) -> None:
         self.open_metadata_screen()
 
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
         self.open_config_screen()
+
+    @tui_command("trajectory")
+    def _command_trajectory(self, arg: str) -> None:
+        self.open_trajectory_screen()
 
     @tui_command("update")
     def _command_update(self, arg: str) -> None:
@@ -329,13 +350,6 @@ class _RuntimeStreamMixin:
         self.notify_session(
             f"Saved idea from {idea.created_at.strftime('%Y-%m-%d %H:%M')}."
         )
-
-    @tui_command("resume")
-    def _command_resume(self, arg: str) -> None:
-        if arg == "":
-            self.append_event(TUIEvent.session_notice("Usage: /resume <session_id>"))
-            return
-        self.switch_session(arg)
 
     def enqueue_run(self, question: str) -> None:
         self._clear_cancel_arm()
@@ -463,13 +477,6 @@ class _RuntimeStreamMixin:
             return
         self.append_event(TUIEvent.idea_list(_idea_items(self._list_ideas())))
         self.notify_session(f"Deleted idea {index}: {idea.content}")
-
-    @tui_command("model")
-    def _command_model(self, arg: str) -> None:
-        if arg == "":
-            self.open_config_screen()
-            return
-        self.switch_model(arg)
 
     async def _run_update_and_restart(self) -> None:
         result = await run_update_command()
@@ -696,7 +703,6 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
-                system_prompt=_system_prompt_text(self._agent),
             ),
             self._handle_config_selection,
         )
@@ -850,9 +856,37 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         next_config = replace_config(config)
         self._provider_name = next_config.provider
         self._current_config = next_config
-        self._agent = self._agent_factory(next_config)
         self._selected_model = next_config.model
         self._request_meta["model"] = self._selected_model
+        self._agent = None
+        self._agent_app = None
+        self._active_runtime = None
+        self._persist_session_state()
+        self.set_status_model(self._selected_model)
+        if self._initial_question != "":
+            self.start_run(self._initial_question)
+
+    def start_run(self, question: str) -> None:
+        if self._current_config is None:
+            self.query_one(CommandInput).value = question
+            return
+        if self._active_worker is not None and self._active_worker.is_running:
+            self.enqueue_run(question)
+            return
+        self._ensure_agent_app()
+        if self._agent_app.is_running_suspended:
+            self.append_event(
+                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
+            )
+            return
+        self._start_run_now(question)
+
+    def _ensure_agent_app(self) -> None:
+        if self._agent_app is not None:
+            return
+        if self._current_config is None:
+            raise RuntimeError("AceAI app is not configured")
+        self._agent = self._agent_factory(self._current_config)
         self._agent_app = AceAgentApp(
             self._agent,
             provider_name=self._provider_name,
@@ -865,28 +899,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             trace_ctx=self._trace_ctx,
             request_meta=self._request_meta,
         )
-        self._persist_session_state()
         self._sync_app_state()
-        self.set_status_model(self._selected_model)
         self._start_update_check()
-        if self._initial_question != "":
-            self.start_run(self._initial_question)
-
-    def start_run(self, question: str) -> None:
-        if self._agent is None:
-            self.query_one(CommandInput).value = question
-            return
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.enqueue_run(question)
-            return
-        if self._agent_app is None:
-            raise RuntimeError("AceAI app is not configured")
-        if self._agent_app.is_running_suspended:
-            self.append_event(
-                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
-            )
-            return
-        self._start_run_now(question)
 
     def switch_session(self, session_id: str) -> None:
         if self._agent_app is None:
@@ -984,7 +998,6 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 else (),
                 tool_permission_items=self._available_tool_permission_items(),
                 api_keys=api_keys,
-                system_prompt=_system_prompt_text(self._agent),
             ),
             self._handle_config_selection,
         )
@@ -1017,6 +1030,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                         enabled_skills=list(selection.enabled_skills),
                         api_keys=api_keys,
                         tool_permissions=selection.tool_permissions,
+                        tool_enabled=selection.tool_enabled,
+                        tool_max_calls=selection.tool_max_calls,
                     )
                 )
                 self.notify_session(
@@ -1052,6 +1067,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 enabled_skills=list(selection.enabled_skills),
                 api_keys=api_keys,
                 tool_permissions=selection.tool_permissions,
+                tool_enabled=selection.tool_enabled,
+                tool_max_calls=selection.tool_max_calls,
             )
         )
         self.notify_session(
@@ -1085,6 +1102,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     enabled_skills=self._current_config.enabled_skills,
                     api_keys=self._current_config.api_keys,
                     tool_permissions=self._current_config.tool_permissions,
+                    tool_enabled=self._current_config.tool_enabled,
+                    tool_max_calls=self._current_config.tool_max_calls,
                 )
             )
         self._selected_model = cast(OpenAIModel, model)
@@ -1098,6 +1117,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
 
     def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
         if self._current_config is None:
+            if self._agent is None:
+                return ()
             return _skill_config_items(self._agent.skill_registry)
         registry = SkillLoader.load_registry(self._current_config.skills)
         return _skill_config_items(registry)
@@ -1105,6 +1126,16 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:
         configured_permissions = (
             self._current_config.tool_permissions
+            if self._current_config is not None
+            else {}
+        )
+        configured_enabled = (
+            self._current_config.tool_enabled
+            if self._current_config is not None
+            else {}
+        )
+        configured_max_calls = (
+            self._current_config.tool_max_calls
             if self._current_config is not None
             else {}
         )
@@ -1120,6 +1151,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     name=configured_tool.name,
                     description=configured_tool.description,
                     permission=permission,
+                    enabled=configured_enabled.get(configured_tool.name, True),
+                    max_calls_per_run=configured_max_calls.get(configured_tool.name),
                 )
             )
         return tuple(items)
