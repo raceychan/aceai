@@ -830,8 +830,7 @@ async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> Non
 
     markdown = ideas_path.read_text(encoding="utf-8")
     assert "修一下 resume 默认 session" in markdown
-    assert app._state.events[-1].kind == "session_notice"
-    assert app._state.events[-1].content.startswith("Saved idea from ")
+    assert app._state.events == []
 
 
 @pytest.mark.anyio
@@ -873,12 +872,11 @@ async def test_interactive_tui_idea_command_lists_recent_ideas(tmp_path) -> None
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/idea"))
 
-    assert app._state.events[-1].kind == "session_notice"
-    assert app._state.events[-1].content.splitlines()[0] == "Saved ideas:"
-    assert "1." in app._state.events[-1].content
-    assert "second idea" in app._state.events[-1].content
-    assert "first idea" in app._state.events[-1].content
-    assert "Delete with /idea delete <number>." in app._state.events[-1].content
+    assert app._state.events[-1].kind == "idea_list"
+    assert [item.title for item in app._state.events[-1].idea_items] == [
+        "second idea",
+        "first idea",
+    ]
 
 
 @pytest.mark.anyio
@@ -899,7 +897,8 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/idea delete 1"))
 
-    assert "Deleted idea 1: second idea" == app._state.events[-1].content
+    assert app._state.events[-1].kind == "idea_list"
+    assert [item.title for item in app._state.events[-1].idea_items] == ["first idea"]
     assert [idea.content for idea in idea_store.list_recent()] == ["first idea"]
 
 

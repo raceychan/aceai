@@ -25,7 +25,7 @@ from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
-from .events import TUIEvent
+from .events import TUIEvent, TUIIdeaItem
 from .metadata import MetadataSection
 from .session_replay import event_log_to_tui_events
 from .setup import (
@@ -264,21 +264,19 @@ class _RuntimeStreamMixin:
     @tui_command("idea")
     def _command_idea(self, arg: str) -> None:
         if arg == "":
-            self.append_event(TUIEvent.session_notice(_ideas_notice(self._list_ideas())))
+            self._show_ideas()
             return
         try:
             delete_index = _idea_delete_index(arg)
         except ValueError:
-            self.append_event(TUIEvent.session_notice("Usage: /idea delete <number>"))
+            self.notify_session("Usage: /idea delete <number>")
             return
         if delete_index is not None:
             self._delete_idea(delete_index)
             return
         idea = self._capture_idea(arg)
-        self.append_event(
-            TUIEvent.session_notice(
-                f"Saved idea from {idea.created_at.strftime('%Y-%m-%d %H:%M')}."
-            )
+        self.notify_session(
+            f"Saved idea from {idea.created_at.strftime('%Y-%m-%d %H:%M')}."
         )
 
     @tui_command("resume")
@@ -303,6 +301,10 @@ class _RuntimeStreamMixin:
             return self._idea_store.list_recent()
         return agent_app.list_ideas()
 
+    def _show_ideas(self) -> None:
+        self.append_event(TUIEvent.idea_list(_idea_items(self._list_ideas())))
+        self.notify_session("Delete an idea with /idea delete <number>.")
+
     def _delete_idea(self, index: int) -> None:
         try:
             agent_app = self._agent_app
@@ -311,9 +313,10 @@ class _RuntimeStreamMixin:
             else:
                 idea = agent_app.delete_idea(index)
         except IndexError:
-            self.append_event(TUIEvent.session_notice(f"No idea found at {index}."))
+            self.notify_session(f"No idea found at {index}.")
             return
-        self.append_event(TUIEvent.session_notice(f"Deleted idea {index}: {idea.content}"))
+        self.append_event(TUIEvent.idea_list(_idea_items(self._list_ideas())))
+        self.notify_session(f"Deleted idea {index}: {idea.content}")
 
     @tui_command("model")
     def _command_model(self, arg: str) -> None:
@@ -344,16 +347,26 @@ def _update_available_notice(result: UpdateCheckResult) -> str:
     )
 
 
-def _ideas_notice(ideas: list[Idea]) -> str:
-    if not ideas:
-        return "No saved ideas for this workspace."
-    lines = ["Saved ideas:"]
-    for index, idea in enumerate(ideas, start=1):
-        created_at = idea.created_at.strftime("%Y-%m-%d %H:%M")
-        lines.append(f"{index}. {created_at}  {idea.content}")
-    lines.append("")
-    lines.append("Delete with /idea delete <number>.")
-    return "\n".join(lines)
+def _idea_items(ideas: list[Idea]) -> list[TUIIdeaItem]:
+    return [_idea_item(index, idea) for index, idea in enumerate(ideas, start=1)]
+
+
+def _idea_item(index: int, idea: Idea) -> TUIIdeaItem:
+    lines = idea.content.splitlines()
+    title = ""
+    body_lines: list[str] = []
+    for line in lines:
+        if title == "" and line != "":
+            title = line
+            continue
+        if title != "":
+            body_lines.append(line)
+    return TUIIdeaItem(
+        index=index,
+        created_at=idea.created_at.strftime("%Y-%m-%d %H:%M"),
+        title=title,
+        body="\n".join(body_lines),
+    )
 
 
 def _idea_delete_index(arg: str) -> int | None:
