@@ -1,5 +1,11 @@
+import asyncio
+import json
 from typing import AsyncGenerator
+from urllib.error import URLError
+from urllib.request import urlopen
 
+import aceai
+from msgspec import Struct
 from opentelemetry.context import Context
 
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
@@ -9,6 +15,19 @@ from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
 from aceai.core.events import AgentEvent, RunCompletedEvent
 from aceai.core.models import ToolApprovalRequest
 from aceai.llm.models import LLMMessage, LLMRequestMeta
+
+PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/aceai/json"
+
+
+class UpdateCheckResult(Struct, frozen=True, kw_only=True):
+    current_version: str
+    latest_version: str
+
+    @property
+    def has_update(self) -> bool:
+        return _version_parts(self.latest_version) > _version_parts(
+            self.current_version
+        )
 
 
 class AceAgentApp:
@@ -42,6 +61,8 @@ class AceAgentApp:
         self._llm_history = list(initial_history or [])
         self._active_runtime: AgentRuntime | None = None
         self._approved_tool_names: set[str] = set()
+        self._update_check_completed = False
+        self._update_check_lock = asyncio.Lock()
         session_id = self._session_service.session_id
         if session_id is not None:
             self._approved_tool_names.update(
@@ -134,6 +155,16 @@ class AceAgentApp:
             return None
         return pending.request
 
+    async def check_for_updates(self) -> UpdateCheckResult | None:
+        async with self._update_check_lock:
+            if self._update_check_completed:
+                return None
+            self._update_check_completed = True
+            result = await check_for_updates()
+            if result is None or not result.has_update:
+                return None
+            return result
+
     async def start_turn(self, question: str) -> AsyncGenerator[AgentEvent, None]:
         self.ensure_session()
         self.persist_session_state()
@@ -221,6 +252,45 @@ def _copy_request_meta(request_meta: LLMRequestMeta | None) -> LLMRequestMeta:
     return {
         **request_meta,
     }
+
+
+async def check_for_updates() -> UpdateCheckResult | None:
+    current_version = aceai.__version__
+    latest_version = await _fetch_latest_package_version()
+    if latest_version is None:
+        return None
+    return UpdateCheckResult(
+        current_version=current_version,
+        latest_version=latest_version,
+    )
+
+
+async def _fetch_latest_package_version() -> str | None:
+    return await asyncio.to_thread(_fetch_latest_package_version_sync)
+
+
+def _fetch_latest_package_version_sync() -> str | None:
+    try:
+        with urlopen(PYPI_PROJECT_JSON_URL, timeout=2.0) as response:
+            payload = json.loads(response.read().decode())
+    except (URLError, TimeoutError):
+        return None
+    if type(payload) is not dict:
+        raise TypeError("PyPI project payload must be a mapping")
+    info = payload["info"]
+    if type(info) is not dict:
+        raise TypeError("PyPI project info must be a mapping")
+    version = info["version"]
+    if type(version) is not str:
+        raise TypeError("PyPI project version must be str")
+    return version
+
+
+def _version_parts(version: str) -> tuple[int, int, int]:
+    parts = version.split(".")
+    if len(parts) != 3:
+        raise ValueError("AceAI version must use x.y.z format")
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def _approved_tool_names_from_event_log(event_log: EventLog) -> set[str]:

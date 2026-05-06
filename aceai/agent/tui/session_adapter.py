@@ -38,6 +38,8 @@ def _payload_for_event(event: TUIEvent) -> dict[str, Any]:
         payload["usage"] = {
             "input_tokens": event.usage.input_tokens,
             "cached_input_tokens": event.usage.cached_input_tokens,
+            "cache_miss_input_tokens": event.usage.cache_miss_input_tokens,
+            "input_cache_hit_rate": event.usage.input_cache_hit_rate,
             "output_tokens": event.usage.output_tokens,
             "total_tokens": event.usage.total_tokens,
         }

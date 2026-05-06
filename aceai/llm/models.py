@@ -333,6 +333,12 @@ class LLMUsage(Record):
     cached_input_tokens: int | None = None
     """Input tokens reported by the provider as prompt-cache hits."""
 
+    cache_miss_input_tokens: int | None = None
+    """Input tokens reported by the provider as prompt-cache misses."""
+
+    input_cache_hit_rate: float | None = None
+    """Input cache hits divided by cache-accounted input tokens."""
+
     output_tokens: int | None = None
     """Optional when providers omit completion-side accounting."""
 
@@ -341,12 +347,51 @@ class LLMUsage(Record):
 
     @classmethod
     def from_payload(cls, payload: StrDict) -> Self:
+        input_tokens = payload["input_tokens"]
+        cached_input_tokens = payload["cached_input_tokens"]
+        cache_miss_input_tokens = (
+            payload["cache_miss_input_tokens"]
+            if "cache_miss_input_tokens" in payload
+            else _cache_miss_input_tokens(input_tokens, cached_input_tokens)
+        )
+        input_cache_hit_rate = (
+            payload["input_cache_hit_rate"]
+            if "input_cache_hit_rate" in payload
+            else _input_cache_hit_rate(cached_input_tokens, cache_miss_input_tokens)
+        )
         return cls(
-            input_tokens=payload["input_tokens"],
-            cached_input_tokens=payload["cached_input_tokens"],
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_miss_input_tokens=cache_miss_input_tokens,
+            input_cache_hit_rate=input_cache_hit_rate,
             output_tokens=payload["output_tokens"],
             total_tokens=payload["total_tokens"],
         )
+
+
+def _cache_miss_input_tokens(
+    input_tokens: int | None,
+    cached_input_tokens: int | None,
+) -> int | None:
+    if input_tokens is None:
+        return None
+    if cached_input_tokens is None:
+        return None
+    return input_tokens - cached_input_tokens
+
+
+def _input_cache_hit_rate(
+    cached_input_tokens: int | None,
+    cache_miss_input_tokens: int | None,
+) -> float | None:
+    if cached_input_tokens is None:
+        return None
+    if cache_miss_input_tokens is None:
+        return None
+    cache_accounted_tokens = cached_input_tokens + cache_miss_input_tokens
+    if cache_accounted_tokens == 0:
+        return None
+    return cached_input_tokens / cache_accounted_tokens
 
 
 class LLMCitationRef(Record):
@@ -578,6 +623,41 @@ class LLMStreamEvent(Record):
 
 class LLMProviderBase(ABC):
     """Interface for LLM providers that bridge vendor SDKs to this contract."""
+
+    def build_usage(
+        self,
+        *,
+        input_tokens: int | None,
+        cached_input_tokens: int | None,
+        output_tokens: int | None,
+        total_tokens: int | None,
+        cache_miss_input_tokens: int | None = None,
+    ) -> LLMUsage:
+        cache_miss_tokens = cache_miss_input_tokens
+        if cache_miss_tokens is None:
+            cache_miss_tokens = _cache_miss_input_tokens(
+                input_tokens,
+                cached_input_tokens,
+            )
+        return LLMUsage(
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_miss_input_tokens=cache_miss_tokens,
+            input_cache_hit_rate=self.input_cache_hit_rate(
+                cached_input_tokens=cached_input_tokens,
+                cache_miss_input_tokens=cache_miss_tokens,
+            ),
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+
+    def input_cache_hit_rate(
+        self,
+        *,
+        cached_input_tokens: int | None,
+        cache_miss_input_tokens: int | None,
+    ) -> float | None:
+        return _input_cache_hit_rate(cached_input_tokens, cache_miss_input_tokens)
 
     @abstractmethod
     async def complete(self, request: LLMInput) -> LLMResponse:

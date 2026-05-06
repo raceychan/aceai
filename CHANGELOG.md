@@ -1,5 +1,24 @@
 # Changelog
 
+## AceAI v0.2.11
+
+### Improvements
+
+- `llm`: Standardize provider cache accounting around cache hits divided by cache-accounted input tokens, with OpenAI and DeepSeek adapting their provider-specific usage fields into one AceAI-owned `LLMUsage` contract.
+- `tui`: Move run status and model to the left side of the status bar, rename `ctx` to `context`, add cache-rate display, and render running/completed states with compact symbols.
+- `tui`: Show session resume, model-switch, and provider-switch feedback as short-lived queued status-bar notices instead of persistent transcript events.
+- `dev`: Add Ruff to the managed development dependency set.
+
+### Fixes
+
+- `sessions`: Migrate legacy usage payloads when loading saved events so older assistant messages derive cache miss and hit-rate fields from existing token data.
+- `tui`: Keep replayed historical sessions from displaying a running status unless replay includes a terminal run-control event.
+- `tui`: Queue multiple short-lived notices so consecutive resume/model-switch notifications display in order instead of overwriting each other.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.10
 
 ### Fixes

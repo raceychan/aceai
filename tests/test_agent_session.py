@@ -275,6 +275,8 @@ def test_session_recorder_persists_assistant_usage(tmp_path) -> None:
 
     assert events[0].payload["usage"]["input_tokens"] == 12
     assert events[0].payload["usage"]["cached_input_tokens"] == 8
+    assert events[0].payload["usage"]["cache_miss_input_tokens"] is None
+    assert events[0].payload["usage"]["input_cache_hit_rate"] is None
     assert events[0].payload["usage"]["output_tokens"] == 5
     assert events[0].payload["usage"]["total_tokens"] == 17
     assert events[0].payload["cost"]["model"] == "gpt-5.5"
@@ -561,6 +563,8 @@ def _llm_completed(
         payload["usage"] = {
             "input_tokens": usage.input_tokens,
             "cached_input_tokens": usage.cached_input_tokens,
+            "cache_miss_input_tokens": usage.cache_miss_input_tokens,
+            "input_cache_hit_rate": usage.input_cache_hit_rate,
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
         }

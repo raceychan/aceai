@@ -115,6 +115,8 @@ class StreamUsage:
         self.completion_tokens = completion_tokens
         self.total_tokens = total_tokens
         self.prompt_tokens_details = prompt_tokens_details
+        self.prompt_cache_hit_tokens = prompt_tokens_details.cached_tokens
+        self.prompt_cache_miss_tokens = prompt_tokens - prompt_tokens_details.cached_tokens
 
 
 class StreamPromptTokenDetails:
@@ -223,5 +225,7 @@ async def test_deepseek_stream_requests_and_maps_usage() -> None:
     final_response = events[-1].response
     assert final_response.usage.input_tokens == 10
     assert final_response.usage.cached_input_tokens == 4
+    assert final_response.usage.cache_miss_input_tokens == 6
+    assert final_response.usage.input_cache_hit_rate == 0.4
     assert final_response.usage.output_tokens == 3
     assert final_response.usage.total_tokens == 13

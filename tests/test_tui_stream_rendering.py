@@ -295,6 +295,7 @@ def test_stream_collapses_tool_activity_only_after_completion() -> None:
     ]
     assert [text.plain for text in completed_writes] == [
         "  ─ [+] work history · 2 tool calls",
+        "  done",
     ]
 
 
@@ -358,6 +359,7 @@ def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
         "  ─ [-] work history · 2 tool calls",
         "    ● read_text_file  completed - result ready",
         "    ● read_text_file  completed - result ready",
+        "  done",
     ]
 
     stream.on_click(
@@ -377,6 +379,7 @@ def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
 
     assert [text.plain for text in writes] == [
         "  ─ [+] work history · 2 tool calls",
+        "  done",
     ]
 
 
@@ -470,6 +473,7 @@ def test_expanded_working_history_preserves_reasoning_tool_order() -> None:
         "    ● read_text_file  completed - result ready",
         "    * reasoning  think second",
         "    ● search_text  completed - search finished",
+        "  done",
     ]
 
 
@@ -560,6 +564,128 @@ def test_completed_working_history_stays_before_answer_when_tool_replays_late() 
     assert renderables[2].plain == "  answer"
 
 
+def test_completed_working_history_stays_before_answer_when_next_question_flushes() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+    events = [
+        TUIEvent.user_message("first?"),
+        TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=call,
+                tool_result=ToolExecutionResult(call=call, output='{"content":"a"}'),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="answer")),
+                final_answer="answer",
+            )
+        ),
+        TUIEvent.user_message("second?"),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 5
+    assert isinstance(renderables[0], Table)
+    assert isinstance(renderables[1], Text)
+    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert isinstance(renderables[2], Text)
+    assert renderables[2].plain == "  answer"
+    assert isinstance(renderables[3], Text)
+    assert renderables[3].plain == ""
+    assert isinstance(renderables[4], Table)
+
+
+def test_completed_retry_does_not_split_or_render_working_history() -> None:
+    first_builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    second_builder = AgentEventBuilder(step_index=1, step_id="step-2")
+    first = LLMToolCall(
+        name="search_text",
+        arguments='{"query":"version"}',
+        call_id="call-1",
+    )
+    second = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"aceai/__init__.py"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.user_message("version?"),
+        TUIEvent.from_agent_event(
+            first_builder.llm_reasoning(
+                segment=LLMSegment(
+                    type="reasoning",
+                    content="check version",
+                    meta=LLMReasoningSegmentMeta(
+                        item_id="reasoning-1",
+                        kind="content",
+                        index=0,
+                        is_delta=True,
+                    ),
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(first_builder.tool_started(tool_call=first)),
+        TUIEvent.from_agent_event(
+            first_builder.tool_completed(
+                tool_call=first,
+                tool_result=ToolExecutionResult(call=first, output="{}"),
+            )
+        ),
+        TUIEvent.from_agent_event(second_builder.tool_started(tool_call=second)),
+        TUIEvent.from_agent_event(
+            second_builder.tool_completed(
+                tool_call=second,
+                tool_result=ToolExecutionResult(call=second, output="{}"),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            second_builder.llm_retrying(
+                retry_count=1,
+                retry_max=5,
+                retry_delay_seconds=0.5,
+                error="TimeoutError:",
+            )
+        ),
+        TUIEvent.from_agent_event(
+            second_builder.llm_reasoning(
+                segment=LLMSegment(
+                    type="reasoning",
+                    content="use cached result",
+                    meta=LLMReasoningSegmentMeta(
+                        item_id="reasoning-2",
+                        kind="content",
+                        index=0,
+                        is_delta=True,
+                    ),
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(second_builder.llm_text_delta(text_delta="answer")),
+        TUIEvent.from_agent_event(
+            second_builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="answer")),
+                final_answer="answer",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+    texts = [renderable.plain for renderable in renderables if isinstance(renderable, Text)]
+
+    assert texts == [
+        "  ─ [+] work history · 2 tool calls",
+        "  answer",
+    ]
+
+
 def test_completed_replayed_approval_cycles_collapse() -> None:
     call = {
         "type": "function_call",
@@ -617,6 +743,7 @@ def test_completed_replayed_approval_cycles_collapse() -> None:
 
     assert [text.plain for text in writes] == [
         "  ─ [+] work history · 1 tool call",
+        "  done",
     ]
 
 
@@ -678,6 +805,7 @@ def test_completed_tool_activity_ignores_invisible_control_events() -> None:
 
     assert [text.plain for text in writes] == [
         "  ─ [+] work history · 2 tool calls",
+        "  done",
     ]
 
 

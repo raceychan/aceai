@@ -1056,6 +1056,38 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_replayed_incomplete_session_does_not_show_running(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    session = store.create_session()
+    store.append_event(
+        session.session_id,
+        SessionEvent(
+            kind="thinking_delta",
+            step_id="step-1",
+            step_index=0,
+            payload={"content": "thinking"},
+        ),
+    )
+    store.append_event(
+        session.session_id,
+        SessionEvent(
+            kind="assistant_message",
+            step_id="step-1",
+            step_index=0,
+            payload={"content": "partial answer"},
+        ),
+    )
+    app = AceAITUI(
+        event_log_to_tui_events(store.load_event_log(session.session_id)),
+        session_recorder=SessionRecorder(store, session.session_id),
+        session_id=session.session_id,
+    )
+
+    async with app.run_test():
+        assert app._state.status == "idle"
+
+
+@pytest.mark.anyio
 async def test_tui_switching_to_current_session_is_noop_for_empty_session(tmp_path) -> None:
     store = SessionStore(tmp_path)
     current = store.create_session()
@@ -1084,11 +1116,11 @@ async def test_tui_switching_to_missing_session_keeps_current_session(tmp_path) 
     )
 
     async with app.run_test():
+        event_count = len(app._state.events)
         app.switch_session("missing-session")
 
         assert app._session_id == current.session_id
-        assert app._state.events[-1].kind == "session_notice"
-        assert app._state.events[-1].content == "Session not found: missing-session"
+        assert len(app._state.events) == event_count
 
 
 @pytest.mark.anyio

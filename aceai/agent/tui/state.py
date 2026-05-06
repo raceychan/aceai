@@ -5,7 +5,6 @@ from typing import Literal
 from msgspec import field
 
 from aceai.llm.interface import Record
-from aceai.llm.models import LLMUsage
 from aceai.agent.cost import CostEstimate
 
 from .events import TUIEvent
@@ -36,6 +35,7 @@ class TUIStepState(Record, kw_only=True):
 class TUIUsageState(Record, kw_only=True):
     current_context_tokens: int | None = None
     current_cached_input_tokens: int | None = None
+    current_input_cache_hit_rate: float | None = None
     session_input_tokens: int | None = None
     session_cached_input_tokens: int | None = None
     session_output_tokens: int | None = None
@@ -150,6 +150,7 @@ def _apply_usage_event(usage_state: TUIUsageState, event: TUIEvent) -> TUIUsageS
     return TUIUsageState(
         current_context_tokens=usage.input_tokens,
         current_cached_input_tokens=usage.cached_input_tokens,
+        current_input_cache_hit_rate=usage.input_cache_hit_rate,
         session_input_tokens=_add_tokens(
             usage_state.session_input_tokens,
             input_tokens,
@@ -299,6 +300,12 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if _is_restored_transcript_event(event):
         return status
     if event.kind in ("user_message", "session_notice"):
+        return status
+    if event.raw_event is None and event.kind not in (
+        "run_completed",
+        "run_failed",
+        "run_suspended",
+    ):
         return status
     if event.kind == "step_started":
         return "running"

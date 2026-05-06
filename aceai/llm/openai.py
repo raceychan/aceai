@@ -580,7 +580,7 @@ class OpenAI(LLMProviderBase):
         usage = response.usage
         usage_block: Unset[LLMUsage] = UNSET
         if usage:
-            usage_block = LLMUsage(
+            usage_block = self.build_usage(
                 input_tokens=usage.input_tokens,
                 cached_input_tokens=_cached_input_tokens(usage),
                 output_tokens=usage.output_tokens,

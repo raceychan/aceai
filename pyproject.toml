@@ -64,6 +64,7 @@ dev = [
     "rich>=14.2.0",
     "textual>=8.2.5",
     "sqlalchemy>=2.0",
+    "ruff>=0.15.12",
 ]
 
 [tool.pytest.ini_options]
