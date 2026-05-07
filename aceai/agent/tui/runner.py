@@ -62,7 +62,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "idea": "Show ideas, save an idea, or delete one",
     "quit": "Exit AceAI",
     "sessions": "Open the session picker",
-    "stats": "Open runtime and usage details",
+    "stats": "Open runtime and usage details in config",
     "steer": "Interrupt or redirect the current run",
     "trajectory": "Open the event trajectory view",
     "update": "Upgrade AceAI and restart",
@@ -320,8 +320,8 @@ class _RuntimeStreamMixin:
         self.open_session_selector()
 
     @tui_command("stats")
-    def _command_metadata(self, arg: str) -> None:
-        self.open_metadata_screen()
+    def _command_stats(self, arg: str) -> None:
+        self.open_config_screen(initial_tab="stats-tab")
 
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
@@ -782,7 +782,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self) -> None:
+    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
         self.push_screen(
             ConfigScreen(
                 provider_name=self._provider_name,
@@ -793,6 +793,8 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
+                stats_sections=self._metadata_sections(),
+                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1071,7 +1073,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self) -> None:
+    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
         api_keys: dict[str, str] = {}
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
@@ -1096,6 +1098,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 compress_threshold=self._current_config.compress_threshold
                 if self._current_config is not None
                 else "100%",
+                stats_sections=self._metadata_sections(),
+                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )

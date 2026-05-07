@@ -22,6 +22,7 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    RichLog,
     Select,
     Static,
     TabbedContent,
@@ -48,6 +49,7 @@ from aceai.llm.openai import OpenAIModel
 from aceai.agent.config import AgentAppConfig
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
+from .metadata import MetadataSection, _metadata_renderables
 from .session_display import session_display_title
 
 
@@ -628,9 +630,15 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #tool-permissions-scroll {
+    #config-scroll, #tool-permissions-scroll, #stats-scroll {
         width: 100%;
         height: 1fr;
+    }
+
+    #stats-body {
+        height: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
     #config-title {
@@ -842,6 +850,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
         compress_threshold: CompressThreshold = "100%",
+        stats_sections: list[MetadataSection] | None = None,
+        initial_tab: str = "settings-tab",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -869,6 +879,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             if item.max_calls_per_run is not None
         }
         self._compress_threshold = compress_threshold
+        self._stats_sections = list(stats_sections or [])
+        self._initial_tab = initial_tab
         self._sync_tool_order()
         self._api_keys = api_keys
         self._provider_highlight = _highlight_for_value(
@@ -883,7 +895,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def compose(self) -> ComposeResult:
         with Container(id="config-panel"):
             yield Label("AceAI configuration", id="config-title")
-            with TabbedContent(initial="settings-tab", id="config-tabs"):
+            with TabbedContent(initial=self._initial_tab, id="config-tabs"):
                 with TabPane("Settings", id="settings-tab"):
                     with VerticalScroll(id="config-scroll"):
                         yield Label(_field_label("provider"))
@@ -965,6 +977,16 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                         )
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
+                with TabPane("Stats", id="stats-tab"):
+                    with VerticalScroll(id="stats-scroll"):
+                        stats_body = RichLog(
+                            id="stats-body",
+                            wrap=True,
+                            auto_scroll=False,
+                        )
+                        for renderable in _metadata_renderables(self._stats_sections):
+                            stats_body.write(renderable)
+                        yield stats_body
             with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")

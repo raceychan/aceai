@@ -415,7 +415,9 @@ async def test_interactive_tui_enter_key_completes_then_submits_slash_command() 
         await pilot.pause()
 
         assert command_input.value == ""
-        assert app.screen.__class__.__name__ == "MetadataScreen"
+        assert app.screen.__class__.__name__ == "ConfigScreen"
+        tabs = app.screen.query_one("#config-tabs", TabbedContent)
+        assert tabs.active == "stats-tab"
 
 
 @pytest.mark.anyio
@@ -1825,7 +1827,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monk
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_stats_command_opens_metadata() -> None:
+async def test_interactive_tui_stats_command_opens_config_stats_tab() -> None:
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1834,13 +1836,13 @@ async def test_interactive_tui_stats_command_opens_metadata() -> None:
     )
     app = AceAIInteractiveTUI(agent)
     calls: list[str] = []
-    app.open_metadata_screen = lambda: calls.append("metadata")
+    app.open_config_screen = lambda initial_tab="settings-tab": calls.append(initial_tab)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/stats"))
 
-    assert calls == ["metadata"]
+    assert calls == ["stats-tab"]
 
 
 @pytest.mark.anyio
@@ -2287,6 +2289,7 @@ async def test_config_screen_is_fullscreen_without_system_prompt_tab() -> None:
         assert panel.region.height == 30
         assert tabs.active == "settings-tab"
         assert screen.query_one("#provider", Input) in settings_tab.query("*")
+        assert screen.query_one("#stats-tab") in tabs.query("*")
         assert "system-prompt-tab" not in screen_ids
         assert "system-prompt" not in screen_ids
 
