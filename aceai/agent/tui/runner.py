@@ -39,6 +39,7 @@ from .setup import (
     ProviderSetupScreen,
     SkillConfigItem,
     ToolPermissionItem,
+    _skill_source,
 )
 from .widgets import ApprovalWidget
 from .widgets import CitationPreviewWidget
@@ -112,17 +113,14 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
             description=skill.description,
             location=str(skill.skill_file),
             builtin=_is_builtin_skill_location(skill.skill_file),
+            source=_skill_source(skill.skill_file),
         )
         for skill in registry.get_skills()
     )
 
 
 def _is_builtin_skill_location(skill_file: Path) -> bool:
-    resolved = skill_file.resolve()
-    return any(
-        resolved.is_relative_to(builtin_path.resolve())
-        for builtin_path in ACE_AGENT_BUILTIN_SKILL_PATHS
-    )
+    return _skill_source(skill_file) == "aceai builtin"
 
 
 def _parse_command(text: str) -> tuple[str, str] | None:

@@ -12,13 +12,14 @@ from aceai.core.executor import Executor
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.llm import LLMResponse
 from aceai.core.run_state import ToolRunState
-from aceai.core.skills import SkillRegistry
+from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.models import LLMToolCall, LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
+from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import clear_config, current_config
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
@@ -41,6 +42,7 @@ from aceai.agent.tui.setup import (
     IdeaPickerScreen,
     SkillConfigItem,
     ToolPermissionItem,
+    _skill_config_items,
 )
 from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import (
@@ -2024,6 +2026,55 @@ async def test_config_screen_uses_model_as_default_model_and_places_skills_on_to
                 enabled_skills=("developer",),
             )
         ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_labels_skill_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(project)
+    write_skill(home / ".aceai" / "skills", "global", "Global skill.", "# Global")
+    write_skill(project / ".agents" / "skills", "project", "Project skill.", "# Project")
+    registry = SkillLoader.load_registry(
+        "auto",
+        extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+    )
+    skill_items = _skill_config_items(registry)
+
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=skill_items,
+        skill_selection_mode="all",
+        enabled_skills=(),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        items_by_name = {item.name: item for item in skill_items}
+        source_by_name = {
+            str(screen.query_one(f"#skill-{index}", Checkbox).label): str(
+                screen.query_one(f"#skill-source-{index}", Static).render()
+            )
+            for index in range(len(skill_items))
+        }
+
+        assert items_by_name["global"].source == "global"
+        assert items_by_name["project"].source == "project"
+        assert items_by_name["skill-creator"].source == "aceai builtin"
+        assert source_by_name["global"] == "global skill"
+        assert source_by_name["project"] == "project skill"
+        assert source_by_name["skill-creator"] == "aceai builtin skill"
 
 
 @pytest.mark.anyio
