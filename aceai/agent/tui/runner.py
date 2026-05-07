@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import AsyncGenerator, Callable, cast
 
 from msgspec import Struct
@@ -17,6 +18,7 @@ from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
+from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import AgentAppConfig, replace_config, save_config
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
@@ -109,8 +111,17 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
             name=skill.name,
             description=skill.description,
             location=str(skill.skill_file),
+            builtin=_is_builtin_skill_location(skill.skill_file),
         )
         for skill in registry.get_skills()
+    )
+
+
+def _is_builtin_skill_location(skill_file: Path) -> bool:
+    resolved = skill_file.resolve()
+    return any(
+        resolved.is_relative_to(builtin_path.resolve())
+        for builtin_path in ACE_AGENT_BUILTIN_SKILL_PATHS
     )
 
 
@@ -1212,7 +1223,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             if self._agent is None:
                 return ()
             return _skill_config_items(self._agent.skill_registry)
-        registry = SkillLoader.load_registry(self._current_config.skills)
+        registry = SkillLoader.load_registry(
+            self._current_config.skills,
+            extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+        )
         return _skill_config_items(registry)
 
     def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:

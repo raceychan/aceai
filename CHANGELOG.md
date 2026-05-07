@@ -1,5 +1,26 @@
 # Changelog
 
+## AceAI v0.2.16
+
+### Features
+
+- `skills`: Ship Anthropic's public `skill-creator` as an AceAI built-in skill so installed AceAI apps include `$skill-creator` without a separate user install.
+- `agent`: Rename the sub-agent delegation tool to `delegate_to_subagent`, making the model-facing tool name describe both the delegation action and the sub-agent target.
+
+### Improvements
+
+- `skills`: Add app-layer built-in skill paths behind `build_ace_agent(...)` while keeping `skill_path="disable"` as the explicit way to turn off all skills.
+- `release`: Add third-party notices for the vendored `skill-creator` source, upstream commit, and Apache 2.0 license path.
+
+### Fixes
+
+- `tui`: Keep built-in skills enabled by default in selected-skill configurations, including older configs that only listed project skills such as `aceai-release`.
+- `skills`: Let user-installed skills override same-name built-ins so global or project `skill-creator` installs take precedence over the packaged default.
+
+### Breaking Changes
+
+- `agent`: Replace the model-facing `delegate_task` tool and `build_delegate_task_tool()` helper with `delegate_to_subagent` and `build_delegate_to_subagent_tool()`.
+
 ## AceAI v0.2.15
 
 ### Features

@@ -266,11 +266,15 @@ When `skill_path="auto"`, AceAI scans:
 
 - `~/.aceai/skills`
 - `.agent/skills` under the current working directory
+- built-in AceAI app skills, when the app passes them to `Executor`
 
 When `skill_path` is a path, AceAI scans:
 
 - `~/.aceai/skills`
 - the provided path
+- built-in AceAI app skills, when the app passes them to `Executor`
+
+The AceAI app ships with a built-in `$skill-creator` skill vendored from Anthropic's public Agent Skills repository. It is loaded by default for `build_ace_agent(...)`; use `skill_path="disable"` to turn off all skills, including built-ins.
 
 For every loaded skill, AceAI injects a compact `<available_skills>` block into the system prompt and registers two skill tools on `Executor`:
 

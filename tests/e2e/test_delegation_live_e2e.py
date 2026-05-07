@@ -46,9 +46,9 @@ async def test_ace_agent_delegates_task_with_live_deepseek_v4_pro() -> None:
     delegation_outputs: list[dict[str, object]] = []
     async for event in agent.run(
         "This is an AceAI live delegation e2e test. You must call the "
-        "`delegate_task` tool exactly once before answering. Delegate this task: "
+        "`delegate_to_subagent` tool exactly once before answering. Delegate this task: "
         f"return the sentinel `{DELEGATION_SENTINEL}` and the calculation "
-        "`19 + 23 = 42`. Use these delegate_task arguments: "
+        "`19 + 23 = 42`. Use these delegate_to_subagent arguments: "
         "task='Return the sentinel and calculation result.', "
         "instructions='Return a concise Summary/Evidence/Risks result. Include "
         f"the exact sentinel {DELEGATION_SENTINEL} and the equation 19 + 23 = 42.', "
@@ -56,7 +56,7 @@ async def test_ace_agent_delegates_task_with_live_deepseek_v4_pro() -> None:
         "and return a result to the main agent.', allowed_tools=[]. After the tool "
         "returns, answer with the same sentinel and equation."
     ):
-        if isinstance(event, ToolCompletedEvent) and event.tool_name == "delegate_task":
+        if isinstance(event, ToolCompletedEvent) and event.tool_name == "delegate_to_subagent":
             delegation_outputs.append(json.loads(event.tool_result.output))
         elif isinstance(event, RunCompletedEvent):
             final_answer = event.final_answer

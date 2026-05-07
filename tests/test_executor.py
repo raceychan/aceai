@@ -154,6 +154,77 @@ def test_executor_loads_skill_registry_and_prompt_instructions(
     assert "skill_view" in executor.tools
 
 
+def test_executor_loads_extra_skill_paths_after_user_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    extra = tmp_path / "builtin"
+    write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
+    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(extra, "skill-creator", "Create skills.", "# Skill Creator")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(cwd)
+
+    executor = Executor(
+        Graph(),
+        [],
+        skill_path="auto",
+        extra_skill_paths=(extra,),
+    )
+
+    assert set(executor.skill_registry.skills) == {
+        "release",
+        "review",
+        "skill-creator",
+    }
+    assert "<name>skill-creator</name>" in executor.prompt_instructions
+
+
+def test_executor_extra_skill_paths_do_not_override_user_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "project"
+    extra = tmp_path / "builtin"
+    write_skill(
+        home / ".aceai" / "skills",
+        "skill-creator",
+        "User skill creator.",
+        "# User Skill Creator",
+    )
+    write_skill(extra, "skill-creator", "Builtin skill creator.", "# Builtin")
+    monkeypatch.setenv("HOME", str(home))
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    executor = Executor(
+        Graph(),
+        [],
+        skill_path="auto",
+        extra_skill_paths=(extra,),
+    )
+
+    skill = executor.skill_registry.get("skill-creator")
+    assert skill.description == "User skill creator."
+    assert skill.read_instructions() == "# User Skill Creator"
+
+
+def test_executor_disable_skill_path_skips_extra_skill_paths(tmp_path: Path) -> None:
+    extra = tmp_path / "builtin"
+    write_skill(extra, "skill-creator", "Create skills.", "# Skill Creator")
+
+    executor = Executor(
+        Graph(),
+        [],
+        skill_path="disable",
+        extra_skill_paths=(extra,),
+    )
+
+    assert executor.skill_registry.skills == {}
+    assert "skills_list" not in executor.tools
+
+
 def test_executor_filters_enabled_skills(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

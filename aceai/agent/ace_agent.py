@@ -6,13 +6,13 @@ from openai import AsyncOpenAI
 
 from aceai.core import Agent, Executor
 from aceai.core.context_manager import CompressThreshold
-from aceai.llm.interface import UNSET, Unset
+from aceai.llm.interface import UNSET, Unset, is_set
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.service import LLMService
 
-from .features import build_delegate_task_tool, default_agent_tools
+from .features import build_delegate_to_subagent_tool, default_agent_tools
 from .permissions import ToolPermission
 
 
@@ -27,6 +27,8 @@ run the repository's tests after meaningful code changes.
 """
 
 ACE_AGENT_SKILL_PATH = "auto"
+ACE_AGENT_BUILTIN_SKILL_PATHS = (Path(__file__).parent / "builtin_skills",)
+ACE_AGENT_BUILTIN_SKILL_NAMES = ("skill-creator",)
 ACE_AGENT_HOSTED_TOOLS = [
     LLMHostedToolSpec(
         provider_name="openai",
@@ -67,7 +69,7 @@ def build_ace_agent(
         tool_max_calls=tool_max_calls,
     )
     app_tools.append(
-        build_delegate_task_tool(
+        build_delegate_to_subagent_tool(
             llm_service=llm_service,
             default_model=model,
             available_tools=app_tools,
@@ -83,7 +85,11 @@ def build_ace_agent(
         Graph(),
         app_tools,
         skill_path=skill_path,
-        enabled_skill_names=enabled_skill_names,
+        enabled_skill_names=_enabled_skill_names_with_builtin_defaults(
+            skill_path=skill_path,
+            enabled_skill_names=enabled_skill_names,
+        ),
+        extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
         hosted_tools=selected_hosted_tools,
     )
     return Agent(
@@ -93,3 +99,17 @@ def build_ace_agent(
         executor=executor,
         compress_threshold=compress_threshold,
     )
+
+
+def _enabled_skill_names_with_builtin_defaults(
+    *,
+    skill_path: str | Path | Literal["auto", "disable"],
+    enabled_skill_names: Unset[tuple[str, ...]],
+) -> Unset[tuple[str, ...]]:
+    if skill_path == "disable" or not is_set(enabled_skill_names):
+        return enabled_skill_names
+    names = list(enabled_skill_names)
+    for builtin_name in ACE_AGENT_BUILTIN_SKILL_NAMES:
+        if builtin_name not in names:
+            names.append(builtin_name)
+    return tuple(names)

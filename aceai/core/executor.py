@@ -100,6 +100,7 @@ class Executor(IExecutor):
         skill_path: str | Path | Literal["auto", "disable"] = "disable",
         enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        extra_skill_paths: tuple[Path, ...] = (),
         hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
         self.graph = graph
@@ -110,6 +111,7 @@ class Executor(IExecutor):
         self._skill_registry = SkillLoader.load_registry(
             skill_path,
             loader_factory=skill_loader_factory,
+            extra_skill_paths=extra_skill_paths,
         )
         if is_set(enabled_skill_names):
             self._skill_registry = self._skill_registry.select(enabled_skill_names)
@@ -236,6 +238,7 @@ class LoggingExecutor(Executor):
         skill_path: str | Path | Literal["auto", "disable"] = "disable",
         enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        extra_skill_paths: tuple[Path, ...] = (),
         hosted_tools: list[LLMHostedToolSpec] | None = None,
     ) -> None:
         super().__init__(
@@ -245,6 +248,7 @@ class LoggingExecutor(Executor):
             skill_path=skill_path,
             enabled_skill_names=enabled_skill_names,
             skill_loader_factory=skill_loader_factory,
+            extra_skill_paths=extra_skill_paths,
             hosted_tools=hosted_tools,
         )
         self.logger = logger

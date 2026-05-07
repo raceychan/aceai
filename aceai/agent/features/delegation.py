@@ -58,7 +58,7 @@ class ChildAgentResult(Struct, frozen=True, kw_only=True):
     step_count: int
 
 
-def build_delegate_task_tool(
+def build_delegate_to_subagent_tool(
     *,
     llm_service: ILLMService,
     default_model: str,
@@ -67,17 +67,33 @@ def build_delegate_task_tool(
 ) -> Tool[Any, Any]:
     tool_map = {available_tool.name: available_tool for available_tool in available_tools}
 
-    @tool(tags=["agent_app", "delegation"])
-    async def delegate_task(
+    @tool(
+        tags=["agent_app", "delegation"],
+        description=(
+            "Delegate a bounded, independent task to a subagent and return the "
+            "subagent's result to the main agent. Use this when the main task has "
+            "a separable investigation, review, or verification step that can be "
+            "completed from a clear task brief and a narrow tool set. Do not use "
+            "this for trivial work, for the main agent's immediate blocking next "
+            "step, for open-ended orchestration, or when the subagent would need "
+            "approval-required tools."
+        ),
+    )
+    async def delegate_to_subagent(
         task: Annotated[
             str,
-            spec(description="Specific work the child agent must complete"),
+            spec(
+                description=(
+                    "Specific bounded work the subagent must complete. State the "
+                    "deliverable directly."
+                )
+            ),
         ],
         instructions: Annotated[
             str,
             spec(
                 description=(
-                    "Task-specific system instructions for the child agent, "
+                    "Task-specific system instructions for the subagent, "
                     "including judgment criteria and output expectations"
                 )
             ),
@@ -86,7 +102,7 @@ def build_delegate_task_tool(
             str,
             spec(
                 description=(
-                    "Evidence and background the child agent may use; this is not "
+                    "Evidence and background the subagent may use; this is not "
                     "a place for behavior instructions"
                 )
             ),
@@ -95,13 +111,13 @@ def build_delegate_task_tool(
             list[str],
             spec(
                 description=(
-                    "Names of local tools the child agent may use. Use an empty "
-                    "list when no tool access is needed"
+                    "Exact local tool names the subagent may use. Keep this narrow. "
+                    "Use an empty list when no tool access is needed. Do not include "
+                    "approval-required tools."
                 )
             ),
         ],
     ) -> ChildAgentResult:
-        """Delegate a bounded task to a child agent and return its result."""
         selected_tools = _select_child_tools(tool_map, allowed_tools)
         child_agent = _build_child_agent(
             llm_service=llm_service,
@@ -124,8 +140,8 @@ def build_delegate_task_tool(
                 final_answer = event.final_answer
             elif isinstance(event, RunSuspendedEvent):
                 raise ToolExecutionError(
-                    "delegated child agent suspended for approval; "
-                    "delegate_task only supports approval-free child tools"
+                    "delegated subagent suspended for approval; "
+                    "delegate_to_subagent only supports approval-free child tools"
                 )
             elif isinstance(event, RunFailedEvent):
                 raise ToolExecutionError(event.error)
@@ -141,7 +157,7 @@ def build_delegate_task_tool(
             step_count=len(child_run.steps),
         )
 
-    return delegate_task
+    return delegate_to_subagent
 
 
 def _select_child_tools(
@@ -153,7 +169,7 @@ def _select_child_tools(
     for tool_name in allowed_tools:
         if tool_name not in tool_map:
             raise ToolExecutionError(
-                "delegate_task received unknown child tool: " + tool_name
+                "delegate_to_subagent received unknown child tool: " + tool_name
             )
         selected_tool = tool_map[tool_name]
         if selected_tool.metadata.require_approval:
@@ -162,7 +178,7 @@ def _select_child_tools(
         selected_tools.append(selected_tool)
     if approval_tools:
         raise ToolExecutionError(
-            "delegate_task cannot use approval-required child tools: "
+            "delegate_to_subagent cannot use approval-required child tools: "
             + ", ".join(approval_tools)
         )
     return selected_tools

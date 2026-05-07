@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.features.delegation import build_delegate_task_tool
+from aceai.agent.features.delegation import build_delegate_to_subagent_tool
 from aceai.agent.features.tools import (
     default_agent_tools,
     read_text_file,
@@ -26,7 +26,7 @@ class RecordingDelegationLLMService:
             yield event
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("delegate_task child agent should stream")
+        raise AssertionError("delegate_to_subagent child agent should stream")
 
 
 def completed_stream(response: LLMResponse) -> list[LLMStreamEvent]:
@@ -39,7 +39,7 @@ def completed_stream(response: LLMResponse) -> list[LLMStreamEvent]:
 
 
 @pytest.mark.anyio
-async def test_delegate_task_runs_child_agent_with_generated_instructions() -> None:
+async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions() -> None:
     llm_service = RecordingDelegationLLMService(
         [
             completed_stream(
@@ -53,13 +53,13 @@ async def test_delegate_task_runs_child_agent_with_generated_instructions() -> N
             )
         ]
     )
-    delegate_task = build_delegate_task_tool(
+    delegate_to_subagent = build_delegate_to_subagent_tool(
         llm_service=llm_service,
         default_model="gpt-5.5",
         available_tools=[],
     )
 
-    result = await delegate_task(
+    result = await delegate_to_subagent(
         task="Review the proposed architecture boundary.",
         instructions="Act as a skeptical architecture reviewer.",
         context_brief="The main agent separated run state from agent definition.",
@@ -86,7 +86,7 @@ async def test_delegate_task_runs_child_agent_with_generated_instructions() -> N
 
 
 @pytest.mark.anyio
-async def test_delegate_task_limits_child_tools_to_allowed_names(tmp_path: Path) -> None:
+async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("delegated evidence", encoding="utf-8")
     llm_service = RecordingDelegationLLMService(
@@ -113,13 +113,13 @@ async def test_delegate_task_limits_child_tools_to_allowed_names(tmp_path: Path)
             ),
         ]
     )
-    delegate_task = build_delegate_task_tool(
+    delegate_to_subagent = build_delegate_to_subagent_tool(
         llm_service=llm_service,
         default_model="gpt-5.5",
         available_tools=[read_text_file, search_text],
     )
 
-    result = await delegate_task(
+    result = await delegate_to_subagent(
         task="Read the note and report the content.",
         instructions="Use file evidence only.",
         context_brief="The target file is the provided note.",
@@ -141,9 +141,9 @@ async def test_delegate_task_limits_child_tools_to_allowed_names(tmp_path: Path)
 
 
 @pytest.mark.anyio
-async def test_delegate_task_rejects_approval_required_child_tools() -> None:
+async def test_delegate_to_subagent_rejects_approval_required_child_tools() -> None:
     llm_service = RecordingDelegationLLMService([])
-    delegate_task = build_delegate_task_tool(
+    delegate_to_subagent = build_delegate_to_subagent_tool(
         llm_service=llm_service,
         default_model="gpt-5.5",
         available_tools=[run_shell_command],
@@ -151,9 +151,9 @@ async def test_delegate_task_rejects_approval_required_child_tools() -> None:
 
     with pytest.raises(
         ToolExecutionError,
-        match="delegate_task cannot use approval-required child tools: run_shell_command",
+        match="delegate_to_subagent cannot use approval-required child tools: run_shell_command",
     ):
-        await delegate_task(
+        await delegate_to_subagent(
             task="Run a shell command.",
             instructions="Use the shell.",
             context_brief="No context.",
@@ -163,9 +163,9 @@ async def test_delegate_task_rejects_approval_required_child_tools() -> None:
 
 
 @pytest.mark.anyio
-async def test_delegate_task_rejects_unknown_child_tools() -> None:
+async def test_delegate_to_subagent_rejects_unknown_child_tools() -> None:
     llm_service = RecordingDelegationLLMService([])
-    delegate_task = build_delegate_task_tool(
+    delegate_to_subagent = build_delegate_to_subagent_tool(
         llm_service=llm_service,
         default_model="gpt-5.5",
         available_tools=[read_text_file],
@@ -173,9 +173,9 @@ async def test_delegate_task_rejects_unknown_child_tools() -> None:
 
     with pytest.raises(
         ToolExecutionError,
-        match="delegate_task received unknown child tool: missing_tool",
+        match="delegate_to_subagent received unknown child tool: missing_tool",
     ):
-        await delegate_task(
+        await delegate_to_subagent(
             task="Use a missing tool.",
             instructions="Call the missing tool.",
             context_brief="No context.",
@@ -184,5 +184,5 @@ async def test_delegate_task_rejects_unknown_child_tools() -> None:
     assert llm_service.stream_calls == []
 
 
-def test_default_agent_tools_do_not_include_delegate_task() -> None:
-    assert "delegate_task" not in {tool.name for tool in default_agent_tools()}
+def test_default_agent_tools_do_not_include_delegate_to_subagent() -> None:
+    assert "delegate_to_subagent" not in {tool.name for tool in default_agent_tools()}

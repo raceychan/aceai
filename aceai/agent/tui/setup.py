@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import os
+from pathlib import Path
 from typing import Callable, cast
 
 from rich.console import Group
@@ -34,7 +35,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
-from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
+from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS, ACE_AGENT_SKILL_PATH
 from aceai.agent.config import config_schema
 from aceai.core.context_manager import CompressThreshold, ContextCompressionPolicy
 from aceai.agent.permissions import TOOL_PERMISSION_OPTIONS, ToolPermission
@@ -69,6 +70,7 @@ class SkillConfigItem(Record, kw_only=True):
     name: str
     description: str
     location: str
+    builtin: bool = False
 
 
 class ToolPermissionItem(Record, kw_only=True):
@@ -157,8 +159,17 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
             name=skill.name,
             description=skill.description,
             location=str(skill.skill_file),
+            builtin=_is_builtin_skill_location(skill.skill_file),
         )
         for skill in registry.get_skills()
+    )
+
+
+def _is_builtin_skill_location(skill_file: Path) -> bool:
+    resolved = skill_file.resolve()
+    return any(
+        resolved.is_relative_to(builtin_path.resolve())
+        for builtin_path in ACE_AGENT_BUILTIN_SKILL_PATHS
     )
 
 
@@ -272,7 +283,10 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         self._default_model = default_model
         self._provider = "openai"
         self._skill_items = _skill_config_items(
-            SkillLoader.load_registry(ACE_AGENT_SKILL_PATH)
+            SkillLoader.load_registry(
+                ACE_AGENT_SKILL_PATH,
+                extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+            )
         )
         self._provider_highlight = _highlight_for_value(
             supported_provider_names(),
@@ -982,7 +996,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if self._skill_selection_mode == "all":
             return self._skill_items
         selected_names = set(self._enabled_skills)
-        return tuple(item for item in self._skill_items if item.name in selected_names)
+        return tuple(
+            item
+            for item in self._skill_items
+            if item.builtin or item.name in selected_names
+        )
 
     def _selected_skill_names(self) -> tuple[str, ...]:
         return _selected_skill_names(self, self._skill_items)

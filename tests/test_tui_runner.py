@@ -2009,6 +2009,48 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
 
 
 @pytest.mark.anyio
+async def test_config_screen_checks_builtin_skills_by_default_in_selected_mode() -> None:
+    project_skill = SkillConfigItem(
+        name="aceai-release",
+        description="Release workflow.",
+        location="/project/.agent/skills/aceai-release/SKILL.md",
+    )
+    builtin_skill = SkillConfigItem(
+        name="skill-creator",
+        description="Create and improve skills.",
+        location="/aceai/agent/builtin_skills/skill-creator/SKILL.md",
+        builtin=True,
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=(project_skill, builtin_skill),
+        skill_selection_mode="selected",
+        enabled_skills=("aceai-release",),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+
+        assert screen.query_one("#skill-0", Checkbox).value is True
+        assert screen.query_one("#skill-1", Checkbox).value is True
+
+        _press_config_apply(screen)
+
+        assert selections[-1].enabled_skills == ("aceai-release", "skill-creator")
+
+
+@pytest.mark.anyio
 async def test_config_screen_is_fullscreen_without_system_prompt_tab() -> None:
     screen = ConfigScreen(
         provider_name="openai",

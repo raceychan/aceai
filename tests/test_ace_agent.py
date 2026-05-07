@@ -113,8 +113,8 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
         "skills_list",
         "skill_view",
     }
-    assert "delegate_task" in agent._executor.tools
-    assert set(agent.skill_registry.skills) == {"aceai-release"}
+    assert "delegate_to_subagent" in agent._executor.tools
+    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
 
 
 def test_build_ace_agent_wires_delegation_tool(tmp_path, monkeypatch) -> None:
@@ -126,11 +126,33 @@ def test_build_ace_agent_wires_delegation_tool(tmp_path, monkeypatch) -> None:
         model="gpt-5.5",
     )
 
-    assert "delegate_task" in agent._executor.tools
-    assert agent._executor.tools["delegate_task"].metadata.tags == [
+    assert "delegate_to_subagent" in agent._executor.tools
+    assert "skill-creator" in agent.skill_registry.skills
+    assert agent._executor.tools["delegate_to_subagent"].metadata.tags == [
         "agent_app",
         "delegation",
     ]
+    assert (
+        "Delegate a bounded, independent task to a subagent"
+        in agent._executor.tools["delegate_to_subagent"].metadata.description
+    )
+
+
+def test_build_ace_agent_keeps_builtin_skills_enabled_in_selected_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    write_skill(project / ".agent" / "skills", "aceai-release", "Release workflow.")
+    monkeypatch.chdir(project)
+
+    agent = build_ace_agent(
+        api_key="test-key",
+        model="gpt-5.5",
+        enabled_skill_names=("aceai-release",),
+    )
+
+    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
 
 
 def test_build_ace_agent_excludes_disabled_app_tools(tmp_path, monkeypatch) -> None:
