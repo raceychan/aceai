@@ -15,6 +15,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import RichLog
 
+from aceai import __version__
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
 from aceai.agent.citations import TurnCitation
 from aceai.agent.tui.state import TUIRunState
@@ -96,9 +97,11 @@ class StreamWidget(RichLog):
         state: TUIRunState | None = None,
         *,
         id: str | None = None,
+        project_name: str = "",
     ) -> None:
         super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
+        self._project_name = project_name
         self._debug_mode = False
         self._selected_debug_index = 0
         self._empty_state_frame_index = 0
@@ -110,6 +113,9 @@ class StreamWidget(RichLog):
     @property
     def debug_mode(self) -> bool:
         return self._debug_mode
+
+    def set_project_name(self, project_name: str) -> None:
+        self._project_name = project_name
 
     def set_debug_mode(self, enabled: bool) -> str | None:
         self._debug_mode = enabled
@@ -285,7 +291,18 @@ class StreamWidget(RichLog):
             "Ask AceAI Anything",
             style="bold #8fbcbb",
         )
-        content = Align.center(Group(dog, Text(""), prompt), vertical="middle")
+        project = _center_empty_state_text(
+            f"Project: {self._project_name}",
+            style="bold #d8dee9",
+        )
+        version = _center_empty_state_text(
+            f"v{__version__}",
+            style="#a7b1c2",
+        )
+        content = Align.center(
+            Group(dog, Text(""), prompt, project, version),
+            vertical="middle",
+        )
         top_padding = _empty_state_top_padding(self)
         if top_padding == 0:
             return content
@@ -1130,7 +1147,7 @@ def _render_idea_list(items: list[TUIIdeaItem]) -> RenderableType:
     if not items:
         return _render_text_block(
             "ideas",
-            "No saved ideas for this workspace.",
+            "No saved ideas yet.",
             event_kind="idea_list",
         )
     renderables: list[RenderableType] = [_render_idea_header(len(items))]
@@ -1152,6 +1169,7 @@ def _render_idea_item(item: TUIIdeaItem) -> Panel:
     title.append(f"{item.index}. ", style=SUBTLE_BULLET_STYLE)
     title.append(item.title, style="bold #eceff4")
     title.append(f"  {item.created_at}", style="#9aa3b2")
+    title.append(f"  {item.project_name}", style="#8fbcbb")
     body = Text()
     body.append(item.body if item.body != "" else " ", style="#d8dee9")
     return Panel(

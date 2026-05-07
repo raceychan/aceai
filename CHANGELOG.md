@@ -1,5 +1,26 @@
 # Changelog
 
+## AceAI v0.2.19
+
+### Features
+
+- `tui`: Show compact context, cache-rate, cost, and elapsed-time status details while using provider catalog context windows to show usage percentage in the status bar and metadata view.
+- `diagnostics`: Add a design spec for automatic Markdown diagnostic reports covering failed runs, sanitized transcripts, tool context, and CLI/TUI report entry points.
+
+### Improvements
+
+- `providers`: Record context-window sizes for OpenAI and DeepSeek models so UI and metadata can reason about model capacity without hard-coded status-bar logic.
+- `tui`: Reset the current cache-rate indicator when switching models so stale cache metrics do not follow a new model selection.
+
+### Fixes
+
+- `tui`: Persist TUI model switches back to the project `.aceai/config.yml`, updating both `model` and `default_model` so restarted sessions use the model selected in the UI.
+- `core`: Convert tool argument decode and validation failures into `ToolExecutionError`, allowing invalid model-supplied arguments to return as structured tool failures instead of crashing the run.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.18
 
 ### Improvements

@@ -1,5 +1,6 @@
 import pytest
 
+from aceai import __version__
 from aceai.agent.config import AgentAppConfig, clear_config, save_config
 from aceai.agent.tui import cli
 
@@ -80,6 +81,14 @@ def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
         cli.main([])
 
     assert str(exc_info.value) == cli.TUI_EXTRA_INSTALL_HINT
+
+
+def test_cli_version_prints_package_version(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == f"aceai {__version__}\n"
 
 
 def test_cli_rejects_direct_question_without_creating_session(monkeypatch) -> None:

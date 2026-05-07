@@ -15,6 +15,7 @@ from typing_extensions import Self
 
 from aceai.agent.cost import CostEstimate
 from aceai.agent.citations import citations_from_payload, message_with_citations
+from aceai.agent.project import ProjectMetadata, ProjectStore, default_project
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.models import (
     LLMMessage,
@@ -59,6 +60,8 @@ SessionEventKind = Literal[
 
 class SessionMetadata(Struct, frozen=True, kw_only=True):
     session_id: str
+    project_id: str
+    project_name: str
     created_at: datetime
     updated_at: datetime
     title: str
@@ -68,6 +71,8 @@ class SessionMetadata(Struct, frozen=True, kw_only=True):
     def from_row(cls, row: RowMapping, *, files_dir: Path) -> Self:
         return cls(
             session_id=row["session_id"],
+            project_id=row["project_id"],
+            project_name=row["project_name"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             title=row["title"],
@@ -327,6 +332,8 @@ class EventLog:
     def replay_export_text(self, metadata: SessionMetadata) -> str:
         lines = [
             f"# AceAI session {metadata.session_id}",
+            f"project_id: {metadata.project_id}",
+            f"project: {metadata.project_name}",
             f"title: {metadata.title}",
             f"created_at: {metadata.created_at.isoformat()}",
             f"updated_at: {metadata.updated_at.isoformat()}",
@@ -355,7 +362,7 @@ class EventLog:
         return "Empty session"
 
 
-from aceai.agent.event_store import EventStore, JsonlEventStore
+from aceai.agent.event_store import EventStore, JsonlEventStore  # noqa: E402
 
 
 _metadata = MetaData()
@@ -363,6 +370,8 @@ _sessions_table = Table(
     "sessions",
     _metadata,
     Column("session_id", String, primary_key=True),
+    Column("project_id", String, nullable=False, index=True),
+    Column("project_name", String, nullable=False, index=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False, index=True),
     Column("title", String, nullable=False),
@@ -376,8 +385,17 @@ class SessionStore:
         self,
         root: Path | None = None,
         event_store: EventStore | None = None,
+        project: ProjectMetadata | None = None,
     ) -> None:
         self.root = root or default_session_root()
+        if project is not None:
+            self.project = project
+        elif root is not None:
+            self.project = ProjectStore(self.root / "projects").resolve_project()
+        else:
+            self.project = default_project()
+        self.project_id = self.project.project_id
+        self.project_name = self.project.name
         self.db_path = self.root / "sessions.sqlite3"
         self.files_dir = self.root / "files"
         self.event_store = event_store or JsonlEventStore(self.files_dir)
@@ -394,6 +412,8 @@ class SessionStore:
             conn.execute(
                 sql_insert(_sessions_table).values(
                     session_id=session_id,
+                    project_id=self.project_id,
+                    project_name=self.project_name,
                     created_at=now,
                     updated_at=now,
                     title="New session",
@@ -403,6 +423,8 @@ class SessionStore:
             )
         return SessionMetadata(
             session_id=session_id,
+            project_id=self.project_id,
+            project_name=self.project_name,
             created_at=now,
             updated_at=now,
             title="New session",
@@ -419,13 +441,25 @@ class SessionStore:
             raise KeyError(session_id)
         return SessionMetadata.from_row(row, files_dir=self.files_dir)
 
-    def list_sessions(self) -> list[SessionMetadata]:
-        query = sql_select(_sessions_table).order_by(
-            _sessions_table.c.updated_at.desc()
-        )
+    def list_sessions(self, project_id: str | None = None) -> list[SessionMetadata]:
+        query = sql_select(_sessions_table).order_by(_sessions_table.c.updated_at.desc())
+        if project_id is not None:
+            query = query.where(_sessions_table.c.project_id == project_id)
         with self.engine.connect() as conn:
             rows = conn.execute(query).mappings().fetchall()
-        return [SessionMetadata.from_row(row, files_dir=self.files_dir) for row in rows]
+        sessions = [
+            SessionMetadata.from_row(row, files_dir=self.files_dir) for row in rows
+        ]
+        if project_id is not None:
+            return sessions
+        sessions.sort(
+            key=lambda session: (
+                0 if session.project_id == self.project_id else 1,
+                session.project_name,
+                -session.updated_at.timestamp(),
+            )
+        )
+        return sessions
 
     def update_session_title(self, session_id: str, title: str) -> None:
         with self.engine.begin() as conn:
@@ -508,6 +542,33 @@ class SessionStore:
                 conn.exec_driver_sql(
                     "ALTER TABLE sessions ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
                 )
+        if "project_id" not in column_names:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''"
+                )
+                conn.execute(
+                    sql_update(_sessions_table).values(project_id=self.project_id)
+                )
+        if "project_name" not in column_names:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE sessions ADD COLUMN project_name TEXT NOT NULL DEFAULT ''"
+                )
+                conn.execute(
+                    sql_update(_sessions_table).values(project_name=self.project_name)
+                )
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_update(_sessions_table)
+                .where(_sessions_table.c.project_id == "")
+                .values(project_id=self.project_id)
+            )
+            conn.execute(
+                sql_update(_sessions_table)
+                .where(_sessions_table.c.project_name == "")
+                .values(project_name=self.project_name)
+            )
 
 
 class SessionRecorder:

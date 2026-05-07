@@ -68,6 +68,7 @@ TUIEventKind = Literal[
 
 class TUIIdeaItem(Record, kw_only=True):
     index: int
+    project_name: str
     created_at: str
     title: str
     body: str = ""

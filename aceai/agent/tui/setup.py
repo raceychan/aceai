@@ -22,6 +22,7 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    RichLog,
     Select,
     Static,
     TabbedContent,
@@ -48,6 +49,7 @@ from aceai.llm.openai import OpenAIModel
 from aceai.agent.config import AgentAppConfig
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
+from .metadata import MetadataSection, _metadata_renderables
 from .session_display import session_display_title
 
 
@@ -628,9 +630,15 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #tool-permissions-scroll {
+    #config-scroll, #tool-permissions-scroll, #stats-scroll {
         width: 100%;
         height: 1fr;
+    }
+
+    #stats-body {
+        height: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
     #config-title {
@@ -842,6 +850,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
         compress_threshold: CompressThreshold = "100%",
+        stats_sections: list[MetadataSection] | None = None,
+        initial_tab: str = "settings-tab",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -869,6 +879,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             if item.max_calls_per_run is not None
         }
         self._compress_threshold = compress_threshold
+        self._stats_sections = list(stats_sections or [])
+        self._initial_tab = initial_tab
         self._sync_tool_order()
         self._api_keys = api_keys
         self._provider_highlight = _highlight_for_value(
@@ -883,7 +895,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def compose(self) -> ComposeResult:
         with Container(id="config-panel"):
             yield Label("AceAI configuration", id="config-title")
-            with TabbedContent(initial="settings-tab", id="config-tabs"):
+            with TabbedContent(initial=self._initial_tab, id="config-tabs"):
                 with TabPane("Settings", id="settings-tab"):
                     with VerticalScroll(id="config-scroll"):
                         yield Label(_field_label("provider"))
@@ -965,6 +977,16 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                         )
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
+                with TabPane("Stats", id="stats-tab"):
+                    with VerticalScroll(id="stats-scroll"):
+                        stats_body = RichLog(
+                            id="stats-body",
+                            wrap=True,
+                            auto_scroll=False,
+                        )
+                        for renderable in _metadata_renderables(self._stats_sections):
+                            stats_body.write(renderable)
+                        yield stats_body
             with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
@@ -1530,7 +1552,8 @@ class SessionSelectScreen(ModalScreen[str]):
     }
 
     #session-table {
-        height: 14;
+        height: auto;
+        max-height: 8;
         background: #3b4252;
         color: #eceff4;
         border: solid #88c0d0;
@@ -1545,6 +1568,12 @@ class SessionSelectScreen(ModalScreen[str]):
     #session-table > .datatable--cursor {
         background: #007acc;
         color: #ffffff;
+        text-style: bold;
+    }
+
+    .session-project-title {
+        margin-top: 1;
+        color: #8fbcbb;
         text-style: bold;
     }
 
@@ -1581,24 +1610,20 @@ class SessionSelectScreen(ModalScreen[str]):
         )
         with Container(id="session-panel"):
             yield Label("Sessions", id="session-title")
-            table = DataTable(id="session-table")
-            table.cursor_type = "row"
-            table.zebra_stripes = True
-            table.add_column("Current", width=7)
-            table.add_column("Title", width=42)
-            table.add_column("Updated", width=19)
-            table.add_column("Created", width=19)
-            table.add_column("Session ID", width=36)
-            for session in self._sessions:
-                table.add_row(
-                    *_session_row_cells(
-                        session,
+            with VerticalScroll(id="session-list-scroll"):
+                for project_id, project_name, sessions in _session_groups(self._sessions):
+                    yield Label(
+                        f"{project_name} ({len(sessions)})",
+                        classes="session-project-title",
+                        id=f"session-project-{project_id}",
+                    )
+                    table = _session_project_table(
+                        sessions,
                         current_session_id=self._current_session_id,
-                    ),
-                    key=session.session_id,
-                )
-            table.move_cursor(row=_session_row_index(self._sessions, value))
-            yield table
+                        selected_session_id=value,
+                    )
+                    table.id = f"session-table-{project_id}"
+                    yield table
             yield Static(
                 f"Total cost: {format_usd(self._store.total_cost_usd())}. "
                 "Press d to delete the highlighted session.",
@@ -1609,7 +1634,10 @@ class SessionSelectScreen(ModalScreen[str]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#session-table", DataTable).focus()
+        table = _table_with_session(self, self._current_session_id)
+        if table is None:
+            table = self.query_one(DataTable)
+        table.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -1618,6 +1646,9 @@ class SessionSelectScreen(ModalScreen[str]):
         if event.button.id != "resume":
             return
         session_id = self._selected_session_id()
+        if session_id is None:
+            self.query_one("#session-status", Static).update("Select a session row.")
+            return
         self.dismiss(session_id)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -1628,6 +1659,9 @@ class SessionSelectScreen(ModalScreen[str]):
 
     def action_confirm_delete_session(self) -> None:
         session_id = self._selected_session_id()
+        if session_id is None:
+            self.query_one("#session-status", Static).update("Select a session row.")
+            return
         if session_id == self._current_session_id:
             self.query_one("#session-status", Static).update(
                 "Switch to another session before deleting the current one."
@@ -1648,10 +1682,14 @@ class SessionSelectScreen(ModalScreen[str]):
         session_id: str,
     ) -> None:
         if confirmed is not True:
-            self.query_one("#session-table", DataTable).focus()
+            table = _table_with_session(self, session_id)
+            if table is not None:
+                table.focus()
             return
         self._store.delete_session(session_id)
-        table = self.query_one("#session-table", DataTable)
+        table = _table_with_session(self, session_id)
+        if table is None:
+            raise ValueError(session_id)
         deleted_row = table.cursor_row
         table.remove_row(session_id)
         self._sessions = [
@@ -1662,8 +1700,10 @@ class SessionSelectScreen(ModalScreen[str]):
         table.focus()
         self.query_one("#session-status", Static).update("Session deleted.")
 
-    def _selected_session_id(self) -> str:
-        table = self.query_one("#session-table", DataTable)
+    def _selected_session_id(self) -> str | None:
+        table = _focused_session_table(self)
+        if table is None:
+            return None
         row = table.ordered_rows[table.cursor_row]
         session_id = row.key.value
         if type(session_id) is not str:
@@ -1904,7 +1944,7 @@ class IdeaListWidget(Static):
         if not self._ideas:
             self.update(
                 Panel(
-                    Text("No saved ideas for this workspace.", style="#d8dee9"),
+                    Text("No saved ideas yet.", style="#d8dee9"),
                     border_style="#4c566a",
                     padding=(0, 1),
                 )
@@ -2029,6 +2069,7 @@ def _idea_panel(idea: Idea, *, index: int, selected: bool) -> Panel:
     title.append(f"{index + 1:>2}. ", style="bold #9aa3b2")
     title.append(_fixed_width(_idea_title(idea), width=48), style="bold #eceff4")
     title.append("  ")
+    title.append(f"{idea.project_name}  ", style="#8fbcbb")
     title.append(created_at, style="#9aa3b2")
     return Panel(
         Text(_idea_body(idea), style="#d8dee9"),
@@ -2109,22 +2150,80 @@ def _session_row_cells(
     session: SessionMetadata,
     *,
     current_session_id: str | None,
-) -> tuple[str, str, str, str, str]:
-    marker = "*" if session.session_id == current_session_id else ""
+) -> tuple[str, str, str, str]:
+    marker = "* " if session.session_id == current_session_id else "  "
     return (
-        marker,
-        _fit_cell(session_display_title(session.title), 42),
+        _fit_cell(f"{marker}{session_display_title(session.title)}", 67),
         _session_second(session.updated_at),
         _session_second(session.created_at),
         session.session_id,
     )
 
 
-def _session_row_index(sessions: list[SessionMetadata], session_id: str) -> int:
+def _session_project_table(
+    sessions: list[SessionMetadata],
+    *,
+    current_session_id: str | None,
+    selected_session_id: str,
+) -> DataTable:
+    table = DataTable()
+    table.cursor_type = "row"
+    table.zebra_stripes = True
+    table.add_column("Title", width=67)
+    table.add_column("Updated", width=19)
+    table.add_column("Created", width=19)
+    table.add_column("Session ID", width=36)
+    selected_row = 0
     for index, session in enumerate(sessions):
-        if session.session_id == session_id:
-            return index
-    raise ValueError(session_id)
+        table.add_row(
+            *_session_row_cells(
+                session,
+                current_session_id=current_session_id,
+            ),
+            key=session.session_id,
+        )
+        if session.session_id == selected_session_id:
+            selected_row = index
+    table.move_cursor(row=selected_row)
+    return table
+
+
+def _session_groups(
+    sessions: list[SessionMetadata],
+) -> list[tuple[str, str, list[SessionMetadata]]]:
+    groups: list[tuple[str, str, list[SessionMetadata]]] = []
+    project_indexes: dict[str, int] = {}
+    for session in sessions:
+        index = project_indexes.get(session.project_id)
+        if index is None:
+            project_indexes[session.project_id] = len(groups)
+            groups.append((session.project_id, session.project_name, [session]))
+            continue
+        groups[index][2].append(session)
+    return groups
+
+
+def _focused_session_table(screen: SessionSelectScreen) -> DataTable | None:
+    focused = screen.focused
+    if isinstance(focused, DataTable):
+        return focused
+    tables = list(screen.query(DataTable))
+    if not tables:
+        return None
+    return tables[0]
+
+
+def _table_with_session(
+    screen: SessionSelectScreen,
+    session_id: str | None,
+) -> DataTable | None:
+    if session_id is None:
+        return None
+    for table in screen.query(DataTable):
+        for row in table.ordered_rows:
+            if row.key.value == session_id:
+                return table
+    return None
 
 
 def _session_by_id(

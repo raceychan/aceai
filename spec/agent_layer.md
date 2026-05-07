@@ -23,14 +23,18 @@ AceAI 不只有一个“agent”概念，代码需要按层次理解：
 
 Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下沉到 `aceai/core`。
 
+- Project 是 agent app 层能力，当前归属 `aceai/agent/project.py`。启动时按当前工作目录解析 Project；未注册过的目录会写入 Project registry，并生成稳定 `project_id`。默认展示名是启动目录名，例如 `/Users/raceychan/mylab/ioa` 对应 `ioa`。
+- Session 和 Ideas 都通过 `project_id` 关联 Project；`project_name` 只作为展示/导出快照，不作为主关联键。这样同名目录不会混在一起，后续 project rename 或路径迁移也有明确升级空间。
 - SQLite 只保存 session 索引和元数据，例如 `session_id`、创建/更新时间、标题、消息文件路径。查询必须通过 SQLAlchemy Core query builder，不写手拼 SQL 字符串。
+- Session metadata 必须包含 `project_id` 和 `project_name`。默认 `/sessions` 和 `aceai resume` 的最新会话选择展示全部 session，但当前 Project 下的 session 排在最前；显式 `aceai resume <session_id>` 仍可按全局唯一 session id 直接恢复。
+- Ideas 是结构化存储，当前归属 `aceai/agent/ideas.py`，默认使用 SQLite；不要把 Markdown 文件当作读写存储格式。Idea 记录必须包含 `idea_id`、`project_id`、`project_name`、`workspace` 和可选 `source_session_id`。默认 idea picker 展示全部 ideas，但当前 Project 下的 ideas 排在最前；如果当前 Project 没有 ideas，就自然展示下一个有内容的 Project。`workspace` 作为来源路径证据保留。Markdown 只作为结构化 ideas 的渲染/导出结果。
 - Session metadata 使用正确的数据类型：`created_at`、`updated_at` 在 Python 侧是 `datetime`，数据库列是 datetime 类型，方便后续排序和过滤。
 - 文件保存 compact transcript，当前使用 JSONL，一行是一条合并后的用户、assistant、tool 或 error 消息。
 - 不要把 streaming event 原样持久化。`assistant_delta`、`tool_call_delta`、`tool_output` 这类高频事件必须在写入前合并，否则一次回答会产生大量无意义存储。
 - 恢复会话时，session 文件转换回足够驱动 TUI 展示的 compact `TUIEvent`，而不是重放 provider raw events。
 - CLI 默认进入时创建新 session；不支持 `aceai <question>` 直接发问，避免误操作创建并运行会话；`aceai resume <session_id>` 从 SQLite 找到 session，再读取对应 JSONL 文件恢复可见会话历史。
 - CLI 支持 `aceai export <session_id>` 导出真实可读 transcript 文本。调试历史问题时优先使用这个命令，不要手动 `cat`/`nl` JSONL。
-- TUI header 显示 `AceAI {session_id}`，让用户知道当前会话 id。
+- TUI header 显示当前 Project 和 session id，让用户知道当前会话属于哪个项目。
 - 退出或切换 session 前，当前 session name 会更新为 `{首个用户问题前 40 字}`；如果 session 没有任何消息，退出时删除该空 session。
 - TUI 内部支持 `/sessions` 查看 session 列表，支持 `/resume <session_id>` 切换 session。
 

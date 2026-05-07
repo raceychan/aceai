@@ -80,6 +80,31 @@ def select_event(state: TUIRunState, event_id: str) -> TUIRunState:
     raise ValueError("selected event does not exist")
 
 
+def reset_cache_rate(state: TUIRunState) -> TUIRunState:
+    usage = state.usage
+    if usage.current_input_cache_hit_rate is None:
+        return state
+    return TUIRunState(
+        status=state.status,
+        steps=state.steps,
+        events=state.events,
+        selected_event_id=state.selected_event_id,
+        final_answer=state.final_answer,
+        error=state.error,
+        usage=TUIUsageState(
+            current_context_tokens=usage.current_context_tokens,
+            current_cached_input_tokens=0,
+            current_input_cache_hit_rate=0.0,
+            session_input_tokens=usage.session_input_tokens,
+            session_cached_input_tokens=usage.session_cached_input_tokens,
+            session_output_tokens=usage.session_output_tokens,
+            session_total_tokens=usage.session_total_tokens,
+            current_cost_usd=usage.current_cost_usd,
+            session_cost_usd=usage.session_cost_usd,
+        ),
+    )
+
+
 def apply_tui_event(state: TUIRunState, event: TUIEvent) -> TUIRunState:
     steps = _apply_step_event(state.steps, event)
     status = _next_run_status(state.status, event)

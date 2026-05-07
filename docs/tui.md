@@ -46,8 +46,8 @@ choose the model, and decide whether to persist the config. AceAI reads
 file mode `0600`.
 
 The runtime config page has separate tabs for provider settings, local tool
-permissions, and the system prompt. Each app tool can be set to `always`, `ask`,
-or `never`: `always` exposes the tool without approval, `ask` routes execution
+permissions, and runtime stats. Each app tool can be set to `always`, `ask`, or
+`never`: `always` exposes the tool without approval, `ask` routes execution
 through the approval strip, and `never` removes the tool from the model-visible
 tool list.
 

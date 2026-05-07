@@ -15,6 +15,7 @@ from textual.worker import Worker
 from aceai.agent.app import AceAgentApp, UpdateCheckResult
 from aceai.agent.citations import TurnCitation
 from aceai.agent.ideas import Idea, IdeaStore
+from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
@@ -62,7 +63,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "idea": "Show ideas, save an idea, or delete one",
     "quit": "Exit AceAI",
     "sessions": "Open the session picker",
-    "stats": "Open runtime and usage details",
+    "stats": "Open runtime and usage details in config",
     "steer": "Interrupt or redirect the current run",
     "trajectory": "Open the event trajectory view",
     "update": "Upgrade AceAI and restart",
@@ -205,7 +206,7 @@ class _RuntimeStreamMixin:
         self._active_run = self._agent_app.active_run
         self._refresh_queued_turns()
         if self._session_id is not None:
-            self.title = f"AceAI {self._session_id}"
+            self.title = self._window_title()
             if self.is_mounted:
                 self.query_one(TopBarWidget).set_title(self.title)
 
@@ -320,8 +321,8 @@ class _RuntimeStreamMixin:
         self.open_session_selector()
 
     @tui_command("stats")
-    def _command_metadata(self, arg: str) -> None:
-        self.open_metadata_screen()
+    def _command_stats(self, arg: str) -> None:
+        self.open_config_screen(initial_tab="stats-tab")
 
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
@@ -478,6 +479,7 @@ class _RuntimeStreamMixin:
         if agent_app is None:
             return self._idea_store.capture(
                 content,
+                project=self._project,
                 source_session_id=self._session_id,
             )
         return agent_app.capture_idea(content)
@@ -485,7 +487,7 @@ class _RuntimeStreamMixin:
     def _list_ideas(self) -> list[Idea]:
         agent_app = self._agent_app
         if agent_app is None:
-            return self._idea_store.list_recent()
+            return self._idea_store.list_for_display(current_project=self._project)
         return agent_app.list_ideas()
 
     def _show_ideas(self) -> None:
@@ -537,16 +539,23 @@ class _RuntimeStreamMixin:
     def _update_idea_and_list(self, index: int, content: str) -> list[Idea]:
         agent_app = self._agent_app
         if agent_app is None:
-            self._idea_store.update_recent(index, content)
-            return self._idea_store.list_recent()
+            self._idea_store.update_displayed(
+                index,
+                content,
+                current_project=self._project,
+            )
+            return self._idea_store.list_for_display(current_project=self._project)
         agent_app.update_idea(index, content)
         return agent_app.list_ideas()
 
     def _delete_idea_and_list(self, index: int) -> list[Idea]:
         agent_app = self._agent_app
         if agent_app is None:
-            self._idea_store.delete_recent(index)
-            return self._idea_store.list_recent()
+            self._idea_store.delete_displayed(
+                index,
+                current_project=self._project,
+            )
+            return self._idea_store.list_for_display(current_project=self._project)
         agent_app.delete_idea(index)
         return agent_app.list_ideas()
 
@@ -554,7 +563,10 @@ class _RuntimeStreamMixin:
         try:
             agent_app = self._agent_app
             if agent_app is None:
-                idea = self._idea_store.delete_recent(index)
+                idea = self._idea_store.delete_displayed(
+                    index,
+                    current_project=self._project,
+                )
             else:
                 idea = agent_app.delete_idea(index)
         except IndexError:
@@ -601,6 +613,7 @@ def _idea_item(index: int, idea: Idea) -> TUIIdeaItem:
             body_lines.append(line)
     return TUIIdeaItem(
         index=index,
+        project_name=idea.project_name,
         created_at=idea.created_at.strftime("%Y-%m-%d %H:%M"),
         title=title,
         body="\n".join(body_lines),
@@ -657,6 +670,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         initial_history: list[LLMMessage] | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        project: ProjectMetadata | None = None,
         idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
@@ -674,6 +688,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             model=self._selected_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            project=project,
             idea_store=idea_store,
             record_events=False,
         )
@@ -687,6 +702,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             session_store=self._session_store(),
             session_recorder=session_recorder,
             session_id=session_id,
+            project=self._project,
             idea_store=self._idea_store,
             trace_ctx=trace_ctx,
             request_meta=self._request_meta,
@@ -782,7 +798,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self) -> None:
+    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
         self.push_screen(
             ConfigScreen(
                 provider_name=self._provider_name,
@@ -793,6 +809,8 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
+                stats_sections=self._metadata_sections(),
+                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -823,10 +841,13 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
+        model_changed = model != self._selected_model
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         self._agent_app.switch_model(self._selected_model)
         self._sync_app_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         self.notify_session(f"Switched model to {self._selected_model}")
 
@@ -888,6 +909,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         initial_history: list[LLMMessage] | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        project: ProjectMetadata | None = None,
         idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
@@ -910,6 +932,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             model=initial_model,
             session_recorder=session_recorder,
             session_id=session_id,
+            project=project,
             idea_store=idea_store,
             record_events=False,
         )
@@ -944,6 +967,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
 
     def apply_config(self, config: AgentAppConfig) -> None:
         next_config = replace_config(config)
+        model_changed = next_config.model != self._selected_model
         self._provider_name = next_config.provider
         self._current_config = next_config
         self._selected_model = next_config.model
@@ -952,6 +976,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._agent_app = None
         self._active_run = None
         self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         if self._initial_question != "":
             self.start_run(self._initial_question)
@@ -990,6 +1016,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             session_store=self._session_store(),
             session_recorder=self._session_recorder,
             session_id=self._session_id,
+            project=self._project,
             idea_store=self._idea_store,
             trace_ctx=self._trace_ctx,
             request_meta=self._request_meta,
@@ -1071,7 +1098,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self) -> None:
+    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
         api_keys: dict[str, str] = {}
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
@@ -1096,6 +1123,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 compress_threshold=self._current_config.compress_threshold
                 if self._current_config is not None
                 else "100%",
+                stats_sections=self._metadata_sections(),
+                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1190,29 +1219,32 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
+        model_changed = model != self._selected_model
         if self._current_config is not None:
-            self._current_config = replace_config(
-                AgentAppConfig(
-                    provider=self._current_config.provider,
-                    api_key=self._current_config.api_key,
-                    model=cast(OpenAIModel, model),
-                    default_model=self._current_config.default_model,
-                    skills=self._current_config.skills,
-                    skill_selection_mode=self._current_config.skill_selection_mode,
-                    enabled_skills=self._current_config.enabled_skills,
-                    api_keys=self._current_config.api_keys,
-                    tool_permissions=self._current_config.tool_permissions,
-                    tool_enabled=self._current_config.tool_enabled,
-                    tool_max_calls=self._current_config.tool_max_calls,
-                    compress_threshold=self._current_config.compress_threshold,
-                )
+            next_config = AgentAppConfig(
+                provider=self._current_config.provider,
+                api_key=self._current_config.api_key,
+                model=cast(OpenAIModel, model),
+                default_model=cast(OpenAIModel, model),
+                skills=self._current_config.skills,
+                skill_selection_mode=self._current_config.skill_selection_mode,
+                enabled_skills=self._current_config.enabled_skills,
+                api_keys=self._current_config.api_keys,
+                tool_permissions=self._current_config.tool_permissions,
+                tool_enabled=self._current_config.tool_enabled,
+                tool_max_calls=self._current_config.tool_max_calls,
+                compress_threshold=self._current_config.compress_threshold,
             )
+            save_config(next_config)
+            self._current_config = next_config
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         if self._agent_app is not None:
             self._agent_app.switch_model(self._selected_model)
             self._sync_app_state()
         self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         self.notify_session(f"Switched model to {self._selected_model}")
 
@@ -1341,6 +1373,7 @@ class AceAILiveTUI(AceAIInteractiveTUI):
         initial_history: list[LLMMessage] | None = None,
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        project: ProjectMetadata | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
@@ -1350,6 +1383,7 @@ class AceAILiveTUI(AceAIInteractiveTUI):
             initial_history=initial_history,
             session_recorder=session_recorder,
             session_id=session_id,
+            project=project,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
         )
@@ -1367,6 +1401,7 @@ def run_interactive_tui(
     initial_history: list[LLMMessage] | None = None,
     session_recorder: SessionRecorder | None = None,
     session_id: str | None = None,
+    project: ProjectMetadata | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
@@ -1376,6 +1411,7 @@ def run_interactive_tui(
         initial_history=initial_history,
         session_recorder=session_recorder,
         session_id=session_id,
+        project=project,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()
@@ -1391,6 +1427,7 @@ def run_configured_tui(
     initial_history: list[LLMMessage] | None = None,
     session_recorder: SessionRecorder | None = None,
     session_id: str | None = None,
+    project: ProjectMetadata | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
@@ -1403,6 +1440,7 @@ def run_configured_tui(
         initial_history=initial_history,
         session_recorder=session_recorder,
         session_id=session_id,
+        project=project,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()
@@ -1416,6 +1454,7 @@ def run_agent_tui(
     initial_history: list[LLMMessage] | None = None,
     session_recorder: SessionRecorder | None = None,
     session_id: str | None = None,
+    project: ProjectMetadata | None = None,
     trace_ctx: Context | None = None,
     request_meta: LLMRequestMeta | None = None,
 ) -> None:
@@ -1426,6 +1465,7 @@ def run_agent_tui(
         initial_history=initial_history,
         session_recorder=session_recorder,
         session_id=session_id,
+        project=project,
         trace_ctx=trace_ctx,
         request_meta=request_meta,
     ).run()

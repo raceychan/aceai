@@ -48,6 +48,15 @@ class CommandInput(TextArea):
         color: #eceff4;
         border: solid #88c0d0;
     }
+
+    CommandInput:focus {
+        background: #3b4252;
+        border: solid #88c0d0;
+    }
+
+    CommandInput .text-area--cursor-line {
+        background: transparent;
+    }
     """
 
     def __init__(self, *, id: str | None = None) -> None:
