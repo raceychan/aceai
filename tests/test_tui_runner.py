@@ -1,5 +1,6 @@
 import asyncio
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from ididi import Graph
@@ -55,7 +56,6 @@ from textual.events import Key
 from textual.widgets import (
     Button,
     Checkbox,
-    DataTable,
     Input,
     RichLog,
     Select,
@@ -63,6 +63,24 @@ from textual.widgets import (
     TabbedContent,
     TextArea,
 )
+
+
+def write_skill(root: Path, name: str, description: str, body: str) -> Path:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: {description}",
+                "---",
+                body,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return skill_dir
 
 
 @pytest.fixture(autouse=True)
@@ -1953,7 +1971,7 @@ async def test_config_screen_apply_restores_masked_api_key() -> None:
 
 
 @pytest.mark.anyio
-async def test_config_screen_uses_model_as_default_model_and_separates_skills() -> None:
+async def test_config_screen_uses_model_as_default_model_and_places_skills_on_tools_tab() -> None:
     skill_item = SkillConfigItem(
         name="developer",
         description=(
@@ -1987,9 +2005,9 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
         _press_config_apply(screen)
 
         assert "default-model" not in screen_ids
-        assert screen.query_one("#api-key", Input).region.y < screen.query_one(
-            "#config-skills-list"
-        ).region.y
+        assert screen.query_one("#config-skills-list") in screen.query_one(
+            "#tool-permissions-tab"
+        ).query("*")
         assert str(screen.query_one("#skill-0", Checkbox).label) == "developer"
         assert (
             "Practical software development workflow"
@@ -2009,11 +2027,156 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
 
 
 @pytest.mark.anyio
+async def test_config_screen_searches_project_skills_and_loads_new_skill_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    release_dir = write_skill(project / "vendor", "release", "Release workflow.", "# Release")
+    review_dir = write_skill(project / "vendor", "review", "Review workflow.", "# Review")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(project)
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=(),
+        skill_selection_mode="selected",
+        enabled_skills=(),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        assert screen.query_one("#search-skills", Button) in screen.query_one(
+            "#tool-permissions-tab"
+        ).query("*")
+
+        assert len(screen.query("#skill-candidate-1")) == 0
+
+        screen.query_one("#search-skills", Button).press()
+        await pilot.pause()
+
+        assert "release" in str(screen.query_one("#skill-candidate-0", Static).render())
+        assert "review" in str(screen.query_one("#skill-candidate-1", Static).render())
+        assert not (project / ".agents" / "skills" / "release").exists()
+        assert not (project / ".agents" / "skills" / "review").exists()
+
+        screen.query_one("#load-skill-0", Button).press()
+        await pilot.pause()
+        assert (project / ".agents" / "skills" / "release").resolve() == release_dir
+        assert str(screen.query_one("#skill-0", Checkbox).label) == "release"
+        assert "review" in str(screen.query_one("#skill-candidate-0", Static).render())
+
+        screen.query_one("#load-skill-0", Button).press()
+        await pilot.pause()
+        assert (project / ".agents" / "skills" / "review").resolve() == review_dir
+        assert str(screen.query_one("#skill-1", Checkbox).label) == "review"
+        assert str(screen.query_one("#skill-candidates-empty", Static).render()) == (
+            "No new skills found"
+        )
+
+        _press_config_apply(screen)
+
+        assert selections[-1].skills == "auto"
+        assert selections[-1].enabled_skills == (
+            "release",
+            "review",
+            "skill-creator",
+        )
+
+
+@pytest.mark.anyio
+async def test_config_screen_search_hides_loaded_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    release_dir = write_skill(project / "vendor", "release", "Release workflow.", "# Release")
+    write_skill(project / "vendor", "review", "Review workflow.", "# Review")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(project)
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=(
+            SkillConfigItem(
+                name="release",
+                description="Release workflow.",
+                location=str(release_dir / "SKILL.md"),
+            ),
+        ),
+        skill_selection_mode="selected",
+        enabled_skills=("release",),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        screen.query_one("#search-skills", Button).press()
+        await pilot.pause()
+
+        assert "review" in str(screen.query_one("#skill-candidate-0", Static).render())
+        assert len(screen.query("#skill-candidate-1")) == 0
+
+
+@pytest.mark.anyio
+async def test_config_screen_reports_skill_search_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(project)
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=(),
+        skill_selection_mode="selected",
+        enabled_skills=(),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        monkeypatch.setattr(
+            "aceai.agent.tui.setup._find_project_skill_dirs",
+            lambda: (_ for _ in ()).throw(OSError("invalid skill path")),
+        )
+        screen.query_one("#search-skills", Button).press()
+        await pilot.pause()
+
+        assert (
+            str(screen.query_one("#skill-search-error", Static).render())
+            == "Skill search failed: invalid skill path"
+        )
+
+
+@pytest.mark.anyio
 async def test_config_screen_checks_builtin_skills_by_default_in_selected_mode() -> None:
     project_skill = SkillConfigItem(
         name="aceai-release",
         description="Release workflow.",
-        location="/project/.agent/skills/aceai-release/SKILL.md",
+        location="/project/.agents/skills/aceai-release/SKILL.md",
     )
     builtin_skill = SkillConfigItem(
         name="skill-creator",

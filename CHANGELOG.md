@@ -1,5 +1,24 @@
 # Changelog
 
+## AceAI v0.2.17
+
+### Features
+
+- `tui`: Move skill selection into the Tools tab and add a project-skill discovery flow that searches the current workspace for new `SKILL.md` files and loads selected candidates on demand.
+
+### Improvements
+
+- `skills`: Change the default project skill directory to `.agents/skills` under the current working directory to align project-level skill links with Codex.
+- `tui`: Hide already loaded skills from the new-skill candidate list and remove the deprecated saved path controls from the configuration screen.
+
+### Fixes
+
+- `tui`: Report invalid or unreadable skill paths as configuration notices instead of crashing when opening the config screen.
+
+### Breaking Changes
+
+- `skills`: Replace the default project auto-scan path `.agent/skills` with `.agents/skills`; project operators must move or link project skills into `.agents/skills` for automatic loading.
+
 ## AceAI v0.2.16
 
 ### Features

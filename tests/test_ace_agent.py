@@ -88,7 +88,7 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = tmp_path / "project"
-    write_skill(project / ".agent" / "skills", "aceai-release", "Release workflow.")
+    write_skill(project / ".agents" / "skills", "aceai-release", "Release workflow.")
     monkeypatch.chdir(project)
 
     agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
@@ -143,7 +143,7 @@ def test_build_ace_agent_keeps_builtin_skills_enabled_in_selected_mode(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = tmp_path / "project"
-    write_skill(project / ".agent" / "skills", "aceai-release", "Release workflow.")
+    write_skill(project / ".agents" / "skills", "aceai-release", "Release workflow.")
     monkeypatch.chdir(project)
 
     agent = build_ace_agent(

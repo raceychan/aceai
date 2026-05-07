@@ -93,7 +93,7 @@ def test_agent_base_auto_loads_global_and_project_skills(
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
-    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(cwd / ".agents" / "skills", "review", "Review workflow.", "# Review")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
 
@@ -118,7 +118,7 @@ def test_agent_base_filters_enabled_skills(
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
-    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(cwd / ".agents" / "skills", "review", "Review workflow.", "# Review")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
 
@@ -148,7 +148,7 @@ def test_agent_base_disable_skill_path_skips_all_skills(
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     write_skill(home / ".aceai" / "skills", "global", "Global skill.", "# Global")
-    write_skill(cwd / ".agent" / "skills", "project", "Project skill.", "# Project")
+    write_skill(cwd / ".agents" / "skills", "project", "Project skill.", "# Project")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
 
@@ -173,7 +173,7 @@ def test_agent_base_explicit_skill_path_skips_project_auto_path(
     cwd = tmp_path / "project"
     explicit = tmp_path / "explicit-skills"
     write_skill(home / ".aceai" / "skills", "global", "Global skill.", "# Global")
-    write_skill(cwd / ".agent" / "skills", "project", "Project skill.", "# Project")
+    write_skill(cwd / ".agents" / "skills", "project", "Project skill.", "# Project")
     write_skill(explicit, "explicit", "Explicit skill.", "# Explicit")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)

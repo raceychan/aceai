@@ -265,7 +265,7 @@ Set `skill_path="disable"` on `Executor` to turn skill loading off completely. T
 When `skill_path="auto"`, AceAI scans:
 
 - `~/.aceai/skills`
-- `.agent/skills` under the current working directory
+- `.agents/skills` under the current working directory
 - built-in AceAI app skills, when the app passes them to `Executor`
 
 When `skill_path` is a path, AceAI scans:
