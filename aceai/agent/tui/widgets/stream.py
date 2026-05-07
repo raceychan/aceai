@@ -16,6 +16,7 @@ from textual.timer import Timer
 from textual.widgets import RichLog
 
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
+from aceai.agent.citations import TurnCitation
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
@@ -25,7 +26,7 @@ SUBTLE_BULLET_STYLE = "bold #9aa3b2"
 REASONING_MARK_STYLE = "bold #d08770"
 EXPAND_MARK_STYLE = "bold #88c0d0"
 TRANSCRIPT_GUTTER = "  "
-EMPTY_STATE_FRAME_SECONDS = 0.2
+EMPTY_STATE_FRAME_SECONDS = 0.45
 EMPTY_STATE_DOG_PIXELS: tuple[tuple[str, ...], ...] = (
     (
         "  oo    oo  ",
@@ -1165,7 +1166,12 @@ def _render_idea_item(item: TUIIdeaItem) -> Panel:
 def _render_event(event: TUIEvent) -> RenderableType | None:
     label = EVENT_LABELS[event.kind]
     if event.kind == "user_message":
-        return _render_user_message(event.content, label=label, event_kind=event.kind)
+        return _render_user_message(
+            event.content,
+            label=label,
+            event_kind=event.kind,
+            citations=event.citations,
+        )
     if event.kind == "session_notice":
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "idea_list":
@@ -1232,14 +1238,37 @@ def _render_user_message(
     *,
     label: str,
     event_kind: TUIEventKind,
-) -> Table:
+    citations: tuple[TurnCitation, ...],
+) -> RenderableType:
     row = Table.grid(expand=True)
     row.add_column(ratio=1, style=PROMPT_BAR_STYLE)
     text = Text()
     text.append("▌ ", style=PROMPT_MARK_STYLE)
     text.append(content, style=PROMPT_BAR_STYLE)
     row.add_row(text, style=PROMPT_BAR_STYLE)
-    return row
+    if not citations:
+        return row
+    return Group(_render_cited_sources(citations), row)
+
+
+def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:
+    lines: list[Text] = []
+    for index, citation in enumerate(citations, start=1):
+        title = Text()
+        title.append(f"[{index}] ", style=SUBTLE_BULLET_STYLE)
+        title.append(citation.label, style="bold #d8dee9")
+        if citation.source != "":
+            title.append(f"  {citation.source}", style="#9aa3b2")
+        body = Text(citation.content, style="#d8dee9")
+        lines.append(title)
+        lines.append(body)
+    return Panel(
+        Group(*lines),
+        title="cited source",
+        title_align="left",
+        border_style="#4c566a",
+        padding=(0, 1),
+    )
 
 
 def _looks_like_markdown(content: str) -> bool:

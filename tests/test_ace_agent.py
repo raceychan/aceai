@@ -5,7 +5,7 @@ import pytest
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
-from aceai.core import ToolExecutionError, ToolExecutor
+from aceai.core import ToolExecutionError, Executor
 from aceai.llm.interface import UNSET, is_present
 
 
@@ -96,9 +96,9 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
     assert agent.default_model == "gpt-5.5"
     assert agent.max_steps is UNSET
     assert ACE_AGENT_SKILL_PATH == "auto"
-    assert isinstance(agent._executor, ToolExecutor)
-    assert agent._hosted_tools[0].provider_name == "openai"
-    assert agent._hosted_tools[0].native_name == "web_search"
+    assert isinstance(agent._executor, Executor)
+    assert agent._executor.hosted_tools[0].provider_name == "openai"
+    assert agent._executor.hosted_tools[0].native_name == "web_search"
     assert set(agent._executor.tools) >= {
         "list_directory",
         "read_text_file",
@@ -113,7 +113,46 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
         "skills_list",
         "skill_view",
     }
-    assert set(agent.skill_registry.skills) == {"aceai-release"}
+    assert "delegate_to_subagent" in agent._executor.tools
+    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
+
+
+def test_build_ace_agent_wires_delegation_tool(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    agent = build_ace_agent(
+        api_key="test-key",
+        model="gpt-5.5",
+    )
+
+    assert "delegate_to_subagent" in agent._executor.tools
+    assert "skill-creator" in agent.skill_registry.skills
+    assert agent._executor.tools["delegate_to_subagent"].metadata.tags == [
+        "agent_app",
+        "delegation",
+    ]
+    assert (
+        "Delegate a bounded, independent task to a subagent"
+        in agent._executor.tools["delegate_to_subagent"].metadata.description
+    )
+
+
+def test_build_ace_agent_keeps_builtin_skills_enabled_in_selected_mode(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    write_skill(project / ".agent" / "skills", "aceai-release", "Release workflow.")
+    monkeypatch.chdir(project)
+
+    agent = build_ace_agent(
+        api_key="test-key",
+        model="gpt-5.5",
+        enabled_skill_names=("aceai-release",),
+    )
+
+    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
 
 
 def test_build_ace_agent_excludes_disabled_app_tools(tmp_path, monkeypatch) -> None:
@@ -142,7 +181,7 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
     )
 
     assert agent.default_model == "deepseek-v4-flash"
-    assert agent._hosted_tools == []
+    assert agent._executor.hosted_tools == []
 
 
 def test_app_file_tool_reports_missing_file_as_tool_execution_error(tmp_path) -> None:

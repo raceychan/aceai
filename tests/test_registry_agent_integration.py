@@ -1,8 +1,8 @@
 import pytest
 from ididi import Graph
 
-from aceai.core.base import AgentBase
-from aceai.core.executor import ToolExecutor
+from aceai.core.agent import Agent
+from aceai.core.executor import Executor
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMStreamEvent, LLMToolCall
 from aceai.core.tools import tool
@@ -24,7 +24,7 @@ class StubLLMService:
             yield event
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 def make_stream(*, response: LLMResponse) -> list[LLMStreamEvent]:
@@ -59,7 +59,7 @@ async def test_registry_tools_injected_by_tag_into_agent_executor(graph: Graph) 
         return message
 
     registry = ToolRegistry(add, echo)
-    executor = ToolExecutor(graph, registry.get_tools("math"))
+    executor = Executor(graph, registry.get_tools("math"))
 
     add_call = LLMToolCall(
         name="add",
@@ -72,13 +72,12 @@ async def test_registry_tools_injected_by_tag_into_agent_executor(graph: Graph) 
             make_stream(response=LLMResponse(text="done")),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=executor,
         max_steps=2,
-        skill_path="disable",
     )
 
     answer = await agent.ask("Need math")

@@ -4,11 +4,10 @@ from msgspec import Struct, field
 
 from aceai.llm.models import LLMToolCall
 
-from .events import AgentEventBuilder
 from .models import AgentStep, ToolApprovalRequest
 from .tools import Tool
 
-AgentRuntimeStatus = Literal["running", "suspended", "completed", "failed"]
+AgentRunStatus = Literal["running", "suspended", "completed", "failed"]
 
 
 class ToolInvocation(Struct, kw_only=True):
@@ -35,14 +34,16 @@ class PendingToolApproval(Struct, kw_only=True):
     step: AgentStep
     invocation: ToolInvocation
     request: ToolApprovalRequest
-    event_builder: AgentEventBuilder
+    run_id: str
+    step_index: int
+    step_id: str
     tool_index: int
 
 
-class AgentRuntimeState(Struct, kw_only=True):
-    """Mutable runtime state for one AgentRuntime."""
+class AgentRunState(Struct, kw_only=True):
+    """Mutable state for one Agent run."""
 
-    status: AgentRuntimeStatus = "running"
+    status: AgentRunStatus = "running"
     tools: ToolRunState = field(default_factory=ToolRunState)
     pending_approval: PendingToolApproval | None = None
 
@@ -52,7 +53,9 @@ class AgentRuntimeState(Struct, kw_only=True):
         step: AgentStep,
         invocation: ToolInvocation,
         request: ToolApprovalRequest,
-        event_builder: AgentEventBuilder,
+        run_id: str,
+        step_index: int,
+        step_id: str,
         tool_index: int,
     ) -> None:
         self.status = "suspended"
@@ -60,7 +63,9 @@ class AgentRuntimeState(Struct, kw_only=True):
             step=step,
             invocation=invocation,
             request=request,
-            event_builder=event_builder,
+            run_id=run_id,
+            step_index=step_index,
+            step_id=step_id,
             tool_index=tool_index,
         )
 

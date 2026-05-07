@@ -2,18 +2,22 @@ import asyncio
 from io import StringIO
 
 import pytest
+from ididi import Graph
 from rich.console import Console
 
-from aceai.core.base import AgentBase
+from aceai.agent.citations import TurnCitation
+from aceai.core.agent import Agent
+from aceai.core.executor import Executor
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.llm import LLMResponse
 from aceai.core.run_state import ToolRunState
+from aceai.core.skills import SkillRegistry
 from aceai.llm.models import LLMToolCall, LLMUsage
 from aceai.llm.models import LLMStreamEvent
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.config import AceAITUIConfig
+from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.config import clear_config, current_config
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
@@ -41,6 +45,7 @@ from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import (
     CommandCompletionWidget,
     CommandInput,
+    CitationPreviewWidget,
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
@@ -73,6 +78,21 @@ def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
 
 
 class StubExecutor:
+    def __init__(self) -> None:
+        self._skill_registry = SkillRegistry()
+
+    @property
+    def prompt_instructions(self) -> str:
+        return ""
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def hosted_tools(self) -> list[object]:
+        return []
+
     def select_tools(
         self,
         include: set[str] | None = None,
@@ -86,6 +106,19 @@ class StubExecutor:
 class ApprovalExecutor:
     def __init__(self) -> None:
         self.calls: list[LLMToolCall] = []
+        self._skill_registry = SkillRegistry()
+
+    @property
+    def prompt_instructions(self) -> str:
+        return ""
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def hosted_tools(self) -> list[object]:
+        return []
 
     def select_tools(
         self,
@@ -193,7 +226,7 @@ async def test_live_tui_streams_agent_events_into_state() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -224,7 +257,7 @@ async def test_interactive_tui_submits_question_from_input(
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -254,6 +287,59 @@ async def test_interactive_tui_submits_question_from_input(
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_start_run_displays_citations_separately(
+    tui_session_store: SessionStore,
+) -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta="answer",
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        app.start_run(
+            "Explain it",
+            citations=(
+                TurnCitation(
+                    label="assistant answer",
+                    content="The job is pending.",
+                    source="session:step-1",
+                ),
+            ),
+        )
+        await pilot.pause(0.1)
+
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == "Explain it"
+        assert visible_user_event.citations[0].content == "The job is pending."
+
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert "<aceai_cited_context>" in user_text
+        assert "<user_request>\nExplain it\n</user_request>" in user_text
+
+        assert app._session_id is not None
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert event_log.events[0].payload["content"] == "Explain it"
+        assert event_log.events[0].payload["citations"][0]["content"] == (
+            "The job is pending."
+        )
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_enter_key_submits_question() -> None:
     llm_service = StubLLMService(
         [
@@ -267,7 +353,7 @@ async def test_interactive_tui_enter_key_submits_question() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -288,7 +374,7 @@ async def test_interactive_tui_enter_key_submits_question() -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_enter_key_completes_then_submits_slash_command() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -315,7 +401,7 @@ async def test_interactive_tui_enter_key_completes_then_submits_slash_command() 
 @pytest.mark.anyio
 async def test_interactive_tui_clear_command_resets_state() -> None:
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -364,7 +450,7 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
             ],
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -411,7 +497,7 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         ],
         gate=gate,
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -476,7 +562,7 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
         ],
         gate=gate,
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -534,7 +620,7 @@ async def test_interactive_tui_steer_cancels_active_run_and_keeps_queue() -> Non
         ],
         gate=gate,
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -577,7 +663,7 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
         ],
         gate=gate,
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -607,7 +693,7 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
 
         assert len(llm_service.calls) == 1
         assert app._active_worker is None
-        assert app._active_runtime is None
+        assert app._active_run is None
         assert app._agent_app.queued_questions == ("Next queued",)
         assert app._state.status == "failed"
         assert app._state.error == "Cancelled current response."
@@ -637,7 +723,7 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
         ]
     )
     executor = ApprovalExecutor()
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -652,8 +738,8 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
 
         assert app._state.status == "suspended"
         assert executor.calls == []
-        assert app._active_runtime is not None
-        assert app._active_runtime.status == "suspended"
+        assert app._active_run is not None
+        assert app._active_run.status == "suspended"
         assert command_input.placeholder == "Choose Approve or Reject"
         status = app.query_one(StatusBarWidget)
         assert "action: choose Approve or Reject" in status.current_text
@@ -699,7 +785,7 @@ async def test_interactive_tui_approves_suspended_tool_with_keyboard() -> None:
         ]
     )
     executor = ApprovalExecutor()
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -749,7 +835,7 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
         ]
     )
     executor = ApprovalExecutor()
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -773,8 +859,8 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
         await pilot.pause(0.1)
 
         assert app._state.status == "suspended"
-        assert app._active_runtime is not None
-        assert app._active_runtime.status == "suspended"
+        assert app._active_run is not None
+        assert app._active_run.status == "suspended"
         assert command_input.placeholder == "Choose Approve or Reject"
         assert executor.calls == [first_call]
         assert not approval.has_class("collapsed")
@@ -791,7 +877,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
         tui_event_to_session_event(TUIEvent.user_message("keep this session"))
     )
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -817,7 +903,7 @@ async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -839,7 +925,7 @@ async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -
 @pytest.mark.anyio
 async def test_interactive_tui_status_bar_shows_selected_model() -> None:
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -900,7 +986,7 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -932,12 +1018,11 @@ async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(tmp_path)
         encoding="utf-8",
     )
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-        skill_path=tmp_path / "skills",
+        executor=Executor(Graph(), [], skill_path=tmp_path / "skills"),
     )
     app = AceAIInteractiveTUI(agent)
 
@@ -969,12 +1054,11 @@ async def test_metadata_screen_scrolls_and_keeps_close_button(tmp_path) -> None:
             encoding="utf-8",
         )
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-        skill_path=skill_root,
+        executor=Executor(Graph(), [], skill_path=skill_root),
     )
     app = AceAIInteractiveTUI(agent)
 
@@ -1002,7 +1086,7 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -1022,7 +1106,7 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_c_key_opens_config_screen() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1039,8 +1123,26 @@ async def test_interactive_tui_c_key_opens_config_screen() -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_i_key_opens_ideas_screen() -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app._show_ideas = lambda: calls.append("ideas")
+
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+
+    assert calls == ["ideas"]
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_config_command_opens_config_screen() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1059,7 +1161,7 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_trajectory_command_opens_trajectory_screen() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1150,7 +1252,7 @@ def test_command_input_tab_does_not_complete_slash_command(monkeypatch) -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_shows_slash_command_completions() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1178,7 +1280,7 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1207,7 +1309,7 @@ async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> No
 
 @pytest.mark.anyio
 async def test_interactive_tui_navigates_slash_command_completion() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1237,7 +1339,7 @@ async def test_interactive_tui_navigates_slash_command_completion() -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1268,7 +1370,7 @@ async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() ->
 @pytest.mark.anyio
 async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> None:
     ideas_path = tmp_path / "ideas.md"
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1290,7 +1392,7 @@ async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> Non
 @pytest.mark.anyio
 async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> None:
     ideas_path = tmp_path / "ideas.md"
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1314,7 +1416,7 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
     idea_store = IdeaStore(ideas_path)
     idea_store.capture("first idea")
     idea_store.capture("second idea")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1339,8 +1441,68 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         await pilot.press("enter")
         await pilot.pause()
 
-        assert command_input.value == "first idea"
+        preview = app.query_one(CitationPreviewWidget)
+        assert command_input.value == ""
+        assert "cited source" in preview.display_text
+        assert "first idea" in preview.display_text
+        assert "1. idea" not in preview.display_text
+        assert "ideas" not in preview.display_text
         assert command_input.has_focus
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    long_content = (
+        "triggered, AceAI should save the selected failed trajectories into memory so "
+        "they can be reviewed or retrieved later with additional implementation detail"
+    )
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture(long_content)
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta="answer",
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        preview = app.query_one(CitationPreviewWidget)
+        assert command_input.value == ""
+        assert "cited source" in preview.display_text
+        assert long_content[:117] in preview.display_text
+        assert long_content not in preview.display_text
+
+        command_input.value = "what should we do?"
+        app.on_input_submitted(Input.Submitted(command_input, command_input.value))
+        await pilot.pause(0.1)
+
+        assert preview.display_text == ""
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == "what should we do?"
+        assert visible_user_event.citations[0].content == long_content
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert long_content in user_text
+        assert "<user_request>\nwhat should we do?\n</user_request>" in user_text
 
 
 @pytest.mark.anyio
@@ -1349,7 +1511,7 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
     idea_store = IdeaStore(ideas_path)
     idea_store.capture("first idea")
     idea_store.capture("second idea")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1386,13 +1548,64 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        add_panel = picker.query_one("#idea-add-panel")
+        assert add_panel.has_class("hidden")
+        assert "Press a to add" in str(picker.query_one("#idea-status", Static).render())
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        add_panel = picker.query_one("#idea-add-panel")
+        assert not add_panel.has_class("hidden")
+        editor = picker.query_one("#idea-add-input", Input)
+        assert editor.has_focus
+        editor.value = "new idea from picker"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        assert picker.query_one("#idea-add-panel").has_class("hidden")
+        idea_list = picker.query_one("#idea-list", IdeaListWidget)
+        assert idea_list.selected_index == 1
+        assert [idea.content for idea in idea_list._ideas] == [
+            "first idea",
+            "new idea from picker",
+        ]
+        assert [idea.content for idea in idea_store.list_recent()] == [
+            "first idea",
+            "new idea from picker",
+        ]
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) -> None:
     ideas_path = tmp_path / "ideas.md"
     idea_store = IdeaStore(ideas_path)
     idea_store.capture("first idea")
     idea_store.capture("second idea")
     idea_store.capture("third idea")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1428,7 +1641,7 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
     idea_store = IdeaStore(ideas_path)
     idea_store.capture("first idea")
     idea_store.capture("second idea")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1457,7 +1670,7 @@ async def test_interactive_tui_update_command_runs_upgrade_and_restarts(monkeypa
         "restart_current_process",
         lambda: restart_calls.append("restart"),
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1489,7 +1702,7 @@ async def test_interactive_tui_update_command_reports_upgrade_failure(monkeypatc
         "restart_current_process",
         lambda: restart_calls.append("restart"),
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1518,7 +1731,7 @@ async def test_interactive_tui_automatically_reports_available_update(monkeypatc
         )
 
     monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1545,7 +1758,7 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
         )
 
     monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1576,7 +1789,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monk
         return None
 
     monkeypatch.setattr(agent_app_module, "check_for_updates", no_update)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1593,7 +1806,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monk
 
 @pytest.mark.anyio
 async def test_interactive_tui_stats_command_opens_metadata() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
@@ -1620,7 +1833,7 @@ async def test_interactive_tui_unknown_slash_input_runs_as_question() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -1646,7 +1859,7 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
             ),
         ]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]
@@ -1793,6 +2006,48 @@ async def test_config_screen_uses_model_as_default_model_and_separates_skills() 
                 enabled_skills=("developer",),
             )
         ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_checks_builtin_skills_by_default_in_selected_mode() -> None:
+    project_skill = SkillConfigItem(
+        name="aceai-release",
+        description="Release workflow.",
+        location="/project/.agent/skills/aceai-release/SKILL.md",
+    )
+    builtin_skill = SkillConfigItem(
+        name="skill-creator",
+        description="Create and improve skills.",
+        location="/aceai/agent/builtin_skills/skill-creator/SKILL.md",
+        builtin=True,
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        skill_items=(project_skill, builtin_skill),
+        skill_selection_mode="selected",
+        enabled_skills=("aceai-release",),
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+
+        assert screen.query_one("#skill-0", Checkbox).value is True
+        assert screen.query_one("#skill-1", Checkbox).value is True
+
+        _press_config_apply(screen)
+
+        assert selections[-1].enabled_skills == ("aceai-release", "skill-creator")
 
 
 @pytest.mark.anyio
@@ -2020,6 +2275,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
         skill_items=(skill_item,),
         skill_selection_mode="all",
         enabled_skills=(),
+        compress_threshold="80%",
     )
 
     async with AceAITUI([]).run_test() as pilot:
@@ -2032,6 +2288,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
 
         screen.dismiss = dismiss
         screen.query_one("#skill-0", Checkbox).value = False
+        screen.query_one("#compress-threshold", Input).value = "75%"
         _press_config_apply(screen)
 
         assert selections[-1] == ConfigSelection(
@@ -2042,6 +2299,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
             skills="auto",
             skill_selection_mode="selected",
             enabled_skills=(),
+            compress_threshold="75%",
         )
 
 
@@ -2162,7 +2420,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
     tmp_path,
     monkeypatch,
 ) -> None:
-    calls: list[AceAITUIConfig] = []
+    calls: list[AgentAppConfig] = []
     llm_service = StubLLMService(
         [
             LLMStreamEvent(
@@ -2172,9 +2430,9 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         ]
     )
 
-    def agent_factory(config: AceAITUIConfig) -> AgentBase:
+    def agent_factory(config: AgentAppConfig) -> Agent:
         calls.append(config)
-        return AgentBase(
+        return Agent(
             prompt="Prompt",
             default_model=config.model,
             llm_service=llm_service,  # type: ignore[arg-type]
@@ -2185,7 +2443,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
     monkeypatch.chdir(tmp_path)
     app = AceAIConfiguredTUI(
         agent_factory,
-        initial_config=AceAITUIConfig(
+        initial_config=AgentAppConfig(
             provider="openai",
             api_key="openai-key",
             model="gpt-5.5",
@@ -2208,7 +2466,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
                 enabled_skills=(),
             )
         )
-        expected_config = AceAITUIConfig(
+        expected_config = AgentAppConfig(
             provider="deepseek",
             api_key="deepseek-key",
             model="deepseek-v4-flash",
@@ -2247,7 +2505,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         SessionState(selected_provider="openai", selected_model="gpt-5.5"),
     )
     llm_service = StubLLMService([])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,  # type: ignore[arg-type]

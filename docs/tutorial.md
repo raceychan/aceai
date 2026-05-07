@@ -36,14 +36,14 @@ def build_llm(api_key: str) -> LLMService:
 ## 3) Build the agent
 
 ```python
-from aceai import AgentBase, Graph, ToolExecutor
+from aceai import Agent, Graph, Executor
 
 
-def build_agent(api_key: str) -> AgentBase:
+def build_agent(api_key: str) -> Agent:
     graph = Graph()
     llm_service = build_llm(api_key)
-    executor = ToolExecutor(graph=graph, tools=[add])
-    return AgentBase(
+    executor = Executor(graph=graph, tools=[add])
+    return Agent(
         sys_prompt="You are a strict calculator. Use tools when needed.",
         default_model="gpt-4o-mini",
         llm_service=llm_service,
@@ -70,4 +70,4 @@ asyncio.run(main())
 ## 5) Next steps
 - Add more tools and annotate every parameter with `spec(...)`.
 - Move deterministic steps into a workflow that calls `LLMService` directly.
-- Pass a tracer to `ToolExecutor` or `AgentBase` to capture spans.
+- Pass a tracer to `Executor` or `Agent` to capture spans.

@@ -1,6 +1,6 @@
 import pytest
 
-from aceai.agent.config import AceAITUIConfig, clear_config, save_config
+from aceai.agent.config import AgentAppConfig, clear_config, save_config
 from aceai.agent.tui import cli
 
 
@@ -37,8 +37,29 @@ def isolated_cli_config(tmp_path, monkeypatch):
 
 
 def install_tui_extra_stub(monkeypatch) -> None:
+    def run_configured_tui(
+        agent_factory,
+        *,
+        initial_config,
+        initial_events,
+        initial_history,
+        session_recorder,
+        session_id,
+        **kwargs,
+    ):
+        if initial_config is None:
+            return
+        agent = agent_factory(initial_config)
+        cli.run_interactive_tui(
+            agent,
+            initial_events=initial_events,
+            initial_history=initial_history,
+            session_recorder=session_recorder,
+            session_id=session_id,
+        )
+
     monkeypatch.setattr(cli, "require_tui_extra", lambda: None)
-    monkeypatch.setattr(cli, "run_configured_tui", None)
+    monkeypatch.setattr(cli, "run_configured_tui", run_configured_tui)
 
 
 def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
@@ -64,13 +85,13 @@ def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
 def test_cli_rejects_direct_question_without_creating_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
-    def build_default_agent(*, api_key, model, **kwargs):
-        calls.append(("build", (api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.api_key, config.model)))
         return StubAgent()
 
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(
         cli,
         "load_session_context",
@@ -87,8 +108,8 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, **kwargs):
-        calls.append(("build", (api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.api_key, config.model)))
         return agent
 
     def run_interactive_tui(received_agent, **kwargs):
@@ -97,7 +118,7 @@ def test_cli_without_question_runs_interactive_tui(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setenv("ACEAI_MODEL", "gpt-4o-mini")
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main([])
@@ -123,8 +144,8 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
-        calls.append(("build", (provider, api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.provider, config.api_key, config.model)))
         return agent
 
     def run_interactive_tui(received_agent, **kwargs):
@@ -134,7 +155,7 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "key")
     monkeypatch.delenv("ACEAI_MODEL", raising=False)
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main([])
@@ -146,8 +167,8 @@ def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> 
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
-        calls.append(("build", (provider, api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.provider, config.api_key, config.model)))
         return agent
 
     def run_interactive_tui(received_agent, **kwargs):
@@ -158,7 +179,7 @@ def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
     monkeypatch.delenv("ACEAI_MODEL", raising=False)
     save_config(
-        AceAITUIConfig(
+        AgentAppConfig(
             provider="openai",
             api_key="project-key",
             model="gpt-4o-mini",
@@ -166,7 +187,7 @@ def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> 
         )
     )
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main([])
@@ -178,8 +199,8 @@ def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, provider="openai", **kwargs):
-        calls.append(("build", (provider, api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.provider, config.api_key, config.model)))
         return agent
 
     def run_interactive_tui(received_agent, **kwargs):
@@ -189,7 +210,7 @@ def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
     monkeypatch.setenv("ACEAI_PROVIDER", "deepseek")
     monkeypatch.delenv("ACEAI_MODEL", raising=False)
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(
         cli,
         "load_session_context",
@@ -249,28 +270,55 @@ def test_cli_without_config_opens_provider_setup_tui(monkeypatch) -> None:
     }
 
 
-def test_build_default_agent_uses_main_ace_agent(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
+def test_build_agent_uses_main_ace_agent(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
     agent = StubAgent()
 
     def build_ace_agent(*, api_key, model, **kwargs):
-        calls.append((api_key, model))
+        calls.append({"api_key": api_key, "model": model, **kwargs})
         return agent
 
     monkeypatch.setattr(cli, "build_ace_agent", build_ace_agent)
 
-    result = cli.build_default_agent(api_key="key", model="gpt-5.5")
+    result = cli.build_agent(
+        AgentAppConfig(
+            provider="openai",
+            api_key="key",
+            model="gpt-4o-mini",
+            default_model="gpt-5.5",
+            skills="disable",
+            skill_selection_mode="selected",
+            enabled_skills=["review"],
+            api_keys={"openai": "key"},
+            tool_permissions={"read_text_file": "ask"},
+            tool_enabled={"run_shell_command": False},
+            tool_max_calls={"search_text": 2},
+            compress_threshold="80%",
+        )
+    )
 
     assert result is agent
-    assert calls == [("key", "gpt-5.5")]
+    assert calls == [
+        {
+            "api_key": "key",
+            "model": "gpt-5.5",
+            "provider_name": "openai",
+            "skill_path": "disable",
+            "enabled_skill_names": ("review",),
+            "tool_permissions": {"read_text_file": "ask"},
+            "tool_enabled": {"run_shell_command": False},
+            "tool_max_calls": {"search_text": 2},
+            "compress_threshold": "80%",
+        }
+    ]
 
 
 def test_cli_resume_loads_existing_session(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
-    def build_default_agent(*, api_key, model, **kwargs):
-        calls.append(("build", (api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.api_key, config.model)))
         return agent
 
     def load_session_context(*, session_id):
@@ -282,7 +330,7 @@ def test_cli_resume_loads_existing_session(monkeypatch) -> None:
 
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(cli, "load_session_context", load_session_context)
     recorder = StubRecorder()
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
@@ -319,8 +367,8 @@ def test_cli_resume_without_session_id_loads_latest_updated_session(monkeypatch)
 
             return [LatestMetadata()]
 
-    def build_default_agent(*, api_key, model, **kwargs):
-        calls.append(("build", (api_key, model)))
+    def build_agent(config):
+        calls.append(("build", (config.api_key, config.model)))
         return agent
 
     def load_session_context(*, session_id):
@@ -333,7 +381,7 @@ def test_cli_resume_without_session_id_loads_latest_updated_session(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     install_tui_extra_stub(monkeypatch)
     monkeypatch.setattr(cli, "SessionStore", StubStore)
-    monkeypatch.setattr(cli, "build_default_agent", build_default_agent)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
     monkeypatch.setattr(cli, "load_session_context", load_session_context)
     recorder = StubRecorder()
     monkeypatch.setattr(cli, "SessionRecorder", lambda store, session_id: recorder)
@@ -386,7 +434,7 @@ def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys)
 
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     install_tui_extra_stub(monkeypatch)
-    monkeypatch.setattr(cli, "build_default_agent", lambda *, api_key, model, **kwargs: agent)
+    monkeypatch.setattr(cli, "build_agent", lambda config: agent)
     monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
 
     cli.main([])

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from ididi import Graph
 
-from aceai.core import AgentBase, ToolExecutor
+from aceai.core import Agent, Executor
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMMessage, LLMStreamEvent, LLMToolCall
 
@@ -62,7 +62,7 @@ class StubSkillSelectingLLMService:
         raise AssertionError("Unexpected extra LLM call")
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 def write_skill(root: Path) -> Path:
@@ -91,13 +91,12 @@ async def test_agent_loads_skill_after_model_requests_skill_view(
     skills_root = tmp_path / "skills"
     write_skill(skills_root)
     llm_service = StubSkillSelectingLLMService()
-    executor = ToolExecutor(Graph(), [])
-    agent = AgentBase(
+    executor = Executor(Graph(), [], skill_path=skills_root)
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
         executor=executor,
-        skill_path=skills_root,
         max_steps=2,
     )
 

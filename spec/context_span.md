@@ -10,9 +10,9 @@
 根因主要有两类：
 
 1. **没有显式建立 parent context**
-   - `AgentBase._run_step()` 里用 `start_span()` 创建了 `agent.step`，但没有把它设置为 current span，也没有把它的 context 传给下游。
+   - `Agent._run_step()` 里用 `start_span()` 创建了 `agent.step`，但没有把它设置为 current span，也没有把它的 context 传给下游。
    - `LLMService.stream()` 内部同样 `start_span()`，在没有 parent context 的情况下也会变成 root span。
-   - `ToolExecutor.execute_tool()` 使用 `start_as_current_span()`，但如果上游没有 current span（或没有显式传 parent context），也会变成 root span。
+   - `Executor.execute()` 使用 `start_as_current_span()`，但如果上游没有 current span（或没有显式传 parent context），也会变成 root span。
 
 2. **async generator 的 `yield` 会跨越 span/context manager 生命周期**
    - `with tracer.start_as_current_span(...): async for ...: yield ...` 的模式会让 “span 的进入/退出” 与 “generator 的消费/中断” 交织。
@@ -29,7 +29,7 @@
 
 核心思路：**在每一层创建 span 时，都显式指定 parent context（而不是依赖 implicit current span）**。
 
-### 1) 在 `AgentBase.run()` 建立会话级 root span（可选但推荐）
+### 1) 在 `Agent.run()` 建立会话级 root span（可选但推荐）
 
 - 在 `run()` 一开始创建 `agent.run`（或类似命名）作为本次对话的 root span。
 - 从该 span 派生出 `run_ctx`（一个 OTEL `Context`），后续所有 step 都使用它作为 parent。
@@ -45,11 +45,11 @@
 - 用 `start_span("agent.step", context=run_ctx)` 创建 step span（只创建，不设置 current）。
 - 用 `set_span_in_context(step_span, run_ctx)` 生成 `step_ctx`。
 - 调用 `llm_service.stream(..., parent_context=step_ctx)`（或通过 request metadata 传递）。
-- 工具执行 `executor.execute_tool(..., parent_context=step_ctx)`。
+- 工具执行 `executor.execute(..., parent_context=step_ctx)`。
 
 注意：`agent.step` 的 `span.end()` 放在 generator 的 `finally`，确保无论消费方是否中断都能结束 span（但不要在整个 generator 期间把它设为 current）。
 
-### 3) 在 `LLMService.stream()` / `ToolExecutor.execute_tool()` 使用 `context=parent_ctx`
+### 3) 在 `LLMService.stream()` / `Executor.execute()` 使用 `context=parent_ctx`
 
 两个原则：
 
@@ -75,7 +75,7 @@ def stream(..., parent_context):
 工具同理：
 
 ```python
-async def execute_tool(..., parent_context):
+async def execute(..., parent_context):
     with tracer.start_as_current_span(f"tool.{name}", context=parent_context, ...):
         ...
 ```
@@ -103,23 +103,23 @@ with tracer.start_as_current_span("agent.step"):
 
 ## 最小改动落地点（对应当前框架结构）
 
-- `AgentBase.run()`：可选新增 `agent.run` root span，并生成 `run_ctx`
-- `AgentBase._run_step()`：`agent.step` 用 `context=run_ctx` 创建，并生成 `step_ctx`；将 `step_ctx` 显式传入：
+- `Agent.run()`：可选新增 `agent.run` root span，并生成 `run_ctx`
+- `Agent._run_step()`：`agent.step` 用 `context=run_ctx` 创建，并生成 `step_ctx`；将 `step_ctx` 显式传入：
   - `llm_service.stream(..., parent_context=step_ctx)`
-  - `executor.execute_tool(..., parent_context=step_ctx)`
+  - `executor.execute(..., parent_context=step_ctx)`
 - `LLMService.stream()`：创建 `llm.stream` 时传 `context=parent_context`
-- `ToolExecutor.execute_tool()`：创建 `tool.*` 时传 `context=parent_context`
+- `Executor.execute()`：创建 `tool.*` 时传 `context=parent_context`
 
 这套策略的目标不是“把 span 设成 current 一直保持”，而是确保 **每个 span 都用同一个 parent context 链接起来**，从而在 Langfuse / OTEL Trace 里稳定落在同一条 trace 下，并避免 async generator 的 `Failed to detach context`。
 
 ## TODO（可执行清单）
 
-- [x] 在 `AgentBase.run()` 增加 `agent.run` span，并生成/保存 `run_ctx`
-- [x] 在 `AgentBase._run_step()` 用 `context=run_ctx` 创建 `agent.step`，并生成 `step_ctx = set_span_in_context(step_span, run_ctx)`
+- [x] 在 `Agent.run()` 增加 `agent.run` span，并生成/保存 `run_ctx`
+- [x] 在 `Agent._run_step()` 用 `context=run_ctx` 创建 `agent.step`，并生成 `step_ctx = set_span_in_context(step_span, run_ctx)`
 - [x] 调整 `agent.step` 生命周期：覆盖 LLM + tool 执行，避免“父 span 先结束、子 span 后发生”的时间轴错位
 - [x] 扩展 `ILLMService.stream()`/`LLMService.stream()` 签名：显式接收 `parent_context`（或等价结构）并用于创建 `llm.stream`（`context=parent_context`）
-- [x] 扩展 `ToolExecutor.execute_tool()` 签名：显式接收 `parent_context` 并用于创建 `tool.*`（`context=parent_context`）
-- [x] 在 `_run_step()` 里把同一个 `step_ctx` 传入 `llm_service.stream(..., parent_context=step_ctx)` 与 `executor.execute_tool(..., parent_context=step_ctx)`，确保它们成为 `agent.step` 的子 span
+- [x] 扩展 `Executor.execute()` 签名：显式接收 `parent_context` 并用于创建 `tool.*`（`context=parent_context`）
+- [x] 在 `_run_step()` 里把同一个 `step_ctx` 传入 `llm_service.stream(..., parent_context=step_ctx)` 与 `executor.execute(..., parent_context=step_ctx)`，确保它们成为 `agent.step` 的子 span
 - [x] 严格禁止在 async generator 中用“大 `with start_as_current_span(...)` 包住 `yield`”的写法；如需 current span，只包住短小的同步片段
 - [ ] 若引入 threadpool / `run_in_executor`：在工作线程入口显式 attach `parent_context`，线程退出时在同一线程 detach（成对）
 - [x] 增加单测：断言一次 `run()` 内 `agent.run -> agent.step -> (llm.stream + tool.*)` 的 parent/trace 关系正确（不再出现多个 root span）

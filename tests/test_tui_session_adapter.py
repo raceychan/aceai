@@ -1,3 +1,4 @@
+from aceai.agent.citations import TurnCitation
 from aceai.agent.session import EventLog, SessionEvent
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
@@ -35,6 +36,63 @@ def test_tui_event_to_session_event_keeps_storage_fields() -> None:
                     "total_tokens": 3,
                 },
         },
+    )
+
+
+def test_tui_event_to_session_event_preserves_user_citations() -> None:
+    event = TUIEvent.user_message(
+        "Explain it",
+        citations=(
+            TurnCitation(
+                label="assistant answer",
+                content="The job is pending.",
+                source="session:step-1",
+            ),
+        ),
+    )
+
+    session_event = tui_event_to_session_event(event)
+
+    assert session_event.payload == {
+        "content": "Explain it",
+        "citations": [
+            {
+                "label": "assistant answer",
+                "content": "The job is pending.",
+                "source": "session:step-1",
+            }
+        ],
+    }
+
+
+def test_event_log_to_tui_events_restores_user_citations() -> None:
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(
+                    kind="user_message",
+                    payload={
+                        "content": "Explain it",
+                        "citations": [
+                            {
+                                "label": "assistant answer",
+                                "content": "The job is pending.",
+                                "source": "session:step-1",
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+    )
+
+    assert events[0].content == "Explain it"
+    assert events[0].citations == (
+        TurnCitation(
+            label="assistant answer",
+            content="The job is pending.",
+            source="session:step-1",
+        ),
     )
 
 

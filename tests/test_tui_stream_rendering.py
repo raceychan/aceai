@@ -8,6 +8,7 @@ from textual.events import Click
 from textual.strip import Strip
 
 from aceai.agent.session import EventLog, SessionEvent
+from aceai.agent.citations import TurnCitation
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
     LLMReasoningSegmentMeta,
@@ -143,6 +144,37 @@ def test_user_messages_render_right_aligned() -> None:
     text = message.columns[0]._cells[0]
     assert isinstance(text, Text)
     assert text.plain == "▌ Where am I?"
+
+
+def test_user_message_citations_render_as_separate_source_block() -> None:
+    renderables = _render_events(
+        [
+            TUIEvent.user_message(
+                "Explain it",
+                citations=(
+                    TurnCitation(
+                        label="assistant answer",
+                        source="session:step-1",
+                        content="The job is pending.",
+                    ),
+                ),
+            )
+        ]
+    )
+
+    group = renderables[0]
+    assert isinstance(group, Group)
+    source = group.renderables[0]
+    question = group.renderables[1]
+    assert isinstance(source, Panel)
+    assert source.title == "cited source"
+    assert "assistant answer" in source.renderable.renderables[0].plain
+    assert "session:step-1" in source.renderable.renderables[0].plain
+    assert source.renderable.renderables[1].plain == "The job is pending."
+    assert isinstance(question, Table)
+    question_text = question.columns[0]._cells[0]
+    assert isinstance(question_text, Text)
+    assert question_text.plain == "▌ Explain it"
 
 
 def test_user_messages_after_answers_get_turn_spacing() -> None:

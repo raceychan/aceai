@@ -60,7 +60,7 @@ def fetch(
 ```
 
 ## OpenTelemetry tracing
-AceAI emits spans around agent steps, tool calls, and LLM calls. Configure OpenTelemetry however you want, then pass a tracer to `LLMService`, `ToolExecutor`, or `AgentBase`.
+AceAI emits spans around agent steps, tool calls, and LLM calls. Configure OpenTelemetry however you want, then pass a tracer to `LLMService`, `Executor`, or `Agent`.
 
 ```python
 from opentelemetry import trace

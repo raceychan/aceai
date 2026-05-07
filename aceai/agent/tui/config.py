@@ -7,7 +7,6 @@ from aceai.agent.config import (
     OPENAI_MODEL_OPTIONS as OPENAI_MODEL_OPTIONS,
     STALE_DEFAULT_OPENAI_MODELS as STALE_DEFAULT_OPENAI_MODELS,
     SUPPORTED_OPENAI_MODELS as SUPPORTED_OPENAI_MODELS,
-    AceAITUIConfig as AceAITUIConfig,
     AgentAppConfig as AgentAppConfig,
     ConfigField as ConfigField,
     ConfigSchema as ConfigSchema,

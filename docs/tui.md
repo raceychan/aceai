@@ -118,7 +118,7 @@ Use redundant signals so the UI does not rely on color alone.
 ## Implementation Path
 
 1. Event completeness:
-   Add `LLMToolCallDeltaEvent`, emit it from `AgentBase._call_llm()`, and test
+   Add `LLMToolCallDeltaEvent`, emit it from `Agent._call_llm()`, and test
    streamed tool-call arguments. This is implemented.
 
 2. Reasoning exposure:
@@ -138,7 +138,7 @@ Use redundant signals so the UI does not rely on color alone.
    ```
 
 5. Live agent runner:
-   Add `aceai/agent/tui/runner.py` to bridge `AgentBase.run()` into the Textual app,
+   Add `aceai/agent/tui/runner.py` to bridge `Agent.run()` into the Textual app,
    then wire cancellation and command handling. The live runner bridge is
    available as `aceai.agent.tui.runner.run_agent_tui`.
 

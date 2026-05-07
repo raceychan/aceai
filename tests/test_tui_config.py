@@ -1,5 +1,5 @@
 from aceai.agent.config import (
-    AceAITUIConfig,
+    AgentAppConfig,
     LEGACY_AGENT_SKILLS_DIR,
     clear_config,
     config_schema,
@@ -28,11 +28,12 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["tool_permissions"].value_type == "mapping"
     assert fields["tool_enabled"].value_type == "mapping"
     assert fields["tool_max_calls"].value_type == "mapping"
+    assert fields["compress_threshold"].value_type == "string"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-4o-mini",
@@ -40,6 +41,7 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         tool_permissions={"run_shell_command": "ask"},
         tool_enabled={"read_text_file": False},
         tool_max_calls={"search_text": 4},
+        compress_threshold="80%",
     )
 
     save_config(config, path)
@@ -60,7 +62,7 @@ def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -
     global_path.parent.mkdir(parents=True)
     project_path.parent.mkdir(parents=True)
     save_config(
-        AceAITUIConfig(
+        AgentAppConfig(
             provider="openai",
             api_key="global",
             model="gpt-4o-mini",
@@ -68,7 +70,7 @@ def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -
         ),
         global_path,
     )
-    project_config = AceAITUIConfig(
+    project_config = AgentAppConfig(
         provider="openai",
         api_key="project",
         model="gpt-5.5",
@@ -86,7 +88,7 @@ def test_load_config_falls_back_to_global_config(tmp_path, monkeypatch) -> None:
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
     global_path = tmp_path / "home" / ".aceai" / "config.yaml"
-    global_config = AceAITUIConfig(
+    global_config = AgentAppConfig(
         provider="openai",
         api_key="global",
         model="gpt-4o-mini",
@@ -100,7 +102,7 @@ def test_load_config_falls_back_to_global_config(tmp_path, monkeypatch) -> None:
 
 def test_save_config_defaults_to_project_config(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",
@@ -117,13 +119,13 @@ def test_save_config_defaults_to_project_config(tmp_path, monkeypatch) -> None:
 
 def test_save_config_replaces_config_without_backup_files(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    first = AceAITUIConfig(
+    first = AgentAppConfig(
         provider="openai",
         api_key="first",
         model="gpt-4o-mini",
         api_keys={"openai": "first"},
     )
-    second = AceAITUIConfig(
+    second = AgentAppConfig(
         provider="openai",
         api_key="second",
         model="gpt-5.5",
@@ -142,13 +144,13 @@ def test_save_config_replaces_config_without_backup_files(tmp_path) -> None:
 
 
 def test_replace_config_uses_single_active_config_object() -> None:
-    first = AceAITUIConfig(
+    first = AgentAppConfig(
         provider="openai",
         api_key="first",
         model="gpt-5.5",
         api_keys={"openai": "first"},
     )
-    second = AceAITUIConfig(
+    second = AgentAppConfig(
         provider="openai",
         api_key="second",
         model="gpt-4o",
@@ -174,7 +176,7 @@ def test_load_config_migrates_stale_default_model(tmp_path) -> None:
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",
@@ -184,7 +186,7 @@ def test_load_config_migrates_stale_default_model(tmp_path) -> None:
 
 def test_load_config_preserves_versioned_gpt51_selection(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.1",
@@ -199,7 +201,7 @@ def test_load_config_preserves_versioned_gpt51_selection(tmp_path) -> None:
 
 def test_save_and_load_deepseek_config_round_trips(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="deepseek",
         api_key="secret",
         model="deepseek-v4-pro",
@@ -222,7 +224,7 @@ def test_load_config_uses_provider_default_when_model_is_missing(tmp_path) -> No
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="deepseek",
         api_key="secret",
         model="deepseek-v4-pro",
@@ -246,7 +248,7 @@ def test_load_config_replaces_legacy_builtin_skill_path_with_auto(tmp_path) -> N
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",
@@ -311,3 +313,41 @@ def test_load_config_rejects_invalid_tool_max_calls(tmp_path) -> None:
         assert str(exc) == "AceAI config tool_max_calls values must be positive"
     else:
         raise AssertionError("load_config accepted non-positive tool max calls")
+
+
+def test_load_config_rejects_invalid_compress_threshold(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 3\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "compress_threshold: 101%\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_config(path)
+    except ValueError as exc:
+        assert str(exc) == "compress_threshold must be a percentage from 0% to 100%"
+    else:
+        raise AssertionError("load_config accepted invalid compress threshold")
+
+
+def test_load_config_accepts_numeric_compress_threshold(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 3\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "compress_threshold: 2048\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_config(path)
+
+    assert loaded is not None
+    assert loaded.compress_threshold == 2048

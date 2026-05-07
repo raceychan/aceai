@@ -10,7 +10,7 @@ Every tool parameter must use `typing.Annotated` with `spec(...)`. Missing annot
 `complete_json` requires the first message to be a system message and validates output strictly with msgspec. If the model keeps returning invalid JSON, the call will fail.
 
 ## Where do I configure tracing?
-Use OpenTelemetry directly. Configure a `TracerProvider` and exporter, then pass a tracer to `LLMService`, `ToolExecutor`, or `AgentBase`.
+Use OpenTelemetry directly. Configure a `TracerProvider` and exporter, then pass a tracer to `LLMService`, `Executor`, or `Agent`.
 
 ## Does AceAI catch tool exceptions?
 No. Tool exceptions are allowed to surface so failures are visible.

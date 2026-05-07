@@ -14,9 +14,9 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from aceai import AgentBase, Graph, LLMService, Tool, spec, tool
+from aceai import Agent, Graph, LLMService, Tool, spec, tool
 from aceai.llm.errors import AceAIValidationError
-from aceai.core.executor import ToolExecutor
+from aceai.core.executor import Executor
 from aceai.llm.openai import OpenAI
 from terminal_ui import run_agent_with_terminal_ui
 
@@ -222,7 +222,7 @@ def build_agent(
     model: str,
     openai_api_key: str,
     tracer: trace.Tracer,
-) -> AgentBase:
+) -> Agent:
     graph = Graph()
 
     llm_service = LLMService(
@@ -234,9 +234,9 @@ def build_agent(
         ],
         timeout_seconds=120,
     )
-    executor = ToolExecutor(graph=graph, tools=tools, tracer=tracer)
+    executor = Executor(graph=graph, tools=tools, tracer=tracer)
 
-    return AgentBase(
+    return Agent(
         prompt=prompt,
         default_model=model,
         llm_service=llm_service,

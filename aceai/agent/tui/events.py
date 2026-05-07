@@ -36,6 +36,7 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import ToolExecutionResult
+from aceai.agent.citations import TurnCitation, citations_from_payload
 from aceai.agent.cost import CostEstimate, estimate_usage_cost
 from aceai.agent.session import EventLog, SessionEvent
 
@@ -93,15 +94,22 @@ class TUIEvent(Record, kw_only=True):
     cost: CostEstimate | None = None
     error: str | None = None
     idea_items: list[TUIIdeaItem] = field(default_factory=list[TUIIdeaItem])
+    citations: tuple[TurnCitation, ...] = ()
 
     @classmethod
-    def user_message(cls, question: str) -> Self:
+    def user_message(
+        cls,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> Self:
         return cls(
             kind="user_message",
             step_index=-1,
             step_id=uuid_str(),
             title="you",
             content=question,
+            citations=citations,
             raw_event=None,
         )
 
@@ -146,7 +154,10 @@ class TUIEvent(Record, kw_only=True):
     @classmethod
     def from_session_event(cls, event: SessionEvent) -> "TUIEvent | None":
         if event.kind == "user_message":
-            return cls.user_message(event.payload["content"])
+            citations: tuple[TurnCitation, ...] = ()
+            if "citations" in event.payload:
+                citations = citations_from_payload(event.payload["citations"])
+            return cls.user_message(event.payload["content"], citations=citations)
         if event.kind == "assistant_message":
             return cls._from_session_assistant_event(event)
         if event.kind == "assistant_tool_call":

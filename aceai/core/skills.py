@@ -148,11 +148,17 @@ class SkillLoader:
         cls,
         skill_path: str | Path | Literal["auto", "disable"],
         loader_factory: Callable[[str], "SkillLoader"] | None = None,
+        extra_skill_paths: tuple[Path, ...] = (),
     ) -> "SkillRegistry":
         registry = SkillRegistry()
+        if skill_path == "disable":
+            return registry
         for path in cls.resolve_paths(skill_path):
             loader = cls(str(path)) if loader_factory is None else loader_factory(str(path))
             registry.register(*loader.load_skills().get_skills())
+        for path in extra_skill_paths:
+            loader = cls(str(path)) if loader_factory is None else loader_factory(str(path))
+            registry.register_missing(*loader.load_skills().get_skills())
         return registry
 
     def load_skills(self) -> "SkillRegistry":
@@ -187,6 +193,12 @@ class SkillRegistry:
         for skill in skills:
             if skill.name in self._skills:
                 raise DuplicateSkillError(f"Skill {skill.name!r} is duplicated")
+            self._skills[skill.name] = skill
+
+    def register_missing(self, *skills: Skill) -> None:
+        for skill in skills:
+            if skill.name in self._skills:
+                continue
             self._skills[skill.name] = skill
 
     def load_dir(self, path: Path) -> None:

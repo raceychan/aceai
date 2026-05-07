@@ -60,8 +60,8 @@ An agent is a workflow where the LLM decides whether to call tools at each step.
 
 To build an agent you wire three pieces:
 - `LLMService` to talk to providers
-- `ToolExecutor` to decode and run tools
-- `AgentBase` to manage the step loop
+- `Executor` to decode and run tools
+- `Agent` to manage the step loop
 
 ### Hybrid
-A common production shape is hybrid: do deterministic steps in a workflow, then delegate open-ended reasoning and tool use to `AgentBase`. Subclassing `AgentBase` is a clean way to add product-specific behavior while keeping the core loop intact.
+A common production shape is hybrid: do deterministic steps in a workflow, then delegate open-ended reasoning and tool use to `Agent`. Subclassing `Agent` is a clean way to add product-specific behavior while keeping the core loop intact.

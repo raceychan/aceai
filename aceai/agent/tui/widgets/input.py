@@ -7,6 +7,8 @@ from textual.events import Click, Key
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
+from aceai.agent.citations import TurnCitation
+
 
 @dataclass(frozen=True)
 class CommandCompletionItem:
@@ -234,6 +236,62 @@ def _queued_button_label(index: int, question: str) -> str:
     if len(first_line) > 96:
         first_line = f"{first_line[:93]}..."
     return f"{index + 1}. {first_line}"
+
+
+class CitationPreviewWidget(Static):
+    """Read-only cited source preview shown above the input box."""
+
+    DEFAULT_CSS = """
+    CitationPreviewWidget {
+        height: auto;
+        max-height: 5;
+        padding: 0 1;
+        background: #2e3440;
+        color: #d8dee9;
+        border-top: solid #4c566a;
+        border-bottom: none;
+    }
+
+    CitationPreviewWidget.hidden {
+        display: none;
+    }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._citations: tuple[TurnCitation, ...] = ()
+        self.display_text = ""
+        self.display = False
+
+    def set_citations(self, citations: tuple[TurnCitation, ...]) -> None:
+        self._citations = citations
+        if not citations:
+            self.display = False
+            self.add_class("hidden")
+            self.display_text = ""
+            self.update("")
+            return
+        self.display = True
+        self.remove_class("hidden")
+        self.display_text = "\n".join(
+            ["cited source"]
+            + [
+                _citation_preview_label(citation)
+                for citation in citations
+            ]
+        )
+        self.update(self.display_text)
+
+    @property
+    def renderable(self) -> str:
+        return self.display_text
+
+
+def _citation_preview_label(citation: TurnCitation) -> str:
+    first_line = citation.content.splitlines()[0] if citation.content.splitlines() else ""
+    if len(first_line) > 120:
+        first_line = f"{first_line[:117]}..."
+    return first_line
 
 
 def _is_slash_command_selection(value: str) -> bool:

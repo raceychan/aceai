@@ -48,7 +48,7 @@ from aceai.llm.openai import OpenAI
 If you want to build your own agent with tools, use the core APIs:
 
 ```python
-from aceai import AgentBase, ToolExecutor, spec, tool
+from aceai import Agent, Executor, spec, tool
 ```
 
 If you just want to use AceAI as an app, do not import anything; run the CLI:
@@ -73,8 +73,8 @@ from typing import Annotated
 from msgspec import Struct, field
 from openai import AsyncOpenAI
 
-from aceai import AgentBase, Graph, LLMService, spec, tool
-from aceai.executor import ToolExecutor
+from aceai import Agent, Graph, LLMService, spec, tool
+from aceai import Executor
 from aceai.llm.openai import OpenAI
 
 
@@ -96,8 +96,8 @@ def build_agent(api_key: str):
         default_meta={"model": "gpt-4o-mini"},
     )
     llm_service = LLMService(providers=[provider], timeout_seconds=60)
-    executor = ToolExecutor(graph=graph, tools=[lookup_order])
-    return AgentBase(
+    executor = Executor(graph=graph, tools=[lookup_order])
+    return Agent(
         sys_prompt="You are a logistics assistant.",
         default_model="gpt-4o-mini",
         llm_service=llm_service,
@@ -106,7 +106,7 @@ def build_agent(api_key: str):
     )
 ```
 
-Plug your own loop/UI into `AgentBase`. See `examples/logistics_agent_demo.py` for a multi-tool async workflow.
+Plug your own loop/UI into `Agent`. See `examples/logistics_agent_demo.py` for a multi-tool async workflow.
 
 ## Concepts: workflow / agent / hybrid
 
@@ -169,8 +169,8 @@ An agent is a workflow where the *LLM* owns the control flow: at each step it de
 
 In AceAI, building an agent is wiring three pieces:
 - `LLMService`: talks to a concrete LLM provider (complete/stream/complete_json).
-- `ToolExecutor`: strictly decodes explicit tool args, resolves DI, runs the tools you pass in, and encodes returns back to strings.
-- `AgentBase`: runs the multi-step loop, maintains message history, orchestrates tool calls, and emits events.
+- `Executor`: strictly decodes explicit tool args, resolves DI, runs the tools you pass in, and encodes returns back to strings.
+- `Agent`: runs the multi-step loop, maintains message history, orchestrates tool calls, and emits events.
 
 Example: a minimal agent (one `add` tool).
 
@@ -179,8 +179,8 @@ from typing import Annotated
 
 from openai import AsyncOpenAI
 
-from aceai import AgentBase, Graph, LLMService, spec, tool
-from aceai.executor import ToolExecutor
+from aceai import Agent, Graph, LLMService, spec, tool
+from aceai import Executor
 from aceai.llm.openai import OpenAI
 
 
@@ -192,7 +192,7 @@ def add(
     return a + b
 
 
-def build_agent(api_key: str) -> AgentBase:
+def build_agent(api_key: str) -> Agent:
     graph = Graph()
     llm = LLMService(
         providers=[
@@ -203,8 +203,8 @@ def build_agent(api_key: str) -> AgentBase:
         ],
         timeout_seconds=60,
     )
-    executor = ToolExecutor(graph=graph, tools=[add])
-    return AgentBase(
+    executor = Executor(graph=graph, tools=[add])
+    return Agent(
         sys_prompt="You are a strict calculator. Use tools when needed.",
         default_model="gpt-4o-mini",
         llm_service=llm,
@@ -243,31 +243,40 @@ Follow the release checklist in `references/checklist.md` when the user asks to 
 
 AceAI loads only skill metadata at agent startup. The full instruction body and supporting files are loaded later through tools, so large skill packages do not all enter the context window up front.
 
-`AgentBase` accepts:
+Configure skills on `Executor`, then pass that executor into `Agent`:
 
 ```python
-agent = AgentBase(
+executor = Executor(
+    graph=graph,
+    tools=[],
+    skill_path="auto",
+)
+
+agent = Agent(
     prompt="You are a release assistant.",
     default_model="gpt-4o-mini",
     llm_service=llm,
     executor=executor,
-    skill_path="auto",
 )
 ```
 
-Set `skill_path="disable"` to turn skill loading off completely. This skips both global and project skills and does not register `skills_list` or `skill_view`.
+Set `skill_path="disable"` on `Executor` to turn skill loading off completely. This skips both global and project skills and does not register `skills_list` or `skill_view`.
 
 When `skill_path="auto"`, AceAI scans:
 
 - `~/.aceai/skills`
 - `.agent/skills` under the current working directory
+- built-in AceAI app skills, when the app passes them to `Executor`
 
 When `skill_path` is a path, AceAI scans:
 
 - `~/.aceai/skills`
 - the provided path
+- built-in AceAI app skills, when the app passes them to `Executor`
 
-For every loaded skill, AceAI injects a compact `<available_skills>` block into the system prompt and registers two skill tools on `ToolExecutor`:
+The AceAI app ships with a built-in `$skill-creator` skill vendored from Anthropic's public Agent Skills repository. It is loaded by default for `build_ace_agent(...)`; use `skill_path="disable"` to turn off all skills, including built-ins.
+
+For every loaded skill, AceAI injects a compact `<available_skills>` block into the system prompt and registers two skill tools on `Executor`:
 
 - `skills_list`: list known skills and their metadata.
 - `skill_view`: load a skill's full instructions, or load a supporting file inside that skill directory.
@@ -282,14 +291,14 @@ The expected flow is progressive disclosure:
 Users can also mention a skill explicitly with `$skill_name`; the mention is visible to the model and should make selection unambiguous.
 
 ### Hybrid
-The most common production shape is hybrid: keep the deterministic parts as a workflow (call `LLMService` directly; `complete_json` is great for strict I/O), and delegate open-ended reasoning + tool use to `AgentBase`.
+The most common production shape is hybrid: keep the deterministic parts as a workflow (call `LLMService` directly; `complete_json` is great for strict I/O), and delegate open-ended reasoning + tool use to `Agent`.
 
-A simple approach is to subclass `AgentBase`, add helper methods that call `LLMService` for pre/post-processing, then hand off to `super().ask(...)`:
+A simple approach is to subclass `Agent`, add helper methods that call `LLMService` for pre/post-processing, then hand off to `super().ask(...)`:
 
 ```python
 from msgspec import Struct
 
-from aceai.core import AgentBase
+from aceai.core import Agent
 from aceai.llm import LLMMessage
 
 
@@ -297,7 +306,7 @@ class Route(Struct):
     department: str
 
 
-class RoutedAgent(AgentBase):
+class RoutedAgent(Agent):
     async def classify(self, question: str) -> Route:
         return await self.llm_service.complete_json(
             schema=Route,
@@ -344,7 +353,7 @@ def search_text(
 
 The Python default still applies for direct calls, but an OpenAI tool call must include `path`. If a parameter has a default that the model should use when the user does not specify a value, say that in the parameter description.
 
-AceAI does not ship filesystem or shell tools by default. If your agent should read files, edit files, search text, or run commands, define those tools in the calling application and pass them explicitly to `ToolExecutor`. This keeps OS permissions, path policy, sandboxing, and audit rules in the application boundary rather than the framework.
+AceAI does not ship filesystem or shell tools by default. If your agent should read files, edit files, search text, or run commands, define those tools in the calling application and pass them explicitly to `Executor`. This keeps OS permissions, path policy, sandboxing, and audit rules in the application boundary rather than the framework.
 
 ### Strict decoding & auto JSON encoding
 msgspec Struct validation enforces input types; return values are auto JSON-encoded (works for Struct/dict/primitive). LLM tool arguments are decoded into the right shapes, and outputs are encoded back to strings.
@@ -458,8 +467,8 @@ trace.set_tracer_provider(otel_provider)
 tracer = trace.get_tracer("aceai-app")
 
 llm_service = LLMService(providers=[provider], timeout_seconds=60)
-executor = ToolExecutor(graph=graph, tools=[greet], tracer=tracer)
-agent = AgentBase(..., tracer=tracer)
+executor = Executor(graph=graph, tools=[greet], tracer=tracer)
+agent = Agent(..., tracer=tracer)
 ```
 
 #### Example: configure via env vars
@@ -521,7 +530,7 @@ An agent run completes when the model returns a step with **no tool calls**; tha
   return User(id=1)
   ```
 
-- **Tracing**: AceAI emits OpenTelemetry spans; configure `TracerProvider`/exporter natively (no AceAI wrapper), then pass a `tracer=...` into `LLMService`/`ToolExecutor`/`AgentBase`.
+- **Tracing**: AceAI emits OpenTelemetry spans; configure `TracerProvider`/exporter natively (no AceAI wrapper), then pass a `tracer=...` into `LLMService`/`Executor`/`Agent`.
 
 - **Failure policy**: fail fast; no implicit retries for tools. LLM retries are up to you.
 - **OpenAI dependency**: only needed if you use the OpenAI provider or `examples/logistics_agent_demo.py`; importing that provider without the SDK will raise a missing dependency error.
@@ -602,15 +611,15 @@ class MyProvider(LLMProviderBase):
 Then inject it exactly like the built-in OpenAI adapter:
 
 ```python
-from aceai import AgentBase, Graph, LLMService
-from aceai.core import ToolExecutor
+from aceai import Agent, Graph, LLMService
+from aceai.core import Executor
 
 
 provider = MyProvider(client=MyVendorClient(api_key="..."), default_model="vendor-large")
 llm = LLMService(providers=[provider], timeout_seconds=60)
-executor = ToolExecutor(graph=Graph(), tools=[])
+executor = Executor(graph=Graph(), tools=[])
 
-agent = AgentBase(
+agent = Agent(
     prompt="You are a helpful assistant.",
     default_model="vendor-large",
     llm_service=llm,
@@ -620,34 +629,34 @@ agent = AgentBase(
 
 For agent/tool support, the provider also needs to map vendor tool calls into `LLMToolCall` and return them on `LLMResponse.tool_calls`. If your vendor expects a different tool schema envelope, implement a provider-specific `IToolSpec` renderer and attach it with `@tool(spec_cls=...)`; see the custom tool spec section below.
 
-### Custom agent (subclass `AgentBase`)
-In real products, the core reasoning loop is rarely the whole story: you often need to inject request metadata (tenant/user ids, model selection), enforce guardrails, integrate with your UI/event system, or standardize defaults across calls. Subclassing `AgentBase` lets you wrap those concerns around the existing streaming + tool-execution loop without re-implementing it; `AgentBase` already owns message assembly, step bookkeeping, and calling into `LLMService` and the `ToolExecutor`, so delegating to `super()` keeps the behavior consistent while you add your glue. This is usually the best place to customize because it keeps product policy at the boundary and leaves your tools/providers reusable and easy to test.
+### Custom agent (subclass `Agent`)
+In real products, the core reasoning loop is rarely the whole story: you often need to inject request metadata (tenant/user ids, model selection), enforce guardrails, integrate with your UI/event system, or standardize defaults across calls. Subclassing `Agent` lets you wrap those concerns around the existing streaming + tool-execution loop without re-implementing it; `Agent` already owns message assembly, step bookkeeping, and calling into `LLMService` and the `Executor`, so delegating to `super()` keeps the behavior consistent while you add your glue. This is usually the best place to customize because it keeps product policy at the boundary and leaves your tools/providers reusable and easy to test.
 
 ```python
-from aceai.core import AgentBase
+from aceai.core import Agent
 from aceai.llm.models import LLMRequestMeta
 from typing import Unpack
 
-class MyAgent(AgentBase):
+class MyAgent(Agent):
     async def ask(self, question: str, **request_meta: Unpack[LLMRequestMeta]) -> str:
         # e.g., enforce defaults / attach metadata for every request
         request_meta.setdefault("model", self.default_model)
         return await super().ask(question, **request_meta)
 ```
 
-### Custom executor (subclass `ToolExecutor`)
-Tool calls are a natural choke point for governance: you may want to enforce an allowlist, apply rate limits, add audits, or redact arguments before storing them. Subclass `ToolExecutor` and override `execute_tool` to add pre/post hooks, then delegate to `super().execute_tool` so you still benefit from AceAI’s standard argument decoding, dependency resolution, and return encoding. Centralizing policies here is typically better than sprinkling checks across tools because it keeps tools small and makes rules consistent across the entire tool surface.
+### Custom executor (subclass `Executor`)
+Tool calls are a natural choke point for governance: you may want to enforce an allowlist, apply rate limits, add audits, or redact arguments before storing them. Subclass `Executor` and override `execute` to add pre/post hooks, then delegate to `super().execute` so you still benefit from AceAI’s standard argument decoding, dependency resolution, and return encoding. Centralizing policies here is typically better than sprinkling checks across tools because it keeps tools small and makes rules consistent across the entire tool surface.
 
 ```python
-from aceai.executor import ToolExecutor
+from aceai import Executor
 from aceai.llm.errors import AceAIValidationError
 
-class AuditedExecutor(ToolExecutor):
-    async def execute_tool(self, tool_call):
+class AuditedExecutor(Executor):
+    async def execute(self, invocation, *, tool_state):
         # pre-hook (e.g., allowlist)
-        if tool_call.name not in {"lookup_order", "create_order"}:
-            raise AceAIValidationError(f"Tool not allowed: {tool_call.name}")
-        result = await super().execute_tool(tool_call)
+        if invocation.call.name not in {"lookup_order", "create_order"}:
+            raise AceAIValidationError(f"Tool not allowed: {invocation.call.name}")
+        result = await super().execute(invocation, tool_state=tool_state)
         # post-hook (e.g., audit log / metrics)
         return result
 ```
