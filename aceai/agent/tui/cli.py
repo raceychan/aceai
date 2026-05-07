@@ -17,6 +17,7 @@ from aceai.agent.provider_catalog import (
     supported_provider_names,
 )
 from aceai.core import AgentBase
+from aceai.core.context_manager import CompressThreshold
 from aceai.llm.interface import UNSET
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
@@ -87,6 +88,7 @@ def build_default_agent(
     tool_permissions: dict[str, ToolPermission] | None = None,
     tool_enabled: dict[str, bool] | None = None,
     tool_max_calls: dict[str, int] | None = None,
+    compress_threshold: CompressThreshold = "100%",
 ) -> AgentBase:
     agent_model = model if default_model is None else default_model
     skill_path = skills if skills is not None else None
@@ -104,6 +106,7 @@ def build_default_agent(
                 tool_permissions=tool_permissions,
                 tool_enabled=tool_enabled,
                 tool_max_calls=tool_max_calls,
+                compress_threshold=compress_threshold,
             )
         return build_ace_agent(
             api_key=api_key,
@@ -113,6 +116,7 @@ def build_default_agent(
             tool_permissions=tool_permissions,
             tool_enabled=tool_enabled,
             tool_max_calls=tool_max_calls,
+            compress_threshold=compress_threshold,
         )
     if skill_path is None:
         return build_ace_agent(
@@ -123,6 +127,7 @@ def build_default_agent(
             tool_permissions=tool_permissions,
             tool_enabled=tool_enabled,
             tool_max_calls=tool_max_calls,
+            compress_threshold=compress_threshold,
         )
     return build_ace_agent(
         api_key=api_key,
@@ -133,6 +138,7 @@ def build_default_agent(
         tool_permissions=tool_permissions,
         tool_enabled=tool_enabled,
         tool_max_calls=tool_max_calls,
+        compress_threshold=compress_threshold,
     )
 
 
@@ -150,6 +156,7 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
             tool_permissions=config.tool_permissions,
             tool_enabled=config.tool_enabled,
             tool_max_calls=config.tool_max_calls,
+            compress_threshold=config.compress_threshold,
         )
     return build_default_agent(
         api_key=config.api_key,
@@ -162,6 +169,7 @@ def build_agent_from_config(config: AceAITUIConfig) -> AgentBase:
         tool_permissions=config.tool_permissions,
         tool_enabled=config.tool_enabled,
         tool_max_calls=config.tool_max_calls,
+        compress_threshold=config.compress_threshold,
     )
 
 
@@ -201,6 +209,7 @@ def resolve_initial_config(
                     tool_permissions=stored.tool_permissions,
                     tool_enabled=stored.tool_enabled,
                     tool_max_calls=stored.tool_max_calls,
+                    compress_threshold=stored.compress_threshold,
                 )
             )
         return stored
@@ -222,6 +231,7 @@ def resolve_initial_config(
                 tool_permissions={},
                 tool_enabled={},
                 tool_max_calls={},
+                compress_threshold="100%",
             )
         )
     return None
@@ -253,6 +263,7 @@ def apply_session_state_to_initial_config(
                 tool_permissions=config.tool_permissions,
                 tool_enabled=config.tool_enabled,
                 tool_max_calls=config.tool_max_calls,
+                compress_threshold=config.compress_threshold,
             )
         )
     if config is not None and provider in config.api_keys:
@@ -269,6 +280,7 @@ def apply_session_state_to_initial_config(
                 tool_permissions=config.tool_permissions,
                 tool_enabled=config.tool_enabled,
                 tool_max_calls=config.tool_max_calls,
+                compress_threshold=config.compress_threshold,
             )
         )
     env_name = api_key_env(provider)
@@ -292,6 +304,9 @@ def apply_session_state_to_initial_config(
                 tool_permissions=config.tool_permissions if config is not None else {},
                 tool_enabled=config.tool_enabled if config is not None else {},
                 tool_max_calls=config.tool_max_calls if config is not None else {},
+                compress_threshold=config.compress_threshold
+                if config is not None
+                else "100%",
             )
         )
     return config

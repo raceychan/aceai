@@ -28,6 +28,7 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["tool_permissions"].value_type == "mapping"
     assert fields["tool_enabled"].value_type == "mapping"
     assert fields["tool_max_calls"].value_type == "mapping"
+    assert fields["compress_threshold"].value_type == "string"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
@@ -40,6 +41,7 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         tool_permissions={"run_shell_command": "ask"},
         tool_enabled={"read_text_file": False},
         tool_max_calls={"search_text": 4},
+        compress_threshold="80%",
     )
 
     save_config(config, path)
@@ -311,3 +313,41 @@ def test_load_config_rejects_invalid_tool_max_calls(tmp_path) -> None:
         assert str(exc) == "AceAI config tool_max_calls values must be positive"
     else:
         raise AssertionError("load_config accepted non-positive tool max calls")
+
+
+def test_load_config_rejects_invalid_compress_threshold(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 3\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "compress_threshold: 101%\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_config(path)
+    except ValueError as exc:
+        assert str(exc) == "compress_threshold must be a percentage from 0% to 100%"
+    else:
+        raise AssertionError("load_config accepted invalid compress threshold")
+
+
+def test_load_config_accepts_numeric_compress_threshold(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "config_version: 3\n"
+        "provider: openai\n"
+        "api_keys:\n"
+        "  openai: secret\n"
+        "model: gpt-5.5\n"
+        "compress_threshold: 2048\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_config(path)
+
+    assert loaded is not None
+    assert loaded.compress_threshold == 2048

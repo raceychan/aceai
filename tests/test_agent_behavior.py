@@ -148,6 +148,22 @@ class SimpleLLMService:
         raise AssertionError("AgentBase should not call complete() in streaming mode")
 
 
+class CompressingLLMService:
+    def __init__(self, stream_events: list[LLMStreamEvent]) -> None:
+        self._stream_events = list(stream_events)
+        self.complete_calls: list[dict] = []
+        self.stream_calls: list[dict] = []
+
+    async def stream(self, **request):
+        self.stream_calls.append(request)
+        for event in self._stream_events:
+            yield event
+
+    async def complete(self, **request) -> LLMResponse:
+        self.complete_calls.append(request)
+        return LLMResponse(text="Earlier discussion summary.")
+
+
 def make_stream(
     *,
     response: LLMResponse,
@@ -172,6 +188,39 @@ def make_stream(
 
 async def collect_events(agent: AgentBase, question: str) -> list[AgentEvent]:
     return [event async for event in agent.run(question)]
+
+
+@pytest.mark.anyio
+async def test_agent_compresses_resume_history_before_llm_call() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(10)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert len(llm_service.complete_calls) == 1
+    messages = llm_service.stream_calls[0]["messages"]
+    assert messages[0].role == "system"
+    assert messages[1].role == "system"
+    assert "<aceai_context_summary>" in messages[1].content[0]["data"]
+    assert "Earlier discussion summary." in messages[1].content[0]["data"]
+    assert messages[-1].content[0]["data"] == "new question"
+    assert "history message 0" not in "\n".join(
+        message.content[0]["data"] for message in messages
+    )
 
 
 @pytest.mark.anyio

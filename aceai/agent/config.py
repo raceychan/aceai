@@ -16,6 +16,7 @@ from aceai.agent.provider_catalog import (
 )
 from aceai.agent.permissions import ToolPermission
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
+from aceai.core.context_manager import CompressThreshold, ContextCompressionPolicy
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
@@ -56,6 +57,7 @@ class AgentAppConfig(Record, kw_only=True):
     )
     tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
+    compress_threshold: CompressThreshold = "100%"
 
 
 AceAITUIConfig = AgentAppConfig
@@ -129,6 +131,12 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             required=True,
             description="Per-tool maximum call count. Missing tools are unlimited.",
         ),
+        ConfigField(
+            name="compress_threshold",
+            value_type="string",
+            required=True,
+            description="Context compression threshold as a percentage or token count.",
+        ),
     ),
 )
 
@@ -196,6 +204,7 @@ def validate_config(config: AgentAppConfig) -> None:
             raise TypeError("AceAI config tool_max_calls values must be int")
         if max_calls < 1:
             raise ValueError("AceAI config tool_max_calls values must be positive")
+    ContextCompressionPolicy(config.compress_threshold)
 
 
 def default_config_path() -> Path:
@@ -245,6 +254,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
     tool_permissions = _load_tool_permissions(data)
     tool_enabled = _load_tool_enabled(data)
     tool_max_calls = _load_tool_max_calls(data)
+    compress_threshold = _load_compress_threshold(data)
     if legacy_skill_path:
         skill_selection_mode = "all"
         enabled_skills = []
@@ -279,6 +289,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
             tool_permissions=tool_permissions,
             tool_enabled=tool_enabled,
             tool_max_calls=tool_max_calls,
+            compress_threshold=compress_threshold,
         )
     )
 
@@ -301,6 +312,7 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
             "tool_permissions": config.tool_permissions,
             "tool_enabled": config.tool_enabled,
             "tool_max_calls": config.tool_max_calls,
+            "compress_threshold": config.compress_threshold,
         },
         sort_keys=False,
     )
@@ -399,3 +411,19 @@ def _load_tool_max_calls(data: dict[object, object]) -> dict[str, int]:
             raise ValueError("AceAI config tool_max_calls values must be positive")
         max_calls_by_tool[tool_name] = max_calls
     return max_calls_by_tool
+
+
+def _load_compress_threshold(data: dict[object, object]) -> CompressThreshold:
+    if "compress_threshold" not in data:
+        return "100%"
+    threshold = data["compress_threshold"]
+    if type(threshold) is str:
+        ContextCompressionPolicy(threshold)
+        return threshold
+    if type(threshold) is int:
+        ContextCompressionPolicy(threshold)
+        return threshold
+    if type(threshold) is float:
+        ContextCompressionPolicy(threshold)
+        return threshold
+    raise TypeError("AceAI config compress_threshold must be str, int, or float")

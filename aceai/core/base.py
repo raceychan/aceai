@@ -29,7 +29,7 @@ from .skills import (
     format_skills_for_prompt,
 )
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
-from .context_manager import ContextManager
+from .context_manager import CompressThreshold, ContextCompressionPolicy, ContextManager
 from .events import (
     AgentEvent,
     AgentEventBuilder,
@@ -60,9 +60,13 @@ class AgentRuntime:
         max_steps_label: str | int = "unlimited",
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta,
+        compression_policy: ContextCompressionPolicy | None = None,
     ) -> None:
         self.question = question
-        self.context = ContextManager(prompt)
+        self.context = ContextManager(
+            prompt,
+            compression_policy=compression_policy,
+        )
         self.context.init_context(messages)
         self.llm_service = llm_service
         self.executor = executor
@@ -94,6 +98,7 @@ class AgentRuntime:
         tracer: trace.Tracer,
         trace_ctx: Context | None,
         request_meta: LLMRequestMeta,
+        compression_policy: ContextCompressionPolicy | None,
     ) -> "AgentRuntime":
         return cls(
             question=question,
@@ -107,6 +112,7 @@ class AgentRuntime:
             tracer=tracer,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
+            compression_policy=compression_policy,
         )
 
     @classmethod
@@ -124,6 +130,7 @@ class AgentRuntime:
         tracer: trace.Tracer,
         trace_ctx: Context | None,
         request_meta: LLMRequestMeta,
+        compression_policy: ContextCompressionPolicy | None,
     ) -> "AgentRuntime":
         return cls(
             question=question,
@@ -137,6 +144,7 @@ class AgentRuntime:
             tracer=tracer,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
+            compression_policy=compression_policy,
         )
 
     async def _call_llm(
@@ -150,15 +158,17 @@ class AgentRuntime:
             tools.extend(executor.select_tools())
         tools.extend(self.hosted_tools)
 
+        messages = await self.context.prepare_for_llm(llm_service=self.llm_service)
+
         if tools:
             stream = self.llm_service.stream(
-                messages=self.context.context,
+                messages=messages,
                 tools=tools,
                 metadata=self.request_meta,
             )
         else:
             stream = self.llm_service.stream(
-                messages=self.context.context,
+                messages=messages,
                 metadata=self.request_meta,
             )
 
@@ -580,6 +590,8 @@ class AgentBase:
         enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
         skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
         hosted_tools: list[LLMHostedToolSpec] | None = None,
+        compress_threshold: CompressThreshold = "100%",
+        context_window_tokens: int = 128000,
     ):
         if is_set(max_steps) and max_steps < 1:
             raise AceAIConfigurationError("max_steps must be positive or UNSET")
@@ -596,6 +608,10 @@ class AgentBase:
         self._ctx_mgr: ContextManager = ContextManager(prompt + skill_prompt)
         self._executor = executor
         self._hosted_tools = hosted_tools if hosted_tools is not None else []
+        self._compression_policy = ContextCompressionPolicy(
+            compress_threshold,
+            context_window_tokens=context_window_tokens,
+        )
         if isinstance(executor, ToolExecutor) and self._skill_registry.get_skills():
             executor.register_tools(*self._skill_registry.as_tools())
         self._max_steps = max_steps
@@ -656,6 +672,7 @@ class AgentBase:
             tracer=self._tracer,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
+            compression_policy=self._compression_policy,
         )
 
     def create_resume_run(
@@ -677,6 +694,7 @@ class AgentBase:
             tracer=self._tracer,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
+            compression_policy=self._compression_policy,
         )
 
     async def run(

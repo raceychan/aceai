@@ -5,6 +5,7 @@ from ididi import Graph
 from openai import AsyncOpenAI
 
 from aceai.core import AgentBase, ToolExecutor
+from aceai.core.context_manager import CompressThreshold
 from aceai.llm.interface import UNSET, Unset
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
@@ -45,6 +46,7 @@ def build_ace_agent(
     tool_permissions: dict[str, ToolPermission] | None = None,
     tool_enabled: dict[str, bool] | None = None,
     tool_max_calls: dict[str, int] | None = None,
+    compress_threshold: CompressThreshold = "100%",
 ) -> AgentBase:
     if provider_name == "openai":
         provider = OpenAI(
@@ -81,4 +83,5 @@ def build_ace_agent(
         skill_path=skill_path,
         enabled_skill_names=enabled_skill_names,
         hosted_tools=selected_hosted_tools,
+        compress_threshold=compress_threshold,
     )

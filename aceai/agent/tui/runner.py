@@ -1029,6 +1029,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 else (),
                 tool_permission_items=self._available_tool_permission_items(),
                 api_keys=api_keys,
+                compress_threshold=self._current_config.compress_threshold
+                if self._current_config is not None
+                else "100%",
             ),
             self._handle_config_selection,
         )
@@ -1063,6 +1066,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                         tool_permissions=selection.tool_permissions,
                         tool_enabled=selection.tool_enabled,
                         tool_max_calls=selection.tool_max_calls,
+                        compress_threshold=selection.compress_threshold,
                     )
                 )
                 self.notify_session(
@@ -1100,6 +1104,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 tool_permissions=selection.tool_permissions,
                 tool_enabled=selection.tool_enabled,
                 tool_max_calls=selection.tool_max_calls,
+                compress_threshold=selection.compress_threshold,
             )
         )
         self.notify_session(
@@ -1135,6 +1140,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     tool_permissions=self._current_config.tool_permissions,
                     tool_enabled=self._current_config.tool_enabled,
                     tool_max_calls=self._current_config.tool_max_calls,
+                    compress_threshold=self._current_config.compress_threshold,
                 )
             )
         self._selected_model = cast(OpenAIModel, model)

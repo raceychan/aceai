@@ -2032,6 +2032,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
 
         screen.dismiss = dismiss
         screen.query_one("#skill-0", Checkbox).value = False
+        screen.query_one("#compress-threshold", Input).value = "75%"
         _press_config_apply(screen)
 
         assert selections[-1] == ConfigSelection(
@@ -2042,6 +2043,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
             skills="auto",
             skill_selection_mode="selected",
             enabled_skills=(),
+            compress_threshold="75%",
         )
 
 

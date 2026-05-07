@@ -36,6 +36,7 @@ from aceai.agent.provider_catalog import (
 )
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
 from aceai.agent.config import config_schema
+from aceai.core.context_manager import CompressThreshold, ContextCompressionPolicy
 from aceai.agent.permissions import TOOL_PERMISSION_OPTIONS, ToolPermission
 from aceai.agent.session import SessionMetadata, SessionStore
 from aceai.core.skills import SkillLoader, SkillRegistry
@@ -61,6 +62,7 @@ class ConfigSelection(Record, kw_only=True):
     )
     tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
+    compress_threshold: CompressThreshold = "100%"
 
 
 class SkillConfigItem(Record, kw_only=True):
@@ -127,6 +129,25 @@ def _api_key_value_from_input(value: str, api_key: str) -> str:
     if value == _masked_api_key(api_key):
         return api_key
     return value
+
+
+def _compress_threshold_input_value(value: CompressThreshold) -> str:
+    return f"{value}"
+
+
+def _compress_threshold_from_input(value: str) -> CompressThreshold:
+    if value.endswith("%"):
+        ContextCompressionPolicy(value)
+        return value
+    if value.count(".") == 1:
+        threshold = float(value)
+        ContextCompressionPolicy(threshold)
+        return threshold
+    if value.isdecimal():
+        threshold = int(value)
+        ContextCompressionPolicy(threshold)
+        return threshold
+    raise ValueError("compress_threshold must be a percentage, ratio, or token count")
 
 
 def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
@@ -330,6 +351,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
             skill_selection_mode="selected",
             enabled_skills=list(enabled_skills),
             api_keys={provider: api_key},
+            compress_threshold="100%",
         )
         persist = self.query_one("#persist", Checkbox).value
         if persist:
@@ -649,6 +671,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         skill_selection_mode: str = "all",
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
+        compress_threshold: CompressThreshold = "100%",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -671,6 +694,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             for item in tool_permission_items
             if item.max_calls_per_run is not None
         }
+        self._compress_threshold = compress_threshold
         self._sync_tool_order()
         self._api_keys = api_keys
         self._provider_highlight = _highlight_for_value(
@@ -718,6 +742,14 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                                 self._model_highlight,
                             ),
                             id="model-options",
+                        )
+                        yield Label(_field_label("compress_threshold"))
+                        yield Input(
+                            value=_compress_threshold_input_value(
+                                self._compress_threshold
+                            ),
+                            placeholder="80%",
+                            id="compress-threshold",
                         )
                         yield Label(_field_label("api_key"))
                         yield Input(
@@ -918,6 +950,9 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             return
         try:
             self._sync_tool_settings_from_controls()
+            compress_threshold = _compress_threshold_from_input(
+                self.query_one("#compress-threshold", Input).value,
+            )
         except ValueError as exc:
             self.query_one("#config-error", Static).update(str(exc))
             return
@@ -933,6 +968,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 tool_permissions=dict(self._tool_permissions),
                 tool_enabled=dict(self._tool_enabled),
                 tool_max_calls=dict(self._tool_max_calls),
+                compress_threshold=compress_threshold,
             )
         )
 
