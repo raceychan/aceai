@@ -140,7 +140,7 @@ def test_executor_loads_skill_registry_and_prompt_instructions(
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
-    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(cwd / ".agents" / "skills", "review", "Review workflow.", "# Review")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
 
@@ -161,7 +161,7 @@ def test_executor_loads_extra_skill_paths_after_user_paths(
     cwd = tmp_path / "project"
     extra = tmp_path / "builtin"
     write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
-    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(cwd / ".agents" / "skills", "review", "Review workflow.", "# Review")
     write_skill(extra, "skill-creator", "Create skills.", "# Skill Creator")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
@@ -231,7 +231,7 @@ def test_executor_filters_enabled_skills(
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     write_skill(home / ".aceai" / "skills", "release", "Release workflow.", "# Release")
-    write_skill(cwd / ".agent" / "skills", "review", "Review workflow.", "# Review")
+    write_skill(cwd / ".agents" / "skills", "review", "Review workflow.", "# Review")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(cwd)
 

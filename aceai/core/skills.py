@@ -138,7 +138,7 @@ class SkillLoader:
     ) -> list[Path]:
         global_skills = Path.home() / ".aceai" / "skills"
         if skill_path == "auto":
-            return [global_skills, Path.cwd() / ".agent" / "skills"]
+            return [global_skills, Path.cwd() / ".agents" / "skills"]
         if skill_path == "disable":
             return []
         return [global_skills, Path(skill_path).expanduser()]

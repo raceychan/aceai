@@ -23,7 +23,7 @@ from aceai.agent.config import AgentAppConfig, replace_config, save_config
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.executor import Executor
-from aceai.core.skills import SkillLoader, SkillRegistry
+from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
 from aceai.llm.models import LLMRequestMeta
@@ -1223,10 +1223,14 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             if self._agent is None:
                 return ()
             return _skill_config_items(self._agent.skill_registry)
-        registry = SkillLoader.load_registry(
-            self._current_config.skills,
-            extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
-        )
+        try:
+            registry = SkillLoader.load_registry(
+                self._current_config.skills,
+                extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+            )
+        except (SkillLoadingError, OSError) as exc:
+            self.notify_session(f"Skill search failed: {exc}")
+            return ()
         return _skill_config_items(registry)
 
     def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:

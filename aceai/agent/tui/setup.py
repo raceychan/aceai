@@ -13,6 +13,7 @@ from msgspec import field
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Key
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
@@ -40,7 +41,7 @@ from aceai.agent.config import config_schema
 from aceai.core.context_manager import CompressThreshold, ContextCompressionPolicy
 from aceai.agent.permissions import TOOL_PERMISSION_OPTIONS, ToolPermission
 from aceai.agent.session import SessionMetadata, SessionStore
-from aceai.core.skills import SkillLoader, SkillRegistry
+from aceai.core.skills import Skill, SkillLoader, SkillLoadingError, SkillRegistry
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
@@ -178,26 +179,95 @@ def _skill_checkboxes(
     checked_items: tuple[SkillConfigItem, ...],
 ):
     if not skill_items:
-        yield Static("No skills available", id="skills-empty")
-        return
+        return (Static("No skills available", id="skills-empty"),)
     checked_names = {item.name for item in checked_items}
+    controls: list[Container] = []
     for index, item in enumerate(skill_items):
-        with Container(classes="skill-entry"):
-            yield Checkbox(
-                item.name,
-                value=item.name in checked_names,
-                id=f"skill-{index}",
+        controls.append(
+            Container(
+                Checkbox(
+                    item.name,
+                    value=item.name in checked_names,
+                    id=f"skill-{index}",
+                ),
+                Static(
+                    item.description,
+                    classes="skill-description",
+                    id=f"skill-description-{index}",
+                ),
+                Static(
+                    item.location,
+                    classes="skill-location",
+                    id=f"skill-location-{index}",
+                ),
+                classes="skill-entry",
             )
-            yield Static(
-                item.description,
-                classes="skill-description",
-                id=f"skill-description-{index}",
+        )
+    return tuple(controls)
+
+
+def _project_skill_dir() -> Path:
+    return Path.cwd() / ".agents" / "skills"
+
+
+def _project_skill_link_paths() -> tuple[Path, ...]:
+    skills_dir = _project_skill_dir()
+    if not skills_dir.exists():
+        return ()
+    return tuple(
+        child
+        for child in sorted(skills_dir.iterdir())
+        if child.is_symlink()
+    )
+
+
+def _skill_candidate_controls(
+    skill_items: tuple[SkillConfigItem, ...],
+) -> tuple[Static | Horizontal, ...]:
+    if not skill_items:
+        return (Static("No new skills found", id="skill-candidates-empty"),)
+    rows: list[Horizontal] = []
+    for index, item in enumerate(skill_items):
+        rows.append(
+            Horizontal(
+                Static(
+                    f"{item.name} - {item.location}",
+                    classes="skill-candidate-value",
+                    id=f"skill-candidate-{index}",
+                ),
+                Button(
+                    "Load",
+                    id=f"load-skill-{index}",
+                    classes="load-skill",
+                ),
+                classes="skill-candidate-row",
+                id=f"skill-candidate-row-{index}",
             )
-            yield Static(
-                item.location,
-                classes="skill-location",
-                id=f"skill-location-{index}",
-            )
+        )
+    return tuple(rows)
+
+
+def _find_project_skill_dirs() -> tuple[Path, ...]:
+    root = Path.cwd()
+    found = tuple(
+        sorted(
+            skill_file.parent
+            for skill_file in root.rglob("SKILL.md")
+            if not skill_file.is_relative_to(_project_skill_dir())
+        )
+    )
+    return found
+
+
+def _skill_items_from_dirs(skill_dirs: tuple[Path, ...]) -> tuple[SkillConfigItem, ...]:
+    registry = SkillRegistry()
+    for skill_dir in skill_dirs:
+        registry.register(Skill(skill_dir))
+    return _skill_config_items(registry)
+
+
+def _skill_item_from_dir(skill_dir: Path) -> SkillConfigItem:
+    return _skill_config_items(SkillRegistry(Skill(skill_dir)))[0]
 
 
 def _selected_skill_names(
@@ -206,7 +276,11 @@ def _selected_skill_names(
 ) -> tuple[str, ...]:
     selected: list[str] = []
     for index, item in enumerate(skill_items):
-        if screen.query_one(f"#skill-{index}", Checkbox).value:
+        try:
+            checked = screen.query_one(f"#skill-{index}", Checkbox).value
+        except NoMatches:
+            checked = False
+        if checked:
             selected.append(item.name)
     return tuple(selected)
 
@@ -542,10 +616,52 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1;
     }
 
+    #skill-search-error {
+        color: #bf616a;
+        height: auto;
+        min-height: 1;
+        margin-bottom: 1;
+    }
+
     .config-divider {
         height: 1;
         margin: 1 0;
         border-top: solid #4c566a;
+    }
+
+    #skill-search-actions {
+        width: 100%;
+        height: 3;
+        margin-bottom: 1;
+        align: center middle;
+    }
+
+    #search-skills {
+        width: 20;
+    }
+
+    #skill-candidates {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    .skill-candidate-row {
+        width: 100%;
+        height: 3;
+        margin-bottom: 1;
+        align: center middle;
+    }
+
+    .skill-candidate-value {
+        width: 1fr;
+        height: 3;
+        content-align: left middle;
+        color: #e5e9f0;
+    }
+
+    .load-skill {
+        width: 10;
+        margin-left: 1;
     }
 
     #config-skills-list {
@@ -692,7 +808,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         self._provider_name = provider_name
         self._current_model = current_model
         self._default_model = default_model
-        self._skills = skills
+        self._skills = ACE_AGENT_SKILL_PATH if skills != "disable" else skills
+        self._project_skill_links = _project_skill_link_paths()
+        self._found_skill_dirs: tuple[Path, ...] = ()
+        self._candidate_skill_dirs: tuple[Path, ...] = ()
+        self._candidate_skill_items: tuple[SkillConfigItem, ...] = ()
         self._skill_items = skill_items
         self._skill_selection_mode = skill_selection_mode
         self._enabled_skills = enabled_skills
@@ -779,20 +899,31 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             placeholder="80%",
                             id="compress-threshold",
                         )
-                        yield Static(
-                            "",
-                            classes="config-divider",
-                            id="config-skills-divider",
-                        )
+                        yield Static("", id="config-error")
+                with TabPane("Tools", id="tool-permissions-tab"):
+                    with VerticalScroll(id="tool-permissions-scroll"):
                         yield Label(_skills_field_label())
+                        with Horizontal(id="skill-search-actions"):
+                            yield Button(
+                                "Search for skills",
+                                id="search-skills",
+                            )
+                        yield Static("", id="skill-search-error")
+                        yield Label("new skills")
+                        with Container(id="skill-candidates"):
+                            yield from _skill_candidate_controls(
+                                self._candidate_skill_items
+                            )
                         with Container(id="config-skills-list"):
                             yield from _skill_checkboxes(
                                 self._skill_items,
                                 self._checked_skill_items(),
                             )
-                        yield Static("", id="config-error")
-                with TabPane("Tools", id="tool-permissions-tab"):
-                    with VerticalScroll(id="tool-permissions-scroll"):
+                        yield Static(
+                            "",
+                            classes="config-divider",
+                            id="config-tools-divider",
+                        )
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
             with Horizontal(id="config-actions"):
@@ -945,10 +1076,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if event.button.id == "enable-all-tools":
             self._set_all_tools_enabled(True)
             return
+        if event.button.id == "search-skills":
+            self._search_project_skills()
+            return
+        if event.button.id is not None and event.button.id.startswith("load-skill-"):
+            index = int(event.button.id.removeprefix("load-skill-"))
+            self._load_candidate_skill(index)
+            return
         if event.button.id != "apply":
             return
         provider = self.query_one("#provider", Input).value
         model = self.query_one("#model", Input).value
+        self._skills = ACE_AGENT_SKILL_PATH
         enabled_skills = self._selected_skill_names()
         stored_api_key = (
             self._api_key_for_provider(provider)
@@ -1004,6 +1143,115 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def _selected_skill_names(self) -> tuple[str, ...]:
         return _selected_skill_names(self, self._skill_items)
+
+    def _search_project_skills(self) -> None:
+        try:
+            self._found_skill_dirs = _find_project_skill_dirs()
+            self._set_candidate_skills(self._found_skill_dirs)
+        except (SkillLoadingError, OSError) as exc:
+            self._set_skill_search_error(f"Skill search failed: {exc}")
+            return
+        self._set_skill_search_error("")
+        self.run_worker(
+            self._refresh_skill_candidate_controls(),
+            group="skill-candidate-refresh",
+            exclusive=True,
+        )
+
+    def _set_candidate_skills(self, skill_dirs: tuple[Path, ...]) -> None:
+        loaded_names = {item.name for item in self._skill_items}
+        loaded_names.update(path.name for path in self._project_skill_links)
+        candidate_dirs: list[Path] = []
+        candidate_items: list[SkillConfigItem] = []
+        seen_names: set[str] = set()
+        for skill_dir in skill_dirs:
+            item = _skill_item_from_dir(skill_dir)
+            if item.name in loaded_names or item.name in seen_names:
+                continue
+            seen_names.add(item.name)
+            candidate_dirs.append(skill_dir)
+            candidate_items.append(item)
+        self._candidate_skill_dirs = tuple(candidate_dirs)
+        self._candidate_skill_items = tuple(candidate_items)
+
+    def _load_candidate_skill(self, index: int) -> None:
+        try:
+            self._save_skill_link(self._candidate_skill_dirs[index])
+        except (IndexError, SkillLoadingError, OSError) as exc:
+            self._set_skill_search_error(f"Skill search failed: {exc}")
+            return
+        self._project_skill_links = _project_skill_link_paths()
+        self._try_reload_skill_items(ACE_AGENT_SKILL_PATH)
+        self._skill_selection_mode = "all"
+        self._enabled_skills = tuple(item.name for item in self._skill_items)
+        self._set_candidate_skills(self._candidate_skill_dirs)
+        self.run_worker(
+            self._refresh_skill_candidate_controls(),
+            group="skill-candidate-refresh",
+            exclusive=True,
+        )
+        self.run_worker(
+            self._refresh_skill_controls(),
+            group="skill-refresh",
+            exclusive=True,
+        )
+
+    def _save_found_skill_links(self) -> None:
+        project_skill_dir = _project_skill_dir()
+        project_skill_dir.mkdir(parents=True, exist_ok=True)
+        for skill_dir in self._found_skill_dirs:
+            self._save_skill_link(skill_dir)
+
+    def _save_skill_link(self, skill_dir: Path) -> None:
+        project_skill_dir = _project_skill_dir()
+        project_skill_dir.mkdir(parents=True, exist_ok=True)
+        skill = Skill(skill_dir)
+        link_path = project_skill_dir / skill.name
+        target = skill_dir.resolve()
+        if link_path.exists() or link_path.is_symlink():
+            if not link_path.is_symlink() or link_path.resolve() != target:
+                raise SkillLoadingError(f"Project skill link {link_path} already exists")
+            return
+        link_path.symlink_to(target, target_is_directory=True)
+
+    def _try_reload_skill_items(self, skills: str) -> bool:
+        try:
+            self._reload_skill_items(skills)
+        except (SkillLoadingError, OSError) as exc:
+            self._set_skill_search_error(f"Skill search failed: {exc}")
+            return False
+        self._set_skill_search_error("")
+        return True
+
+    def _set_skill_search_error(self, message: str) -> None:
+        self.query_one("#skill-search-error", Static).update(message)
+
+    def _reload_skill_items(self, skills: str) -> None:
+        registry = SkillLoader.load_registry(
+            skills,
+            extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+        )
+        checked_names = set(self._selected_skill_names())
+        checked_names.update(item.name for item in self._checked_skill_items())
+        self._skill_items = _skill_config_items(registry)
+        self._skill_selection_mode = "selected"
+        self._enabled_skills = tuple(
+            item.name
+            for item in self._skill_items
+            if item.builtin or item.name in checked_names
+        )
+
+    async def _refresh_skill_candidate_controls(self) -> None:
+        candidates = self.query_one("#skill-candidates", Container)
+        await candidates.remove_children()
+        await candidates.mount(*_skill_candidate_controls(self._candidate_skill_items))
+
+    async def _refresh_skill_controls(self) -> None:
+        skills_list = self.query_one("#config-skills-list", Container)
+        await skills_list.remove_children()
+        await skills_list.mount(
+            *_skill_checkboxes(self._skill_items, self._checked_skill_items())
+        )
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id is None:
