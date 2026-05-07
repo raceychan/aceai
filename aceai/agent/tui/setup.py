@@ -80,6 +80,7 @@ class ToolPermissionItem(Record, kw_only=True):
 
 
 IdeaSaveHandler = Callable[[int, str], list[Idea]]
+IdeaCaptureHandler = Callable[[str], list[Idea]]
 IdeaDeleteHandler = Callable[[int], list[Idea]]
 
 
@@ -1375,6 +1376,7 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         Binding("down", "cursor_down", "Down", priority=True),
         Binding("j", "cursor_down", "Down"),
         Binding("enter", "reference_idea", "Reference"),
+        Binding("a", "add_idea", "Add"),
         Binding("e", "edit_idea", "Edit"),
         Binding("d", "delete_idea", "Delete"),
     ]
@@ -1403,6 +1405,22 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         margin-top: 1;
     }
 
+    #idea-add-panel {
+        height: 4;
+        margin-top: 1;
+    }
+
+    #idea-add-panel.hidden {
+        display: none;
+    }
+
+    #idea-add-input {
+        height: 3;
+        border: solid #88c0d0;
+        background: #3b4252;
+        color: #eceff4;
+    }
+
     #idea-status {
         height: 1;
         margin-top: 1;
@@ -1414,11 +1432,13 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         self,
         *,
         ideas: list[Idea],
+        capture_idea: IdeaCaptureHandler,
         save_idea: IdeaSaveHandler,
         delete_idea: IdeaDeleteHandler,
     ) -> None:
         super().__init__()
         self._ideas = ideas
+        self._capture_idea = capture_idea
         self._save_idea = save_idea
         self._delete_idea = delete_idea
 
@@ -1427,8 +1447,13 @@ class IdeaPickerScreen(ModalScreen[str | None]):
             yield Label(f"Ideas  {len(self._ideas)}", id="idea-title")
             with VerticalScroll(id="idea-list-scroll"):
                 yield IdeaListWidget(self._ideas, id="idea-list")
+            with Container(id="idea-add-panel", classes="hidden"):
+                yield Input(
+                    value="",
+                    id="idea-add-input",
+                )
             yield Static(
-                "Enter references the highlighted idea. Press e to edit or d to delete.",
+                "Enter references the highlighted idea. Press a to add, e to edit, d to delete.",
                 id="idea-status",
             )
 
@@ -1436,6 +1461,9 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         self.query_one("#idea-list", IdeaListWidget).focus()
 
     def action_cancel(self) -> None:
+        if self._add_panel_visible():
+            self._hide_add_panel()
+            return
         self.dismiss(None)
 
     def action_cursor_up(self) -> None:
@@ -1460,6 +1488,25 @@ class IdeaPickerScreen(ModalScreen[str | None]):
             self._after_edit,
         )
 
+    def action_add_idea(self) -> None:
+        self._show_add_panel()
+
+    def action_save_new_idea(self) -> None:
+        if not self._add_panel_visible():
+            return
+        content = self.query_one("#idea-add-input", Input).value
+        self._ideas = self._capture_idea(content)
+        idea_list = self.query_one("#idea-list", IdeaListWidget)
+        idea_list.set_ideas(self._ideas, selected_index=len(self._ideas) - 1)
+        self._update_title()
+        self._hide_add_panel(status="Idea added.")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "idea-add-input":
+            return
+        event.stop()
+        self.action_save_new_idea()
+
     def action_delete_idea(self) -> None:
         if not self._ideas:
             self.query_one("#idea-status", Static).update("No idea selected.")
@@ -1471,6 +1518,7 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         next_row = min(selected_row, len(self._ideas) - 1)
         idea_list.set_ideas(self._ideas, selected_index=max(0, next_row))
         idea_list.focus()
+        self._update_title()
         self.query_one("#idea-status", Static).update("Idea deleted.")
 
     def _after_edit(self, edited: tuple[int, str] | None) -> None:
@@ -1484,6 +1532,32 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         idea_list.set_ideas(self._ideas, selected_index=selected_row)
         idea_list.focus()
         self.query_one("#idea-status", Static).update("Idea updated.")
+
+    def _show_add_panel(self) -> None:
+        panel = self.query_one("#idea-add-panel", Container)
+        panel.remove_class("hidden")
+        add_input = self.query_one("#idea-add-input", Input)
+        add_input.value = ""
+        add_input.focus()
+        self.query_one("#idea-status", Static).update("Enter saves. Escape cancels.")
+
+    def _hide_add_panel(self, *, status: str | None = None) -> None:
+        panel = self.query_one("#idea-add-panel", Container)
+        panel.add_class("hidden")
+        self.query_one("#idea-add-input", Input).value = ""
+        self.query_one("#idea-list", IdeaListWidget).focus()
+        if status is not None:
+            self.query_one("#idea-status", Static).update(status)
+            return
+        self.query_one("#idea-status", Static).update(
+            "Enter references the highlighted idea. Press a to add, e to edit, d to delete."
+        )
+
+    def _add_panel_visible(self) -> bool:
+        return not self.query_one("#idea-add-panel", Container).has_class("hidden")
+
+    def _update_title(self) -> None:
+        self.query_one("#idea-title", Label).update(f"Ideas  {len(self._ideas)}")
 
     def _selected_index(self) -> int:
         return self.query_one("#idea-list", IdeaListWidget).selected_index + 1

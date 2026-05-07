@@ -25,6 +25,7 @@ from .widgets import (
     CommandCompletionItem,
     CommandCompletionWidget,
     CommandInput,
+    CitationPreviewWidget,
     DetailWidget,
     QueuedTurnsWidget,
     StatusBarWidget,
@@ -65,7 +66,7 @@ class AceAITUI(App[None]):
         ("ctrl+c", "quit", "Quit"),
         ("d", "toggle_debug_mode", "Debug"),
         ("c", "config", "Config"),
-        ("i", "metadata", "Info"),
+        ("i", "ideas", "Ideas"),
         ("s", "session_switcher", "Sessions"),
     ]
 
@@ -102,6 +103,7 @@ class AceAITUI(App[None]):
         yield StatusBarWidget(id="status")
         yield CommandCompletionWidget(id="command-completions", classes="hidden")
         yield QueuedTurnsWidget(id="queued-turns", classes="hidden")
+        yield CitationPreviewWidget(id="citation-preview", classes="hidden")
         yield CommandInput(id="input")
 
     def on_mount(self) -> None:
@@ -377,6 +379,11 @@ class AceAITUI(App[None]):
 
     def action_metadata(self) -> None:
         self.open_metadata_screen()
+
+    def action_ideas(self) -> None:
+        self.append_event(
+            TUIEvent.session_notice("Ideas are only available in live TUI runs.")
+        )
 
     def action_trajectory(self) -> None:
         self.open_trajectory_screen()

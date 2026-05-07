@@ -12,6 +12,7 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.app import AceAgentApp, UpdateCheckResult
+from aceai.agent.citations import TurnCitation
 from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
@@ -38,6 +39,7 @@ from .setup import (
     ToolPermissionItem,
 )
 from .widgets import ApprovalWidget
+from .widgets import CitationPreviewWidget
 from .widgets import CommandCompletionItem
 from .widgets import CommandInput
 from .widgets import QueuedTurnsWidget
@@ -128,6 +130,7 @@ class _RuntimeStreamMixin:
     _agent_app: AceAgentApp | None
     _active_worker: Worker[None] | None
     _idea_store: IdeaStore
+    _pending_turn_citations: list[TurnCitation]
     _cancel_armed: bool
     _cancel_arm_timer: Timer | None
 
@@ -151,10 +154,16 @@ class _RuntimeStreamMixin:
             return
         self.append_event(TUIEvent.session_notice(_update_available_notice(result)))
 
-    async def _stream_agent_turn(self, question: str) -> None:
+    async def _stream_agent_turn(
+        self,
+        question: str,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         if self._agent_app is None:
             raise RuntimeError("AceAI app is not configured")
-        await self._consume_agent_stream(self._agent_app.start_turn(question))
+        await self._consume_agent_stream(
+            self._agent_app.start_turn(question, citations=citations)
+        )
         self._start_next_queued_run()
 
     async def _stream_approval_decision(self, *, approved: bool, reason: str = "") -> None:
@@ -403,20 +412,28 @@ class _RuntimeStreamMixin:
             self._active_worker.cancel()
         self._start_run_now(question)
 
-    def _start_run_now(self, question: str) -> None:
+    def _start_run_now(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         self._clear_cancel_arm()
         if self._agent_app is None:
             raise RuntimeError("AceAI app is not configured")
         self._agent_app.ensure_session()
         self._sync_app_state()
         self._persist_session_state()
-        self.append_event(TUIEvent.user_message(question))
+        if not citations:
+            citations = self._consume_pending_citations()
+        self.append_event(TUIEvent.user_message(question, citations=citations))
         self._active_worker = self.run_worker(
-            self._stream_agent_turn(question),
+            self._stream_agent_turn(question, citations),
             name="aceai-agent",
             description="Run AceAI agent and stream events into the TUI",
             exit_on_error=True,
         )
+        self._refresh_citation_preview()
 
     def _start_next_queued_run(self) -> None:
         agent_app = self._agent_app
@@ -466,19 +483,47 @@ class _RuntimeStreamMixin:
         self.push_screen(
             IdeaPickerScreen(
                 ideas=self._list_ideas(),
+                capture_idea=self._capture_idea_and_list,
                 save_idea=self._update_idea_and_list,
                 delete_idea=self._delete_idea_and_list,
             ),
             self._reference_idea,
         )
 
+    def action_ideas(self) -> None:
+        self._show_ideas()
+
     def _reference_idea(self, content: str | None) -> None:
         if content is None:
             self.query_one(CommandInput).focus()
             return
-        command_input = self.query_one(CommandInput)
-        command_input.value = content
-        command_input.focus()
+        self._pending_citations().append(
+            TurnCitation(label="idea", content=content, source="ideas")
+        )
+        self._refresh_citation_preview()
+        self.query_one(CommandInput).focus()
+
+    def _pending_citations(self) -> list[TurnCitation]:
+        if not hasattr(self, "_pending_turn_citations"):
+            self._pending_turn_citations = []
+        return self._pending_turn_citations
+
+    def _consume_pending_citations(self) -> tuple[TurnCitation, ...]:
+        citations = tuple(self._pending_citations())
+        self._pending_turn_citations = []
+        return citations
+
+    def _refresh_citation_preview(self) -> None:
+        if not self.is_mounted:
+            return
+        widgets = list(self.query(CitationPreviewWidget))
+        if not widgets:
+            return
+        widgets[0].set_citations(tuple(self._pending_citations()))
+
+    def _capture_idea_and_list(self, content: str) -> list[Idea]:
+        self._capture_idea(content)
+        return self._list_ideas()
 
     def _update_idea_and_list(self, index: int, content: str) -> list[Idea]:
         agent_app = self._agent_app
@@ -644,7 +689,12 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         self._cancel_armed = False
         self._cancel_arm_timer: Timer | None = None
 
-    def start_run(self, question: str) -> None:
+    def start_run(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self.enqueue_run(question)
             return
@@ -653,7 +703,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self._start_run_now(question)
+        self._start_run_now(question, citations=citations)
 
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()
@@ -897,7 +947,12 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         if self._initial_question != "":
             self.start_run(self._initial_question)
 
-    def start_run(self, question: str) -> None:
+    def start_run(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         if self._current_config is None:
             self.query_one(CommandInput).value = question
             return
@@ -910,7 +965,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
             )
             return
-        self._start_run_now(question)
+        self._start_run_now(question, citations=citations)
 
     def _ensure_agent_app(self) -> None:
         if self._agent_app is not None:

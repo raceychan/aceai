@@ -45,4 +45,6 @@ def _payload_for_event(event: TUIEvent) -> dict[str, Any]:
         }
     if event.cost is not None:
         payload["cost"] = event.cost.asdict()
+    if event.citations:
+        payload["citations"] = [citation.as_payload() for citation in event.citations]
     return payload

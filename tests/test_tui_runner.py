@@ -4,6 +4,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
+from aceai.agent.citations import TurnCitation
 from aceai.core.base import AgentBase
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.llm import LLMResponse
@@ -41,6 +42,7 @@ from aceai.agent.tui.widgets import ApprovalWidget
 from aceai.agent.tui.widgets import (
     CommandCompletionWidget,
     CommandInput,
+    CitationPreviewWidget,
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
@@ -251,6 +253,59 @@ async def test_interactive_tui_submits_question_from_input(
         assert len(run_ids) == 1
         assert "" not in run_ids
         assert event_log.get_run(next(iter(run_ids))).question == "What now?"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_start_run_displays_citations_separately(
+    tui_session_store: SessionStore,
+) -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta="answer",
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        app.start_run(
+            "Explain it",
+            citations=(
+                TurnCitation(
+                    label="assistant answer",
+                    content="The job is pending.",
+                    source="session:step-1",
+                ),
+            ),
+        )
+        await pilot.pause(0.1)
+
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == "Explain it"
+        assert visible_user_event.citations[0].content == "The job is pending."
+
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert "<aceai_cited_context>" in user_text
+        assert "<user_request>\nExplain it\n</user_request>" in user_text
+
+        assert app._session_id is not None
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert event_log.events[0].payload["content"] == "Explain it"
+        assert event_log.events[0].payload["citations"][0]["content"] == (
+            "The job is pending."
+        )
 
 
 @pytest.mark.anyio
@@ -1039,6 +1094,24 @@ async def test_interactive_tui_c_key_opens_config_screen() -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_i_key_opens_ideas_screen() -> None:
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app._show_ideas = lambda: calls.append("ideas")
+
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+
+    assert calls == ["ideas"]
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_config_command_opens_config_screen() -> None:
     agent = AgentBase(
         prompt="Prompt",
@@ -1339,8 +1412,68 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         await pilot.press("enter")
         await pilot.pause()
 
-        assert command_input.value == "first idea"
+        preview = app.query_one(CitationPreviewWidget)
+        assert command_input.value == ""
+        assert "cited source" in preview.display_text
+        assert "first idea" in preview.display_text
+        assert "1. idea" not in preview.display_text
+        assert "ideas" not in preview.display_text
         assert command_input.has_focus
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    long_content = (
+        "triggered, AceAI should save the selected failed trajectories into memory so "
+        "they can be reviewed or retrieved later with additional implementation detail"
+    )
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture(long_content)
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.output_text.delta",
+                text_delta="answer",
+            ),
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="answer"),
+            ),
+        ]
+    )
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        preview = app.query_one(CitationPreviewWidget)
+        assert command_input.value == ""
+        assert "cited source" in preview.display_text
+        assert long_content[:117] in preview.display_text
+        assert long_content not in preview.display_text
+
+        command_input.value = "what should we do?"
+        app.on_input_submitted(Input.Submitted(command_input, command_input.value))
+        await pilot.pause(0.1)
+
+        assert preview.display_text == ""
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == "what should we do?"
+        assert visible_user_event.citations[0].content == long_content
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert long_content in user_text
+        assert "<user_request>\nwhat should we do?\n</user_request>" in user_text
 
 
 @pytest.mark.anyio
@@ -1382,6 +1515,57 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
         assert [idea.content for idea in idea_store.list_recent()] == [
             "edited first idea",
             "second idea",
+        ]
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.md"
+    idea_store = IdeaStore(ideas_path)
+    idea_store.capture("first idea")
+    agent = AgentBase(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        add_panel = picker.query_one("#idea-add-panel")
+        assert add_panel.has_class("hidden")
+        assert "Press a to add" in str(picker.query_one("#idea-status", Static).render())
+
+        await pilot.press("a")
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        add_panel = picker.query_one("#idea-add-panel")
+        assert not add_panel.has_class("hidden")
+        editor = picker.query_one("#idea-add-input", Input)
+        assert editor.has_focus
+        editor.value = "new idea from picker"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        assert picker.query_one("#idea-add-panel").has_class("hidden")
+        idea_list = picker.query_one("#idea-list", IdeaListWidget)
+        assert idea_list.selected_index == 1
+        assert [idea.content for idea in idea_list._ideas] == [
+            "first idea",
+            "new idea from picker",
+        ]
+        assert [idea.content for idea in idea_store.list_recent()] == [
+            "first idea",
+            "new idea from picker",
         ]
 
 
@@ -2020,6 +2204,7 @@ async def test_config_screen_can_disable_current_agent_skill() -> None:
         skill_items=(skill_item,),
         skill_selection_mode="all",
         enabled_skills=(),
+        compress_threshold="80%",
     )
 
     async with AceAITUI([]).run_test() as pilot:

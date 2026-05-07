@@ -2,6 +2,7 @@ from typing import Any
 
 from msgspec import Struct
 
+from aceai.agent.citations import TurnCitation, citation_payload
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,
@@ -110,14 +111,23 @@ class SessionService:
     def update_state(self, session_id: str, state: SessionState) -> None:
         self._store.update_session_state(session_id, state)
 
-    def record_user_message(self, content: str, *, run_id: str) -> None:
+    def record_user_message(
+        self,
+        content: str,
+        *,
+        run_id: str,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
+        payload: dict[str, Any] = {"content": content}
+        if citations:
+            payload["citations"] = citation_payload(citations)
         self.record_session_event(
             SessionEvent(
                 run_id=run_id,
                 step_id=None,
                 step_index=None,
                 kind="user_message",
-                payload={"content": content},
+                payload=payload,
             )
         )
 

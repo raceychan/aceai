@@ -8,6 +8,7 @@ import aceai
 from msgspec import Struct
 from opentelemetry.context import Context
 
+from aceai.agent.citations import TurnCitation, message_with_citations
 from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
@@ -205,11 +206,17 @@ class AceAgentApp:
                 return None
             return result
 
-    async def start_turn(self, question: str) -> AsyncGenerator[AgentEvent, None]:
+    async def start_turn(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> AsyncGenerator[AgentEvent, None]:
         self.ensure_session()
         self.persist_session_state()
+        llm_question = message_with_citations(question, citations)
         self._active_runtime = self._agent.create_resume_run(
-            question,
+            llm_question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
@@ -219,6 +226,7 @@ class AceAgentApp:
         )
         self._session_service.record_user_message(
             question,
+            citations=citations,
             run_id=self._active_runtime.run_id,
         )
         async for event in self._consume_runtime_stream(

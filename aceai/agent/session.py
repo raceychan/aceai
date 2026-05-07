@@ -14,6 +14,7 @@ from sqlalchemy.engine import RowMapping
 from typing_extensions import Self
 
 from aceai.agent.cost import CostEstimate
+from aceai.agent.citations import citations_from_payload, message_with_citations
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.models import (
     LLMMessage,
@@ -280,7 +281,10 @@ class EventLog:
                 pending_tool_call_ids = set()
                 pending_tool_call_recorded = False
                 history.append(
-                    LLMMessage.build(role="user", content=event.payload["content"])
+                    LLMMessage.build(
+                        role="user",
+                        content=_user_message_history_content(event.payload),
+                    )
                 )
             elif event.kind == "assistant_message":
                 pending_tool_call = None
@@ -545,7 +549,7 @@ class SessionRecorder:
         if event.kind == "user_message":
             self._append_event(
                 "user_message",
-                {"content": event.payload["content"]},
+                _user_message_payload_for_record(event.payload),
                 event,
             )
         elif event.kind in ("tool_completed", "tool_failed"):
@@ -795,9 +799,35 @@ def _tool_call_count(events: list[SessionEvent]) -> int:
     return len(tool_call_ids)
 
 
+def _user_message_payload_for_record(payload: dict[str, Any]) -> dict[str, Any]:
+    recorded: dict[str, Any] = {"content": payload["content"]}
+    if "citations" in payload:
+        recorded["citations"] = payload["citations"]
+    return recorded
+
+
+def _user_message_history_content(payload: dict[str, Any]) -> str:
+    content = payload["content"]
+    if type(content) is not str:
+        raise TypeError("User message content must be str")
+    if "citations" not in payload:
+        return content
+    citations = citations_from_payload(payload["citations"])
+    return message_with_citations(content, citations)
+
+
 def _event_to_export_lines(event: SessionEvent) -> list[str]:
     if event.kind == "user_message":
-        return ["## user", event.payload["content"]]
+        lines = ["## user", event.payload["content"]]
+        if "citations" in event.payload:
+            lines.append("")
+            lines.append("cited context:")
+            for citation in citations_from_payload(event.payload["citations"]):
+                lines.append(f"- {citation.label}")
+                if citation.source != "":
+                    lines.append(f"  source: {citation.source}")
+                lines.append(citation.content)
+        return lines
     if event.kind == "assistant_message":
         return ["## assistant", event.payload["content"]]
     if event.kind == "assistant_tool_call":
