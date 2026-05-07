@@ -18,9 +18,9 @@
 - No compatibility guarantees for downstream consumers that depended on sequential completion ordering.
 
 ## Current State
-- `AgentBase._run_step` iterates `response.tool_calls` one-by-one, awaiting `ToolExecutor.execute_tool` before proceeding. This blocks long-running calls and prevents independent tools from overlapping.
+- `Agent._run_step` iterates `response.tool_calls` one-by-one, awaiting `Executor.execute` before proceeding. This blocks long-running calls and prevents independent tools from overlapping.
 - Failures raised by the first tool immediately abort execution of the remaining calls, leaving later tools unobserved.
-- `ToolExecutor` (`aceai/executor.py:11-84`) is a simple adapter around `Tool.decode_params` → dependency resolution via `ididi.Graph` → tool invocation → `tool.encode_return`. It performs no scheduling and is oblivious to concurrency.
+- `Executor` (`aceai/executor.py:11-84`) is a simple adapter around `Tool.decode_params` → dependency resolution via `ididi.Graph` → tool invocation → `tool.encode_return`. It performs no scheduling and is oblivious to concurrency.
 - Event emission order today is strictly deterministic: start event, run tool, completion event, step completion. This will change once completions race.
 
 ## Design
@@ -29,9 +29,9 @@
    - Emit `event_builder.tool_started` synchronously for each call (still in original order) before any concurrent work begins, so logs remain deterministic at the start boundary.
 
 2. **Concurrent Execution**
-   - Spawn every tool task with `asyncio.create_task(self.executor.execute_tool(call))`.
+   - Spawn every tool task with `asyncio.create_task(self.executor.execute(call))`.
    - Await them via `asyncio.gather(*tasks, return_exceptions=True)` to accumulate completions without cancelling the batch prematurely.
-   - (Optional) Provide a helper such as `ToolExecutor.execute_many(tool_calls)` that wraps the same gather logic but returns a structured container described below, letting the agent remain the sole event emitter.
+   - (Optional) Provide a helper such as `Executor.execute_many(tool_calls)` that wraps the same gather logic but returns a structured container described below, letting the agent remain the sole event emitter.
 
    **Batch Result Container**
    - Introduce records purely for data transfer, not for event emission:
@@ -46,7 +46,7 @@
          results: list[ToolResultRecord]
          duration: float
      ```
-   - `execute_many` would decode inputs, launch concurrent `execute_tool` tasks, and build a `ToolBatchResult` using `asyncio.gather(..., return_exceptions=True)` plus per-task timestamps.
+   - `execute_many` would decode inputs, launch concurrent `execute` tasks, and build a `ToolBatchResult` using `asyncio.gather(..., return_exceptions=True)` plus per-task timestamps.
    - `_run_step` would iterate the returned `results`, emitting `tool_completed`/`tool_failed` events and appending `LLMToolUseMessage`s according to each record. This keeps agent responsibilities explicit while still giving other call sites (telemetry, diagnostics) access to the batch outcome.
 
 3. **Result Plumbing**
@@ -63,7 +63,7 @@
 4. **Failure Propagation**
    - After all tasks settle, inspect the recorded failures:
      - If none failed, emit `event_builder.step_completed(step=step)` and continue the loop.
-     - If one or more failed, raise the first captured `ToolExecutionFailure` (or aggregate them if we introduce a new exception type). The run-level failure handling in `AgentBase.run` already emits `step_failed`/`run_failed`.
+     - If one or more failed, raise the first captured `ToolExecutionFailure` (or aggregate them if we introduce a new exception type). The run-level failure handling in `Agent.run` already emits `step_failed`/`run_failed`.
 
 5. **Message Ordering**
    - Accept that tool-use messages will now reach the LLM in completion order, not request order.

@@ -18,7 +18,7 @@
 
 ### Breaking Changes
 
-- None.
+- `core`: Rename `AgentBase` to `Agent`; import from `aceai` or `aceai.core`.
 
 ## AceAI v0.2.14
 

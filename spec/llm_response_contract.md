@@ -3,7 +3,7 @@
 ## Background
 
 - 当前 `LLMService` 直接将 provider 原始响应压缩成 `LLMResponse`，造成 OpenAI Responses API 等富语义信息无法对外暴露。
-- `AgentBase` 只能消费 `LLMResponse` 的 `text/tool_calls/usage`，无法把 service 层信息保留下来供调用者或下游拓展。
+- `Agent` 只能消费 `LLMResponse` 的 `text/tool_calls/usage`，无法把 service 层信息保留下来供调用者或下游拓展。
 - 目标：在 provider/service/agent 三层之间建立“最大公共部分 + 可拓展”的契约，在不泄露 provider SDK 类型的前提下，完整保留底层返回。
 
 ## 设计目标

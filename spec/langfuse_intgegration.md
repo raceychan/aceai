@@ -1,20 +1,20 @@
 ## Langfuse 集成方案
 
 ### 背景
-- 当前的调用链由 `AgentBase` (aceai/core.py) 负责 Reasoning Loop，`LLMService` (aceai/llm/service.py) 统一调度 provider，`ToolExecutor` (aceai/executor.py) 执行函数工具。除了一层可选的 `LoggingToolExecutor`，目前没有统一的可观察性设施，无法记录对话级 trace、LLM 代价、工具时延或错误。
+- 当前的调用链由 `Agent` (aceai/core.py) 负责 Reasoning Loop，`LLMService` (aceai/llm/service.py) 统一调度 provider，`Executor` (aceai/executor.py) 执行函数工具。除了一层可选的 `LoggingExecutor`，目前没有统一的可观察性设施，无法记录对话级 trace、LLM 代价、工具时延或错误。
 - 现有依赖较少（核心在 `openai`、`msgspec`、`ididi`），因此引入 Langfuse 时需要保持“可选依赖 + 低侵入”的设计，避免破坏纯净的核心 API。
 
 ### Langfuse 集成目标
-1. **端到端 Trace**：每次 `AgentBase.handle` 产生一个 Langfuse trace，串起该轮 LLM 调用、工具执行、最终回答。
+1. **端到端 Trace**：每次 `Agent.handle` 产生一个 Langfuse trace，串起该轮 LLM 调用、工具执行、最终回答。
 2. **LLM 观测**：在 `LLMService.complete/stream` 记录 model、提示词、tokens、错误信息，为成本分析与质量回溯提供依据。
-3. **工具观测**：在 `ToolExecutor.execute_tool` 记录 span，包含工具名、入参、返回值（或摘要）、耗时、异常。
+3. **工具观测**：在 `Executor.execute` 记录 span，包含工具名、入参、返回值（或摘要）、耗时、异常。
 4. **最小侵入**：Langfuse 不应成为强制依赖，未配置时走 no-op 分支；集成代码需覆盖 sync & async 场景。
 5. **安全治理**：允许通过配置裁剪 message/参数，以避免在 Langfuse 中泄露敏感内容。
 
 ### 代码扫描要点
-- `aceai/core.py`：`AgentBase.handle` 是会话入口，循环体中串联了 LLM -> Tool -> LLM，可在这里注入 trace 生命周期管理（开始、更新状态、结束）。
+- `aceai/core.py`：`Agent.handle` 是会话入口，循环体中串联了 LLM -> Tool -> LLM，可在这里注入 trace 生命周期管理（开始、更新状态、结束）。
 - `aceai/llm/service.py`：所有 LLM 请求（包括 `complete_json`）都走这层，是记录 Langfuse generation 的最佳位置；`stream` 需要对 text/tool delta 做聚合以便最终写入实体。
-- `aceai/executor.py`：`ToolExecutor/LoggingToolExecutor` 执行工具并计算耗时，可在这里扩展一个 `InstrumentedToolExecutor` 或给现有类加可选的 telemetry hook。
+- `aceai/executor.py`：`Executor/LoggingExecutor` 执行工具并计算耗时，可在这里扩展一个 `InstrumentedExecutor` 或给现有类加可选的 telemetry hook。
 - `aceai/llm/openai.py`：provider 适配层；一般不需要直接改动，只需从 `LLMService` 传入 metadata（model、usage）给 Langfuse。
 - Tests (`tests/test_agent_behavior.py` 等) 依赖轻量 stub，在落地 Langfuse 时需提供假 Telemetry stub，保证单测不引入真实网络。
 
@@ -22,16 +22,16 @@
 
 | Langfuse 实体 | AceAI 事件/上下文 | 备注 |
 | --- | --- | --- |
-| `trace` | `AgentBase.handle` 一次对话 | trace id = `request_id`/外部传入；metadata 包含 agent、用户、prompt hash |
+| `trace` | `Agent.handle` 一次对话 | trace id = `request_id`/外部传入；metadata 包含 agent、用户、prompt hash |
 | `generation` | `LLMService.complete` 或 `complete_json` 一次响应 | 挂到当前 trace；record 数量对应 LLM 回合数 |
-| `span` | `ToolExecutor.execute_tool` 一次工具调用 | parent = 触发该工具的 generation；记录耗时、依赖节点 |
-| `event` | 中间状态（如 plan、error、final answer） | 可由 `AgentBase` 在关键节点追加 |
+| `span` | `Executor.execute` 一次工具调用 | parent = 触发该工具的 generation；记录耗时、依赖节点 |
+| `event` | 中间状态（如 plan、error、final answer） | 可由 `Agent` 在关键节点追加 |
 
 ### 技术方案
 
 #### 1. Telemetry 抽象层
 1. 新增 `aceai/telemetry/base.py`，定义 `TelemetryClient`/`TraceHandle`/`SpanHandle` 协议，包含 `start_trace`, `start_span`, `log_generation`, `log_event`, `flush` 等方法；默认实现 `NoOpTelemetry`。
-2. `AgentBase`, `LLMService`, `ToolExecutor` 接受可选 `telemetry: TelemetryClient`，若为 None 则回退到 NoOp。
+2. `Agent`, `LLMService`, `Executor` 接受可选 `telemetry: TelemetryClient`，若为 None 则回退到 NoOp。
 3. 通过 `contextvars` 或注入式 `TraceContext` 关联 trace/span，避免在 API 上暴露 Langfuse 细节。
 
 ```python
@@ -47,7 +47,7 @@ class TelemetryClient(Protocol):
     def log_event(self, trace: TraceContext, message: str, level: Literal["info","warning","error"]) -> None: ...
 ```
 
-#### 2. Trace 生命周期（`AgentBase.handle`）
+#### 2. Trace 生命周期（`Agent.handle`）
 1. 入口创建/复用 Trace：若调用者传入 `trace_context`（例如多 agent 协作场景），直接使用；否则调用 `telemetry.start_trace`，name 建议使用 agent 名称。
 2. 在以下节点写 event：
    - 用户问题归一化后：`log_event(level="info", message="user_question", payload=question)`.
@@ -65,8 +65,8 @@ class TelemetryClient(Protocol):
 3. `complete_json` / `_complete_json_with_retry`：将 schema、retry 次数写入 generation metadata，并在每次 decoder error 时记录一条 warning event，方便诊断模型输出质量。
 4. `stream`：累积 `text_delta` 与 `tool_call_delta`，在 `stream` 结束时一次性调用 `log_generation`；如果 streaming 过程中出现 `ResponseErrorEvent`，立刻记录 error event + span。
 
-#### 4. 工具调用埋点（`ToolExecutor`）
-1. 在 `execute_tool` 中，围绕现有 `perf_counter` 逻辑创建 Langfuse span：
+#### 4. 工具调用埋点（`Executor`）
+1. 在 `execute` 中，围绕现有 `perf_counter` 逻辑创建 Langfuse span：
 
 ```python
 span = telemetry.start_span(
@@ -75,14 +75,14 @@ span = telemetry.start_span(
     input={"arguments": param_json, "deps": list(tool.signature.dep_nodes)},
 )
 try:
-    result = await super().execute_tool(...)
+    result = await super().execute(...)
     telemetry.end_span(span, output=result, status="success")
 except Exception as exc:
     telemetry.end_span(span, status="error", error=str(exc))
     raise
 ```
 
-2. `LoggingToolExecutor` 可继承新基类或组合 Telemetry，保持现有日志输出行为。
+2. `LoggingExecutor` 可继承新基类或组合 Telemetry，保持现有日志输出行为。
 3. 若工具调用产生新的子 LLM 请求（未来 MCP 支持时），可以在 span metadata 中标记 `mcp_server`，便于 Langfuse 中筛选。
 
 #### 5. Langfuse 适配实现

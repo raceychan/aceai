@@ -17,10 +17,10 @@ from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
 from aceai.agent.session import SessionRecorder, SessionState
-from aceai.agent.config import AceAITUIConfig, replace_config, save_config
-from aceai.core import AgentBase
+from aceai.agent.config import AgentAppConfig, replace_config, save_config
+from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
-from aceai.core.executor import ToolExecutor
+from aceai.core.executor import Executor
 from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
@@ -46,7 +46,7 @@ from .widgets import QueuedTurnsWidget
 from .widgets import StatusBarWidget
 from .widgets import TopBarWidget
 
-AgentFactory = Callable[[AceAITUIConfig], AgentBase]
+AgentFactory = Callable[[AgentAppConfig], Agent]
 CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
 UPDATE_INSTRUCTIONS = (
@@ -193,7 +193,7 @@ class _RuntimeStreamMixin:
         self._session_recorder = self._agent_app.session_recorder
         self._session_id = self._agent_app.session_id
         self._llm_history = self._agent_app.llm_history
-        self._active_runtime = self._agent_app.active_runtime
+        self._active_run = self._agent_app.active_run
         self._refresh_queued_turns()
         if self._session_id is not None:
             self.title = f"AceAI {self._session_id}"
@@ -638,11 +638,11 @@ def restart_current_process() -> None:
 
 
 class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
-    """Textual app that runs an AgentBase from submitted questions."""
+    """Textual app that runs an Agent from submitted questions."""
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: Agent,
         *,
         initial_events: list[TUIEvent] | None = None,
         initial_history: list[LLMMessage] | None = None,
@@ -685,7 +685,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         self._persist_session_state()
         self._llm_history = self._agent_app.llm_history
         self._active_worker: Worker[None] | None = None
-        self._active_runtime = self._agent_app.active_runtime
+        self._active_run = self._agent_app.active_run
         self._cancel_armed = False
         self._cancel_arm_timer: Timer | None = None
 
@@ -872,7 +872,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self,
         agent_factory: AgentFactory,
         *,
-        initial_config: AceAITUIConfig | None,
+        initial_config: AgentAppConfig | None,
         initial_question: str,
         default_model: OpenAIModel,
         initial_events: list[TUIEvent] | None = None,
@@ -911,10 +911,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._trace_ctx = trace_ctx
         self._selected_model: OpenAIModel = initial_model
         self._llm_history = list(initial_history or [])
-        self._agent: AgentBase | None = None
+        self._agent: Agent | None = None
         self._agent_app: AceAgentApp | None = None
         self._active_worker: Worker[None] | None = None
-        self._active_runtime = None
+        self._active_run = None
         self._cancel_armed = False
         self._cancel_arm_timer: Timer | None = None
 
@@ -928,12 +928,12 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self._handle_setup_config,
         )
 
-    def _handle_setup_config(self, config: AceAITUIConfig | None) -> None:
+    def _handle_setup_config(self, config: AgentAppConfig | None) -> None:
         if config is None:
             return
         self.apply_config(config)
 
-    def apply_config(self, config: AceAITUIConfig) -> None:
+    def apply_config(self, config: AgentAppConfig) -> None:
         next_config = replace_config(config)
         self._provider_name = next_config.provider
         self._current_config = next_config
@@ -941,7 +941,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._request_meta["model"] = self._selected_model
         self._agent = None
         self._agent_app = None
-        self._active_runtime = None
+        self._active_run = None
         self._persist_session_state()
         self.set_status_model(self._selected_model)
         if self._initial_question != "":
@@ -1109,7 +1109,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 )
                 api_keys[selection.provider] = api_key
                 self.apply_user_config(
-                    AceAITUIConfig(
+                    AgentAppConfig(
                         provider=selection.provider,
                         api_key=api_key,
                         model=selection.model,
@@ -1147,7 +1147,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             api_keys.update(self._current_config.api_keys)
         api_keys[selection.provider] = api_key
         self.apply_user_config(
-            AceAITUIConfig(
+            AgentAppConfig(
                 provider=selection.provider,
                 api_key=api_key,
                 model=selection.model,
@@ -1166,7 +1166,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             f"Switched provider to {selection.provider} and model to {selection.model}"
         )
 
-    def apply_user_config(self, config: AceAITUIConfig) -> None:
+    def apply_user_config(self, config: AgentAppConfig) -> None:
         self.apply_config(config)
         save_config(config)
 
@@ -1183,7 +1183,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             return
         if self._current_config is not None:
             self._current_config = replace_config(
-                AceAITUIConfig(
+                AgentAppConfig(
                     provider=self._current_config.provider,
                     api_key=self._current_config.api_key,
                     model=cast(OpenAIModel, model),
@@ -1261,7 +1261,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         if self._agent_app is None:
             event_log = self._session_recorder.store.load_event_log(self._session_id)
             self._llm_history = event_log.replay_llm_history()
-            self._active_runtime = None
+            self._active_run = None
             return
         self._agent_app.restore_history_from_active_session()
         self._sync_app_state()
@@ -1318,7 +1318,7 @@ class AceAILiveTUI(AceAIInteractiveTUI):
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: Agent,
         question: str,
         *,
         initial_events: list[TUIEvent] | None = None,
@@ -1345,7 +1345,7 @@ class AceAILiveTUI(AceAIInteractiveTUI):
 
 
 def run_interactive_tui(
-    agent: AgentBase,
+    agent: Agent,
     *,
     initial_events: list[TUIEvent] | None = None,
     initial_history: list[LLMMessage] | None = None,
@@ -1368,7 +1368,7 @@ def run_interactive_tui(
 def run_configured_tui(
     agent_factory: AgentFactory,
     *,
-    initial_config: AceAITUIConfig | None,
+    initial_config: AgentAppConfig | None,
     initial_question: str,
     default_model: OpenAIModel,
     initial_events: list[TUIEvent] | None = None,
@@ -1393,7 +1393,7 @@ def run_configured_tui(
 
 
 def run_agent_tui(
-    agent: AgentBase,
+    agent: Agent,
     question: str,
     *,
     initial_events: list[TUIEvent] | None = None,
@@ -1416,7 +1416,7 @@ def run_agent_tui(
 
 
 def _agent_metadata_sections(
-    agent: AgentBase,
+    agent: Agent,
     *,
     provider_name: str,
     selected_model: str,
@@ -1428,7 +1428,7 @@ def _agent_metadata_sections(
     ]
     executor = agent.executor
     tool_lines: list[str] = []
-    if isinstance(executor, ToolExecutor):
+    if isinstance(executor, Executor):
         for tool in executor.tools.values():
             tags = ", ".join(tool.metadata.tags)
             tag_text = f" [{tags}]" if tags else ""

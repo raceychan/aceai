@@ -43,7 +43,7 @@ from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-from aceai.agent.config import AceAITUIConfig
+from aceai.agent.config import AgentAppConfig
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
 from .session_display import session_display_title
@@ -200,7 +200,7 @@ def _selected_skill_names(
     return tuple(selected)
 
 
-class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
+class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
     """Collect provider settings before the first live agent run."""
 
     DEFAULT_CSS = """
@@ -343,7 +343,7 @@ class ProviderSetupScreen(ModalScreen[AceAITUIConfig]):
         if model not in supported_models(provider):
             raise ValueError("Unsupported model")
         enabled_skills = self._selected_skill_names()
-        config = AceAITUIConfig(
+        config = AgentAppConfig(
             provider=provider,
             api_key=api_key,
             model=cast(OpenAIModel, model),

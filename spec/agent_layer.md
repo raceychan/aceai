@@ -7,7 +7,7 @@ AceAI 不只有一个“agent”概念，代码需要按层次理解：
 | 层 | 路径 | 作用 | 不应该做什么 |
 | --- | --- | --- | --- |
 | LLM/provider 层 | `aceai/llm` | 把 OpenAI 等模型供应商适配成 AceAI 自己的 request/response/stream/tool spec 契约 | 不放 app 工具、不关心 TUI、不写用户工作流 |
-| Core/framework 层 | `aceai/core` | 给开发者搭 agent 的框架原语：`AgentBase`、事件、context、tool 协议、executor、skills、tracing | 不塞文件/shell/browser/search 这类产品默认工具 |
+| Core/framework 层 | `aceai/core` | 给开发者搭 agent 的框架原语：`Agent`、事件、context、tool 协议、executor、skills、tracing | 不塞文件/shell/browser/search 这类产品默认工具 |
 | Agent app 层 | `aceai/agent` | 给最终用户直接运行的 AceAI app：主 agent、默认工具包、内置 app skills、产品化 preset | 不改 provider 细节，不把 app 假设下沉到 core |
 | TUI 层 | `aceai/agent/tui` | 终端 UI，把结构化事件渲染成用户可读界面 | 不执行工具、不推断 provider 语义、不把 raw JSON 默认铺满主页面 |
 | Docs/spec 层 | `docs`、`spec` | 记录架构、迁移计划、用户文档和后续约束 | 不让关键设计只存在聊天记录里 |
@@ -17,7 +17,7 @@ AceAI 不只有一个“agent”概念，代码需要按层次理解：
 - `aceai/core` 是框架，不是产品。这里的 built-in 能力要克制，偏协议、结构、调度、观测和扩展点。
 - `aceai/agent` 已经是 app。这里可以放真实好用、opinionated 的工具和技能，例如 filesystem、shell、search、browser、memory、artifact 等 capability。
 - `aceai/agent/tui` 是展示层。主对话流应该像 Codex/Claude Code 一样显示简洁的 tool activity；参数、结果、raw event 等细节放在 detail/raw view。
-- 跨层改动必须有明确理由。比如一个 TUI 问题优先改渲染/状态，不要顺手改 `AgentBase`；一个 app tool 需求优先放 `aceai/agent/features`，不要塞进 `aceai/core/tools`。
+- 跨层改动必须有明确理由。比如一个 TUI 问题优先改渲染/状态，不要顺手改 `Agent`；一个 app tool 需求优先放 `aceai/agent/features`，不要塞进 `aceai/core/tools`。
 
 ## Agent App Session 存储
 
@@ -37,11 +37,12 @@ Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下
 ## Provider-hosted tools
 
 Provider-hosted tools are model/provider capabilities that execute outside AceAI's
-`ToolExecutor`. Examples include OpenAI hosted web search, Anthropic server tools,
-and Gemini Google Search grounding.
+local Python tool runner. Examples include OpenAI hosted web search, Anthropic
+server tools, and Gemini Google Search grounding.
 
 - `aceai/llm` owns the neutral transport shape: `LLMHostedToolSpec(provider_name, native_name, native_config)`.
-- `aceai/core.AgentBase` may pass hosted tools through alongside local `IToolSpec` tools, but it must not execute them or infer provider-specific behavior.
+- `aceai/core.Executor` owns the capability surface exposed to the model: local `IToolSpec` tools, skill tools, and provider-hosted tool specs.
+- `aceai/core.Agent` may pass hosted tools through from its executor, but it must not execute them or infer provider-specific behavior.
 - Provider adapters own native serialization. For example, the OpenAI adapter maps `LLMHostedToolSpec(provider_name="openai", native_name="web_search")` to the Responses API hosted tool payload.
 - `aceai/agent` owns product defaults and convenience choices, such as enabling OpenAI web search for the default app agent.
 - Do not encode a cross-provider hosted-tool enum in core. Tool names and capabilities are provider-native and may be versioned or incompatible across vendors.
@@ -54,7 +55,7 @@ and Gemini Google Search grounding.
 
 ## 已知现状
 
-- `AgentBase.run` 为唯一入口，作为 `AsyncIterator[AgentEvent]` 直接 yield 每个事件；成功场景以 `agent.run.completed` 结束并暴露 `final_answer` 字段，失败场景触发新的 `agent.run.failed` 事件。
+- `Agent.run` 为唯一入口，作为 `AsyncIterator[AgentEvent]` 直接 yield 每个事件；成功场景以 `agent.run.completed` 结束并暴露 `final_answer` 字段，失败场景触发新的 `agent.run.failed` 事件。
 
 ## 初步草案
 
@@ -84,20 +85,20 @@ class AgentResponse(Record):
     final_output: str
 ```
 
-- `AgentBase.run` 在每次 LLM 调用后创建 `AgentStep`，将 `LLMResponse` 原封不动塞入 `llm_response`。
+- `Agent.run` 在每次 LLM 调用后创建 `AgentStep`，将 `LLMResponse` 原封不动塞入 `llm_response`。
 - 执行工具后，向 `turn.tool_results` 写入结果；返回给模型的 tool outputs 继续通过 `LLMToolUseMessage` 发送，逻辑保持不变。
 - 默认 API 仅提供 streaming 事件；若调用方需要 `AgentResponse`，需自行 collect 这些事件并构造。
 
 ## 落地策略
 
-1. **Streaming-only**：`AgentBase.run` 直接 yield `AgentEvent`，不再在内部发布或缓存事件；需要一次性结果的调用方自己 `collect`。
-2. **直接演进**：当前尚无外部用户，`AgentBase` 在语义层彻底转向 streaming，删除 `handle`/`stream`/`str` 返回值等旧接口。
+1. **Streaming-only**：`Agent.run` 直接 yield `AgentEvent`，不再在内部发布或缓存事件；需要一次性结果的调用方自己 `collect`。
+2. **直接演进**：当前尚无外部用户，`Agent` 在语义层彻底转向 streaming，删除 `handle`/`stream`/`str` 返回值等旧接口。
 3. **final tool 处理**：`final_answer` 仍作为普通 `ToolExecutionResult` 写入最后一个 turn，并在终结事件 `final_answer` 字段中携带输出，方便消费方提取。
 
 ## 下一步
 
 1. 在 `aceai/llm/models.py` 或 `aceai/core.py` 定义上述 record。
-2. 改造 `AgentBase.run` 使其直接 yield 事件，并移除历史 `handle`/`stream` 语义。
+2. 改造 `Agent.run` 使其直接 yield 事件，并移除历史 `handle`/`stream` 语义。
 3. 选一个 agent/client 更新调用方式，验证实战体验，再回写文档。
 
 ## 业界对标与最佳实践
@@ -207,7 +208,7 @@ type AgentEvent = (
 )
 ```
 
-- `AgentEvent` 联合由 `AgentBase.run()` 返回，外部消费方可按需订阅具体子类；同步体验依旧通过 collect 事件自行构造。
+- `AgentEvent` 联合由 `Agent.run()` 返回，外部消费方可按需订阅具体子类；同步体验依旧通过 collect 事件自行构造。
 - `step_index`/`step_id` 是所有事件共享的最小字段，其它 payload 只出现在相应子类上，杜绝“胖接口”。
 - `RunCompletedEvent` 挂载最终 `step` 与 `final_answer`；`RunFailedEvent` 则单独承载终止错误，与其它 step/工具事件一起保持精确负载。
 
@@ -231,7 +232,7 @@ type AgentEvent = (
 
 1. Provider 仍通过 `LLMStreamEvent` 暴露原始事件，agent 层监听它们并转换成 `agent.llm.*` 事件，保证 ADK 风格的“最大公共事件”语义。
 2. `AgentEvent` 中只有 step/run 相关子类才暴露 `step` 字段，依旧与 `AgentStep` 结构共享引用，满足 trace/审计需求。
-3. 上层可根据需要把 `AgentBase.run` 的事件写入任何外部 event bus（Kafka、Redis、SSE 等）或直接驱动 UI；若想保留旧的 `AgentResponse` 结构，可在外部 helper 中收集事件后组装。
+3. 上层可根据需要把 `Agent.run` 的事件写入任何外部 event bus（Kafka、Redis、SSE 等）或直接驱动 UI；若想保留旧的 `AgentResponse` 结构，可在外部 helper 中收集事件后组装。
 4. 如果后续要扩展 planner/critic 等子流程，可在事件枚举中新增前缀（如 `agent.planner.*`），保持 closed set + 显式注册的策略。
 
 ---

@@ -1,5 +1,5 @@
 from aceai.agent.config import (
-    AceAITUIConfig,
+    AgentAppConfig,
     LEGACY_AGENT_SKILLS_DIR,
     clear_config,
     config_schema,
@@ -33,7 +33,7 @@ def test_config_schema_lists_required_fields() -> None:
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-4o-mini",
@@ -62,7 +62,7 @@ def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -
     global_path.parent.mkdir(parents=True)
     project_path.parent.mkdir(parents=True)
     save_config(
-        AceAITUIConfig(
+        AgentAppConfig(
             provider="openai",
             api_key="global",
             model="gpt-4o-mini",
@@ -70,7 +70,7 @@ def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -
         ),
         global_path,
     )
-    project_config = AceAITUIConfig(
+    project_config = AgentAppConfig(
         provider="openai",
         api_key="project",
         model="gpt-5.5",
@@ -88,7 +88,7 @@ def test_load_config_falls_back_to_global_config(tmp_path, monkeypatch) -> None:
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
     global_path = tmp_path / "home" / ".aceai" / "config.yaml"
-    global_config = AceAITUIConfig(
+    global_config = AgentAppConfig(
         provider="openai",
         api_key="global",
         model="gpt-4o-mini",
@@ -102,7 +102,7 @@ def test_load_config_falls_back_to_global_config(tmp_path, monkeypatch) -> None:
 
 def test_save_config_defaults_to_project_config(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",
@@ -119,13 +119,13 @@ def test_save_config_defaults_to_project_config(tmp_path, monkeypatch) -> None:
 
 def test_save_config_replaces_config_without_backup_files(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    first = AceAITUIConfig(
+    first = AgentAppConfig(
         provider="openai",
         api_key="first",
         model="gpt-4o-mini",
         api_keys={"openai": "first"},
     )
-    second = AceAITUIConfig(
+    second = AgentAppConfig(
         provider="openai",
         api_key="second",
         model="gpt-5.5",
@@ -144,13 +144,13 @@ def test_save_config_replaces_config_without_backup_files(tmp_path) -> None:
 
 
 def test_replace_config_uses_single_active_config_object() -> None:
-    first = AceAITUIConfig(
+    first = AgentAppConfig(
         provider="openai",
         api_key="first",
         model="gpt-5.5",
         api_keys={"openai": "first"},
     )
-    second = AceAITUIConfig(
+    second = AgentAppConfig(
         provider="openai",
         api_key="second",
         model="gpt-4o",
@@ -176,7 +176,7 @@ def test_load_config_migrates_stale_default_model(tmp_path) -> None:
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",
@@ -186,7 +186,7 @@ def test_load_config_migrates_stale_default_model(tmp_path) -> None:
 
 def test_load_config_preserves_versioned_gpt51_selection(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.1",
@@ -201,7 +201,7 @@ def test_load_config_preserves_versioned_gpt51_selection(tmp_path) -> None:
 
 def test_save_and_load_deepseek_config_round_trips(tmp_path) -> None:
     path = tmp_path / "config.yaml"
-    config = AceAITUIConfig(
+    config = AgentAppConfig(
         provider="deepseek",
         api_key="secret",
         model="deepseek-v4-pro",
@@ -224,7 +224,7 @@ def test_load_config_uses_provider_default_when_model_is_missing(tmp_path) -> No
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="deepseek",
         api_key="secret",
         model="deepseek-v4-pro",
@@ -248,7 +248,7 @@ def test_load_config_replaces_legacy_builtin_skill_path_with_auto(tmp_path) -> N
 
     loaded = load_config(path)
 
-    assert loaded == AceAITUIConfig(
+    assert loaded == AgentAppConfig(
         provider="openai",
         api_key="secret",
         model="gpt-5.5",

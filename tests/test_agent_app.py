@@ -3,7 +3,7 @@ import pytest
 from aceai.agent.app import AceAgentApp
 from aceai.agent.citations import TurnCitation
 from aceai.agent.session import SessionEvent, SessionStore
-from aceai.core.base import AgentBase
+from aceai.core.agent import Agent
 from aceai.core.events import RunSuspendedEvent, ToolApprovalRequestedEvent
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMStreamEvent, LLMToolCall
@@ -45,7 +45,7 @@ async def test_agent_app_reuses_approved_tool_name_across_session_turns(tmp_path
         {"write_file": '{"ok":true}'},
         approval_required={"write_file"},
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -115,7 +115,7 @@ async def test_agent_app_seeds_approved_tool_cache_from_session_history(
         {"write_file": '{"ok":true}'},
         approval_required={"write_file"},
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -142,7 +142,7 @@ async def test_agent_app_sends_turn_citations_as_structured_context(tmp_path) ->
     llm_service = StubLLMService(
         [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,

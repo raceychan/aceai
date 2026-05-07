@@ -16,7 +16,7 @@
 3. **完成事件**：
    - 等 `response.completed` 事件携带 `LLMResponse`，再构造 `AgentStep` 并发 `LLMCompletedEvent`，随后沿用原有工具调用/最终答案逻辑。
 4. **错误传播**：
-   - 若 streaming 中出现 `response.error` 事件或迭代器抛异常，直接终止本 step，让 `AgentBase.run` 复用现有失败路径；不会再 fallback 到 `complete`。
+   - 若 streaming 中出现 `response.error` 事件或迭代器抛异常，直接终止本 step，让 `Agent.run` 复用现有失败路径；不会再 fallback 到 `complete`。
 
 ## 数据结构调整
 - 在 `AgentStep` 顶层新增 `reasoning_log: str`，默认空串，直接承载拼接后的增量文本，避免再透传到 `annotations.extra`。
@@ -38,7 +38,7 @@
   - streaming 抛错时，`RunFailedEvent` 仍然触发。
 
 ## 风险与取舍
-- **Breaking change**：`AgentBase` 依赖 streaming，假设所有 provider 都实现 `stream`；不再 fallback 到 `complete`，符合“破坏兼容”原则。
+- **Breaking change**：`Agent` 依赖 streaming，假设所有 provider 都实现 `stream`；不再 fallback 到 `complete`，符合“破坏兼容”原则。
 - **事件风暴**：长回答会产生大量 delta 事件。
 - **内存占用**：`reasoning_log` 会保存完整推理文本。
 

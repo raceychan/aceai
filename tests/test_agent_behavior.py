@@ -1,9 +1,10 @@
 import pytest
 
-from aceai.core.base import AgentBase
+from aceai.core.agent import Agent
 from aceai.llm.errors import AceAIRuntimeError
 from aceai.core.executor import ToolExecutionError
 from aceai.core.run_state import ToolRunState
+from aceai.core.skills import SkillRegistry
 from aceai.core.events import (
     AgentEvent,
     LLMMediaEvent,
@@ -40,11 +41,26 @@ class StubExecutor:
         self,
         results: dict[str, str] | None = None,
         approval_required: set[str] | None = None,
+        hosted_tools: list[LLMHostedToolSpec] | None = None,
     ) -> None:
         self.tool_specs: list[object] = []
         self._results = results or {}
         self._approval_required = approval_required or set()
         self.calls: list[LLMToolCall] = []
+        self._skill_registry = SkillRegistry()
+        self._hosted_tools = hosted_tools if hosted_tools is not None else []
+
+    @property
+    def prompt_instructions(self) -> str:
+        return ""
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        return self._hosted_tools
 
     def select_tools(
         self, include: set[str] | None = None, exclude: set[str] | None = None
@@ -101,7 +117,7 @@ class StubLLMService:
             yield event
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 class RaisingExecutor(StubExecutor):
@@ -131,7 +147,7 @@ class RaisingStreamLLMService:
         raise self._error
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 class SimpleLLMService:
@@ -145,7 +161,7 @@ class SimpleLLMService:
             yield event
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 class CompressingLLMService:
@@ -186,7 +202,7 @@ def make_stream(
     return events
 
 
-async def collect_events(agent: AgentBase, question: str) -> list[AgentEvent]:
+async def collect_events(agent: Agent, question: str) -> list[AgentEvent]:
     return [event async for event in agent.run(question)]
 
 
@@ -195,7 +211,7 @@ async def test_agent_compresses_resume_history_before_llm_call() -> None:
     llm_service = CompressingLLMService(
         make_stream(response=LLMResponse(text="done"), deltas=["done"])
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -232,7 +248,7 @@ async def test_agent_allows_whitespace_question_and_calls_llm() -> None:
         )
     ]
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -256,7 +272,7 @@ async def test_agent_events_share_a_non_empty_run_id() -> None:
             deltas=["answer"],
         )
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -270,6 +286,52 @@ async def test_agent_events_share_a_non_empty_run_id() -> None:
     assert "" not in run_ids
 
 
+def test_agent_creates_independent_run_contexts() -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        max_steps=2,
+    )
+
+    first_run = agent.create_run("first")
+    second_run = agent.create_run("second")
+
+    assert first_run is not second_run
+    assert first_run.run_id != second_run.run_id
+    assert first_run.question == "first"
+    assert second_run.question == "second"
+    assert first_run.context.context[-1].content[0]["data"] == "first"
+    assert second_run.context.context[-1].content[0]["data"] == "second"
+
+
+@pytest.mark.anyio
+async def test_agent_rejects_run_context_from_different_agent() -> None:
+    first_agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        agent_id="first",
+    )
+    second_agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        agent_id="second",
+    )
+    run = first_agent.create_run("hello")
+
+    with pytest.raises(AceAIRuntimeError, match="different agent"):
+        async for _ in second_agent.execute(run):
+            pass
+    with pytest.raises(AceAIRuntimeError, match="different agent"):
+        async for _ in second_agent.resume_approval(
+            run,
+            ToolApprovalDecision(call_id="call", approved=True),
+        ):
+            pass
+
+
 @pytest.mark.anyio
 async def test_agent_returns_llm_text_without_tool_calls() -> None:
     streams = [
@@ -280,7 +342,7 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
     ]
     llm_service = StubLLMService(streams)
     executor = StubExecutor()
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -295,7 +357,7 @@ async def test_agent_returns_llm_text_without_tool_calls() -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_passes_hosted_tools_without_local_executor() -> None:
+async def test_agent_passes_hosted_tools_from_executor() -> None:
     streams = [
         make_stream(
             response=LLMResponse(text="searched"),
@@ -307,11 +369,12 @@ async def test_agent_passes_hosted_tools_without_local_executor() -> None:
         provider_name="openai",
         native_name="web_search",
     )
-    agent = AgentBase(
+    executor = StubExecutor(hosted_tools=[hosted_tool])
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-5.5",
         llm_service=llm_service,
-        hosted_tools=[hosted_tool],
+        executor=executor,
     )
 
     events = await collect_events(agent, "What changed today?")
@@ -329,7 +392,7 @@ async def test_agent_resume_includes_restored_history_before_current_question() 
         )
     ]
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -377,7 +440,7 @@ async def test_agent_surfaces_media_events() -> None:
         ]
     ]
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -408,7 +471,7 @@ async def test_agent_handles_tool_call_and_continues_conversation() -> None:
     ]
     llm_service = StubLLMService(streams)
     executor = StubExecutor({"lookup": '{"value":42}'})
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -446,7 +509,7 @@ async def test_agent_preserves_reasoning_content_during_tool_sub_turn() -> None:
     ]
     llm_service = StubLLMService(streams)
     executor = StubExecutor({"lookup": "tool result"})
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -474,7 +537,7 @@ async def test_agent_does_not_complete_mid_step_after_tool_calls() -> None:
             deltas=["done"],
         ),
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -491,7 +554,7 @@ async def test_agent_does_not_complete_mid_step_after_tool_calls() -> None:
 @pytest.mark.anyio
 async def test_agent_raises_after_exceeding_turn_limit() -> None:
     streams = [make_stream(response=LLMResponse(text=""), deltas=[])]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -516,7 +579,7 @@ async def test_agent_unset_max_steps_runs_until_answer() -> None:
         make_stream(response=LLMResponse(text="done"), deltas=["done"]),
     ]
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -534,7 +597,7 @@ async def test_agent_unset_max_steps_runs_until_answer() -> None:
 @pytest.mark.anyio
 async def test_agent_can_return_structured_response() -> None:
     response = LLMResponse(text="final")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([make_stream(response=response, deltas=["final"])]),
@@ -550,7 +613,7 @@ async def test_agent_can_return_structured_response() -> None:
 
 @pytest.mark.anyio
 async def test_agent_stream_emits_run_completed_event() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -587,7 +650,7 @@ async def test_agent_emits_text_deltas_without_buffering_reasoning_log() -> None
             response=LLMResponse(text="foobar"),
         ),
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -608,7 +671,7 @@ async def test_agent_emits_text_deltas_without_buffering_reasoning_log() -> None
 
 @pytest.mark.anyio
 async def test_reasoning_log_is_empty_when_no_deltas() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -631,7 +694,7 @@ async def test_reasoning_log_is_empty_when_no_deltas() -> None:
 
 @pytest.mark.anyio
 async def test_stream_error_bubbles_without_run_failed_event() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -676,7 +739,7 @@ async def test_agent_emits_function_call_argument_deltas() -> None:
             response=LLMResponse(text="hello world"),
         ),
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
@@ -710,7 +773,7 @@ async def test_agent_emits_llm_retry_progress() -> None:
             response=LLMResponse(text="recovered"),
         ),
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
@@ -731,7 +794,7 @@ async def test_agent_emits_llm_retry_progress() -> None:
 async def test_agent_uses_default_error_message_when_stream_error_missing_text() -> (
     None
 ):
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -757,7 +820,7 @@ async def test_agent_uses_default_error_message_when_stream_error_missing_text()
 
 @pytest.mark.anyio
 async def test_agent_errors_when_completion_event_lacks_response() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -793,7 +856,7 @@ async def test_reasoning_segments_do_not_populate_reasoning_log() -> None:
         ],
     )
     stream = make_stream(response=response, deltas=[])
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=SimpleLLMService(stream),
@@ -835,7 +898,7 @@ async def test_agent_emits_streaming_reasoning_before_text() -> None:
             ),
         ),
     ]
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -873,7 +936,7 @@ async def test_agent_returns_tool_execution_failure_to_model() -> None:
     ]
     executor = RaisingExecutor(ToolExecutionError("no calc"))
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -904,7 +967,7 @@ async def test_agent_reraises_unstructured_tool_failure() -> None:
         )
     ]
     executor = RaisingExecutor(ValueError("broken executor"))
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService([stream]),
@@ -940,7 +1003,7 @@ async def test_agent_executes_all_tool_calls_in_step() -> None:
         ),
     ]
     executor = StubExecutor({"lookup": '{"value":42}', "calc": "3"})
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -970,7 +1033,7 @@ async def test_agent_suspends_before_approval_required_tool() -> None:
         {"write_file": '{"ok":true}'},
         approval_required={"write_file"},
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -979,7 +1042,7 @@ async def test_agent_suspends_before_approval_required_tool() -> None:
     )
     run = agent.create_run("Write it")
 
-    events = [event async for event in run.execute()]
+    events = [event async for event in agent.execute(run)]
 
     requested = [event for event in events if isinstance(event, ToolApprovalRequestedEvent)]
     suspended = [event for event in events if isinstance(event, RunSuspendedEvent)]
@@ -1008,7 +1071,7 @@ async def test_agent_resumes_approved_tool_and_continues_conversation() -> None:
         approval_required={"write_file"},
     )
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -1016,13 +1079,16 @@ async def test_agent_resumes_approved_tool_and_continues_conversation() -> None:
         max_steps=2,
     )
     run = agent.create_run("Write it")
-    suspend_events = [event async for event in run.execute()]
+    suspend_events = [event async for event in agent.execute(run)]
     request = [
         event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [
-        event async for event in run.resume_approval(ToolApprovalDecision.approve(request))
+        event
+        async for event in agent.resume_approval(
+            run, ToolApprovalDecision.approve(request)
+        )
     ]
 
     resolved = [
@@ -1065,7 +1131,7 @@ async def test_agent_reuses_approved_tool_name_in_same_run() -> None:
         {"write_file": '{"ok":true}'},
         approval_required={"write_file"},
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(streams),
@@ -1073,13 +1139,16 @@ async def test_agent_reuses_approved_tool_name_in_same_run() -> None:
         max_steps=2,
     )
     run = agent.create_run("Write both")
-    suspend_events = [event async for event in run.execute()]
+    suspend_events = [event async for event in agent.execute(run)]
     request = [
         event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [
-        event async for event in run.resume_approval(ToolApprovalDecision.approve(request))
+        event
+        async for event in agent.resume_approval(
+            run, ToolApprovalDecision.approve(request)
+        )
     ]
 
     assert executor.calls == [first_call, second_call]
@@ -1107,7 +1176,7 @@ async def test_agent_rejects_tool_and_returns_rejection_to_model() -> None:
         approval_required={"write_file"},
     )
     llm_service = StubLLMService(streams)
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=llm_service,
@@ -1115,15 +1184,16 @@ async def test_agent_rejects_tool_and_returns_rejection_to_model() -> None:
         max_steps=2,
     )
     run = agent.create_run("Write it")
-    suspend_events = [event async for event in run.execute()]
+    suspend_events = [event async for event in agent.execute(run)]
     request = [
         event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [
         event
-        async for event in run.resume_approval(
-            ToolApprovalDecision.reject(request, reason="not now")
+        async for event in agent.resume_approval(
+            run,
+            ToolApprovalDecision.reject(request, reason="not now"),
         )
     ]
 
@@ -1140,7 +1210,7 @@ async def test_agent_rejects_tool_and_returns_rejection_to_model() -> None:
 @pytest.mark.anyio
 async def test_suspended_agent_run_requires_approval_resume() -> None:
     call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=StubLLMService(
@@ -1161,21 +1231,22 @@ async def test_suspended_agent_run_requires_approval_resume() -> None:
     )
     run = agent.create_run("Write it")
 
-    [event async for event in run.execute()]
+    [event async for event in agent.execute(run)]
 
     with pytest.raises(AceAIRuntimeError, match="resume_approval"):
-        async for _ in run.execute():
+        async for _ in agent.execute(run):
             pass
     with pytest.raises(AceAIRuntimeError, match="does not match"):
-        async for _ in run.resume_approval(
-            ToolApprovalDecision(call_id="other-call", approved=True)
+        async for _ in agent.resume_approval(
+            run,
+            ToolApprovalDecision(call_id="other-call", approved=True),
         ):
             pass
 
 
 @pytest.mark.anyio
 async def test_agent_run_rethrows_when_no_steps_recorded() -> None:
-    agent = AgentBase(
+    agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
         llm_service=RaisingStreamLLMService([], RuntimeError("preflight failure")),

@@ -16,7 +16,7 @@ from typing import Annotated
 
 from openai import AsyncOpenAI
 
-from aceai import AgentBase, Graph, LLMService, ToolExecutor, spec, tool
+from aceai import Agent, Graph, LLMService, Executor, spec, tool
 from aceai.llm.openai import OpenAI
 
 
@@ -28,15 +28,15 @@ def add(
     return a + b
 
 
-def build_agent(api_key: str) -> AgentBase:
+def build_agent(api_key: str) -> Agent:
     graph = Graph()
     provider = OpenAI(
         client=AsyncOpenAI(api_key=api_key),
         default_meta={"model": "gpt-4o-mini"},
     )
     llm_service = LLMService(providers=[provider], timeout_seconds=60)
-    executor = ToolExecutor(graph=graph, tools=[add])
-    return AgentBase(
+    executor = Executor(graph=graph, tools=[add])
+    return Agent(
         sys_prompt="You are a strict calculator. Use tools when needed.",
         default_model="gpt-4o-mini",
         llm_service=llm_service,

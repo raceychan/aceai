@@ -13,7 +13,7 @@ from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
-from aceai.core import AgentBase, AgentRuntime, ToolApprovalDecision
+from aceai.core import Agent, AgentRunContext, ToolApprovalDecision
 from aceai.core.events import AgentEvent, RunCompletedEvent
 from aceai.core.models import ToolApprovalRequest
 from aceai.llm.models import LLMMessage, LLMRequestMeta
@@ -37,7 +37,7 @@ class AceAgentApp:
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: Agent,
         *,
         provider_name: str,
         selected_model: str,
@@ -62,7 +62,7 @@ class AceAgentApp:
         )
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
-        self._active_runtime: AgentRuntime | None = None
+        self._active_run: AgentRunContext | None = None
         self._queued_questions: list[str] = []
         self._idea_store = idea_store or IdeaStore()
         self._approved_tool_names: set[str] = set()
@@ -77,7 +77,7 @@ class AceAgentApp:
             )
 
     @property
-    def agent(self) -> AgentBase:
+    def agent(self) -> Agent:
         return self._agent
 
     @property
@@ -105,8 +105,8 @@ class AceAgentApp:
         return list(self._llm_history)
 
     @property
-    def active_runtime(self) -> AgentRuntime | None:
-        return self._active_runtime
+    def active_run(self) -> AgentRunContext | None:
+        return self._active_run
 
     @property
     def queued_questions(self) -> tuple[str, ...]:
@@ -114,8 +114,8 @@ class AceAgentApp:
 
     @property
     def is_running_suspended(self) -> bool:
-        runtime = self._active_runtime
-        return runtime is not None and runtime.status == "suspended"
+        run = self._active_run
+        return run is not None and run.status == "suspended"
 
     def ensure_session(self) -> str:
         return self._session_service.ensure_session()
@@ -123,7 +123,7 @@ class AceAgentApp:
     def switch_session(self, session_id: str) -> AgentSessionSnapshot:
         snapshot = self._session_service.attach_session(session_id)
         self._llm_history = list(snapshot.history)
-        self._active_runtime = None
+        self._active_run = None
         self._queued_questions = []
         self._approved_tool_names = _approved_tool_names_from_event_log(
             snapshot.event_log
@@ -134,14 +134,14 @@ class AceAgentApp:
         session_id = self.session_id
         if session_id is None:
             self._llm_history = []
-            self._active_runtime = None
+            self._active_run = None
             self._queued_questions = []
             return
         self._llm_history = self._session_service.snapshot(session_id).history
-        self._active_runtime = None
+        self._active_run = None
 
     def cancel_active_turn(self) -> None:
-        self._active_runtime = None
+        self._active_run = None
 
     def enqueue_turn(self, question: str) -> int:
         self._queued_questions.append(question)
@@ -188,10 +188,10 @@ class AceAgentApp:
         return self._idea_store.update_recent(index, content)
 
     def pending_approval_request(self) -> ToolApprovalRequest | None:
-        runtime = self._active_runtime
-        if runtime is None:
+        run = self._active_run
+        if run is None:
             return None
-        pending = runtime.run_state.pending_approval
+        pending = run.run_state.pending_approval
         if pending is None:
             return None
         return pending.request
@@ -215,23 +215,23 @@ class AceAgentApp:
         self.ensure_session()
         self.persist_session_state()
         llm_question = message_with_citations(question, citations)
-        self._active_runtime = self._agent.create_resume_run(
+        self._active_run = self._agent.create_resume_run(
             llm_question,
             self._llm_history,
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
         )
-        self._active_runtime.run_state.tools.approved_tool_names = (
+        self._active_run.run_state.tools.approved_tool_names = (
             self._approved_tool_names
         )
         self._session_service.record_user_message(
             question,
             citations=citations,
-            run_id=self._active_runtime.run_id,
+            run_id=self._active_run.run_id,
         )
-        async for event in self._consume_runtime_stream(
-            self._active_runtime,
-            self._active_runtime.execute(),
+        async for event in self._consume_run_stream(
+            self._active_run,
+            self._agent.execute(self._active_run),
         ):
             yield event
 
@@ -257,35 +257,35 @@ class AceAgentApp:
         self,
         decision: ToolApprovalDecision,
     ) -> AsyncGenerator[AgentEvent, None]:
-        runtime = self._current_runtime()
-        async for event in self._consume_runtime_stream(
-            runtime,
-            runtime.resume_approval(decision),
+        run = self._current_run()
+        async for event in self._consume_run_stream(
+            run,
+            self._agent.resume_approval(run, decision),
         ):
             yield event
 
-    async def _consume_runtime_stream(
+    async def _consume_run_stream(
         self,
-        runtime: AgentRuntime,
+        run: AgentRunContext,
         stream: AsyncGenerator[AgentEvent, None],
     ) -> AsyncGenerator[AgentEvent, None]:
         try:
             async for event in stream:
                 self._session_service.record_agent_event(event)
                 if isinstance(event, RunCompletedEvent):
-                    self._finish_runtime_turn(runtime, event.final_answer)
+                    self._finish_run_turn(run, event.final_answer)
                 yield event
         finally:
             await stream.aclose()
 
-    def _current_runtime(self) -> AgentRuntime:
-        runtime = self._active_runtime
-        if runtime is None:
-            raise RuntimeError("AceAI runtime is not active")
-        return runtime
+    def _current_run(self) -> AgentRunContext:
+        run = self._active_run
+        if run is None:
+            raise RuntimeError("AceAI run is not active")
+        return run
 
-    def _finish_runtime_turn(self, runtime: AgentRuntime, answer: str) -> None:
-        self._llm_history = list(runtime.context.context[1:])
+    def _finish_run_turn(self, run: AgentRunContext, answer: str) -> None:
+        self._llm_history = list(run.context.context[1:])
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
 
     def _request_meta_for_run(self) -> LLMRequestMeta:

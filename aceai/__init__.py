@@ -6,8 +6,11 @@ __version__ = "0.2.15"
 
 from ididi import Graph as Graph
 
-from .core import AgentBase as AgentBase
-from .core import ToolExecutor as ToolExecutor
+from .core import Agent as Agent
+from .core import DummyExecutor as DummyExecutor
+from .core import Executor as Executor
+from .core import IExecutor as IExecutor
+from .core import LoggingExecutor as LoggingExecutor
 from .llm import AceAIConfigurationError as AceAIConfigurationError
 from .llm import AceAIError as AceAIError
 from .llm import AceAIImplementationError as AceAIImplementationError

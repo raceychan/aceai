@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from ididi import Graph
 from openai import AsyncOpenAI
 
-from aceai.core import AgentBase, ToolExecutor
+from aceai.core import Agent, Executor
 from aceai.core.events import RunCompletedEvent, ToolCompletedEvent
 from aceai.llm import LLMResponse
 from aceai.llm.models import LLMMessage, LLMStreamEvent, LLMToolCall
@@ -168,7 +168,7 @@ class DeepSkillWorkflowLLMService:
         raise AssertionError("Unexpected extra LLM call")
 
     async def complete(self, **request) -> LLMResponse:
-        raise AssertionError("AgentBase should not call complete() in streaming mode")
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
     def _last_tool_text(self, messages: list[LLMMessage], tool_name: str) -> str:
         tool_messages = [
@@ -268,8 +268,8 @@ async def test_agent_runs_deep_progressive_disclosure_skill_e2e(
     skills_root = tmp_path / "skills"
     write_skill_creator_style_skill(skills_root)
     llm_service = DeepSkillWorkflowLLMService()
-    executor = ToolExecutor(Graph(), [])
-    agent = AgentBase(
+    executor = Executor(Graph(), [], skill_path=skills_root)
+    agent = Agent(
         prompt=(
             "You are testing a mature agent skill loading workflow. Use tools across "
             "multiple reasoning steps. Start with skills_list, then load the matching "
@@ -278,7 +278,6 @@ async def test_agent_runs_deep_progressive_disclosure_skill_e2e(
         default_model="test-model",
         llm_service=llm_service,
         executor=executor,
-        skill_path=skills_root,
         max_steps=6,
     )
 
@@ -309,7 +308,7 @@ async def test_agent_identifies_loads_and_uses_skill_with_live_openai(
         client=AsyncOpenAI(),
         default_meta={"model": os.environ.get("ACEAI_LIVE_OPENAI_MODEL", "gpt-4o-mini")},
     )
-    agent = AgentBase(
+    agent = Agent(
         prompt=(
             "You are testing mature skill loading. When a task matches an available "
             "skill, call skill_view before answering. Follow progressive disclosure: "
@@ -319,8 +318,7 @@ async def test_agent_identifies_loads_and_uses_skill_with_live_openai(
         ),
         default_model=os.environ.get("ACEAI_LIVE_OPENAI_MODEL", "gpt-4o-mini"),
         llm_service=LLMService([provider], timeout_seconds=60.0),
-        executor=ToolExecutor(Graph(), []),
-        skill_path=skills_root,
+        executor=Executor(Graph(), [], skill_path=skills_root),
         max_steps=6,
     )
 

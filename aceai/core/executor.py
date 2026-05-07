@@ -1,16 +1,18 @@
+from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from ididi import Graph
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
 from aceai.llm.errors import AceAIError
-from aceai.llm.interface import is_present
-from aceai.llm.models import LLMToolCall
+from aceai.llm.interface import UNSET, Unset, is_present, is_set
+from aceai.llm.models import LLMHostedToolSpec, LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
 from aceai.core.tools import IToolSpec, Tool
 from aceai.core.run_state import ToolInvocation, ToolRunState
+from aceai.core.skills import SkillLoader, SkillRegistry, format_skills_for_prompt
 
 
 class ToolExecutionError(AceAIError):
@@ -18,6 +20,21 @@ class ToolExecutionError(AceAIError):
 
 
 class IExecutor:
+    @property
+    def prompt_instructions(self) -> str:
+        "instructions that describe executor-provided capabilities"
+        raise NotImplementedError
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        "skills available through this executor"
+        raise NotImplementedError
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        "provider-hosted tools exposed by this executor"
+        raise NotImplementedError
+
     def select_tools(
         self, include: set[str] | None = None, exclude: set[str] | None = None
     ) -> list[IToolSpec]:
@@ -38,17 +55,78 @@ class IExecutor:
         raise NotImplementedError
 
 
-class ToolExecutor(IExecutor):
+class DummyExecutor(IExecutor):
+    def __init__(self) -> None:
+        self._skill_registry = SkillRegistry()
+        self._hosted_tools: list[LLMHostedToolSpec] = []
+
+    @property
+    def prompt_instructions(self) -> str:
+        return ""
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        return self._hosted_tools
+
+    def select_tools(
+        self, include: set[str] | None = None, exclude: set[str] | None = None
+    ) -> list[IToolSpec]:
+        if include and exclude:
+            raise ValueError("Cannot specify both include and exclude")
+        return []
+
+    def resolve_invocation(self, tool_call: LLMToolCall) -> ToolInvocation:
+        raise KeyError(tool_call.name)
+
+    async def execute(
+        self,
+        invocation: ToolInvocation,
+        *,
+        tool_state: ToolRunState,
+    ) -> str:
+        raise KeyError(invocation.call.name)
+
+
+class Executor(IExecutor):
     def __init__(
         self,
         graph: Graph,
         tools: list[Tool[Any, Any]],
         tracer: trace.Tracer | None = None,
+        skill_path: str | Path | Literal["auto", "disable"] = "disable",
+        enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
+        skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        hosted_tools: list[LLMHostedToolSpec] | None = None,
     ):
         self.graph = graph
         self.tools = {tool.name: tool for tool in tools}
         self._all_tools: list[IToolSpec] = []
         self._tracer = tracer or trace.get_tracer("aceai.executor")
+        self._hosted_tools = hosted_tools if hosted_tools is not None else []
+        self._skill_registry = SkillLoader.load_registry(
+            skill_path,
+            loader_factory=skill_loader_factory,
+        )
+        if is_set(enabled_skill_names):
+            self._skill_registry = self._skill_registry.select(enabled_skill_names)
+        if self._skill_registry.get_skills():
+            self.register_tools(*self._skill_registry.as_tools())
+
+    @property
+    def prompt_instructions(self) -> str:
+        return format_skills_for_prompt(self._skill_registry)
+
+    @property
+    def skill_registry(self) -> SkillRegistry:
+        return self._skill_registry
+
+    @property
+    def hosted_tools(self) -> list[LLMHostedToolSpec]:
+        return self._hosted_tools
 
     def register_tools(self, *tools: Tool[Any, Any]) -> None:
         for tool in tools:
@@ -147,7 +225,7 @@ class ILogger:
 type ITimer = Callable[[], float]
 
 
-class LoggingToolExecutor(ToolExecutor):
+class LoggingExecutor(Executor):
     def __init__(
         self,
         graph: Graph,
@@ -155,8 +233,20 @@ class LoggingToolExecutor(ToolExecutor):
         logger: ILogger,
         timer: ITimer = perf_counter,
         tracer: trace.Tracer | None = None,
+        skill_path: str | Path | Literal["auto", "disable"] = "disable",
+        enabled_skill_names: Unset[tuple[str, ...]] = UNSET,
+        skill_loader_factory: Callable[[str], SkillLoader] = SkillLoader,
+        hosted_tools: list[LLMHostedToolSpec] | None = None,
     ) -> None:
-        super().__init__(graph, tools, tracer=tracer)
+        super().__init__(
+            graph,
+            tools,
+            tracer=tracer,
+            skill_path=skill_path,
+            enabled_skill_names=enabled_skill_names,
+            skill_loader_factory=skill_loader_factory,
+            hosted_tools=hosted_tools,
+        )
         self.logger = logger
         self.timer = timer
 

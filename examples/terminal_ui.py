@@ -1,6 +1,6 @@
 from rich.console import Console
 
-from aceai import AgentBase
+from aceai import Agent
 from aceai.core.events import (
     AgentEvent,
     LLMCompletedEvent,
@@ -87,7 +87,7 @@ class EventStreamPrinter:
 
 
 async def run_agent_with_terminal_ui(
-    agent: AgentBase, question: str, *, trace_ctx: Context | None = None
+    agent: Agent, question: str, *, trace_ctx: Context | None = None
 ) -> str:
     console = Console()
     printer = EventStreamPrinter(question, console)

@@ -35,7 +35,7 @@ logs or infer state from printed text.
 
 AceAI already has the right foundation:
 
-- `AgentBase.run()` returns an async stream of `AgentEvent` records.
+- `Agent.run()` returns an async stream of `AgentEvent` records.
 - `aceai/core/events.py` defines explicit lifecycle events for LLM, tool, step,
   and run boundaries.
 - `aceai/llm/models.py` defines provider-agnostic `LLMStreamEvent` and
@@ -46,7 +46,7 @@ AceAI already has the right foundation:
 
 There are also important gaps:
 
-- `AgentBase._call_llm()` currently ignores
+- `Agent._call_llm()` currently ignores
   `response.function_call_arguments.delta`, so the agent event stream cannot
   show tool-call argument construction in real time.
 - Reasoning content is represented as final `LLMSegment(type="reasoning")`
@@ -62,7 +62,7 @@ Use Textual as the TUI framework and Rich as the rendering layer.
 
 Textual fits AceAI because:
 
-- It is an async Python TUI framework, so it matches `AgentBase.run()` naturally.
+- It is an async Python TUI framework, so it matches `Agent.run()` naturally.
 - It uses Rich renderables, which preserves the existing rendering investment.
 - It provides layouts, widgets, keyboard bindings, styling, scroll views, input
   widgets, and reactive updates.
@@ -291,7 +291,7 @@ aceai/agent/tui/
 Responsibilities:
 
 - `events.py`: Convert `AgentEvent` into TUI-specific records.
-- `runner.py`: Bridge an `AgentBase.run()` async iterator into Textual messages.
+- `runner.py`: Bridge an `Agent.run()` async iterator into Textual messages.
 - `app.py`: Own the Textual `App`, layout, key bindings, and command handling.
 - `widgets/stream.py`: Render transcript and live event blocks.
 - `widgets/timeline.py`: Render step/tool timeline state.
@@ -304,10 +304,10 @@ Responsibilities:
 
 1. Add `LLMToolCallDeltaEvent` to `aceai/core/events.py`.
 2. Add `AgentEventBuilder.tool_call_delta()`.
-3. Change `AgentBase._call_llm()` so
+3. Change `Agent._call_llm()` so
    `response.function_call_arguments.delta` emits the new agent event.
 4. Add tests proving tool-call argument deltas are visible from
-   `AgentBase.run()`.
+   `Agent.run()`.
 5. Run `uv run pytest`.
 
 This phase is intentionally breaking for consumers that assumed tool-call
@@ -356,7 +356,7 @@ python -m aceai.agent.tui
 
 ### Phase 5: Live Agent Runner
 
-1. Add `aceai/agent/tui/runner.py` to run an `AgentBase` and post events into the app.
+1. Add `aceai/agent/tui/runner.py` to run an `Agent` and post events into the app.
 2. Add cancellation handling for `Ctrl+C` and `/quit`.
 3. Add an example that starts a real agent with the TUI.
 4. Preserve `examples/terminal_ui.py` as the lightweight non-interactive Rich

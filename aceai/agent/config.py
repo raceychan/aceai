@@ -59,9 +59,6 @@ class AgentAppConfig(Record, kw_only=True):
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
     compress_threshold: CompressThreshold = "100%"
 
-
-AceAITUIConfig = AgentAppConfig
-
 APP_CONFIG_SCHEMA = ConfigSchema(
     version=CONFIG_VERSION,
     fields=(
