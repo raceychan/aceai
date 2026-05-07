@@ -8,52 +8,66 @@ providers:
     models:
       - id: gpt-5.5
         label: GPT-5.5
+        max_context_window: 1050000
         pricing:
           input_usd_per_million: 5.0
           cached_input_usd_per_million: 0.5
           output_usd_per_million: 30.0
       - id: gpt-5.5-pro
         label: GPT-5.5 pro
+        max_context_window: 1050000
         pricing:
           input_usd_per_million: 30.0
           cached_input_usd_per_million: 30.0
           output_usd_per_million: 180.0
       - id: gpt-5.4
         label: GPT-5.4
+        max_context_window: 1050000
         pricing:
           input_usd_per_million: 2.5
           cached_input_usd_per_million: 0.25
           output_usd_per_million: 15.0
       - id: gpt-5.4-pro
         label: GPT-5.4 pro
+        max_context_window: 1050000
         pricing:
           input_usd_per_million: 30.0
           cached_input_usd_per_million: 30.0
           output_usd_per_million: 180.0
       - id: gpt-5.4-mini
         label: GPT-5.4 mini
+        max_context_window: 400000
         pricing:
           input_usd_per_million: 0.75
           cached_input_usd_per_million: 0.075
           output_usd_per_million: 4.5
       - id: gpt-5.4-nano
         label: GPT-5.4 nano
+        max_context_window: 400000
       - id: gpt-5.2
         label: GPT-5.2
+        max_context_window: 400000
       - id: gpt-5.2-pro
         label: GPT-5.2 pro
+        max_context_window: 400000
       - id: gpt-5.1
         label: GPT-5.1
+        max_context_window: 400000
       - id: gpt-4o
         label: GPT-4o
+        max_context_window: 128000
       - id: gpt-4o-mini
         label: GPT-4o mini
+        max_context_window: 128000
       - id: o3
         label: o3
+        max_context_window: 200000
       - id: o3-mini
         label: o3 mini
+        max_context_window: 200000
       - id: o4-mini
         label: o4 mini
+        max_context_window: 200000
   - name: deepseek
     label: DeepSeek
     api_key_env: DEEPSEEK_API_KEY
@@ -62,24 +76,28 @@ providers:
     models:
       - id: deepseek-v4-flash
         label: DeepSeek V4 Flash
+        max_context_window: 1000000
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
           output_usd_per_million: 0.28
       - id: deepseek-v4-pro
         label: DeepSeek V4 Pro
+        max_context_window: 1000000
         pricing:
           input_usd_per_million: 0.435
           cached_input_usd_per_million: 0.003625
           output_usd_per_million: 0.87
       - id: deepseek-chat
         label: DeepSeek Chat
+        max_context_window: 1000000
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
           output_usd_per_million: 0.28
       - id: deepseek-reasoner
         label: DeepSeek Reasoner
+        max_context_window: 1000000
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028

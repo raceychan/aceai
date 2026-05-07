@@ -7,7 +7,12 @@ from ididi import Graph, use
 from msgspec import Struct
 
 from aceai.llm.errors import AceAIRuntimeError
-from aceai.core.executor import DummyExecutor, Executor, LoggingExecutor
+from aceai.core.executor import (
+    DummyExecutor,
+    Executor,
+    LoggingExecutor,
+    ToolExecutionError,
+)
 from aceai.core.run_state import ToolRunState
 from aceai.llm.models import LLMToolCall
 from aceai.core.tools import tool
@@ -286,6 +291,26 @@ async def test_tool_executor_awaits_async_tool_results(graph: Graph) -> None:
     result = await execute_call(executor, call)
 
     assert result == "3"
+
+
+@pytest.mark.anyio
+async def test_tool_executor_returns_invalid_arguments_as_tool_execution_error(
+    graph: Graph,
+) -> None:
+    message_tool = build_tool(echo_message)
+    executor = Executor(graph, [message_tool])
+    call = LLMToolCall(
+        name=message_tool.name,
+        arguments='{"query":"hello"}',
+        call_id="call-invalid-args",
+    )
+
+    with pytest.raises(ToolExecutionError) as exc_info:
+        await execute_call(executor, call)
+
+    assert str(exc_info.value) == (
+        "Invalid arguments for tool echo_message: Object missing required field `message`"
+    )
 
 
 @pytest.mark.anyio

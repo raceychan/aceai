@@ -14,13 +14,21 @@ from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
+from aceai.agent.provider_catalog import context_window_for_model_any_provider
 from .events import TUIEvent
 from .metadata import MetadataScreen, MetadataSection
 from .session_adapter import tui_event_to_session_event
 from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
-from .state import TUIRunState, apply_tui_event, initial_state, reduce_events, select_event
+from .state import (
+    TUIRunState,
+    apply_tui_event,
+    initial_state,
+    reduce_events,
+    reset_cache_rate,
+    select_event,
+)
 from .trajectory import TrajectoryScreen
 from .widgets import (
     ApprovalWidget,
@@ -249,6 +257,15 @@ class AceAITUI(App[None]):
                 usage=self._state.usage,
             )
 
+    def reset_status_cache_rate(self) -> None:
+        self._state = reset_cache_rate(self._state)
+        if self.is_mounted:
+            self.query_one(StatusBarWidget).set_status(
+                model=self._status_model,
+                status=self._state.status,
+                usage=self._state.usage,
+            )
+
     def on_top_bar_widget_quit_requested(
         self,
         event: TopBarWidget.QuitRequested,
@@ -405,6 +422,10 @@ class AceAITUI(App[None]):
 
     def _metadata_sections(self) -> list[MetadataSection]:
         usage = self._state.usage
+        max_ctx = context_window_for_model_any_provider(
+            self._status_model
+        ) if self._status_model else None
+        ctx_pct = _context_window_pct(usage.current_context_tokens, max_ctx)
         lines = [
             f"session: {self._session_id or '-'}",
             f"project: {self._project.name}",
@@ -415,7 +436,7 @@ class AceAITUI(App[None]):
             f"events: {len(self._state.events)}",
         ]
         cost_lines = [
-            f"context: {_format_tokens(usage.current_context_tokens)}",
+            f"context: {_format_tokens(usage.current_context_tokens)}{ctx_pct}",
             f"session tokens: {_format_tokens(usage.session_total_tokens)}",
             f"input: {_format_tokens(usage.session_input_tokens)}",
             f"cached input: {_format_tokens(usage.session_cached_input_tokens)}",
@@ -581,3 +602,13 @@ def _format_tokens(value: int | None) -> str:
     if value is None:
         return "-"
     return f"{value:,}"
+
+
+def _context_window_pct(
+    current_tokens: int | None,
+    max_window: int | None,
+) -> str:
+    if current_tokens is None or max_window is None or max_window == 0:
+        return ""
+    pct = current_tokens / max_window * 100
+    return f" ({pct:.0f}%)"

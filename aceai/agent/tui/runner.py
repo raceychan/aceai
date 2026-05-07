@@ -841,10 +841,13 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
+        model_changed = model != self._selected_model
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         self._agent_app.switch_model(self._selected_model)
         self._sync_app_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         self.notify_session(f"Switched model to {self._selected_model}")
 
@@ -964,6 +967,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
 
     def apply_config(self, config: AgentAppConfig) -> None:
         next_config = replace_config(config)
+        model_changed = next_config.model != self._selected_model
         self._provider_name = next_config.provider
         self._current_config = next_config
         self._selected_model = next_config.model
@@ -972,6 +976,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._agent_app = None
         self._active_run = None
         self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         if self._initial_question != "":
             self.start_run(self._initial_question)
@@ -1213,29 +1219,32 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 TUIEvent.session_notice(_model_options_text(self._provider_name))
             )
             return
+        model_changed = model != self._selected_model
         if self._current_config is not None:
-            self._current_config = replace_config(
-                AgentAppConfig(
-                    provider=self._current_config.provider,
-                    api_key=self._current_config.api_key,
-                    model=cast(OpenAIModel, model),
-                    default_model=self._current_config.default_model,
-                    skills=self._current_config.skills,
-                    skill_selection_mode=self._current_config.skill_selection_mode,
-                    enabled_skills=self._current_config.enabled_skills,
-                    api_keys=self._current_config.api_keys,
-                    tool_permissions=self._current_config.tool_permissions,
-                    tool_enabled=self._current_config.tool_enabled,
-                    tool_max_calls=self._current_config.tool_max_calls,
-                    compress_threshold=self._current_config.compress_threshold,
-                )
+            next_config = AgentAppConfig(
+                provider=self._current_config.provider,
+                api_key=self._current_config.api_key,
+                model=cast(OpenAIModel, model),
+                default_model=cast(OpenAIModel, model),
+                skills=self._current_config.skills,
+                skill_selection_mode=self._current_config.skill_selection_mode,
+                enabled_skills=self._current_config.enabled_skills,
+                api_keys=self._current_config.api_keys,
+                tool_permissions=self._current_config.tool_permissions,
+                tool_enabled=self._current_config.tool_enabled,
+                tool_max_calls=self._current_config.tool_max_calls,
+                compress_threshold=self._current_config.compress_threshold,
             )
+            save_config(next_config)
+            self._current_config = next_config
         self._selected_model = cast(OpenAIModel, model)
         self._request_meta["model"] = self._selected_model
         if self._agent_app is not None:
             self._agent_app.switch_model(self._selected_model)
             self._sync_app_state()
         self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
         self.set_status_model(self._selected_model)
         self.notify_session(f"Switched model to {self._selected_model}")
 

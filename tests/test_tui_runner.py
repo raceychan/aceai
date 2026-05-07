@@ -21,7 +21,7 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import clear_config, current_config
+from aceai.agent.config import clear_config, current_config, load_config
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
 from aceai.agent.ideas import IdeaStore
@@ -1025,9 +1025,93 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
         await pilot.pause(0.1)
 
         status = app.query_one(StatusBarWidget)
-        assert "context: 1,200" in status.current_text
+        assert "context: 1.2k" in status.current_text
         assert "cache rate: 16.7%" in status.current_text
-        assert "cost: $0.0141" in status.current_text
+        assert "cost: $0.014" in status.current_text
+        assert "time:" in status.current_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_switch_model_resets_cache_rate() -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text="answer",
+                    model="gpt-5.5",
+                    usage=LLMUsage(
+                        input_tokens=1_200,
+                        cached_input_tokens=200,
+                        cache_miss_input_tokens=1_000,
+                        input_cache_hit_rate=200 / 1_200,
+                        output_tokens=300,
+                        total_tokens=1_500,
+                    ),
+                ),
+            ),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "What now?"))
+        await pilot.pause(0.1)
+
+        status = app.query_one(StatusBarWidget)
+        assert "cache rate: 16.7%" in status.current_text
+
+        app.switch_model("gpt-5.5")
+
+        assert "model: gpt-5.5" in status.current_text
+        assert "cache rate: 0.0%" in status.current_text
+        assert app._state.usage.current_input_cache_hit_rate == 0.0
+
+
+@pytest.mark.anyio
+async def test_configured_tui_switch_model_saves_project_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-4o",
+            default_model="gpt-4o",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-4o",
+    )
+
+    async with app.run_test():
+        app.switch_model("gpt-5.5")
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.model == "gpt-5.5"
+    assert saved_config.default_model == "gpt-5.5"
 
 
 @pytest.mark.anyio

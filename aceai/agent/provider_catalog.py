@@ -42,6 +42,7 @@ class ModelTokenPrice(Record, kw_only=True):
 class ModelCatalogEntry(Record, kw_only=True):
     id: str
     label: str
+    max_context_window: int | None = None
     pricing: ModelTokenPrice | None = None
 
     @classmethod
@@ -54,10 +55,22 @@ class ModelCatalogEntry(Record, kw_only=True):
             raise TypeError("Provider catalog model id must be str")
         if type(label) is not str:
             raise TypeError("Provider catalog model label must be str")
+        max_context_window = None
+        if "max_context_window" in raw:
+            max_context_window = raw["max_context_window"]
+            if type(max_context_window) is not int:
+                raise TypeError(
+                    "Provider catalog max_context_window must be int"
+                )
         pricing = None
         if "pricing" in raw:
             pricing = ModelTokenPrice.from_raw(model_id, raw["pricing"])
-        return cls(id=model_id, label=label, pricing=pricing)
+        return cls(
+            id=model_id,
+            label=label,
+            max_context_window=max_context_window,
+            pricing=pricing,
+        )
 
 
 class ProviderCatalogEntry(Record, kw_only=True):
@@ -198,6 +211,25 @@ def price_for_model_any_provider(model: str) -> ModelTokenPrice | None:
         price = price_for_model(provider.name, model)
         if price is not None:
             return price
+    return None
+
+
+def context_window_for_model(provider_name: str, model: str) -> int | None:
+    provider = get_provider_catalog(provider_name)
+    for entry in provider.models:
+        if entry.max_context_window is not None and model == entry.id:
+            return entry.max_context_window
+    for entry in provider.models:
+        if entry.max_context_window is not None and model.startswith(f"{entry.id}-"):
+            return entry.max_context_window
+    return None
+
+
+def context_window_for_model_any_provider(model: str) -> int | None:
+    for provider in load_provider_catalog().providers:
+        ctx = context_window_for_model(provider.name, model)
+        if ctx is not None:
+            return ctx
     return None
 
 

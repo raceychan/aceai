@@ -13,7 +13,7 @@ from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.state import initial_state, reduce_events, select_event
+from aceai.agent.tui.state import initial_state, reduce_events, reset_cache_rate, select_event
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
     CommandInput,
@@ -178,6 +178,33 @@ def test_reduce_events_tracks_usage_totals() -> None:
     assert state.usage.session_cached_input_tokens == 40
     assert state.usage.session_output_tokens == 50
     assert state.usage.session_total_tokens == 300
+
+
+def test_reset_cache_rate_clears_current_cache_only() -> None:
+    event = AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
+        step=AgentStep(
+            llm_response=LLMResponse(
+                text="first",
+                usage=LLMUsage(
+                    input_tokens=100,
+                    cached_input_tokens=40,
+                    cache_miss_input_tokens=60,
+                    input_cache_hit_rate=0.4,
+                    output_tokens=20,
+                    total_tokens=120,
+                ),
+            )
+        )
+    )
+    state = reduce_events([TUIEvent.from_agent_event(event)])
+
+    next_state = reset_cache_rate(state)
+
+    assert next_state.usage.current_context_tokens == 100
+    assert next_state.usage.current_cached_input_tokens == 0
+    assert next_state.usage.current_input_cache_hit_rate == 0.0
+    assert next_state.usage.session_cached_input_tokens == 40
+    assert next_state.usage.session_total_tokens == 120
 
 
 def test_reduce_events_tracks_cost_totals() -> None:

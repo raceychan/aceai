@@ -3,6 +3,7 @@ from time import perf_counter
 from typing import Any, Callable, Literal
 
 from ididi import Graph
+from msgspec import DecodeError, ValidationError
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -207,7 +208,12 @@ class Executor(IExecutor):
                 "tool.dep_count": len(tool.signature.dep_nodes),
             },
         ):
-            params = tool.decode_params(param_json)
+            try:
+                params = tool.decode_params(param_json)
+            except (DecodeError, ValidationError) as exc:
+                raise ToolExecutionError(
+                    f"Invalid arguments for tool {tool_name}: {exc}"
+                ) from exc
             result = await self.resolve_tool_deps(tool, **params)
             if is_present(max_calls_per_run):
                 tool_state.call_counts[tool_name] = (
