@@ -204,12 +204,14 @@ def test_idea_list_renders_as_separate_items_with_title_and_body() -> None:
                 [
                     TUIIdeaItem(
                         index=1,
+                        project_name="ioa",
                         created_at="2026-05-06 11:13",
                         title="Add a Learn button",
                         body="Select failed trajectories by default.",
                     ),
                     TUIIdeaItem(
                         index=2,
+                        project_name="aceai",
                         created_at="2026-05-06 11:39",
                         title="Use obsidian as external knowledge base",
                     ),

@@ -10,6 +10,7 @@ from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
 from aceai.agent.ideas import Idea, IdeaStore
+from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
@@ -47,18 +48,25 @@ class AceAgentApp:
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
         idea_store: IdeaStore | None = None,
+        project: ProjectMetadata | None = None,
         trace_ctx: Context | None = None,
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
         self._agent = agent
         self._provider_name = provider_name
         self._selected_model = selected_model
+        self._project = project or (
+            session_store.project
+            if session_store is not None
+            else default_project()
+        )
         self._request_meta = _copy_request_meta(request_meta)
         self._request_meta["model"] = selected_model
         self._session_service = session_service or SessionService(
             store=session_store,
             recorder=session_recorder,
             session_id=session_id,
+            project=self._project,
         )
         self._trace_ctx = trace_ctx
         self._llm_history = list(initial_history or [])
@@ -91,6 +99,14 @@ class AceAgentApp:
     @property
     def session_service(self) -> SessionService:
         return self._session_service
+
+    @property
+    def project(self) -> ProjectMetadata:
+        return self._project
+
+    @property
+    def project_name(self) -> str:
+        return self._project.name
 
     @property
     def session_id(self) -> str | None:
@@ -175,17 +191,25 @@ class AceAgentApp:
     def capture_idea(self, content: str) -> Idea:
         return self._idea_store.capture(
             content,
+            project=self._project,
             source_session_id=self.session_id,
         )
 
     def list_ideas(self) -> list[Idea]:
-        return self._idea_store.list_recent()
+        return self._idea_store.list_for_display(current_project=self._project)
 
     def delete_idea(self, index: int) -> Idea:
-        return self._idea_store.delete_recent(index)
+        return self._idea_store.delete_displayed(
+            index,
+            current_project=self._project,
+        )
 
     def update_idea(self, index: int, content: str) -> Idea:
-        return self._idea_store.update_recent(index, content)
+        return self._idea_store.update_displayed(
+            index,
+            content,
+            current_project=self._project,
+        )
 
     def pending_approval_request(self) -> ToolApprovalRequest | None:
         run = self._active_run

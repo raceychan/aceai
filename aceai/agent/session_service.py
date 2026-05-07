@@ -12,6 +12,7 @@ from aceai.agent.session import (
     SessionState,
     SessionStore,
 )
+from aceai.agent.project import ProjectMetadata
 from aceai.core.events import (
     AgentEvent,
     LLMCompletedEvent,
@@ -53,11 +54,16 @@ class SessionService:
         store: SessionStore | None = None,
         recorder: SessionRecorder | None = None,
         session_id: str | None = None,
+        project: ProjectMetadata | None = None,
     ) -> None:
         if recorder is not None and session_id is not None:
             if recorder.session_id != session_id:
                 raise ValueError("Session recorder and session_id disagree")
-        self._store = store or (recorder.store if recorder is not None else SessionStore())
+        self._store = store or (
+            recorder.store
+            if recorder is not None
+            else SessionStore(project=project)
+        )
         self._recorder = recorder
         self._session_id = session_id or (recorder.session_id if recorder is not None else None)
 

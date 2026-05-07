@@ -6,6 +6,7 @@ import pytest
 from ididi import Graph
 from rich.console import Console
 
+from aceai import __version__
 from aceai.agent.citations import TurnCitation
 from aceai.core.agent import Agent
 from aceai.core.executor import Executor
@@ -24,6 +25,7 @@ from aceai.agent.config import clear_config, current_config
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
 from aceai.agent.ideas import IdeaStore
+from aceai.agent.project import ProjectStore
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui import runner as tui_runner_module
 from aceai.agent.tui.app import AceAITUI
@@ -88,7 +90,7 @@ def write_skill(root: Path, name: str, description: str, body: str) -> Path:
 @pytest.fixture(autouse=True)
 def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
     store = SessionStore(tmp_path / "sessions")
-    monkeypatch.setattr(tui_app_module, "SessionStore", lambda: store)
+    monkeypatch.setattr(tui_app_module, "SessionStore", lambda **kwargs: store)
 
     async def no_update() -> None:
         return None
@@ -985,6 +987,7 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         assert "context:" not in status.current_text
         assert "cache rate:" not in status.current_text
         assert "cost:" not in status.current_text
+        assert "version:" not in status.current_text
 
 
 @pytest.mark.anyio
@@ -1055,6 +1058,9 @@ async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(tmp_path)
         section.title: "\n".join(section.lines)
         for section in sections
     }
+    assert "project: aceai" in section_lines["Runtime"]
+    assert "project_id:" in section_lines["Runtime"]
+    assert f"version: {__version__}" in section_lines["Runtime"]
     assert "model: gpt-4o" in section_lines["Runtime"]
     assert "session cost: -" in section_lines["Usage"]
     assert "provider: openai" in section_lines["Agent"]
@@ -1390,54 +1396,9 @@ async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() ->
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_idea_command_saves_markdown_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent, idea_store=IdeaStore(ideas_path))
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(
-            Input.Submitted(command_input, "/idea 修一下 resume 默认 session")
-        )
-
-    markdown = ideas_path.read_text(encoding="utf-8")
-    assert "修一下 resume 默认 session" in markdown
-    assert app._state.events == []
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent, idea_store=IdeaStore(ideas_path))
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        app.on_command_input_submitted(
-            CommandInput.Submitted(command_input, "/idea first line\nsecond line")
-        )
-
-    markdown = ideas_path.read_text(encoding="utf-8")
-    assert "first line\nsecond line" in markdown
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+async def test_interactive_tui_idea_command_saves_structured_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture("first idea")
-    idea_store.capture("second idea")
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1445,6 +1406,56 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(
+            Input.Submitted(command_input, "/idea 修一下 resume 默认 session")
+        )
+
+    markdown = idea_store.render_markdown(project=app._project)
+    assert "修一下 resume 默认 session" in markdown
+    assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
+        "修一下 resume 默认 session"
+    ]
+    assert app._state.events == []
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_command_input_submitted(
+            CommandInput.Submitted(command_input, "/idea first line\nsecond line")
+        )
+
+    markdown = idea_store.render_markdown(project=app._project)
+    assert "first line\nsecond line" in markdown
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first idea", project=app._project)
+    idea_store.capture("second idea", project=app._project)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1473,14 +1484,47 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_idea_picker_shows_other_project_when_current_empty(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    project_store = ProjectStore(tmp_path / "projects")
+    current_project = project_store.resolve_project(tmp_path / "ioa")
+    other_project = project_store.resolve_project(tmp_path / "aceai")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        idea_store=idea_store,
+        project=current_project,
+    )
+    idea_store.capture("aceai idea", project=other_project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, IdeaPickerScreen)
+        idea_list = screen.query_one("#idea-list", IdeaListWidget)
+        assert [idea.content for idea in idea_list._ideas] == ["aceai idea"]
+        assert idea_list._ideas[0].project_id == other_project.project_id
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+    ideas_path = tmp_path / "ideas.sqlite3"
     long_content = (
         "triggered, AceAI should save the selected failed trajectories into memory so "
         "they can be reviewed or retrieved later with additional implementation detail"
     )
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture(long_content)
     llm_service = StubLLMService(
         [
             LLMStreamEvent(
@@ -1500,6 +1544,7 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture(long_content, project=app._project)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1529,10 +1574,8 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
 
 @pytest.mark.anyio
 async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+    ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture("first idea")
-    idea_store.capture("second idea")
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1540,6 +1583,8 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first idea", project=app._project)
+    idea_store.capture("second idea", project=app._project)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1563,7 +1608,7 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
             "edited first idea",
             "second idea",
         ]
-        assert [idea.content for idea in idea_store.list_recent()] == [
+        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
             "edited first idea",
             "second idea",
         ]
@@ -1571,9 +1616,8 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
 
 @pytest.mark.anyio
 async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+    ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture("first idea")
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1581,6 +1625,7 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first idea", project=app._project)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1614,7 +1659,7 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
             "first idea",
             "new idea from picker",
         ]
-        assert [idea.content for idea in idea_store.list_recent()] == [
+        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
             "first idea",
             "new idea from picker",
         ]
@@ -1622,11 +1667,8 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
 
 @pytest.mark.anyio
 async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+    ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture("first idea")
-    idea_store.capture("second idea")
-    idea_store.capture("third idea")
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1634,6 +1676,9 @@ async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) ->
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first idea", project=app._project)
+    idea_store.capture("second idea", project=app._project)
+    idea_store.capture("third idea", project=app._project)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1651,7 +1696,7 @@ async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) ->
             "first idea",
             "third idea",
         ]
-        assert [idea.content for idea in idea_store.list_recent()] == [
+        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
             "first idea",
             "third idea",
         ]
@@ -1659,10 +1704,8 @@ async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) ->
 
 @pytest.mark.anyio
 async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.md"
+    ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
-    idea_store.capture("first idea")
-    idea_store.capture("second idea")
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1670,6 +1713,8 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
     app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first idea", project=app._project)
+    idea_store.capture("second idea", project=app._project)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -1677,7 +1722,9 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
 
     assert app._state.events[-1].kind == "idea_list"
     assert [item.title for item in app._state.events[-1].idea_items] == ["second idea"]
-    assert [idea.content for idea in idea_store.list_recent()] == ["second idea"]
+    assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
+        "second idea"
+    ]
 
 
 @pytest.mark.anyio
@@ -1909,6 +1956,8 @@ async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
         console.print(stream._render_empty_state())
         text = console.export_text()
         assert "Ask AceAI Anything" in text
+        assert "Project: aceai" in text
+        assert f"v{__version__}" in text
         assert "██" in text
         assert "No events yet" not in text
 
@@ -2740,7 +2789,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         app._handle_session_selection(second.session_id)
 
         assert app._session_id == second.session_id
-        assert app.title == f"AceAI {second.session_id}"
+        assert app.title == f"AceAI {second.project_name} {second.session_id}"
         assert app._state.events[0].content == "second"
         assert app._selected_model == "gpt-5.5"
         assert app._llm_history[0].content[0]["data"] == "second"

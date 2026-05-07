@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from aceai import __version__
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.provider_catalog import (
     all_supported_models,
@@ -278,6 +279,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--file",
         default=None,
         help="Write aceai export output to a new file instead of stdout.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     return parser
 

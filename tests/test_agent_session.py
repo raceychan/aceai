@@ -1,4 +1,8 @@
-from datetime import datetime
+import json
+from datetime import datetime, timezone
+
+from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
+from sqlalchemy import insert as sql_insert
 
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
@@ -10,6 +14,7 @@ from aceai.agent.session import (
     SessionStore,
 )
 from aceai.agent.event_store import JsonlEventStore
+from aceai.agent.project import ProjectStore
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
@@ -46,6 +51,83 @@ def test_session_store_lists_sessions_by_recent_update(tmp_path) -> None:
     ]
 
 
+def test_session_store_lists_all_sessions_with_current_project_first(tmp_path) -> None:
+    project_store = ProjectStore(tmp_path / "projects")
+    ioa = project_store.resolve_project(tmp_path / "ioa")
+    travel_butler = project_store.resolve_project(tmp_path / "travel_butler")
+    ioa_store = SessionStore(tmp_path / "sessions", project=ioa)
+    travel_store = SessionStore(tmp_path / "sessions", project=travel_butler)
+
+    ioa_session = ioa_store.create_session()
+    travel_session = travel_store.create_session()
+
+    sessions = ioa_store.list_sessions()
+
+    assert [session.session_id for session in sessions] == [
+        ioa_session.session_id,
+        travel_session.session_id,
+    ]
+    assert sessions[0].project_id == ioa.project_id
+    assert sessions[0].project_name == "ioa"
+
+
+def test_session_store_can_filter_sessions_by_project(tmp_path) -> None:
+    project_store = ProjectStore(tmp_path / "projects")
+    ioa = project_store.resolve_project(tmp_path / "ioa")
+    travel_butler = project_store.resolve_project(tmp_path / "travel_butler")
+    ioa_store = SessionStore(tmp_path / "sessions", project=ioa)
+    travel_store = SessionStore(tmp_path / "sessions", project=travel_butler)
+
+    ioa_session = ioa_store.create_session()
+    travel_store.create_session()
+
+    sessions = ioa_store.list_sessions(project_id=ioa.project_id)
+
+    assert [session.session_id for session in sessions] == [ioa_session.session_id]
+
+
+def test_session_store_backfills_empty_project_to_current_project(tmp_path) -> None:
+    root = tmp_path / "sessions"
+    files_dir = root / "files"
+    files_dir.mkdir(parents=True)
+    engine = create_engine(f"sqlite:///{root / 'sessions.sqlite3'}")
+    metadata = MetaData()
+    sessions_table = Table(
+        "sessions",
+        metadata,
+        Column("session_id", String, primary_key=True),
+        Column("project_id", String, nullable=False),
+        Column("project_name", String, nullable=False),
+        Column("created_at", DateTime(timezone=True), nullable=False),
+        Column("updated_at", DateTime(timezone=True), nullable=False),
+        Column("title", String, nullable=False),
+        Column("path", String, nullable=False),
+        Column("state_json", String, nullable=False),
+    )
+    metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(
+            sql_insert(sessions_table).values(
+                session_id="session-1",
+                project_id="",
+                project_name="",
+                created_at=now,
+                updated_at=now,
+                title="old session",
+                path="session-1.events.jsonl",
+                state_json=json.dumps(SessionState.empty().as_json()),
+            )
+        )
+    (files_dir / "session-1.events.jsonl").write_text("", encoding="utf-8")
+
+    store = SessionStore(root)
+    session = store.get_session("session-1")
+
+    assert session.project_id == store.project_id
+    assert session.project_name == "aceai"
+
+
 def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -63,6 +145,8 @@ def test_jsonl_event_store_round_trips_session_events(tmp_path) -> None:
     path = event_store.create_event_log(session_id)
     metadata = SessionMetadata(
         session_id=session_id,
+        project_id="project-1",
+        project_name="test-project",
         created_at=datetime(2026, 1, 1),
         updated_at=datetime(2026, 1, 1),
         title="Test",

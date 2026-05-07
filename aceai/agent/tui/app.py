@@ -6,9 +6,11 @@ from textual.events import Key
 from textual.timer import Timer
 from textual.widgets import TextArea
 
+from aceai import __version__
 from aceai.core.events import AgentEvent
 
 from aceai.agent.ideas import IdeaStore
+from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
@@ -78,6 +80,7 @@ class AceAITUI(App[None]):
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
         idea_store: IdeaStore | None = None,
+        project: ProjectMetadata | None = None,
         record_events: bool = True,
     ) -> None:
         super().__init__()
@@ -86,18 +89,23 @@ class AceAITUI(App[None]):
         self._status_model = model
         self._session_recorder = session_recorder
         self._session_id = session_id
+        self._project = project or (
+            session_recorder.store.project
+            if session_recorder is not None
+            else default_project()
+        )
         self._idea_store = idea_store or IdeaStore()
         self._record_events = record_events
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta: TUIEvent | None = None
         self._pending_stream_delta_timer: Timer | None = None
         self._command_completion_selected_index = 0
-        self.title = "AceAI" if session_id is None else f"AceAI {session_id}"
+        self.title = self._window_title()
 
     def compose(self) -> ComposeResult:
         yield TopBarWidget(id="topbar")
         with Horizontal(id="main"):
-            yield StreamWidget(id="stream")
+            yield StreamWidget(id="stream", project_name=self._project.name)
             yield DetailWidget(id="detail", classes="collapsed")
         yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
@@ -141,6 +149,7 @@ class AceAITUI(App[None]):
             marker = "*" if session.session_id == self._session_id else "-"
             lines.append(
                 f"{marker} {session.session_id}  "
+                f"{session.project_name}  "
                 f"{session_display_title(session.title)}  {session.updated_at}"
             )
         lines.append("")
@@ -180,7 +189,7 @@ class AceAITUI(App[None]):
             self._session_recorder.finalize()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
-        self.title = f"AceAI {metadata.session_id}"
+        self.title = self._window_title()
         event_log = store.load_event_log(metadata.session_id)
         self.load_events(event_log_to_tui_events(event_log))
         self.notify_session(f"Resumed session {metadata.session_id}")
@@ -188,18 +197,18 @@ class AceAITUI(App[None]):
     def ensure_session(self) -> None:
         if self._session_recorder is not None:
             return
-        store = SessionStore()
+        store = SessionStore(project=self._project)
         metadata = store.create_session()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
-        self.title = f"AceAI {metadata.session_id}"
+        self.title = self._window_title()
         if self.is_mounted:
             self.query_one(TopBarWidget).set_title(self.title)
 
     def _session_store(self) -> SessionStore:
         if self._session_recorder is not None:
             return self._session_recorder.store
-        return SessionStore()
+        return SessionStore(project=self._project)
 
     def append_event(self, event: TUIEvent) -> None:
         if self._should_buffer_stream_delta(event):
@@ -398,6 +407,9 @@ class AceAITUI(App[None]):
         usage = self._state.usage
         lines = [
             f"session: {self._session_id or '-'}",
+            f"project: {self._project.name}",
+            f"project_id: {self._project.project_id}",
+            f"version: {__version__}",
             f"model: {self._status_model or 'unconfigured'}",
             f"status: {self._state.status}",
             f"events: {len(self._state.events)}",
@@ -429,7 +441,9 @@ class AceAITUI(App[None]):
 
     def _refresh_widgets(self) -> None:
         self.query_one(TopBarWidget).set_title(self.title)
-        self.query_one(StreamWidget).set_state(self._state)
+        stream = self.query_one(StreamWidget)
+        stream.set_project_name(self._project.name)
+        stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
@@ -441,6 +455,11 @@ class AceAITUI(App[None]):
             command_input.placeholder = "Choose Approve or Reject"
         else:
             command_input.placeholder = "Ask AceAI or type /quit"
+
+    def _window_title(self) -> str:
+        if self._session_id is None:
+            return f"AceAI {self._project.name}"
+        return f"AceAI {self._project.name} {self._session_id}"
 
     def _focus_message_panel(self) -> None:
         self.query_one(StreamWidget).focus()
