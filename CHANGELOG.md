@@ -1,5 +1,19 @@
 # Changelog
 
+## AceAI v0.2.18
+
+### Improvements
+
+- `tui`: Label skill entries by source in the Tools tab so global, project, and AceAI built-in skills are visible without inspecting filesystem paths.
+
+### Fixes
+
+- `llm`: Split streaming timeouts into a longer first-event window and a shorter post-start idle window so slower OpenAI Responses startup does not trigger repeated retries while stalled streams still fail promptly after output begins.
+
+### Breaking Changes
+
+- `llm`: `LLMService` now accepts `stream_start_timeout_seconds` before `stream_event_timeout_seconds`; callers using positional timeout arguments must pass these values with keywords or update the positional order.
+
 ## AceAI v0.2.17
 
 ### Features

@@ -72,6 +72,7 @@ class SkillConfigItem(Record, kw_only=True):
     description: str
     location: str
     builtin: bool = False
+    source: str = "global"
 
 
 class ToolPermissionItem(Record, kw_only=True):
@@ -161,17 +162,34 @@ def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
             description=skill.description,
             location=str(skill.skill_file),
             builtin=_is_builtin_skill_location(skill.skill_file),
+            source=_skill_source(skill.skill_file),
         )
         for skill in registry.get_skills()
     )
 
 
 def _is_builtin_skill_location(skill_file: Path) -> bool:
+    return _skill_source(skill_file) == "aceai builtin"
+
+
+def _skill_source(skill_file: Path) -> str:
     resolved = skill_file.resolve()
-    return any(
+    if any(
         resolved.is_relative_to(builtin_path.resolve())
         for builtin_path in ACE_AGENT_BUILTIN_SKILL_PATHS
-    )
+    ):
+        return "aceai builtin"
+    if _is_under(skill_file, Path.cwd() / ".agents" / "skills"):
+        return "project"
+    if _is_under(skill_file, Path.home() / ".aceai" / "skills"):
+        return "global"
+    return "project"
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    absolute_path = path.expanduser().absolute()
+    absolute_root = root.expanduser().absolute()
+    return absolute_path.is_relative_to(absolute_root)
 
 
 def _skill_checkboxes(
@@ -196,6 +214,11 @@ def _skill_checkboxes(
                     id=f"skill-description-{index}",
                 ),
                 Static(
+                    _skill_source_label(item),
+                    classes=f"skill-source skill-source-{item.source.replace(' ', '-')}",
+                    id=f"skill-source-{index}",
+                ),
+                Static(
                     item.location,
                     classes="skill-location",
                     id=f"skill-location-{index}",
@@ -204,6 +227,10 @@ def _skill_checkboxes(
             )
         )
     return tuple(controls)
+
+
+def _skill_source_label(item: SkillConfigItem) -> str:
+    return f"{item.source} skill"
 
 
 def _project_skill_dir() -> Path:
@@ -330,6 +357,12 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
 
     .skill-description {
         color: #e5e9f0;
+        margin-left: 3;
+        height: auto;
+    }
+
+    .skill-source {
+        color: #88c0d0;
         margin-left: 3;
         height: auto;
     }
@@ -774,6 +807,12 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     .skill-description {
         color: #e5e9f0;
+        margin-left: 3;
+        height: auto;
+    }
+
+    .skill-source {
+        color: #88c0d0;
         margin-left: 3;
         height: auto;
     }

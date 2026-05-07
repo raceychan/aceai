@@ -163,6 +163,31 @@ class HangingStreamProvider(RecordingProvider):
         return iterator()
 
 
+class SlowAfterFirstStreamProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+        self.attempts += 1
+        attempt = self.attempts
+
+        async def iterator():
+            if attempt == 1:
+                yield LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="hello",
+                )
+                await asyncio.sleep(60.0)
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="recovered"),
+            )
+
+        return iterator()
+
+
 class AlwaysFailingStreamProvider(RecordingProvider):
     def stream(self, request: LLMInput):
         self.stream_requests.append(request)
@@ -177,6 +202,13 @@ class AlwaysFailingStreamProvider(RecordingProvider):
 def test_llm_service_requires_providers() -> None:
     with pytest.raises(AceAIConfigurationError):
         LLMService([], timeout_seconds=1.0)
+
+
+def test_llm_service_defaults_distinguish_stream_start_and_event_timeouts() -> None:
+    service = LLMService([RecordingProvider()], timeout_seconds=1.0)
+
+    assert service._stream_start_timeout_seconds == 30.0
+    assert service._stream_event_timeout_seconds == 15.0
 
 
 def test_llm_service_rotation_and_counts() -> None:
@@ -286,6 +318,7 @@ async def test_llm_service_stream_retries_when_next_event_times_out() -> None:
         [provider],
         timeout_seconds=1.0,
         retry_initial_delay_seconds=0.0,
+        stream_start_timeout_seconds=0.01,
         stream_event_timeout_seconds=0.01,
     )
 
@@ -298,6 +331,32 @@ async def test_llm_service_stream_retries_when_next_event_times_out() -> None:
         "response.completed",
     ]
     retry_event = events[0]
+    assert retry_event.retry_count == 1
+    assert retry_event.error == "TimeoutError: "
+    assert len(provider.stream_requests) == 2
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_uses_event_timeout_after_first_event() -> None:
+    provider = SlowAfterFirstStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+        stream_start_timeout_seconds=10.0,
+        stream_event_timeout_seconds=0.01,
+    )
+
+    events: list[LLMStreamEvent] = []
+    async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+        events.append(event)
+
+    assert [event.event_type for event in events] == [
+        "response.output_text.delta",
+        "response.retrying",
+        "response.completed",
+    ]
+    retry_event = events[1]
     assert retry_event.retry_count == 1
     assert retry_event.error == "TimeoutError: "
     assert len(provider.stream_requests) == 2

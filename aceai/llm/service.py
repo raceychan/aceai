@@ -109,7 +109,8 @@ class LLMService:
         max_retries: int = 5,
         retry_initial_delay_seconds: float = 0.5,
         retry_backoff_factor: float = 2.0,
-        stream_event_timeout_seconds: float = 3.0,
+        stream_start_timeout_seconds: float = 30.0,
+        stream_event_timeout_seconds: float = 15.0,
     ):
         if not providers:
             raise AceAIConfigurationError("At least one provider is required")
@@ -119,6 +120,7 @@ class LLMService:
         self._max_retries = max_retries
         self._retry_initial_delay_seconds = retry_initial_delay_seconds
         self._retry_backoff_factor = retry_backoff_factor
+        self._stream_start_timeout_seconds = stream_start_timeout_seconds
         self._stream_event_timeout_seconds = stream_event_timeout_seconds
 
     def _get_current_provider(self) -> LLMProviderBase:
@@ -316,11 +318,18 @@ class LLMService:
             stream_resp: AsyncGenerator[LLMStreamEvent, None] | None = None
             try:
                 stream_resp = provider.stream(request)
+                received_stream_event = False
                 while True:
+                    timeout_seconds = (
+                        self._stream_event_timeout_seconds
+                        if received_stream_event
+                        else self._stream_start_timeout_seconds
+                    )
                     event = await _next_stream_event(
                         stream_resp,
-                        timeout_seconds=self._stream_event_timeout_seconds,
+                        timeout_seconds=timeout_seconds,
                     )
+                    received_stream_event = True
                     yield event
             except StopAsyncIteration:
                 return
