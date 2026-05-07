@@ -743,14 +743,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             ),
                             id="model-options",
                         )
-                        yield Label(_field_label("compress_threshold"))
-                        yield Input(
-                            value=_compress_threshold_input_value(
-                                self._compress_threshold
-                            ),
-                            placeholder="80%",
-                            id="compress-threshold",
-                        )
                         yield Label(_field_label("api_key"))
                         yield Input(
                             value=_masked_api_key(
@@ -758,6 +750,19 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             ),
                             placeholder=api_key_env(self._provider_name),
                             id="api-key",
+                        )
+                        yield Static(
+                            "",
+                            classes="config-divider",
+                            id="config-compression-divider",
+                        )
+                        yield Label(_field_label("compress_threshold"))
+                        yield Input(
+                            value=_compress_threshold_input_value(
+                                self._compress_threshold
+                            ),
+                            placeholder="80%",
+                            id="compress-threshold",
                         )
                         yield Static(
                             "",
