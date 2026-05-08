@@ -33,7 +33,6 @@ class ApprovalWidget(Container):
 
     #approval-row {
         height: 1;
-        margin-top: 1;
     }
 
     #approval-summary {

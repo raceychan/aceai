@@ -8,7 +8,7 @@ from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, set_span_in_context
 
 from aceai.llm import ILLMService, LLMResponse
-from aceai.llm.errors import AceAIRuntimeError
+from aceai.llm.errors import AceAIRuntimeError, LLMProviderError
 from aceai.llm.interface import Unset, is_set
 from aceai.llm.models import LLMRequestMeta, LLMToolCallDelta, LLMToolSpec
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
@@ -122,6 +122,22 @@ async def execute_agent_run(
                         yield event
                         return
                     yield event
+            except LLMProviderError as exc:
+                run_context.run_state.status = "failed"
+                error_msg = str(exc)
+                failed_step = AgentStep(
+                    step_id=step_id,
+                    llm_response=LLMResponse(text="", status="failed"),
+                )
+                run_context.steps.append(failed_step)
+                for event in _handle_failed_step(
+                    run_context,
+                    failed_step,
+                    len(run_context.steps) - 1,
+                    error_msg=error_msg,
+                ):
+                    yield event
+                return
             except Exception as exc:
                 run_context.run_state.status = "failed"
                 if not run_context.steps:
@@ -293,8 +309,8 @@ async def _call_llm(
                         )
                 case "response.error":
                     if isinstance(stream_event.error, str):
-                        raise AceAIRuntimeError(stream_event.error)
-                    raise AceAIRuntimeError("LLM streaming error")
+                        raise LLMProviderError(stream_event.error)
+                    raise LLMProviderError("LLM streaming error")
                 case "response.retrying":
                     if not isinstance(stream_event.error, str):
                         raise AceAIRuntimeError("LLM retry event missing error")
@@ -310,6 +326,8 @@ async def _call_llm(
                         raise AceAIRuntimeError(
                             "LLM stream completed without a response payload"
                         )
+                    if response.status == "failed":
+                        raise LLMProviderError(response.text)
                     for segment in response.segments:
                         if segment.type == "reasoning" and not reasoning_streamed:
                             yield event_builder.llm_reasoning(segment=segment)

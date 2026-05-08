@@ -18,8 +18,12 @@ from aceai.agent.provider_catalog import (
 def test_provider_catalog_loads_supported_providers_and_models() -> None:
     catalog = load_provider_catalog()
 
-    assert supported_provider_names() == ("openai", "deepseek")
-    assert provider_options() == (("OpenAI", "openai"), ("DeepSeek", "deepseek"))
+    assert supported_provider_names() == ("openai", "deepseek", "codex")
+    assert provider_options() == (
+        ("OpenAI", "openai"),
+        ("DeepSeek", "deepseek"),
+        ("Codex (subscription)", "codex"),
+    )
     assert catalog.pricing_source == "provider-api-pricing-2026-05-04"
     assert default_model("openai") == "gpt-5.5"
     assert stale_default_models("openai") == ("gpt-5.1",)

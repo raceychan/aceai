@@ -693,7 +693,7 @@ async def test_reasoning_log_is_empty_when_no_deltas() -> None:
 
 
 @pytest.mark.anyio
-async def test_stream_error_bubbles_without_run_failed_event() -> None:
+async def test_stream_error_emits_run_failed_event() -> None:
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -710,13 +710,11 @@ async def test_stream_error_bubbles_without_run_failed_event() -> None:
         executor=StubExecutor(),
     )
 
-    events: list[AgentEvent] = []
-    with pytest.raises(AceAIRuntimeError, match="provider exploded"):
-        async for evt in agent.run("boom?"):
-            events.append(evt)
+    events = await collect_events(agent, "boom?")
 
-    assert isinstance(events[-1], LLMStartedEvent)
-    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
+    assert isinstance(events[-3], LLMStartedEvent)
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == "provider exploded"
 
 
 @pytest.mark.anyio
@@ -809,13 +807,43 @@ async def test_agent_uses_default_error_message_when_stream_error_missing_text()
         executor=StubExecutor(),
     )
 
-    events: list[AgentEvent] = []
-    with pytest.raises(AceAIRuntimeError, match="LLM streaming error"):
-        async for evt in agent.run("Boom?"):
-            events.append(evt)
+    events = await collect_events(agent, "Boom?")
 
-    assert isinstance(events[-1], LLMStartedEvent)
-    assert not any(isinstance(evt, RunFailedEvent) for evt in events)
+    assert isinstance(events[-3], LLMStartedEvent)
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == "LLM streaming error"
+
+
+@pytest.mark.anyio
+async def test_agent_treats_failed_llm_completion_as_run_failure() -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [
+                [
+                    LLMStreamEvent(
+                        event_type="response.completed",
+                        response=LLMResponse(
+                            text=(
+                                "LLM request failed after retries. "
+                                "Please try again later."
+                            ),
+                            status="failed",
+                        ),
+                    )
+                ]
+            ]
+        ),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Boom?")
+
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == (
+        "LLM request failed after retries. Please try again later."
+    )
 
 
 @pytest.mark.anyio

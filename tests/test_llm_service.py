@@ -3,7 +3,7 @@ import asyncio
 import pytest
 import httpx
 from msgspec import DecodeError, Struct
-from openai import OpenAIError
+from openai import APIError, OpenAIError
 from types import SimpleNamespace
 
 from aceai.llm.errors import (
@@ -134,6 +134,43 @@ class FlakyStreamProvider(RecordingProvider):
                 self.failures_remaining -= 1
                 raise httpx.RemoteProtocolError(
                     "peer closed connection without sending complete message body"
+                )
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="recovered"),
+            )
+
+        return iterator()
+
+
+class FlakyAPIErrorStreamProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                raise APIError(
+                    "Our servers are currently overloaded. Please try again later.",
+                    request=httpx.Request(
+                        "POST",
+                        "https://api.openai.com/v1/responses",
+                    ),
+                    body={
+                        "type": "error",
+                        "error": {
+                            "type": "service_unavailable_error",
+                            "code": "server_is_overloaded",
+                            "message": (
+                                "Our servers are currently overloaded. "
+                                "Please try again later."
+                            ),
+                        },
+                    },
                 )
             yield LLMStreamEvent(
                 event_type="response.completed",
@@ -307,6 +344,29 @@ async def test_llm_service_stream_emits_retry_progress() -> None:
     assert retry_event.retry_delay_seconds == 0.0
     assert retry_event.error == (
         "RemoteProtocolError: peer closed connection without sending complete message body"
+    )
+    assert len(provider.stream_requests) == 2
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_retries_openai_api_error_events() -> None:
+    provider = FlakyAPIErrorStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    events: list[LLMStreamEvent] = []
+    async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+        events.append(event)
+
+    assert [event.event_type for event in events] == [
+        "response.retrying",
+        "response.completed",
+    ]
+    assert events[0].error == (
+        "APIError: Our servers are currently overloaded. Please try again later."
     )
     assert len(provider.stream_requests) == 2
 

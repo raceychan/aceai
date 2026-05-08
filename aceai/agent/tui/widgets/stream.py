@@ -1,5 +1,6 @@
 """Main event stream pane for the read-only TUI prototype."""
 
+import json
 from hashlib import sha1
 
 from rich import box
@@ -65,6 +66,8 @@ EMPTY_STATE_DOG_HEIGHT = len(EMPTY_STATE_DOG_PIXELS[0])
 EMPTY_STATE_DOG_WIDTH = max(len(row) for row in EMPTY_STATE_DOG_PIXELS[0]) * 2
 EMPTY_STATE_MIN_WIDTH = EMPTY_STATE_DOG_WIDTH + 4
 EMPTY_STATE_CONTENT_HEIGHT = EMPTY_STATE_DOG_HEIGHT + 2
+TOOL_ARGUMENT_PREVIEW_MAX_CHARS = 96
+TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS = 48
 EMPTY_STATE_PIXEL_STYLES: dict[str, str] = {
     "o": "#e5b86f",
     "n": "#111827",
@@ -924,8 +927,10 @@ def _render_tool_block(tool_block: _ToolBlockState) -> Text:
     text.append(TRANSCRIPT_GUTTER)
     text.append("●", style=SUBTLE_BULLET_STYLE)
     text.append(" ")
-    text.append(tool_block.name, style=style)
-    text.append(f"  {_tool_summary(tool_block)}", style=style)
+    text.append(_tool_call_preview(tool_block), style=style)
+    summary = _tool_summary(tool_block)
+    if summary != "":
+        text.append(f"  {summary}", style=style)
     return text
 
 
@@ -1067,13 +1072,49 @@ def _tool_summary(tool_block: _ToolBlockState) -> str:
     if tool_block.status == "failed":
         return "failed"
     if tool_block.status == "completed":
-        summary = _tool_output_summary(tool_block.output)
-        if summary != "":
-            return f"completed - {summary}"
-        return "completed"
+        return _tool_output_summary(tool_block.output)
     if tool_block.status == "awaiting_approval":
         return "waiting for approval"
     return "running"
+
+
+def _tool_call_preview(tool_block: _ToolBlockState) -> str:
+    if tool_block.name is None:
+        raise ValueError("tool block must include a tool name before rendering")
+    arguments = _tool_argument_preview(tool_block.arguments)
+    if arguments == "":
+        return tool_block.name
+    return f"{tool_block.name}({arguments})"
+
+
+def _tool_argument_preview(arguments: str) -> str:
+    if arguments == "":
+        return ""
+    payload = json.loads(arguments)
+    if not isinstance(payload, dict):
+        return "..."
+    items = list(payload.items())
+    if len(items) == 1:
+        return _tool_argument_value_preview(items[0][1])
+    parts: list[str] = []
+    for key, value in items:
+        if type(key) is not str:
+            return "..."
+        parts.append(f"{key}: {_tool_argument_value_preview(value)}")
+    preview = ", ".join(parts)
+    if len(preview) > TOOL_ARGUMENT_PREVIEW_MAX_CHARS:
+        return preview[: TOOL_ARGUMENT_PREVIEW_MAX_CHARS - 3] + "..."
+    return preview
+
+
+def _tool_argument_value_preview(value: object) -> str:
+    if isinstance(value, str):
+        if len(value) > TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS:
+            value = value[: TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS - 3] + "..."
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, int | float | bool) or value is None:
+        return json.dumps(value, ensure_ascii=False)
+    return "..."
 
 
 def _tool_output_summary(output: str) -> str:

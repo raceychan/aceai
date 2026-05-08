@@ -895,6 +895,52 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_accepts_typed_approval_shortcut() -> None:
+    call = LLMToolCall(
+        name="write_text_file",
+        arguments='{"path":"x","content":"hello"}',
+        call_id="call-1",
+    )
+    llm_service = MultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="use tool", tool_calls=[call]),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="done"),
+                ),
+            ],
+        ]
+    )
+    executor = ApprovalExecutor()
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Write it"))
+        await _wait_until(pilot, lambda: app._state.status == "suspended")
+
+        command_input.value = "a"
+        app.on_command_input_submitted(CommandInput.Submitted(command_input, "a"))
+        await _wait_until(pilot, lambda: app._state.status == "completed")
+
+        assert app._state.final_answer == "done"
+        assert executor.calls == [call]
+        assert command_input.value == ""
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_shows_next_approval_after_resume_suspends_again() -> (
     None
 ):

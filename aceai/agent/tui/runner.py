@@ -268,11 +268,26 @@ class _RuntimeStreamMixin:
         question = value
         if question == "":
             return
+        if self._dispatch_approval_input(question):
+            self.exit_command_input(command_input)
+            return
         if self._dispatch_command(question):
             self.exit_command_input(command_input)
             return
         self.start_run(question)
         self.exit_command_input(command_input)
+
+    def _dispatch_approval_input(self, text: str) -> bool:
+        agent_app = self._agent_app
+        if agent_app is None or not agent_app.is_running_suspended:
+            return False
+        if text in ("a", "approve"):
+            self.approve_pending_tool()
+            return True
+        if text in ("r", "reject"):
+            self.reject_pending_tool("rejected by caller")
+            return True
+        return False
 
     def cancel_active_run(self) -> bool:
         if self._active_worker is None or not self._active_worker.is_running:
