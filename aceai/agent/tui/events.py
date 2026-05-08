@@ -103,12 +103,14 @@ class TUIEvent(Record, kw_only=True):
         question: str,
         *,
         citations: tuple[TurnCitation, ...] = (),
+        event_id: str = "",
     ) -> Self:
         return cls(
             kind="user_message",
             step_index=-1,
             step_id=uuid_str(),
             title="you",
+            event_id=event_id or uuid_str(),
             content=question,
             citations=citations,
             raw_event=None,
@@ -158,7 +160,11 @@ class TUIEvent(Record, kw_only=True):
             citations: tuple[TurnCitation, ...] = ()
             if "citations" in event.payload:
                 citations = citations_from_payload(event.payload["citations"])
-            return cls.user_message(event.payload["content"], citations=citations)
+            return cls.user_message(
+                event.payload["content"],
+                citations=citations,
+                event_id=event.event_id,
+            )
         if event.kind == "assistant_message":
             return cls._from_session_assistant_event(event)
         if event.kind == "assistant_tool_call":
@@ -195,6 +201,7 @@ class TUIEvent(Record, kw_only=True):
             step_index=_session_step_index(event),
             step_id=event.step_id or uuid_str(),
             title="assistant",
+            event_id=event.event_id or uuid_str(),
             content=event.payload["content"],
             usage=_session_usage(event),
             cost=_session_cost(event),

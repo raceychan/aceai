@@ -2,6 +2,7 @@
 
 from functools import cache
 from importlib import resources
+from typing import Literal
 
 import yaml
 from typing_extensions import Self
@@ -10,6 +11,7 @@ from aceai.llm.interface import Record
 
 
 CATALOG_RESOURCE = "provider_catalog.yaml"
+ProviderAuthMode = Literal["api_key", "subscription"]
 
 
 class ModelTokenPrice(Record, kw_only=True):
@@ -28,7 +30,9 @@ class ModelTokenPrice(Record, kw_only=True):
         if type(input_price) is not float:
             raise TypeError("Provider catalog input_usd_per_million must be float")
         if type(cached_input_price) is not float:
-            raise TypeError("Provider catalog cached_input_usd_per_million must be float")
+            raise TypeError(
+                "Provider catalog cached_input_usd_per_million must be float"
+            )
         if type(output_price) is not float:
             raise TypeError("Provider catalog output_usd_per_million must be float")
         return cls(
@@ -43,6 +47,7 @@ class ModelCatalogEntry(Record, kw_only=True):
     id: str
     label: str
     max_context_window: int | None = None
+    reasoning_effort_options: tuple[str, ...] = ()
     pricing: ModelTokenPrice | None = None
 
     @classmethod
@@ -59,9 +64,21 @@ class ModelCatalogEntry(Record, kw_only=True):
         if "max_context_window" in raw:
             max_context_window = raw["max_context_window"]
             if type(max_context_window) is not int:
+                raise TypeError("Provider catalog max_context_window must be int")
+        reasoning_effort_options: tuple[str, ...] = ()
+        if "reasoning_effort_options" in raw:
+            raw_options = raw["reasoning_effort_options"]
+            if type(raw_options) is not list:
                 raise TypeError(
-                    "Provider catalog max_context_window must be int"
+                    "Provider catalog reasoning_effort_options must be list"
                 )
+            reasoning_effort_options = tuple(
+                _require_str(
+                    option,
+                    "Provider catalog reasoning_effort_options entries must be str",
+                )
+                for option in raw_options
+            )
         pricing = None
         if "pricing" in raw:
             pricing = ModelTokenPrice.from_raw(model_id, raw["pricing"])
@@ -69,6 +86,7 @@ class ModelCatalogEntry(Record, kw_only=True):
             id=model_id,
             label=label,
             max_context_window=max_context_window,
+            reasoning_effort_options=reasoning_effort_options,
             pricing=pricing,
         )
 
@@ -76,6 +94,7 @@ class ModelCatalogEntry(Record, kw_only=True):
 class ProviderCatalogEntry(Record, kw_only=True):
     name: str
     label: str
+    auth_mode: ProviderAuthMode
     api_key_env: str
     default_model: str
     stale_default_models: tuple[str, ...]
@@ -87,6 +106,7 @@ class ProviderCatalogEntry(Record, kw_only=True):
             raise TypeError("Provider catalog provider must be a mapping")
         name = raw["name"]
         label = raw["label"]
+        auth_mode = raw["auth_mode"]
         api_key_env_value = raw["api_key_env"]
         default_model_value = raw["default_model"]
         stale_default_model_values = raw["stale_default_models"]
@@ -95,6 +115,8 @@ class ProviderCatalogEntry(Record, kw_only=True):
             raise TypeError("Provider catalog provider name must be str")
         if type(label) is not str:
             raise TypeError("Provider catalog provider label must be str")
+        if auth_mode not in ("api_key", "subscription"):
+            raise ValueError("Provider catalog auth_mode is unsupported")
         if type(api_key_env_value) is not str:
             raise TypeError("Provider catalog api_key_env must be str")
         if type(default_model_value) is not str:
@@ -111,6 +133,7 @@ class ProviderCatalogEntry(Record, kw_only=True):
         return cls(
             name=name,
             label=label,
+            auth_mode=auth_mode,
             api_key_env=api_key_env_value,
             default_model=default_model_value,
             stale_default_models=parsed_stale_models,
@@ -142,8 +165,10 @@ class ProviderCatalog(Record, kw_only=True):
 
 @cache
 def load_provider_catalog() -> ProviderCatalog:
-    text = resources.files("aceai.agent").joinpath(CATALOG_RESOURCE).read_text(
-        encoding="utf-8"
+    text = (
+        resources.files("aceai.agent")
+        .joinpath(CATALOG_RESOURCE)
+        .read_text(encoding="utf-8")
     )
     raw = yaml.safe_load(text)
     return ProviderCatalog.from_raw(raw)
@@ -155,7 +180,8 @@ def supported_provider_names() -> tuple[str, ...]:
 
 def provider_options() -> tuple[tuple[str, str], ...]:
     return tuple(
-        (provider.label, provider.name) for provider in load_provider_catalog().providers
+        (provider.label, provider.name)
+        for provider in load_provider_catalog().providers
     )
 
 
@@ -195,6 +221,10 @@ def api_key_env(provider_name: str) -> str:
     return get_provider_catalog(provider_name).api_key_env
 
 
+def auth_mode(provider_name: str) -> ProviderAuthMode:
+    return get_provider_catalog(provider_name).auth_mode
+
+
 def price_for_model(provider_name: str, model: str) -> ModelTokenPrice | None:
     provider = get_provider_catalog(provider_name)
     for entry in provider.models:
@@ -231,6 +261,28 @@ def context_window_for_model_any_provider(model: str) -> int | None:
         if ctx is not None:
             return ctx
     return None
+
+
+def supports_reasoning_effort(provider_name: str, model: str) -> bool:
+    return len(reasoning_effort_options(provider_name, model)) > 0
+
+
+def reasoning_effort_options(provider_name: str, model: str) -> tuple[str, ...]:
+    provider = get_provider_catalog(provider_name)
+    for entry in provider.models:
+        if model == entry.id:
+            return entry.reasoning_effort_options
+    for entry in provider.models:
+        if model.startswith(f"{entry.id}-"):
+            return entry.reasoning_effort_options
+    return ()
+
+
+def supports_reasoning_effort_any_provider(model: str) -> bool:
+    for provider in load_provider_catalog().providers:
+        if supports_reasoning_effort(provider.name, model):
+            return True
+    return False
 
 
 def pricing_source() -> str:

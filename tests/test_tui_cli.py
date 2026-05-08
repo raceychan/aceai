@@ -3,6 +3,7 @@ import pytest
 from aceai import __version__
 from aceai.agent.config import AgentAppConfig, clear_config, save_config
 from aceai.agent.tui import cli
+from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
 
 
 class StubAgent:
@@ -170,6 +171,32 @@ def test_cli_uses_deepseek_env_provider(monkeypatch) -> None:
     cli.main([])
 
     assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-pro"))
+
+
+def test_cli_uses_codex_cli_auth_default(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    def build_agent(config):
+        calls.append(("build", (config.provider, config.api_key, config.model)))
+        return agent
+
+    def run_interactive_tui(received_agent, **kwargs):
+        calls.append(("interactive", (received_agent, kwargs)))
+
+    monkeypatch.setenv("ACEAI_PROVIDER", "codex")
+    monkeypatch.delenv("ACEAI_CODEX_TOKEN", raising=False)
+    monkeypatch.delenv("ACEAI_MODEL", raising=False)
+    install_tui_extra_stub(monkeypatch)
+    monkeypatch.setattr(cli, "build_agent", build_agent)
+    monkeypatch.setattr(cli, "run_interactive_tui", run_interactive_tui)
+
+    cli.main([])
+
+    assert calls[0] == (
+        "build",
+        ("codex", CODEX_CLI_AUTH_SENTINEL, "gpt-5.5"),
+    )
 
 
 def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> None:

@@ -10,6 +10,7 @@ from msgspec import field
 from aceai.agent.provider_catalog import (
     default_model,
     model_options,
+    reasoning_effort_options,
     stale_default_models,
     supported_models,
     supported_provider_names,
@@ -23,7 +24,8 @@ from aceai.llm.openai import OpenAIModel
 ProviderName = str
 ConfigValueType = Literal["string", "mapping", "list"]
 SkillSelectionMode = Literal["all", "selected"]
-CONFIG_VERSION = 3
+ReasoningLevel = Literal["auto", "low", "medium", "high", "max"]
+CONFIG_VERSION = 4
 DEFAULT_OPENAI_MODEL: OpenAIModel = default_model("openai")
 STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = stale_default_models("openai")
 OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = model_options("openai")
@@ -58,6 +60,8 @@ class AgentAppConfig(Record, kw_only=True):
     tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
     compress_threshold: CompressThreshold = "100%"
+    reasoning_level: ReasoningLevel = "auto"
+
 
 APP_CONFIG_SCHEMA = ConfigSchema(
     version=CONFIG_VERSION,
@@ -134,6 +138,12 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             required=True,
             description="Context compression threshold as a percentage or token count.",
         ),
+        ConfigField(
+            name="reasoning_level",
+            value_type="string",
+            required=True,
+            description="Reasoning effort level for models that support it.",
+        ),
     ),
 )
 
@@ -171,6 +181,12 @@ def validate_config(config: AgentAppConfig) -> None:
         raise ValueError("AceAI config model is unsupported")
     if config.default_model not in supported_models(config.provider):
         raise ValueError("AceAI config default_model is unsupported")
+    if config.reasoning_level not in ("auto", "low", "medium", "high", "max"):
+        raise ValueError("AceAI config reasoning_level is unsupported")
+    if config.reasoning_level != "auto":
+        options = reasoning_effort_options(config.provider, config.model)
+        if config.reasoning_level not in options:
+            raise ValueError("AceAI config reasoning_level is unsupported for model")
     if config.api_key == "":
         raise ValueError("AceAI config api_key is required")
     if config.skills == "":
@@ -252,6 +268,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
     tool_enabled = _load_tool_enabled(data)
     tool_max_calls = _load_tool_max_calls(data)
     compress_threshold = _load_compress_threshold(data)
+    reasoning_level = _load_reasoning_level(data)
     if legacy_skill_path:
         skill_selection_mode = "all"
         enabled_skills = []
@@ -268,9 +285,8 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
         raise ValueError("AceAI config skill_selection_mode is unsupported")
     if not has_config_version and model in stale_default_models(provider):
         model = default_model(provider)
-    if (
-        not has_config_version
-        and configured_default_model in stale_default_models(provider)
+    if not has_config_version and configured_default_model in stale_default_models(
+        provider
     ):
         configured_default_model = default_model(provider)
     return replace_config(
@@ -287,6 +303,7 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
             tool_enabled=tool_enabled,
             tool_max_calls=tool_max_calls,
             compress_threshold=compress_threshold,
+            reasoning_level=reasoning_level,
         )
     )
 
@@ -310,6 +327,7 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
             "tool_enabled": config.tool_enabled,
             "tool_max_calls": config.tool_max_calls,
             "compress_threshold": config.compress_threshold,
+            "reasoning_level": config.reasoning_level,
         },
         sort_keys=False,
     )
@@ -424,3 +442,14 @@ def _load_compress_threshold(data: dict[object, object]) -> CompressThreshold:
         ContextCompressionPolicy(threshold)
         return threshold
     raise TypeError("AceAI config compress_threshold must be str, int, or float")
+
+
+def _load_reasoning_level(data: dict[object, object]) -> ReasoningLevel:
+    if "reasoning_level" not in data:
+        return "auto"
+    level = data["reasoning_level"]
+    if type(level) is not str:
+        raise TypeError("AceAI config reasoning_level must be str")
+    if level not in ("auto", "low", "medium", "high", "max"):
+        raise ValueError("AceAI config reasoning_level is unsupported")
+    return level

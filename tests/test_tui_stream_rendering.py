@@ -8,7 +8,7 @@ from textual.events import Click
 from textual.strip import Strip
 
 from aceai.agent.session import EventLog, SessionEvent
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
     LLMReasoningSegmentMeta,
@@ -153,9 +153,14 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
                 "Explain it",
                 citations=(
                     TurnCitation(
-                        label="assistant answer",
-                        source="session:step-1",
                         content="The job is pending.",
+                        origin=ConversationCitationOrigin(
+                            kind="conversation",
+                            event_id="event-1",
+                            role="assistant",
+                            span_start=0,
+                            span_end=19,
+                        ),
                     ),
                 ),
             )
@@ -168,8 +173,7 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
     question = group.renderables[1]
     assert isinstance(source, Panel)
     assert source.title == "cited source"
-    assert "assistant answer" in source.renderable.renderables[0].plain
-    assert "session:step-1" in source.renderable.renderables[0].plain
+    assert "conversation:assistant" in source.renderable.renderables[0].plain
     assert source.renderable.renderables[1].plain == "The job is pending."
     assert isinstance(question, Table)
     question_text = question.columns[0]._cells[0]
@@ -354,8 +358,8 @@ def test_stream_collapses_tool_activity_only_after_completion() -> None:
     )
 
     assert [text.plain for text in running_writes] == [
-        "  ● read_text_file  completed - result ready",
-        "  ● read_text_file  completed - result ready",
+        '  ● read_text_file("a.py")  result ready',
+        '  ● read_text_file("b.py")  result ready',
     ]
     assert [text.plain for text in completed_writes] == [
         "  ─ [+] work history · 2 tool calls",
@@ -421,8 +425,8 @@ def test_clicking_collapsed_tool_activity_expands_and_collapses() -> None:
 
     assert [text.plain for text in writes] == [
         "  ─ [-] work history · 2 tool calls",
-        "    ● read_text_file  completed - result ready",
-        "    ● read_text_file  completed - result ready",
+        '    ● read_text_file("a.py")  result ready',
+        '    ● read_text_file("b.py")  result ready',
         "  done",
     ]
 
@@ -534,9 +538,9 @@ def test_expanded_working_history_preserves_reasoning_tool_order() -> None:
     assert [text.plain for text in writes] == [
         "  ─ [-] work history · 2 tool calls",
         "    * reasoning  think first",
-        "    ● read_text_file  completed - result ready",
+        '    ● read_text_file("a.py")  result ready',
         "    * reasoning  think second",
-        "    ● search_text  completed - search finished",
+        '    ● search_text("needle")  search finished',
         "  done",
     ]
 
@@ -1040,7 +1044,10 @@ def test_tool_call_deltas_render_as_one_collapsed_tool_message() -> None:
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == "  ● write_text_file  completed - file written"
+    assert (
+        text.plain
+        == '  ● write_text_file(path: "binary_search.py", content: "print(1)\\n")  file written'
+    )
 
 
 def test_unknown_in_progress_tool_call_deltas_do_not_render() -> None:
@@ -1095,7 +1102,63 @@ def test_directory_tool_result_summarizes_entry_count_without_details() -> None:
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == "  ● list_directory  completed - 2 entries"
+    assert text.plain == '  ● list_directory(".")  2 entries'
+
+
+def test_short_shell_command_arguments_render_inline() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"bash ls"}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output='{"exit_code":0,"stdout":"","stderr":""}',
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == '  ● run_shell_command("bash ls")  command exited 0'
+
+
+def test_long_and_complex_tool_arguments_render_collapsed_preview() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="replace_text_in_file",
+        arguments=(
+            '{"path":"a.py","old_text":"line 1\\nline 2\\nline 3",'
+            '"metadata":{"source":"test"},"new_text":"'
+            "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+            '"}'
+        ),
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output='{"path":"a.py","replacements":1}',
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert (
+        text.plain
+        == '  ● replace_text_in_file(path: "a.py", old_text: "line 1\\nline 2\\nline 3", metadata: ..., new_text: "abcdefghijklmnopq...)  result ready'
+    )
 
 
 def test_consecutive_completed_tools_compact_by_tool_name() -> None:
@@ -1226,8 +1289,8 @@ def test_failed_tools_do_not_compact_into_completed_group() -> None:
     failed = renderables[1]
     assert isinstance(completed, Text)
     assert isinstance(failed, Text)
-    assert completed.plain == "  ● read_text_file  completed - result ready"
-    assert failed.plain == "  ● read_text_file  failed"
+    assert completed.plain == '  ● read_text_file("a.py")  result ready'
+    assert failed.plain == '  ● read_text_file("b.py")  failed'
 
 
 def test_repeated_approval_cycles_compact_by_tool_name() -> None:
@@ -1397,5 +1460,5 @@ def test_running_tool_activity_does_not_collapse() -> None:
     second_rendered = renderables[1]
     assert isinstance(first_rendered, Text)
     assert isinstance(second_rendered, Text)
-    assert first_rendered.plain == "  ● read_text_file  completed - result ready"
-    assert second_rendered.plain == "  ● read_text_file  completed - result ready"
+    assert first_rendered.plain == '  ● read_text_file("a.py")  result ready'
+    assert second_rendered.plain == '  ● read_text_file("b.py")  result ready'

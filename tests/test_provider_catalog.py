@@ -6,7 +6,10 @@ from aceai.agent.provider_catalog import (
     price_for_model,
     pricing_source,
     provider_options,
+    reasoning_effort_options,
     stale_default_models,
+    supports_reasoning_effort,
+    supports_reasoning_effort_any_provider,
     supported_models,
     supported_provider_names,
 )
@@ -15,8 +18,12 @@ from aceai.agent.provider_catalog import (
 def test_provider_catalog_loads_supported_providers_and_models() -> None:
     catalog = load_provider_catalog()
 
-    assert supported_provider_names() == ("openai", "deepseek")
-    assert provider_options() == (("OpenAI", "openai"), ("DeepSeek", "deepseek"))
+    assert supported_provider_names() == ("openai", "deepseek", "codex")
+    assert provider_options() == (
+        ("OpenAI", "openai"),
+        ("DeepSeek", "deepseek"),
+        ("Codex (subscription)", "codex"),
+    )
     assert catalog.pricing_source == "provider-api-pricing-2026-05-04"
     assert default_model("openai") == "gpt-5.5"
     assert stale_default_models("openai") == ("gpt-5.1",)
@@ -68,6 +75,23 @@ def test_context_window_exact_match() -> None:
 
 def test_context_window_versioned_model_suffix() -> None:
     assert context_window_for_model("openai", "gpt-5.5-2026-05-04") == 1050000
+
+
+def test_reasoning_effort_support_is_declared_per_model() -> None:
+    assert supports_reasoning_effort("openai", "gpt-5.5")
+    assert supports_reasoning_effort("openai", "gpt-5.5-2026-05-04")
+    assert supports_reasoning_effort("openai", "o3")
+    assert not supports_reasoning_effort("openai", "gpt-4o")
+    assert supports_reasoning_effort("deepseek", "deepseek-v4-pro")
+    assert supports_reasoning_effort("deepseek", "deepseek-reasoner")
+    assert supports_reasoning_effort_any_provider("gpt-5.5")
+    assert not supports_reasoning_effort_any_provider("gpt-4o")
+    assert reasoning_effort_options("openai", "gpt-5.5") == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert reasoning_effort_options("deepseek", "deepseek-v4-pro") == ("high", "max")
 
 
 def test_context_window_returns_none_for_missing() -> None:

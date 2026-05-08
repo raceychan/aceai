@@ -222,7 +222,7 @@ class LLMResponseFormat(Record):
 class ReasoningConfig(TypedDict, total=False):
     """Reasoning configuration supported by providers like OpenAI Responses."""
 
-    effort: Literal["low", "medium", "high"]
+    effort: Literal["low", "medium", "high", "max"]
     """Requested reasoning depth; providers map onto model-specific tiers."""
 
     summary: Literal["auto", "none"]
@@ -238,7 +238,9 @@ class ReasoningConfig(TypedDict, total=False):
 class LLMReasoningConfigSnapshot(Record, kw_only=True):
     """Provider-reported reasoning configuration applied to a response."""
 
-    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    effort: (
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"] | None
+    ) = None
     """Requested reasoning depth tier (provider-specific semantics)."""
 
     summary: Literal["auto", "concise", "detailed"] | None = None
@@ -492,7 +494,9 @@ class LLMReasoningSegmentMeta(Record, kw_only=True):
     is_delta: bool = False
 
 
-type LLMSegmentMeta = LLMToolCallSegmentMeta | LLMImageSegmentMeta | LLMReasoningSegmentMeta
+type LLMSegmentMeta = (
+    LLMToolCallSegmentMeta | LLMImageSegmentMeta | LLMReasoningSegmentMeta
+)
 
 
 class LLMSegment(Record):
@@ -525,6 +529,7 @@ class LLMSegment(Record):
 
     media: LLMGeneratedMedia | None = None
     """Optional generated media payload for non-text segments."""
+
 
 class LLMResponse(Record):
     """Provider-agnostic completion payload."""

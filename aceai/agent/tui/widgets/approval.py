@@ -23,7 +23,7 @@ class ApprovalWidget(Container):
     ApprovalWidget {
         height: 3;
         background: #2e3440;
-        border-top: solid #4c566a;
+        border: round #4c566a;
         padding: 0 1;
     }
 
@@ -33,7 +33,6 @@ class ApprovalWidget(Container):
 
     #approval-row {
         height: 1;
-        margin-top: 1;
     }
 
     #approval-summary {

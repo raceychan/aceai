@@ -1,5 +1,21 @@
 # Changelog
 
+## AceAI v0.2.20
+
+### Improvements
+
+- `llm`: Retry OpenAI `APIError` streaming failures such as overloaded-server responses so transient provider errors can recover through the existing retry path.
+- `tui`: Show compact tool argument previews in work history rows so file paths, commands, and short parameters are visible without expanding raw details.
+
+### Fixes
+
+- `core`: Convert provider stream errors and failed LLM completions into structured run failures so the TUI and session state receive a `run_failed` event instead of an uncaught exception.
+- `tui`: Support keyboard approval and rejection while a run is suspended for tool approval.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.19
 
 ### Features

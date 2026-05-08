@@ -116,7 +116,9 @@ class StreamUsage:
         self.total_tokens = total_tokens
         self.prompt_tokens_details = prompt_tokens_details
         self.prompt_cache_hit_tokens = prompt_tokens_details.cached_tokens
-        self.prompt_cache_miss_tokens = prompt_tokens - prompt_tokens_details.cached_tokens
+        self.prompt_cache_miss_tokens = (
+            prompt_tokens - prompt_tokens_details.cached_tokens
+        )
 
 
 class StreamPromptTokenDetails:
@@ -158,6 +160,36 @@ async def test_deepseek_complete_uses_chat_completions() -> None:
     assert response.text == "hello from deepseek"
     assert response.reasoning_content == "thinking about hello"
     assert response.provider_meta[0].provider_name == "deepseek"
+
+
+@pytest.mark.anyio
+async def test_deepseek_complete_passes_reasoning_effort() -> None:
+    provider = DeepSeek(
+        api_key="test-key",
+        default_meta={"model": "deepseek-v4-pro"},
+    )
+    client = RecordingClient()
+    provider._client = client
+
+    await provider.complete(
+        {
+            "messages": [
+                LLMMessage.build(role="user", content="hello"),
+            ],
+            "metadata": {
+                "reasoning": {
+                    "effort": "max",
+                    "summary": "auto",
+                }
+            },
+        }
+    )
+
+    assert client.chat.completions.kwargs is not None
+    assert client.chat.completions.kwargs["reasoning_effort"] == "max"
+    assert client.chat.completions.kwargs["extra_body"] == {
+        "thinking": {"type": "enabled"}
+    }
 
 
 def test_deepseek_formats_reasoning_content_for_tool_sub_turn() -> None:

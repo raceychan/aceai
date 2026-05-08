@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
 from aceai.core import ToolExecutionError, Executor
 from aceai.llm.interface import UNSET, is_present
+from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
 
 
 def write_skill(root: Path, name: str, description: str) -> None:
@@ -181,6 +183,50 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
     )
 
     assert agent.default_model == "deepseek-v4-flash"
+    assert agent._executor.hosted_tools == []
+
+
+def test_build_ace_agent_supports_openai_codex_without_hosted_tools(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    agent = build_ace_agent(
+        provider_name="codex",
+        api_key="codex-access-token",
+        model="gpt-5.4",
+    )
+
+    assert agent.default_model == "gpt-5.4"
+    assert agent._executor.hosted_tools == []
+
+
+def test_build_ace_agent_can_use_codex_cli_auth_sentinel(
+    tmp_path, monkeypatch
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "codex-access-token",
+                    "refresh_token": "codex-refresh-token",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    agent = build_ace_agent(
+        provider_name="codex",
+        api_key=CODEX_CLI_AUTH_SENTINEL,
+        model="gpt-5.4",
+    )
+
+    assert agent.default_model == "gpt-5.4"
     assert agent._executor.hosted_tools == []
 
 

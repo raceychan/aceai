@@ -19,7 +19,7 @@ class DetailWidget(ScrollableContainer):
 
     DEFAULT_CSS = """
     DetailWidget {
-        border: solid #8fbcbb;
+        border: round #8fbcbb;
         background: #2e3440;
         color: #e5e9f0;
         padding: 1 2;

@@ -10,6 +10,7 @@ from aceai.llm.interface import UNSET, Unset, is_set
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
+from aceai.llm.openai_codex import OpenAICodex
 from aceai.llm.service import LLMService
 
 from .features import build_delegate_to_subagent_tool, default_agent_tools
@@ -53,6 +54,11 @@ def build_ace_agent(
     if provider_name == "openai":
         provider = OpenAI(
             client=AsyncOpenAI(api_key=api_key),
+            default_meta={"model": model},
+        )
+    elif provider_name == "codex":
+        provider = OpenAICodex(
+            api_key=api_key,
             default_meta={"model": model},
         )
     elif provider_name == "deepseek":

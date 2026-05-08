@@ -16,6 +16,9 @@ from openai.types.responses.response_image_gen_call_partial_image_event import (
     ResponseImageGenCallPartialImageEvent,
 )
 from openai.types.responses.response_output_item import ImageGenerationCall
+from openai.types.responses.response_output_item_done_event import (
+    ResponseOutputItemDoneEvent,
+)
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_reasoning_item import Summary as ReasoningSummary
 from openai.types.responses.response_reasoning_summary_text_delta_event import (
@@ -776,3 +779,43 @@ async def test_stream_yields_completed_event(
 
     assert events[-1].event_type == "response.completed"
     assert fake_openai_client.responses.stream_calls[0]["model"] == "gpt-4o"
+
+
+@pytest.mark.anyio
+async def test_stream_uses_streamed_tool_call_when_final_output_is_empty(
+    fake_openai_client,
+    openai_provider: OpenAI,
+) -> None:
+    tool_call = ResponseFunctionToolCall(
+        type="function_call",
+        name="lookup",
+        arguments='{"query":"repo"}',
+        call_id="call-1",
+        id="fc-1",
+        status="completed",
+    )
+    fake_openai_client.responses.stream_events = [
+        ResponseOutputItemDoneEvent(
+            item=tool_call,
+            output_index=0,
+            sequence_number=1,
+            type="response.output_item.done",
+        )
+    ]
+    fake_openai_client.responses.final_stream_response.output = []
+    request = {"messages": _messages_with_attr_parts([LLMMessage.build("system", "s")])}
+
+    events: list[LLMStreamEvent] = []
+    async for evt in openai_provider.stream(request):
+        events.append(evt)
+
+    completed = events[-1]
+    assert completed.event_type == "response.completed"
+    assert completed.response is not None
+    assert completed.response.tool_calls == [
+        LLMToolCall(
+            name="lookup",
+            arguments='{"query":"repo"}',
+            call_id="call-1",
+        )
+    ]

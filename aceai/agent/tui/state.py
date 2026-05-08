@@ -3,6 +3,7 @@
 from typing import Literal
 
 from msgspec import field
+from msgspec.json import decode as msg_decode
 
 from aceai.llm.interface import Record
 from aceai.agent.cost import CostEstimate
@@ -12,6 +13,7 @@ from .events import TUIEvent
 TUIRunStatus = Literal["idle", "running", "suspended", "completed", "failed"]
 TUIStepStatus = Literal["running", "completed", "failed"]
 TUIToolStatus = Literal["pending", "running", "awaiting_approval", "completed", "failed"]
+TUISubagentStatus = Literal["pending", "running", "completed", "failed"]
 
 
 class TUIToolState(Record, kw_only=True):
@@ -22,6 +24,14 @@ class TUIToolState(Record, kw_only=True):
     output: str = ""
     error: str | None = None
     events: list[TUIEvent] = field(default_factory=list[TUIEvent])
+
+
+class TUISubagentState(Record, kw_only=True):
+    call_id: str
+    task: str = ""
+    status: TUISubagentStatus = "pending"
+    output: str = ""
+    error: str | None = None
 
 
 class TUIStepState(Record, kw_only=True):
@@ -47,6 +57,7 @@ class TUIUsageState(Record, kw_only=True):
 class TUIRunState(Record, kw_only=True):
     status: TUIRunStatus = "idle"
     steps: list[TUIStepState] = field(default_factory=list[TUIStepState])
+    subagents: list[TUISubagentState] = field(default_factory=list[TUISubagentState])
     events: list[TUIEvent] = field(default_factory=list[TUIEvent])
     selected_event_id: str | None = None
     final_answer: str = ""
@@ -71,6 +82,7 @@ def select_event(state: TUIRunState, event_id: str) -> TUIRunState:
             return TUIRunState(
                 status=state.status,
                 steps=state.steps,
+                subagents=state.subagents,
                 events=state.events,
                 selected_event_id=event_id,
                 final_answer=state.final_answer,
@@ -87,6 +99,7 @@ def reset_cache_rate(state: TUIRunState) -> TUIRunState:
     return TUIRunState(
         status=state.status,
         steps=state.steps,
+        subagents=state.subagents,
         events=state.events,
         selected_event_id=state.selected_event_id,
         final_answer=state.final_answer,
@@ -107,12 +120,14 @@ def reset_cache_rate(state: TUIRunState) -> TUIRunState:
 
 def apply_tui_event(state: TUIRunState, event: TUIEvent) -> TUIRunState:
     steps = _apply_step_event(state.steps, event)
+    subagents = _apply_subagent_event(state.subagents, event)
     status = _next_run_status(state.status, event)
     events = _append_event(state.events, event)
     selected_event_id = events[-1].event_id
     return TUIRunState(
         status=status,
         steps=steps,
+        subagents=subagents,
         events=events,
         selected_event_id=selected_event_id,
         final_answer=event.content if event.kind == "run_completed" else state.final_answer,
@@ -321,6 +336,79 @@ def _update_tool(tool_state: TUIToolState, event: TUIEvent) -> TUIToolState:
     )
 
 
+def _apply_subagent_event(
+    subagents: list[TUISubagentState],
+    event: TUIEvent,
+) -> list[TUISubagentState]:
+    if event.tool_call_id is None:
+        return subagents
+
+    target = _find_subagent(subagents, event.tool_call_id)
+    if target is None and event.tool_name != "delegate_to_subagent":
+        return subagents
+    if target is None:
+        target = TUISubagentState(
+            call_id=event.tool_call_id,
+            task=_subagent_task(event),
+        )
+
+    updated = _update_subagent(target, event)
+    next_subagents: list[TUISubagentState] = []
+    inserted = False
+    for subagent in subagents:
+        if subagent.call_id == event.tool_call_id:
+            next_subagents.append(updated)
+            inserted = True
+        else:
+            next_subagents.append(subagent)
+    if not inserted:
+        next_subagents.append(updated)
+    return next_subagents
+
+
+def _find_subagent(
+    subagents: list[TUISubagentState],
+    call_id: str,
+) -> TUISubagentState | None:
+    for subagent in subagents:
+        if subagent.call_id == call_id:
+            return subagent
+    return None
+
+
+def _update_subagent(
+    subagent: TUISubagentState,
+    event: TUIEvent,
+) -> TUISubagentState:
+    return TUISubagentState(
+        call_id=subagent.call_id,
+        task=_next_subagent_task(subagent.task, event),
+        status=_next_subagent_status(subagent.status, event),
+        output=event.content if event.kind == "tool_completed" else subagent.output,
+        error=event.error if event.kind == "tool_failed" else subagent.error,
+    )
+
+
+def _next_subagent_task(current_task: str, event: TUIEvent) -> str:
+    if current_task != "":
+        return current_task
+    return _subagent_task(event)
+
+
+def _subagent_task(event: TUIEvent) -> str:
+    if event.tool_call is None:
+        return ""
+    payload = msg_decode(event.tool_call.arguments.encode("utf-8"))
+    if type(payload) is not dict:
+        raise TypeError("delegate_to_subagent arguments must decode to an object")
+    if "task" not in payload:
+        return event.tool_call.arguments
+    task = payload["task"]
+    if type(task) is not str:
+        raise TypeError("delegate_to_subagent task argument must be str")
+    return task
+
+
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if _is_restored_transcript_event(event):
         return status
@@ -369,6 +457,21 @@ def _next_tool_status(status: TUIToolStatus, event: TUIEvent) -> TUIToolStatus:
     if event.kind == "tool_approval_requested":
         return "awaiting_approval"
     if event.kind == "tool_approval_resolved":
+        return "running"
+    if event.kind == "tool_completed":
+        return "completed"
+    if event.kind == "tool_failed":
+        return "failed"
+    if status == "pending" and event.kind in ("tool_call_delta", "tool_output"):
+        return "running"
+    return status
+
+
+def _next_subagent_status(
+    status: TUISubagentStatus,
+    event: TUIEvent,
+) -> TUISubagentStatus:
+    if event.kind == "tool_started":
         return "running"
     if event.kind == "tool_completed":
         return "completed"

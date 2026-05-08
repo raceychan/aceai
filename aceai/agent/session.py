@@ -14,7 +14,11 @@ from sqlalchemy.engine import RowMapping
 from typing_extensions import Self
 
 from aceai.agent.cost import CostEstimate
-from aceai.agent.citations import citations_from_payload, message_with_citations
+from aceai.agent.citations import (
+    citation_origin_name,
+    citations_from_payload,
+    message_with_citations,
+)
 from aceai.agent.project import ProjectMetadata, ProjectStore, default_project
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.models import (
@@ -884,9 +888,7 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
             lines.append("")
             lines.append("cited context:")
             for citation in citations_from_payload(event.payload["citations"]):
-                lines.append(f"- {citation.label}")
-                if citation.source != "":
-                    lines.append(f"  source: {citation.source}")
+                lines.append(f"- {citation_origin_name(citation.origin)}")
                 lines.append(citation.content)
         return lines
     if event.kind == "assistant_message":

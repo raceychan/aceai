@@ -13,14 +13,28 @@ from textual.widgets import Input
 from textual.worker import Worker
 
 from aceai.agent.app import AceAgentApp, UpdateCheckResult
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import (
+    IdeaCitationOrigin,
+    TurnCitation,
+)
 from aceai.agent.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
-from aceai.agent.provider_catalog import api_key_env, model_options, supported_models
+from aceai.agent.provider_catalog import (
+    api_key_env,
+    model_options,
+    supported_models,
+    supports_reasoning_effort,
+)
+from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.session import SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import AgentAppConfig, replace_config, save_config
+from aceai.agent.config import (
+    AgentAppConfig,
+    ReasoningLevel,
+    replace_config,
+    save_config,
+)
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.executor import Executor
@@ -53,13 +67,12 @@ from .widgets import TopBarWidget
 AgentFactory = Callable[[AgentAppConfig], Agent]
 CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
-UPDATE_INSTRUCTIONS = (
-    "Run /update to upgrade AceAI and restart."
-)
+UPDATE_INSTRUCTIONS = "Run /update to upgrade AceAI and restart."
 UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "clear": "Clear the visible transcript",
     "config": "Open provider, model, skill, and tool settings",
+    "debug": "Toggle the debug detail view",
     "idea": "Show ideas, save an idea, or delete one",
     "quit": "Exit AceAI",
     "sessions": "Open the session picker",
@@ -105,6 +118,27 @@ def _model_from_request_meta(
     if "model" in request_meta:
         return _as_model(provider_name, request_meta["model"])
     return _as_model(provider_name, default_model)
+
+
+def _request_meta_with_reasoning_level(
+    request_meta: LLMRequestMeta,
+    reasoning_level: ReasoningLevel,
+) -> LLMRequestMeta:
+    next_meta = dict(request_meta)
+    if reasoning_level == "auto":
+        next_meta.pop("reasoning", None)
+        return next_meta
+    next_meta["reasoning"] = {"effort": reasoning_level, "summary": "auto"}
+    return next_meta
+
+
+def _reasoning_level_from_request_meta(request_meta: LLMRequestMeta) -> ReasoningLevel:
+    if "reasoning" not in request_meta:
+        return "auto"
+    effort = request_meta["reasoning"].get("effort")
+    if effort not in ("low", "medium", "high", "max"):
+        return "auto"
+    return effort
 
 
 def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
@@ -176,7 +210,9 @@ class _RuntimeStreamMixin:
         )
         self._start_next_queued_run()
 
-    async def _stream_approval_decision(self, *, approved: bool, reason: str = "") -> None:
+    async def _stream_approval_decision(
+        self, *, approved: bool, reason: str = ""
+    ) -> None:
         if approved:
             stream = self._agent_app.approve_tool()
         else:
@@ -232,11 +268,26 @@ class _RuntimeStreamMixin:
         question = value
         if question == "":
             return
+        if self._dispatch_approval_input(question):
+            self.exit_command_input(command_input)
+            return
         if self._dispatch_command(question):
             self.exit_command_input(command_input)
             return
         self.start_run(question)
         self.exit_command_input(command_input)
+
+    def _dispatch_approval_input(self, text: str) -> bool:
+        agent_app = self._agent_app
+        if agent_app is None or not agent_app.is_running_suspended:
+            return False
+        if text in ("a", "approve"):
+            self.approve_pending_tool()
+            return True
+        if text in ("r", "reject"):
+            self.reject_pending_tool("rejected by caller")
+            return True
+        return False
 
     def cancel_active_run(self) -> bool:
         if self._active_worker is None or not self._active_worker.is_running:
@@ -328,6 +379,10 @@ class _RuntimeStreamMixin:
     def _command_config(self, arg: str) -> None:
         self.open_config_screen()
 
+    @tui_command("debug")
+    def _command_debug(self, arg: str) -> None:
+        self.action_toggle_debug_mode()
+
     @tui_command("trajectory")
     def _command_trajectory(self, arg: str) -> None:
         self.open_trajectory_screen()
@@ -375,12 +430,13 @@ class _RuntimeStreamMixin:
         self._clear_cancel_arm()
         agent_app = self._agent_app
         if agent_app is None:
-            self.append_event(TUIEvent.session_notice("Configure AceAI before enqueueing a run."))
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before enqueueing a run.")
+            )
             return
         if (
-            (self._active_worker is None or not self._active_worker.is_running)
-            and not agent_app.is_running_suspended
-        ):
+            self._active_worker is None or not self._active_worker.is_running
+        ) and not agent_app.is_running_suspended:
             self._start_run_now(question)
             return
         agent_app.enqueue_turn(question)
@@ -390,11 +446,15 @@ class _RuntimeStreamMixin:
         self._clear_cancel_arm()
         agent_app = self._agent_app
         if agent_app is None:
-            self.append_event(TUIEvent.session_notice("Configure AceAI before steering a run."))
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before steering a run.")
+            )
             return
         if agent_app.is_running_suspended:
             self.append_event(
-                TUIEvent.session_notice("Choose Approve or Reject before steering this run.")
+                TUIEvent.session_notice(
+                    "Choose Approve or Reject before steering this run."
+                )
             )
             return
         if self._active_worker is not None and self._active_worker.is_running:
@@ -405,11 +465,15 @@ class _RuntimeStreamMixin:
         self._clear_cancel_arm()
         agent_app = self._agent_app
         if agent_app is None:
-            self.append_event(TUIEvent.session_notice("Configure AceAI before steering a run."))
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before steering a run.")
+            )
             return
         if agent_app.is_running_suspended:
             self.append_event(
-                TUIEvent.session_notice("Choose Approve or Reject before steering this run.")
+                TUIEvent.session_notice(
+                    "Choose Approve or Reject before steering this run."
+                )
             )
             return
         try:
@@ -504,13 +568,16 @@ class _RuntimeStreamMixin:
     def action_ideas(self) -> None:
         self._show_ideas()
 
-    def _reference_idea(self, content: str | None) -> None:
-        if content is None:
+    def _reference_idea(self, idea: Idea | None) -> None:
+        if idea is None:
             self.query_one(CommandInput).focus()
             return
-        self._pending_citations().append(
-            TurnCitation(label="idea", content=content, source="ideas")
-        )
+        self._pending_turn_citations = [
+            TurnCitation(
+                content=idea.content,
+                origin=IdeaCitationOrigin(kind="idea", idea_id=idea.idea_id),
+            )
+        ]
         self._refresh_citation_preview()
         self.query_one(CommandInput).focus()
 
@@ -677,15 +744,26 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     ) -> None:
         self._request_meta: LLMRequestMeta = dict(request_meta or {})
         self._provider_name = "openai"
+        self._reasoning_level = _reasoning_level_from_request_meta(self._request_meta)
         self._selected_model = _model_from_request_meta(
             self._request_meta,
             agent.default_model,
             self._provider_name,
         )
+        if self._reasoning_level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            self._selected_model,
+        ):
+            self._reasoning_level = "auto"
+        self._request_meta = _request_meta_with_reasoning_level(
+            self._request_meta,
+            self._reasoning_level,
+        )
         self._request_meta["model"] = self._selected_model
         super().__init__(
             events=initial_events or [],
             model=self._selected_model,
+            reasoning_level=self._reasoning_level,
             session_recorder=session_recorder,
             session_id=session_id,
             project=project,
@@ -725,7 +803,9 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             return
         if self._agent_app.is_running_suspended:
             self.append_event(
-                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
+                TUIEvent.session_notice(
+                    "Choose Approve or Reject before starting another run."
+                )
             )
             return
         self._start_run_now(question, citations=citations)
@@ -804,6 +884,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 provider_name=self._provider_name,
                 current_model=self._selected_model,
                 default_model=cast(OpenAIModel, self._agent.default_model),
+                reasoning_level=self._reasoning_level,
                 skills="auto",
                 skill_items=_skill_config_items(self._agent.skill_registry),
                 skill_selection_mode="all",
@@ -833,7 +914,9 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self.append_event(
-                TUIEvent.session_notice("Model changes apply after the current run finishes.")
+                TUIEvent.session_notice(
+                    "Model changes apply after the current run finishes."
+                )
             )
             return
         if model not in supported_models(self._provider_name):
@@ -842,13 +925,25 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
             )
             return
         model_changed = model != self._selected_model
+        if self._reasoning_level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            model,
+        ):
+            self._reasoning_level = "auto"
         self._selected_model = cast(OpenAIModel, model)
+        self._request_meta = _request_meta_with_reasoning_level(
+            self._request_meta,
+            self._reasoning_level,
+        )
         self._request_meta["model"] = self._selected_model
         self._agent_app.switch_model(self._selected_model)
         self._sync_app_state()
         if model_changed:
             self.reset_status_cache_rate()
-        self.set_status_model(self._selected_model)
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
         self.notify_session(f"Switched model to {self._selected_model}")
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
@@ -874,7 +969,10 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         state = self._session_recorder.store.get_session_state(self._session_id)
         if state.selected_model == "":
             return
-        if state.selected_provider != "" and state.selected_provider != self._provider_name:
+        if (
+            state.selected_provider != ""
+            and state.selected_provider != self._provider_name
+        ):
             return
         if state.selected_model not in supported_models(self._provider_name):
             return
@@ -882,7 +980,10 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         self._request_meta["model"] = self._selected_model
         self._agent_app.switch_model(self._selected_model)
         self._sync_app_state()
-        self.set_status_model(self._selected_model)
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
 
     def _metadata_sections(self) -> list[MetadataSection]:
         return [
@@ -915,7 +1016,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         request_meta: LLMRequestMeta | None = None,
     ) -> None:
         self._request_meta: LLMRequestMeta = dict(request_meta or {})
-        self._provider_name = initial_config.provider if initial_config is not None else "openai"
+        self._provider_name = (
+            initial_config.provider if initial_config is not None else "openai"
+        )
         self._current_config = initial_config
         initial_model = (
             initial_config.model
@@ -926,10 +1029,25 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 self._provider_name,
             )
         )
+        self._reasoning_level = (
+            initial_config.reasoning_level
+            if initial_config is not None
+            else _reasoning_level_from_request_meta(self._request_meta)
+        )
+        if self._reasoning_level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            initial_model,
+        ):
+            self._reasoning_level = "auto"
+        self._request_meta = _request_meta_with_reasoning_level(
+            self._request_meta,
+            self._reasoning_level,
+        )
         self._request_meta["model"] = initial_model
         super().__init__(
             events=initial_events or [],
             model=initial_model,
+            reasoning_level=self._reasoning_level,
             session_recorder=session_recorder,
             session_id=session_id,
             project=project,
@@ -971,6 +1089,11 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._provider_name = next_config.provider
         self._current_config = next_config
         self._selected_model = next_config.model
+        self._reasoning_level = next_config.reasoning_level
+        self._request_meta = _request_meta_with_reasoning_level(
+            self._request_meta,
+            self._reasoning_level,
+        )
         self._request_meta["model"] = self._selected_model
         self._agent = None
         self._agent_app = None
@@ -978,7 +1101,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._persist_session_state()
         if model_changed:
             self.reset_status_cache_rate()
-        self.set_status_model(self._selected_model)
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
         if self._initial_question != "":
             self.start_run(self._initial_question)
 
@@ -997,7 +1123,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._ensure_agent_app()
         if self._agent_app.is_running_suspended:
             self.append_event(
-                TUIEvent.session_notice("Choose Approve or Reject before starting another run.")
+                TUIEvent.session_notice(
+                    "Choose Approve or Reject before starting another run."
+                )
             )
             return
         self._start_run_now(question, citations=citations)
@@ -1110,7 +1238,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 default_model=self._current_config.default_model
                 if self._current_config is not None
                 else self._selected_model,
-                skills=self._current_config.skills if self._current_config is not None else "",
+                skills=self._current_config.skills
+                if self._current_config is not None
+                else "",
                 skill_items=self._available_skill_items(),
                 skill_selection_mode=self._current_config.skill_selection_mode
                 if self._current_config is not None
@@ -1123,6 +1253,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 compress_threshold=self._current_config.compress_threshold
                 if self._current_config is not None
                 else "100%",
+                reasoning_level=self._reasoning_level,
                 stats_sections=self._metadata_sections(),
                 initial_tab=initial_tab,
             ),
@@ -1160,6 +1291,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                         tool_enabled=selection.tool_enabled,
                         tool_max_calls=selection.tool_max_calls,
                         compress_threshold=selection.compress_threshold,
+                        reasoning_level=selection.reasoning_level,
                     )
                 )
                 self.notify_session(
@@ -1173,6 +1305,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             env_name = api_key_env(selection.provider)
             if env_name in os.environ:
                 api_key = os.environ[env_name]
+        if api_key == "":
+            api_key = default_api_key_for_provider(selection.provider)
         if api_key == "":
             self.append_event(
                 TUIEvent.session_notice(
@@ -1198,6 +1332,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 tool_enabled=selection.tool_enabled,
                 tool_max_calls=selection.tool_max_calls,
                 compress_threshold=selection.compress_threshold,
+                reasoning_level=selection.reasoning_level,
             )
         )
         self.notify_session(
@@ -1211,7 +1346,9 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
             self.append_event(
-                TUIEvent.session_notice("Model changes apply after the current run finishes.")
+                TUIEvent.session_notice(
+                    "Model changes apply after the current run finishes."
+                )
             )
             return
         if model not in supported_models(self._provider_name):
@@ -1220,6 +1357,14 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             )
             return
         model_changed = model != self._selected_model
+        reasoning_level = self._reasoning_level
+        if self._current_config is not None:
+            reasoning_level = self._current_config.reasoning_level
+        if reasoning_level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            model,
+        ):
+            reasoning_level = "auto"
         if self._current_config is not None:
             next_config = AgentAppConfig(
                 provider=self._current_config.provider,
@@ -1234,10 +1379,16 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 tool_enabled=self._current_config.tool_enabled,
                 tool_max_calls=self._current_config.tool_max_calls,
                 compress_threshold=self._current_config.compress_threshold,
+                reasoning_level=reasoning_level,
             )
             save_config(next_config)
             self._current_config = next_config
         self._selected_model = cast(OpenAIModel, model)
+        self._reasoning_level = reasoning_level
+        self._request_meta = _request_meta_with_reasoning_level(
+            self._request_meta,
+            self._reasoning_level,
+        )
         self._request_meta["model"] = self._selected_model
         if self._agent_app is not None:
             self._agent_app.switch_model(self._selected_model)
@@ -1245,7 +1396,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self._persist_session_state()
         if model_changed:
             self.reset_status_cache_rate()
-        self.set_status_model(self._selected_model)
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
         self.notify_session(f"Switched model to {self._selected_model}")
 
     def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
@@ -1479,8 +1633,7 @@ def _agent_metadata_sections(
 ) -> list[MetadataSection]:
     skills = agent.skill_registry.get_skills()
     skill_lines = [
-        f"{skill.name}: {skill.description} ({skill.skill_file})"
-        for skill in skills
+        f"{skill.name}: {skill.description} ({skill.skill_file})" for skill in skills
     ]
     executor = agent.executor
     tool_lines: list[str] = []
@@ -1490,8 +1643,7 @@ def _agent_metadata_sections(
             tag_text = f" [{tags}]" if tags else ""
             tool_lines.append(f"{tool.name}{tag_text}: {tool.description}")
     hosted_lines = [
-        f"{tool.provider_name}:{tool.native_name}"
-        for tool in agent.hosted_tools
+        f"{tool.provider_name}:{tool.native_name}" for tool in agent.hosted_tools
     ]
     return [
         MetadataSection(

@@ -1,7 +1,9 @@
 """Main event stream pane for the read-only TUI prototype."""
 
+import json
 from hashlib import sha1
 
+from rich import box
 from rich.align import Align
 from msgspec import Struct
 from rich.console import Group, RenderableType
@@ -17,7 +19,7 @@ from textual.widgets import RichLog
 
 from aceai import __version__
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import TurnCitation, citation_origin_name
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
@@ -64,6 +66,8 @@ EMPTY_STATE_DOG_HEIGHT = len(EMPTY_STATE_DOG_PIXELS[0])
 EMPTY_STATE_DOG_WIDTH = max(len(row) for row in EMPTY_STATE_DOG_PIXELS[0]) * 2
 EMPTY_STATE_MIN_WIDTH = EMPTY_STATE_DOG_WIDTH + 4
 EMPTY_STATE_CONTENT_HEIGHT = EMPTY_STATE_DOG_HEIGHT + 2
+TOOL_ARGUMENT_PREVIEW_MAX_CHARS = 96
+TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS = 48
 EMPTY_STATE_PIXEL_STYLES: dict[str, str] = {
     "o": "#e5b86f",
     "n": "#111827",
@@ -81,7 +85,7 @@ class StreamWidget(RichLog):
 
     DEFAULT_CSS = """
     StreamWidget {
-        border: solid #81a1c1;
+        border: round #5e81ac;
         background: #2e3440;
         color: #e5e9f0;
         padding: 0 1;
@@ -708,6 +712,7 @@ def _selectable_debug_events(events: list[TUIEvent]) -> list[TUIEvent]:
 def _selected_debug_panel(renderable: RenderableType) -> RenderableType:
     return Panel(
         renderable,
+        box=box.ROUNDED,
         border_style="#88c0d0",
         style="on #3b4252",
         padding=(0, 0),
@@ -922,8 +927,10 @@ def _render_tool_block(tool_block: _ToolBlockState) -> Text:
     text.append(TRANSCRIPT_GUTTER)
     text.append("●", style=SUBTLE_BULLET_STYLE)
     text.append(" ")
-    text.append(tool_block.name, style=style)
-    text.append(f"  {_tool_summary(tool_block)}", style=style)
+    text.append(_tool_call_preview(tool_block), style=style)
+    summary = _tool_summary(tool_block)
+    if summary != "":
+        text.append(f"  {summary}", style=style)
     return text
 
 
@@ -1065,13 +1072,49 @@ def _tool_summary(tool_block: _ToolBlockState) -> str:
     if tool_block.status == "failed":
         return "failed"
     if tool_block.status == "completed":
-        summary = _tool_output_summary(tool_block.output)
-        if summary != "":
-            return f"completed - {summary}"
-        return "completed"
+        return _tool_output_summary(tool_block.output)
     if tool_block.status == "awaiting_approval":
         return "waiting for approval"
     return "running"
+
+
+def _tool_call_preview(tool_block: _ToolBlockState) -> str:
+    if tool_block.name is None:
+        raise ValueError("tool block must include a tool name before rendering")
+    arguments = _tool_argument_preview(tool_block.arguments)
+    if arguments == "":
+        return tool_block.name
+    return f"{tool_block.name}({arguments})"
+
+
+def _tool_argument_preview(arguments: str) -> str:
+    if arguments == "":
+        return ""
+    payload = json.loads(arguments)
+    if not isinstance(payload, dict):
+        return "..."
+    items = list(payload.items())
+    if len(items) == 1:
+        return _tool_argument_value_preview(items[0][1])
+    parts: list[str] = []
+    for key, value in items:
+        if type(key) is not str:
+            return "..."
+        parts.append(f"{key}: {_tool_argument_value_preview(value)}")
+    preview = ", ".join(parts)
+    if len(preview) > TOOL_ARGUMENT_PREVIEW_MAX_CHARS:
+        return preview[: TOOL_ARGUMENT_PREVIEW_MAX_CHARS - 3] + "..."
+    return preview
+
+
+def _tool_argument_value_preview(value: object) -> str:
+    if isinstance(value, str):
+        if len(value) > TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS:
+            value = value[: TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS - 3] + "..."
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, int | float | bool) or value is None:
+        return json.dumps(value, ensure_ascii=False)
+    return "..."
 
 
 def _tool_output_summary(output: str) -> str:
@@ -1174,6 +1217,7 @@ def _render_idea_item(item: TUIIdeaItem) -> Panel:
     body.append(item.body if item.body != "" else " ", style="#d8dee9")
     return Panel(
         body,
+        box=box.ROUNDED,
         title=title,
         title_align="left",
         border_style="#4c566a",
@@ -1274,14 +1318,13 @@ def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:
     for index, citation in enumerate(citations, start=1):
         title = Text()
         title.append(f"[{index}] ", style=SUBTLE_BULLET_STYLE)
-        title.append(citation.label, style="bold #d8dee9")
-        if citation.source != "":
-            title.append(f"  {citation.source}", style="#9aa3b2")
+        title.append(citation_origin_name(citation.origin), style="bold #d8dee9")
         body = Text(citation.content, style="#d8dee9")
         lines.append(title)
         lines.append(body)
     return Panel(
         Group(*lines),
+        box=box.ROUNDED,
         title="cited source",
         title_align="left",
         border_style="#4c566a",

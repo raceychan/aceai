@@ -1,3 +1,6 @@
+import pytest
+
+from aceai.agent.provider_catalog import auth_mode, provider_options
 from aceai.agent.config import (
     AgentAppConfig,
     LEGACY_AGENT_SKILLS_DIR,
@@ -10,6 +13,13 @@ from aceai.agent.config import (
     replace_config,
     save_config,
 )
+
+
+def test_provider_catalog_records_provider_auth_modes() -> None:
+    assert auth_mode("openai") == "api_key"
+    assert auth_mode("deepseek") == "api_key"
+    assert auth_mode("codex") == "subscription"
+    assert ("Codex (subscription)", "codex") in provider_options()
 
 
 def test_config_schema_lists_required_fields() -> None:
@@ -29,6 +39,7 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["tool_enabled"].value_type == "mapping"
     assert fields["tool_max_calls"].value_type == "mapping"
     assert fields["compress_threshold"].value_type == "string"
+    assert fields["reasoning_level"].value_type == "string"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
@@ -42,6 +53,7 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         tool_enabled={"read_text_file": False},
         tool_max_calls={"search_text": 4},
         compress_threshold="80%",
+        reasoning_level="auto",
     )
 
     save_config(config, path)
@@ -50,6 +62,97 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
     assert loaded == config
     assert current_config() == config
     assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_save_and_load_config_round_trips_reasoning_level(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    config = AgentAppConfig(
+        provider="openai",
+        api_key="secret",
+        model="gpt-5.5",
+        api_keys={"openai": "secret"},
+        reasoning_level="high",
+    )
+
+    save_config(config, path)
+
+    assert load_config(path) == config
+
+
+def test_save_and_load_config_round_trips_deepseek_reasoning_level(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    config = AgentAppConfig(
+        provider="deepseek",
+        api_key="secret",
+        model="deepseek-v4-pro",
+        default_model="deepseek-v4-pro",
+        api_keys={"deepseek": "secret"},
+        reasoning_level="max",
+    )
+
+    save_config(config, path)
+
+    assert load_config(path) == config
+
+
+def test_load_config_rejects_reasoning_level_for_unsupported_model(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join(
+            (
+                "version: 4",
+                "provider: openai",
+                "model: gpt-4o",
+                "default_model: gpt-4o",
+                "api_key: secret",
+                "skills: auto",
+                "skill_selection_mode: all",
+                "enabled_skills: []",
+                "api_keys:",
+                "  openai: secret",
+                "tool_permissions: {}",
+                "tool_enabled: {}",
+                "tool_max_calls: {}",
+                "compress_threshold: 100%",
+                "reasoning_level: high",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reasoning_level is unsupported for model"):
+        load_config(path)
+
+
+def test_load_config_rejects_provider_specific_unsupported_reasoning_level(
+    tmp_path,
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join(
+            (
+                "version: 4",
+                "provider: deepseek",
+                "model: deepseek-v4-pro",
+                "default_model: deepseek-v4-pro",
+                "api_key: secret",
+                "skills: auto",
+                "skill_selection_mode: all",
+                "enabled_skills: []",
+                "api_keys:",
+                "  deepseek: secret",
+                "tool_permissions: {}",
+                "tool_enabled: {}",
+                "tool_max_calls: {}",
+                "compress_threshold: 100%",
+                "reasoning_level: medium",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reasoning_level is unsupported for model"):
+        load_config(path)
 
 
 def test_load_config_prefers_project_config_over_global(tmp_path, monkeypatch) -> None:

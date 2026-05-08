@@ -16,7 +16,13 @@ from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    RateLimitError,
+)
 
 from aceai.llm.errors import (
     AceAIConfigurationError,
@@ -38,6 +44,7 @@ LLM_RETRY_EXHAUSTED_MESSAGE = "LLM request failed after retries. Please try agai
 RetryableProviderErrors = (
     TimeoutError,
     httpx.TransportError,
+    APIError,
     APIConnectionError,
     APITimeoutError,
     RateLimitError,

@@ -10,7 +10,10 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from aceai.agent.cost import format_usd
-from aceai.agent.provider_catalog import context_window_for_model_any_provider
+from aceai.agent.provider_catalog import (
+    context_window_for_model_any_provider,
+    supports_reasoning_effort_any_provider,
+)
 from aceai.agent.tui.state import TUIRunStatus, TUIUsageState
 
 
@@ -33,6 +36,7 @@ class StatusBarWidget(Static):
         super().__init__("", id=id)
         self.current_text = ""
         self._model: str | None = None
+        self._reasoning_level = "auto"
         self._status: TUIRunStatus = "idle"
         self._usage = TUIUsageState()
         self._spinner_frame = 0
@@ -50,10 +54,12 @@ class StatusBarWidget(Static):
         self,
         *,
         model: str | None,
+        reasoning_level: str = "auto",
         status: TUIRunStatus,
         usage: TUIUsageState | None = None,
     ) -> None:
         self._model = model
+        self._reasoning_level = reasoning_level
         previous_status = self._status
         self._status = status
         self._usage = usage or TUIUsageState()
@@ -124,13 +130,22 @@ class StatusBarWidget(Static):
     def _render_status(self) -> None:
         model_text = self._model if self._model is not None else "unconfigured"
         max_ctx = _max_context_window(self._model)
-        left_text = f"{_status_symbol(self._status, self._spinner_frame)} model: {model_text}"
+        left_parts = [
+            f"{_status_symbol(self._status, self._spinner_frame)} model: {model_text}"
+        ]
+        if self._model is not None and supports_reasoning_effort_any_provider(
+            self._model
+        ):
+            left_parts.append(f"reasoning: {self._reasoning_level}")
+        left_text = "   ".join(left_parts)
         right_text = _status_usage_text(
             self._usage,
             max_context_window=max_ctx,
             elapsed_seconds=self._elapsed_seconds(),
         )
-        self.current_text = left_text if right_text == "" else f"{left_text}   {right_text}"
+        self.current_text = (
+            left_text if right_text == "" else f"{left_text}   {right_text}"
+        )
         if self._status == "suspended":
             self.current_text = (
                 f"{self.current_text}   action: choose Approve or Reject"
@@ -185,9 +200,7 @@ def _status_usage_text(
 ) -> str:
     parts: list[str] = []
     if usage.current_context_tokens is not None:
-        ctx_pct = _context_window_pct(
-            usage.current_context_tokens, max_context_window
-        )
+        ctx_pct = _context_window_pct(usage.current_context_tokens, max_context_window)
         parts.append(
             f"context: {_format_context_tokens(usage.current_context_tokens)}{ctx_pct}"
         )
