@@ -192,7 +192,7 @@ def test_build_ace_agent_supports_openai_codex_without_hosted_tools(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     agent = build_ace_agent(
-        provider_name="openai-codex",
+        provider_name="codex",
         api_key="codex-access-token",
         model="gpt-5.4",
     )
@@ -221,7 +221,7 @@ def test_build_ace_agent_can_use_codex_cli_auth_sentinel(
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     agent = build_ace_agent(
-        provider_name="openai-codex",
+        provider_name="codex",
         api_key=CODEX_CLI_AUTH_SENTINEL,
         model="gpt-5.4",
     )

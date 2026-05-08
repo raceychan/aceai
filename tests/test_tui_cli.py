@@ -184,8 +184,8 @@ def test_cli_uses_codex_cli_auth_default(monkeypatch) -> None:
     def run_interactive_tui(received_agent, **kwargs):
         calls.append(("interactive", (received_agent, kwargs)))
 
-    monkeypatch.setenv("ACEAI_PROVIDER", "openai-codex")
-    monkeypatch.delenv("ACEAI_OPENAI_CODEX_TOKEN", raising=False)
+    monkeypatch.setenv("ACEAI_PROVIDER", "codex")
+    monkeypatch.delenv("ACEAI_CODEX_TOKEN", raising=False)
     monkeypatch.delenv("ACEAI_MODEL", raising=False)
     install_tui_extra_stub(monkeypatch)
     monkeypatch.setattr(cli, "build_agent", build_agent)
@@ -195,7 +195,7 @@ def test_cli_uses_codex_cli_auth_default(monkeypatch) -> None:
 
     assert calls[0] == (
         "build",
-        ("openai-codex", CODEX_CLI_AUTH_SENTINEL, "gpt-5.5"),
+        ("codex", CODEX_CLI_AUTH_SENTINEL, "gpt-5.5"),
     )
 
 

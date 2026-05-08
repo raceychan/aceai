@@ -23,6 +23,7 @@ the provider adapter can resolve the local login at runtime.
 
 Current subscription providers:
 
-- `openai-codex`: uses the Codex CLI login in `~/.codex/auth.json`. AceAI stores
+- `codex`: shown as `Codex (subscription)`. It uses the Codex CLI login in
+  `~/.codex/auth.json`. AceAI stores
   the internal sentinel `codex-cli` and the provider resolves the access token
   from the local Codex auth file when a run starts.

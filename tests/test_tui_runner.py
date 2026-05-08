@@ -2697,7 +2697,7 @@ async def test_config_screen_requires_provider_model_and_api_key() -> None:
 @pytest.mark.anyio
 async def test_config_screen_uses_codex_cli_auth_when_key_is_blank() -> None:
     screen = ConfigScreen(
-        provider_name="openai-codex",
+        provider_name="codex",
         current_model="gpt-5.5",
         default_model="gpt-5.5",
         skills="auto",
@@ -2718,7 +2718,7 @@ async def test_config_screen_uses_codex_cli_auth_when_key_is_blank() -> None:
         _press_config_apply(screen)
 
         assert selections[-1] == ConfigSelection(
-            provider="openai-codex",
+            provider="codex",
             model="gpt-5.5",
             default_model="gpt-5.5",
             api_key=CODEX_CLI_AUTH_SENTINEL,
@@ -2744,7 +2744,7 @@ async def test_config_screen_hides_api_key_when_switching_to_subscription_provid
         await pilot.pause()
 
         assert not screen.query_one("#api-key-row").has_class("hidden")
-        screen.query_one("#provider", Input).value = "openai-codex"
+        screen.query_one("#provider", Input).value = "codex"
         await pilot.pause()
 
         assert screen.query_one("#api-key-row").has_class("hidden")
@@ -2903,7 +2903,7 @@ async def test_configured_tui_switches_to_codex_with_cli_auth_default(
     async with app.run_test() as pilot:
         app._handle_config_selection(
             ConfigSelection(
-                provider="openai-codex",
+                provider="codex",
                 model="gpt-5.5",
                 default_model="gpt-5.5",
                 api_key="",
@@ -2913,7 +2913,7 @@ async def test_configured_tui_switches_to_codex_with_cli_auth_default(
             )
         )
         expected_config = AgentAppConfig(
-            provider="openai-codex",
+            provider="codex",
             api_key=CODEX_CLI_AUTH_SENTINEL,
             model="gpt-5.5",
             default_model="gpt-5.5",
@@ -2922,7 +2922,7 @@ async def test_configured_tui_switches_to_codex_with_cli_auth_default(
             enabled_skills=[],
             api_keys={
                 "openai": "openai-key",
-                "openai-codex": CODEX_CLI_AUTH_SENTINEL,
+                "codex": CODEX_CLI_AUTH_SENTINEL,
             },
         )
 

@@ -120,10 +120,10 @@ providers:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
           output_usd_per_million: 0.28
-  - name: openai-codex
-    label: OpenAI Codex
+  - name: codex
+    label: Codex (subscription)
     auth_mode: subscription
-    api_key_env: ACEAI_OPENAI_CODEX_TOKEN
+    api_key_env: ACEAI_CODEX_TOKEN
     default_model: gpt-5.5
     stale_default_models: []
     models:

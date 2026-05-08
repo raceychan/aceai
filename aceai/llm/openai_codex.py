@@ -13,7 +13,7 @@ from aceai.llm.openai import OpenAI, OpenAIMeta, OpenAIPayload
 
 
 OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-OPENAI_CODEX_PROVIDER_NAME = "openai-codex"
+OPENAI_CODEX_PROVIDER_NAME = "codex"
 CODEX_CLI_AUTH_SENTINEL = "codex-cli"
 OPENAI_CODEX_DEFAULT_INSTRUCTIONS = "You are AceAI, a concise coding agent."
 

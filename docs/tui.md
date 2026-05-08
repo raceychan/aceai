@@ -36,7 +36,7 @@ aceai = "aceai.agent.tui.cli:main"
 
 `aceai` launches the terminal UI after installation. Provider authentication is
 declared in `aceai/agent/provider_catalog.yaml`: API key providers show an API
-key field, while subscription providers such as `openai-codex` use a local
+key field, while subscription providers such as `codex` use a local
 subscription login and do not show API key configuration. `ACEAI_MODEL`
 overrides the default model.
 

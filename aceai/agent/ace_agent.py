@@ -56,7 +56,7 @@ def build_ace_agent(
             client=AsyncOpenAI(api_key=api_key),
             default_meta={"model": model},
         )
-    elif provider_name == "openai-codex":
+    elif provider_name == "codex":
         provider = OpenAICodex(
             api_key=api_key,
             default_meta={"model": model},
