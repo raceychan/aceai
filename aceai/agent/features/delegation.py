@@ -3,8 +3,9 @@ from uuid import uuid4
 
 from ididi import Graph
 from msgspec import Struct
+from msgspec.json import encode as msg_encode
 
-from aceai.core import Agent, ToolExecutionError, Executor
+from aceai.core import Agent, ToolExecutionError, Executor, ToolExecutionOutput
 from aceai.core.events import (
     AgentEvent,
     RunCompletedEvent,
@@ -13,9 +14,14 @@ from aceai.core.events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
+from aceai.core.context_manager import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    CompressThreshold,
+)
 from aceai.core.tools import Annotated, Tool, spec, tool
 from aceai.llm import ILLMService
 from aceai.llm.interface import UNSET, Unset
+from aceai.llm.models import LLMHostedToolSpec
 
 
 DELEGATED_AGENT_SYSTEM_BOUNDARY = """
@@ -37,12 +43,16 @@ Evidence:
 
 Risks:
 - Any uncertainty, missing evidence, or follow-up the main agent should know.
+
+Next:
+- The next action the main agent should take, if any.
 """
 
 
 class ChildToolResult(Struct, frozen=True, kw_only=True):
     tool_name: str
     call_id: str
+    arguments: str
     output: str
     error: str | None = None
 
@@ -58,14 +68,38 @@ class ChildAgentResult(Struct, frozen=True, kw_only=True):
     step_count: int
 
 
+class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
+    type: str
+    agent_id: str
+    run_id: str
+    status: str
+    task: str
+    handoff: str
+    artifact_id: str
+    evidence: list[str]
+    step_count: int
+    tool_result_count: int
+    tool_names: list[str]
+
+
 def build_delegate_to_subagent_tool(
     *,
     llm_service: ILLMService,
     default_model: str,
     available_tools: list[Tool[Any, Any]],
-    child_max_steps: Unset[int] = 4,
+    available_hosted_tools: list[LLMHostedToolSpec] | None = None,
+    # max_steps is a hard stop. Keep child agents unlimited by default; only set
+    # this for a deliberate execution-budget policy.
+    child_max_steps: Unset[int] = UNSET,
+    compress_threshold: CompressThreshold = "100%",
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ) -> Tool[Any, Any]:
     tool_map = {available_tool.name: available_tool for available_tool in available_tools}
+    hosted_tool_map = {
+        _hosted_tool_key(hosted_tool): hosted_tool
+        for hosted_tool in available_hosted_tools or []
+    }
+    allowed_tools_description = _allowed_tools_description(hosted_tool_map)
 
     @tool(
         tags=["agent_app", "delegation"],
@@ -110,21 +144,28 @@ def build_delegate_to_subagent_tool(
         allowed_tools: Annotated[
             list[str],
             spec(
-                description=(
-                    "Exact local tool names the subagent may use. Keep this narrow. "
-                    "Use an empty list when no tool access is needed. Do not include "
-                    "approval-required tools."
-                )
+                description=allowed_tools_description
             ),
         ],
-    ) -> ChildAgentResult:
-        selected_tools = _select_child_tools(tool_map, allowed_tools)
+    ) -> ToolExecutionOutput:
+        selected_tools = _select_child_tools(
+            tool_map,
+            hosted_tool_map,
+            allowed_tools,
+        )
+        selected_hosted_tools = _select_child_hosted_tools(
+            hosted_tool_map,
+            allowed_tools,
+        )
         child_agent = _build_child_agent(
             llm_service=llm_service,
             default_model=default_model,
             instructions=instructions,
             tools=selected_tools,
+            hosted_tools=selected_hosted_tools,
             child_max_steps=child_max_steps,
+            compress_threshold=compress_threshold,
+            context_window_tokens=context_window_tokens,
         )
         child_question = _format_child_question(
             task=task,
@@ -146,15 +187,36 @@ def build_delegate_to_subagent_tool(
             elif isinstance(event, RunFailedEvent):
                 raise ToolExecutionError(event.error)
 
-        return ChildAgentResult(
+        result = ChildAgentResult(
             agent_id=child_agent.agent_id,
             run_id=child_run.run_id,
             status=child_run.status,
             final_answer=final_answer,
-            summary=final_answer,
+            summary=_bounded_text(final_answer, 1200),
             important_evidence=_collect_child_evidence(events),
             tool_results=_collect_child_tool_results(events),
             step_count=len(child_run.steps),
+        )
+        artifact_id = uuid4().hex
+        handoff = ChildAgentHandoff(
+            type="subagent_handoff",
+            agent_id=result.agent_id,
+            run_id=result.run_id,
+            status=result.status,
+            task=task,
+            handoff=result.summary,
+            artifact_id=artifact_id,
+            evidence=[
+                _bounded_text(evidence, 240)
+                for evidence in result.important_evidence[:3]
+            ],
+            step_count=result.step_count,
+            tool_result_count=len(result.tool_results),
+            tool_names=_tool_names(result.tool_results),
+        )
+        return ToolExecutionOutput(
+            output=msg_encode(result).decode("utf-8"),
+            model_output=msg_encode(handoff).decode("utf-8"),
         )
 
     return delegate_to_subagent
@@ -162,11 +224,14 @@ def build_delegate_to_subagent_tool(
 
 def _select_child_tools(
     tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
     allowed_tools: list[str],
 ) -> list[Tool[Any, Any]]:
     selected_tools: list[Tool[Any, Any]] = []
     approval_tools: list[str] = []
     for tool_name in allowed_tools:
+        if tool_name in hosted_tool_map:
+            continue
         if tool_name not in tool_map:
             raise ToolExecutionError(
                 "delegate_to_subagent received unknown child tool: " + tool_name
@@ -184,20 +249,59 @@ def _select_child_tools(
     return selected_tools
 
 
+def _select_child_hosted_tools(
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+    allowed_tools: list[str],
+) -> list[LLMHostedToolSpec]:
+    selected_tools: list[LLMHostedToolSpec] = []
+    for tool_name in allowed_tools:
+        if tool_name in hosted_tool_map:
+            selected_tools.append(hosted_tool_map[tool_name])
+    return selected_tools
+
+
+def _hosted_tool_key(hosted_tool: LLMHostedToolSpec) -> str:
+    return hosted_tool.provider_name + ":" + hosted_tool.native_name
+
+
+def _allowed_tools_description(
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+) -> str:
+    description = (
+        "Exact local tool names or hosted tool identifiers the subagent may use. "
+        "Hosted tool identifiers use provider:native_name. Keep this narrow. Use "
+        "an empty list when no tool access is needed. Do not include "
+        "approval-required local tools."
+    )
+    if not hosted_tool_map:
+        return description
+    return (
+        description
+        + " Available hosted tool identifiers: "
+        + ", ".join(hosted_tool_map)
+        + "."
+    )
+
+
 def _build_child_agent(
     *,
     llm_service: ILLMService,
     default_model: str,
     instructions: str,
     tools: list[Tool[Any, Any]],
+    hosted_tools: list[LLMHostedToolSpec],
     child_max_steps: Unset[int],
+    compress_threshold: CompressThreshold,
+    context_window_tokens: int,
 ) -> Agent:
     return Agent(
         prompt=_format_child_prompt(instructions),
         default_model=default_model,
         llm_service=llm_service,
-        executor=Executor(Graph(), tools),
+        executor=Executor(Graph(), tools, hosted_tools=hosted_tools),
         max_steps=child_max_steps,
+        compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
         agent_id=f"child-{uuid4()}",
     )
 
@@ -232,8 +336,23 @@ def _collect_child_tool_results(events: list[AgentEvent]) -> list[ChildToolResul
                 ChildToolResult(
                     tool_name=event.tool_call.name,
                     call_id=event.tool_call.call_id,
+                    arguments=event.tool_call.arguments,
                     output=event.tool_result.output,
                     error=event.tool_result.error,
                 )
             )
     return tool_results
+
+
+def _tool_names(tool_results: list[ChildToolResult]) -> list[str]:
+    names: list[str] = []
+    for result in tool_results:
+        if result.tool_name not in names:
+            names.append(result.tool_name)
+    return names
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n[truncated]"

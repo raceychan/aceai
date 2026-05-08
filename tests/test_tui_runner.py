@@ -66,6 +66,7 @@ from aceai.agent.tui.widgets.input import (
     _citation_preview_text,
 )
 from textual.events import Key
+from textual.containers import VerticalScroll
 from textual.widgets import (
     Button,
     Checkbox,
@@ -1495,6 +1496,8 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
         assert "/idea" in completions.display_text
         assert "/quit" in completions.display_text
         assert "/sessions" in completions.display_text
+        assert "/subagents" in completions.display_text
+        assert "Show delegated subagent details" in completions.display_text
         assert "/trajectory" in completions.display_text
         assert "/update" in completions.display_text
         assert "/model" not in completions.display_text
@@ -1647,6 +1650,43 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         assert "1. idea" not in preview.display_text
         assert "ideas" not in preview.display_text
         assert command_input.has_focus
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_idea_picker_scrolls_highlighted_row_into_view(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    for index in range(18):
+        idea_store.capture(f"idea {index}", project=app._project)
+
+    async with app.run_test(size=(100, 20)) as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        idea_list = picker.query_one("#idea-list", IdeaListWidget)
+        scroll = picker.query_one("#idea-list-scroll", VerticalScroll)
+
+        for _index in range(17):
+            await pilot.press("down")
+
+        await _wait_until(pilot, lambda: idea_list.selected_index == 17)
+        await _wait_until(pilot, lambda: scroll.scroll_y > 0)
+
+        selected_top = idea_list._selected_item_top()
+        assert scroll.scroll_y <= selected_top
+        assert selected_top < scroll.scroll_y + scroll.scrollable_content_region.height
 
 
 @pytest.mark.anyio

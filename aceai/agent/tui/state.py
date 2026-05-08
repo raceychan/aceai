@@ -1,5 +1,6 @@
 """State reducer for the read-only TUI prototype."""
 
+import json
 from typing import Literal
 
 from msgspec import field
@@ -16,6 +17,31 @@ TUIToolStatus = Literal["pending", "running", "awaiting_approval", "completed", 
 TUISubagentStatus = Literal["pending", "running", "completed", "failed"]
 
 
+class TUISubagentArguments(Record, kw_only=True):
+    task: str = ""
+    instructions: str = ""
+    context_brief: str = ""
+    allowed_tools: list[str] = field(default_factory=list[str])
+
+
+class TUISubagentToolResult(Record, kw_only=True):
+    tool_name: str
+    call_id: str
+    output: str
+    error: str | None = None
+
+
+class TUISubagentResult(Record, kw_only=True):
+    agent_id: str
+    run_id: str
+    status: str
+    final_answer: str
+    summary: str
+    important_evidence: list[str]
+    tool_results: list[TUISubagentToolResult]
+    step_count: int
+
+
 class TUIToolState(Record, kw_only=True):
     call_id: str
     name: str | None = None
@@ -29,7 +55,17 @@ class TUIToolState(Record, kw_only=True):
 class TUISubagentState(Record, kw_only=True):
     call_id: str
     task: str = ""
+    instructions: str = ""
+    context_brief: str = ""
+    allowed_tools: list[str] = field(default_factory=list[str])
     status: TUISubagentStatus = "pending"
+    agent_id: str = ""
+    run_id: str = ""
+    summary: str = ""
+    final_answer: str = ""
+    important_evidence: list[str] = field(default_factory=list[str])
+    tool_results: list[TUISubagentToolResult] = field(default_factory=list[TUISubagentToolResult])
+    step_count: int = 0
     output: str = ""
     error: str | None = None
 
@@ -174,6 +210,12 @@ def _merge_stream_delta(previous: TUIEvent, event: TUIEvent) -> TUIEvent:
         usage=event.usage,
         cost=event.cost,
         error=event.error,
+        run_id=previous.run_id,
+        retry_count=previous.retry_count,
+        retry_max=previous.retry_max,
+        retry_delay_seconds=previous.retry_delay_seconds,
+        compression_count=previous.compression_count,
+        compression_reason=previous.compression_reason,
     )
 
 
@@ -380,33 +422,76 @@ def _update_subagent(
     subagent: TUISubagentState,
     event: TUIEvent,
 ) -> TUISubagentState:
+    arguments = _next_subagent_arguments(subagent, event)
+    result = _subagent_result(event)
     return TUISubagentState(
         call_id=subagent.call_id,
-        task=_next_subagent_task(subagent.task, event),
+        task=arguments.task,
+        instructions=arguments.instructions,
+        context_brief=arguments.context_brief,
+        allowed_tools=arguments.allowed_tools,
         status=_next_subagent_status(subagent.status, event),
+        agent_id=subagent.agent_id if result is None else result.agent_id,
+        run_id=subagent.run_id if result is None else result.run_id,
+        summary=subagent.summary if result is None else result.summary,
+        final_answer=subagent.final_answer if result is None else result.final_answer,
+        important_evidence=(
+            subagent.important_evidence if result is None else result.important_evidence
+        ),
+        tool_results=subagent.tool_results if result is None else result.tool_results,
+        step_count=subagent.step_count if result is None else result.step_count,
         output=event.content if event.kind == "tool_completed" else subagent.output,
         error=event.error if event.kind == "tool_failed" else subagent.error,
     )
 
 
-def _next_subagent_task(current_task: str, event: TUIEvent) -> str:
-    if current_task != "":
-        return current_task
-    return _subagent_task(event)
+def _next_subagent_arguments(
+    subagent: TUISubagentState,
+    event: TUIEvent,
+) -> TUISubagentArguments:
+    arguments = _subagent_arguments(event)
+    if arguments is not None:
+        return arguments
+    return TUISubagentArguments(
+        task=subagent.task,
+        instructions=subagent.instructions,
+        context_brief=subagent.context_brief,
+        allowed_tools=subagent.allowed_tools,
+    )
 
 
 def _subagent_task(event: TUIEvent) -> str:
-    if event.tool_call is None:
+    arguments = _subagent_arguments(event)
+    if arguments is None:
         return ""
-    payload = msg_decode(event.tool_call.arguments.encode("utf-8"))
-    if type(payload) is not dict:
-        raise TypeError("delegate_to_subagent arguments must decode to an object")
-    if "task" not in payload:
-        return event.tool_call.arguments
-    task = payload["task"]
-    if type(task) is not str:
-        raise TypeError("delegate_to_subagent task argument must be str")
-    return task
+    return arguments.task
+
+
+def _subagent_arguments(event: TUIEvent) -> TUISubagentArguments | None:
+    if event.tool_call is None:
+        return None
+    return msg_decode(
+        event.tool_call.arguments.encode("utf-8"),
+        type=TUISubagentArguments,
+    )
+
+
+def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
+    if event.kind != "tool_completed":
+        return None
+    payload = json.loads(event.content)
+    if payload.get("type") == "subagent_audit":
+        return TUISubagentResult(
+            agent_id=payload["agent_id"],
+            run_id=payload["run_id"],
+            status=payload["status"],
+            final_answer="",
+            summary=payload["summary"],
+            important_evidence=[],
+            tool_results=[],
+            step_count=payload["step_count"],
+        )
+    return msg_decode(event.content.encode("utf-8"), type=TUISubagentResult)
 
 
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
@@ -427,6 +512,8 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if event.kind == "run_suspended":
         return "suspended"
     if event.kind == "run_failed":
+        return "failed"
+    if event.kind == "context_compaction_failed":
         return "failed"
     if status == "suspended" and event.kind == "tool_approval_resolved":
         return "running"

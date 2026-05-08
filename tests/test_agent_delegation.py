@@ -1,8 +1,12 @@
+import json
 from pathlib import Path
 
 import pytest
 
-from aceai.agent.features.delegation import build_delegate_to_subagent_tool
+from aceai.agent.features.delegation import (
+    _build_child_agent,
+    build_delegate_to_subagent_tool,
+)
 from aceai.agent.features.tools import (
     default_agent_tools,
     read_text_file,
@@ -10,7 +14,13 @@ from aceai.agent.features.tools import (
     search_text,
 )
 from aceai.core import ToolExecutionError
-from aceai.llm.models import LLMResponse, LLMStreamEvent, LLMToolCall
+from aceai.llm.interface import UNSET
+from aceai.llm.models import (
+    LLMHostedToolSpec,
+    LLMResponse,
+    LLMStreamEvent,
+    LLMToolCall,
+)
 
 
 class RecordingDelegationLLMService:
@@ -36,6 +46,10 @@ def completed_stream(response: LLMResponse) -> list[LLMStreamEvent]:
             response=response,
         )
     ]
+
+
+def test_delegate_to_subagent_defaults_child_max_steps_to_unset() -> None:
+    assert build_delegate_to_subagent_tool.__kwdefaults__["child_max_steps"] is UNSET
 
 
 @pytest.mark.anyio
@@ -66,13 +80,17 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
         allowed_tools=[],
     )
 
-    assert result.status == "completed"
-    assert result.final_answer.startswith("Summary:\nReviewed")
-    assert result.summary == result.final_answer
-    assert result.step_count == 1
-    assert result.important_evidence == []
-    assert result.tool_results == []
-    assert result.agent_id.startswith("child-")
+    payload = json.loads(result.output)
+    model_payload = json.loads(result.model_output)
+    assert payload["status"] == "completed"
+    assert payload["final_answer"].startswith("Summary:\nReviewed")
+    assert payload["summary"] == payload["final_answer"]
+    assert payload["step_count"] == 1
+    assert payload["important_evidence"] == []
+    assert payload["tool_results"] == []
+    assert payload["agent_id"].startswith("child-")
+    assert model_payload["type"] == "subagent_handoff"
+    assert model_payload["handoff"].startswith("Summary:\nReviewed")
 
     messages = llm_service.stream_calls[0]["messages"]
     system_text = messages[0].content[0]["data"]
@@ -126,18 +144,97 @@ async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path
         allowed_tools=["read_text_file"],
     )
 
-    assert result.status == "completed"
-    assert result.step_count == 2
-    assert len(result.tool_results) == 1
-    assert result.tool_results[0].tool_name == "read_text_file"
-    assert result.tool_results[0].call_id == "call-read"
-    assert "delegated evidence" in result.tool_results[0].output
-    assert result.important_evidence == [result.tool_results[0].output]
+    payload = json.loads(result.output)
+    model_payload = json.loads(result.model_output)
+    assert payload["status"] == "completed"
+    assert payload["step_count"] == 2
+    assert len(payload["tool_results"]) == 1
+    assert payload["tool_results"][0]["tool_name"] == "read_text_file"
+    assert payload["tool_results"][0]["call_id"] == "call-read"
+    assert payload["tool_results"][0]["arguments"] == '{"path":"' + str(target) + '"}'
+    assert "delegated evidence" in payload["tool_results"][0]["output"]
+    assert payload["important_evidence"] == [payload["tool_results"][0]["output"]]
+    assert model_payload["tool_result_count"] == 1
+    assert model_payload["tool_names"] == ["read_text_file"]
+    assert "delegated evidence" in model_payload["evidence"][0]
 
     first_call_tools = llm_service.stream_calls[0]["tools"]
     assert [tool.name for tool in first_call_tools] == ["read_text_file"]
     second_call_tools = llm_service.stream_calls[1]["tools"]
     assert [tool.name for tool in second_call_tools] == ["read_text_file"]
+
+
+@pytest.mark.anyio
+async def test_delegate_to_subagent_allows_child_hosted_tools() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+    llm_service = RecordingDelegationLLMService(
+        [
+            completed_stream(
+                LLMResponse(
+                    text=(
+                        "Summary:\nFound current news.\n\n"
+                        "Evidence:\nUsed hosted web search.\n\n"
+                        "Risks:\nNone."
+                    )
+                )
+            )
+        ]
+    )
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-5.5",
+        available_tools=[],
+        available_hosted_tools=[hosted_tool],
+    )
+
+    result = await delegate_to_subagent(
+        task="Search current Iran news.",
+        instructions="Use hosted web search.",
+        context_brief="Current date is 2026-05-08.",
+        allowed_tools=["openai:web_search"],
+    )
+
+    payload = json.loads(result.output)
+    assert payload["status"] == "completed"
+    assert payload["final_answer"].startswith("Summary:\nFound current news.")
+    assert llm_service.stream_calls[0]["tools"] == [hosted_tool]
+
+
+def test_delegate_to_subagent_schema_lists_available_hosted_tools() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=RecordingDelegationLLMService([]),
+        default_model="gpt-5.5",
+        available_tools=[],
+        available_hosted_tools=[hosted_tool],
+    )
+
+    schema = delegate_to_subagent.tool_spec.generate_schema()
+
+    description = schema["parameters"]["properties"]["allowed_tools"]["description"]
+    assert "Available hosted tool identifiers: openai:web_search." in description
+
+
+def test_delegated_child_agent_inherits_context_window_tokens() -> None:
+    agent = _build_child_agent(
+        llm_service=RecordingDelegationLLMService([]),
+        default_model="gpt-5.5",
+        instructions="Report concisely.",
+        tools=[],
+        hosted_tools=[],
+        child_max_steps=4,
+        compress_threshold=0.5,
+        context_window_tokens=1050000,
+    )
+
+    assert agent._compression_policy.threshold == 0.5
+    assert agent._compression_policy.context_window_tokens == 1050000
 
 
 @pytest.mark.anyio

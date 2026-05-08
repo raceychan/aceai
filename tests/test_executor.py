@@ -117,10 +117,12 @@ async def execute_call(
     call: LLMToolCall,
     tool_state: ToolRunState | None = None,
 ) -> str:
-    return await executor.execute(
+    result = await executor.execute(
         executor.resolve_invocation(call),
         tool_state=tool_state or ToolRunState(),
     )
+    assert result.model_output == result.output
+    return result.output
 
 
 def test_dummy_executor_has_no_tools() -> None:
@@ -468,4 +470,5 @@ async def test_tool_executor_resolves_invocation_with_approval_metadata(
     assert invocation.call is call
     assert invocation.tool is approved_tool
     assert invocation.approval_required is True
-    assert result == '"hello"'
+    assert result.output == '"hello"'
+    assert result.model_output == '"hello"'

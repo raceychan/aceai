@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -322,7 +323,8 @@ class EventLog:
                     pending_tool_call_recorded = True
                 history.append(
                     LLMToolUseMessage.from_content(
-                        content=event.payload["output"],
+                        content=event.payload.get("model_output")
+                        or event.payload["output"],
                         name=event.payload["tool_name"],
                         call_id=event.payload["tool_call_id"],
                     )
@@ -358,6 +360,12 @@ class EventLog:
             if cost is not None:
                 total += cost.total_cost_usd
         return total
+
+    def last_user_message_created_at(self) -> datetime | None:
+        for event in reversed(self.events):
+            if event.kind == "user_message":
+                return datetime.fromisoformat(event.created_at)
+        return None
 
     def title_source(self) -> str:
         for event in self.events:
@@ -446,7 +454,7 @@ class SessionStore:
         return SessionMetadata.from_row(row, files_dir=self.files_dir)
 
     def list_sessions(self, project_id: str | None = None) -> list[SessionMetadata]:
-        query = sql_select(_sessions_table).order_by(_sessions_table.c.updated_at.desc())
+        query = sql_select(_sessions_table).order_by(_sessions_table.c.created_at.desc())
         if project_id is not None:
             query = query.where(_sessions_table.c.project_id == project_id)
         with self.engine.connect() as conn:
@@ -460,7 +468,7 @@ class SessionStore:
             key=lambda session: (
                 0 if session.project_id == self.project_id else 1,
                 session.project_name,
-                -session.updated_at.timestamp(),
+                -session.created_at.timestamp(),
             )
         )
         return sessions
@@ -506,6 +514,7 @@ class SessionStore:
                 )
             )
         self.event_store.delete_event_log(metadata)
+        shutil.rmtree(self.root / session_id, ignore_errors=True)
 
     def finalize_session_title(self, session_id: str) -> str:
         title_source = self.load_event_log(session_id).title_source()
@@ -583,44 +592,46 @@ class SessionRecorder:
         self._tools: dict[str, _ToolBuffer] = {}
         self._finalized = False
         self._saved = True
+        self._last_recorded_event_id: str | None = None
 
     @property
     def saved(self) -> bool:
         return self._saved
 
-    def record(self, event: SessionEvent) -> None:
+    @property
+    def last_recorded_event_id(self) -> str | None:
+        return self._last_recorded_event_id
+
+    def record(self, event: SessionEvent) -> str | None:
         if event.kind == "session_notice":
-            return
+            return None
         if event.kind == "assistant_delta":
             self._assistant_buffer += event.payload["content"]
-            return
+            return None
         if event.kind == "tool_call_delta":
             self._tool_for(event).arguments += event.payload["content"]
-            return
+            return None
         if event.kind == "tool_started":
-            self._record_tool_started(event)
-            return
+            return self._record_tool_started(event)
         if event.kind == "tool_output":
             self._tool_for(event).output += event.payload["content"]
-            return
+            return None
         if event.kind == "tool_approval_requested":
-            self._record_tool_approval_requested(event)
-            return
+            return self._record_tool_approval_requested(event)
         if event.kind == "llm_completed":
-            self._record_llm_completed(event)
-            return
+            return self._record_llm_completed(event)
 
         self.flush_assistant()
         if event.kind == "user_message":
-            self._append_event(
+            return self._append_event(
                 "user_message",
                 _user_message_payload_for_record(event.payload),
                 event,
             )
         elif event.kind in ("tool_completed", "tool_failed"):
-            self._record_tool_result(event)
+            return self._record_tool_result(event)
         elif event.kind in ("run_failed", "step_failed"):
-            self._append_event(
+            return self._append_event(
                 "error",
                 {
                     "content": event.payload.get("error") or event.payload["content"],
@@ -629,29 +640,31 @@ class SessionRecorder:
                 event,
             )
         elif event.kind == "tool_approval_resolved":
-            self._record_tool_approval_resolved(event)
+            return self._record_tool_approval_resolved(event)
         elif event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
-            self._append_event(event.kind, dict(event.payload), event)
+            return self._append_event(event.kind, dict(event.payload), event)
         elif event.kind in (
             "llm_retrying",
             "media",
             "reasoning_summary",
             "thinking_delta",
         ):
-            self._append_event(event.kind, dict(event.payload), event)
+            return self._append_event(event.kind, dict(event.payload), event)
+        return None
 
     def flush_assistant(
         self,
         usage: LLMUsage | None = None,
         cost: CostEstimate | None = None,
-    ) -> None:
+    ) -> str | None:
         if self._assistant_buffer == "":
-            return
+            return None
         payload: dict[str, Any] = {"content": self._assistant_buffer}
         payload.update(_usage_payload(usage))
         payload.update(_cost_payload(cost))
-        self._append_event("assistant_message", payload, None)
+        event_id = self._append_event("assistant_message", payload, None)
         self._assistant_buffer = ""
+        return event_id
 
     def finalize(self) -> bool:
         if self._finalized:
@@ -667,12 +680,12 @@ class SessionRecorder:
         self._finalized = True
         return self._saved
 
-    def _record_llm_completed(self, event: SessionEvent) -> None:
+    def _record_llm_completed(self, event: SessionEvent) -> str | None:
         content = self._assistant_buffer or event.payload["content"]
         self._assistant_buffer = ""
         tool_calls = LLMToolCall.list_from_payload(event.payload)
         if tool_calls:
-            self._append_event(
+            return self._append_event(
                 "assistant_tool_call",
                 {
                     "content": "",
@@ -682,9 +695,8 @@ class SessionRecorder:
                 },
                 event,
             )
-            return
         if content != "":
-            self._append_event(
+            return self._append_event(
                 "assistant_message",
                 {
                     "content": content,
@@ -693,16 +705,17 @@ class SessionRecorder:
                 },
                 event,
             )
+        return None
 
-    def _record_tool_started(self, event: SessionEvent) -> None:
+    def _record_tool_started(self, event: SessionEvent) -> str:
         tool_buffer = self._tool_for(event)
         tool_buffer.name = event.payload["tool_name"]
         call = LLMToolCall.from_payload(event.payload["tool_call"])
         tool_buffer.call = call
         tool_buffer.arguments = call.arguments
-        self._append_event("tool_started", dict(event.payload), event)
+        return self._append_event("tool_started", dict(event.payload), event)
 
-    def _record_tool_approval_requested(self, event: SessionEvent) -> None:
+    def _record_tool_approval_requested(self, event: SessionEvent) -> str | None:
         tool_buffer = self._tool_for(event)
         if "tool_name" in event.payload:
             tool_buffer.name = event.payload["tool_name"]
@@ -711,8 +724,8 @@ class SessionRecorder:
             tool_buffer.call = call
             tool_buffer.arguments = call.arguments
         if tool_buffer.name is None:
-            return
-        self._append_event(
+            return None
+        return self._append_event(
             "tool_approval_requested",
             {
                 "content": event.payload["content"],
@@ -724,7 +737,7 @@ class SessionRecorder:
             event,
         )
 
-    def _record_tool_approval_resolved(self, event: SessionEvent) -> None:
+    def _record_tool_approval_resolved(self, event: SessionEvent) -> str | None:
         tool_buffer = self._tool_for(event)
         if "tool_name" in event.payload:
             tool_buffer.name = event.payload["tool_name"]
@@ -733,8 +746,8 @@ class SessionRecorder:
             tool_buffer.call = call
             tool_buffer.arguments = call.arguments
         if tool_buffer.name is None:
-            return
-        self._append_event(
+            return None
+        return self._append_event(
             "tool_approval_resolved",
             {
                 "content": event.payload["content"],
@@ -746,7 +759,7 @@ class SessionRecorder:
             event,
         )
 
-    def _record_tool_result(self, event: SessionEvent) -> None:
+    def _record_tool_result(self, event: SessionEvent) -> str | None:
         tool_buffer = self._tool_for(event)
         if "tool_name" in event.payload:
             tool_buffer.name = event.payload["tool_name"]
@@ -759,8 +772,8 @@ class SessionRecorder:
         elif event.payload["content"] != "":
             tool_buffer.output = event.payload["content"]
         if tool_buffer.name is None:
-            return
-        self._append_event(
+            return None
+        event_id = self._append_event(
             "tool_result",
             {
                 "content": _tool_content(
@@ -772,11 +785,16 @@ class SessionRecorder:
                 "tool_call_id": event.payload["tool_call_id"],
                 "tool_arguments": tool_buffer.arguments,
                 "output": tool_buffer.output,
+                "model_output": event.payload.get("tool_result", {}).get(
+                    "model_output",
+                    tool_buffer.output,
+                ),
                 "status": "failed" if event.kind == "tool_failed" else "completed",
             },
             event,
         )
         self._tools.pop(event.payload["tool_call_id"], None)
+        return event_id
 
     def _tool_for(self, event: SessionEvent) -> _ToolBuffer:
         if "tool_call_id" not in event.payload:
@@ -793,10 +811,17 @@ class SessionRecorder:
         kind: SessionEventKind,
         payload: dict[str, Any],
         source_event: SessionEvent | None,
-    ) -> None:
+    ) -> str:
+        if source_event is None:
+            event_id = uuid_str()
+        else:
+            event_id = source_event.event_id
+            if event_id == "":
+                raise ValueError("source event must include event_id")
         self.store.append_event(
             self.session_id,
             SessionEvent(
+                event_id=event_id,
                 session_id=self.session_id,
                 run_id="" if source_event is None else source_event.run_id,
                 step_id=None if source_event is None else source_event.step_id,
@@ -805,6 +830,8 @@ class SessionRecorder:
                 payload=payload,
             ),
         )
+        self._last_recorded_event_id = event_id
+        return event_id
 
 
 def default_session_root() -> Path:
@@ -976,13 +1003,27 @@ def _tool_content(kind: SessionEventKind, error: str | None, output: str) -> str
         return f"completed - {entry_count} entries"
     if '"bytes_written":' in output:
         return "completed - file written"
-    if '"exit_code":0' in output:
-        return "completed - command exited 0"
-    if '"exit_code":' in output:
-        return "completed - command finished"
     if '"matches":' in output:
         return "completed - search finished"
+    if '"exit_code":' in output:
+        return "completed - " + _shell_output_summary(output)
     return "completed"
+
+
+def _shell_output_summary(output: str) -> str:
+    payload = json.loads(output)
+    exit_code = payload["exit_code"]
+    stdout = payload["stdout"]
+    stderr = payload["stderr"]
+    if type(exit_code) is not int:
+        raise TypeError("shell tool exit_code must be int")
+    if type(stdout) is not str:
+        raise TypeError("shell tool stdout must be str")
+    if type(stderr) is not str:
+        raise TypeError("shell tool stderr must be str")
+    if exit_code == 0:
+        return "succeeded"
+    return f"exit {exit_code}"
 
 
 def _utc_now() -> datetime:

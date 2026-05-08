@@ -2,7 +2,7 @@
 AceAI - AI agent framework that delivers.
 """
 
-__version__ = "0.2.20"
+__version__ = "0.2.21"
 
 from ididi import Graph as Graph
 
@@ -16,6 +16,7 @@ from .llm import AceAIError as AceAIError
 from .llm import AceAIImplementationError as AceAIImplementationError
 from .llm import AceAIRuntimeError as AceAIRuntimeError
 from .llm import AceAIValidationError as AceAIValidationError
+from .llm import LLMContextWindowExceededError as LLMContextWindowExceededError
 from .llm import LLMService as LLMService
 from .llm import LLMProviderError as LLMProviderError
 from .llm import UnannotatedToolParamError as UnannotatedToolParamError

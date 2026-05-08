@@ -1,5 +1,28 @@
 # Changelog
 
+## AceAI v0.2.21
+
+### Features
+
+- `subagents`: Add session-archived subagent audit artifacts so delegated runs can return compact model-facing handoffs while preserving the full child run result and tool outputs for export and replay.
+- `context`: Add durable context checkpoint and compaction boundary support so oversized active runs can summarize older steps while keeping recent tool and response context available.
+
+### Improvements
+
+- `delegation`: Keep child agents unlimited by default by using `UNSET` for `child_max_steps`; explicit max-step budgets remain available for deliberate execution limits only.
+- `tui`: Track delegated subagents with structured state and render subagent details, evidence, status, and archived results without flooding the main stream.
+- `llm`: Improve streaming retry and context-window handling around compacted runs so provider failures and oversized context paths surface as structured AceAI events.
+
+### Fixes
+
+- `session`: Preserve subagent task, allowed tools, run id, summary, and tool-result metadata across session storage, export, and replay.
+- `core`: Keep context compression from losing the current active step or reordering current-run summaries ahead of raw retained steps.
+
+### Breaking Changes
+
+- `delegation`: `delegate_to_subagent` now returns a `ToolExecutionOutput` with compact `model_output` and full JSON `output` instead of returning the child-result struct directly; callers must read the desired payload field explicitly.
+- `context`: The compression policy now uses `recent_step_budget` instead of `keep_recent_messages`; callers constructing `ContextCompressionPolicy` must pass the new concrete argument.
+
 ## AceAI v0.2.20
 
 ### Improvements

@@ -271,6 +271,7 @@ def test_event_log_to_tui_events_restores_tool_message() -> None:
     assert event.tool_result == ToolExecutionResult(
         call=event.tool_call,
         output='{"entries":[]}',
+        model_output='{"entries":[]}',
     )
 
 

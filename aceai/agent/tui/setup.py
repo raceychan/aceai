@@ -16,6 +16,7 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Key
+from textual.geometry import Region
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
@@ -63,6 +64,242 @@ PanelListItem = TypeVar("PanelListItem")
 PanelListRenderer = Callable[[list[PanelListItem], int], list[Text | Panel]]
 IDEA_PREVIEW_LINES = 2
 IDEA_PREVIEW_WIDTH = 112
+ACE_FORM_CSS = """
+Input, Select, Button, Checkbox, TextArea {
+    color: #eceff4;
+}
+
+Input {
+    height: 3;
+    background: #343b49;
+    color: #eceff4;
+    border: round #5e6b80;
+    padding: 0 1;
+}
+
+Input:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+
+Input.-invalid {
+    background: #3b4252;
+    border: round #bf616a;
+}
+
+Input.-invalid:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #bf616a;
+}
+
+Input > .input--placeholder, Input > .input--suggestion {
+    color: #8f98a8;
+    text-style: dim;
+}
+
+Input > .input--cursor {
+    background: #eceff4;
+    color: #2e3440;
+}
+
+Input > .input--selection {
+    background: #4c566a;
+    color: #eceff4;
+}
+
+Select > SelectCurrent {
+    background: #343b49;
+    color: #eceff4;
+    border: round #5e6b80;
+    padding: 0 1;
+}
+
+Select:focus > SelectCurrent {
+    background: #3b4252;
+    border: round #88c0d0;
+}
+
+Select.-expanded > SelectCurrent {
+    background: #3b4252;
+    border: round #88c0d0;
+}
+
+Select > SelectOverlay {
+    background: #343b49;
+    border: round #88c0d0;
+}
+
+Select > SelectOverlay:focus {
+    background: #343b49;
+    background-tint: #343b49 0%;
+    border: round #88c0d0;
+}
+
+Select > SelectOverlay > .option-list--option-highlighted {
+    background: #4c566a;
+    color: #eceff4;
+}
+
+Select > SelectOverlay:focus > .option-list--option-highlighted {
+    background: #4c566a;
+    color: #eceff4;
+    text-style: bold;
+}
+
+Button, Button.-style-default {
+    background: transparent;
+    color: #88c0d0;
+    border: round #5e81ac;
+    text-style: bold;
+}
+
+Button:focus, Button.-style-default:focus {
+    background: #354252;
+    background-tint: #354252 0%;
+    color: #eceff4;
+    border: round #88c0d0;
+}
+
+Button:hover, Button.-style-default:hover {
+    background: #354252;
+    color: #eceff4;
+    border: round #88c0d0;
+}
+
+Button.-active, Button.-style-default.-active {
+    background: transparent;
+    color: #eceff4;
+    border: round #88c0d0;
+    tint: transparent;
+}
+
+Button.-style-default.-primary {
+    background: transparent;
+    color: #eceff4;
+    border: round #88c0d0;
+}
+
+Button.-style-default.-primary:hover,
+Button.-style-default.-primary:focus,
+Button.-style-default.-primary.-active {
+    background: transparent;
+    background-tint: #2e3440 0%;
+    color: #eceff4;
+    border: round #8fbcbb;
+    tint: transparent;
+}
+
+Checkbox {
+    background: transparent;
+    border: round #5e6b80;
+    padding: 0 1;
+}
+
+Checkbox:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+
+Checkbox > .toggle--label {
+    background: transparent;
+    color: #eceff4;
+}
+
+Checkbox:focus > .toggle--label {
+    background: transparent;
+    color: #eceff4;
+    text-style: bold;
+}
+
+Checkbox > .toggle--button {
+    background: #263241;
+    color: #6f7888;
+}
+
+Checkbox.-on > .toggle--button {
+    background: #263241;
+    color: #a3be8c;
+}
+
+TextArea {
+    background: #343b49;
+    color: #eceff4;
+    border: round #5e6b80;
+}
+
+TextArea:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+
+TextArea .text-area--cursor-line {
+    background: #3b4252;
+}
+
+ProviderSetupScreen Input,
+ConfigScreen Input,
+IdeaPickerScreen Input {
+    height: 3;
+    background: #343b49;
+    color: #eceff4;
+    border: round #5e6b80;
+    padding: 0 1;
+}
+
+ProviderSetupScreen Input:focus,
+ConfigScreen Input:focus,
+IdeaPickerScreen Input:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+
+ProviderSetupScreen Input.-valid,
+ConfigScreen Input.-valid,
+IdeaPickerScreen Input.-valid {
+    background: #343b49;
+    border: round #5e6b80;
+}
+
+ProviderSetupScreen Input.-valid:focus,
+ConfigScreen Input.-valid:focus,
+IdeaPickerScreen Input.-valid:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+
+ProviderSetupScreen Input.-invalid,
+ConfigScreen Input.-invalid,
+IdeaPickerScreen Input.-invalid {
+    background: #3b4252;
+    border: round #bf616a;
+}
+
+ProviderSetupScreen Input.-invalid:focus,
+ConfigScreen Input.-invalid:focus,
+IdeaPickerScreen Input.-invalid:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #bf616a;
+}
+
+IdeaEditScreen TextArea {
+    background: #343b49;
+    color: #eceff4;
+    border: round #5e6b80;
+}
+
+IdeaEditScreen TextArea:focus {
+    background: #3b4252;
+    background-tint: #3b4252 0%;
+    border: round #88c0d0;
+}
+"""
 REASONING_LEVEL_LABELS: dict[ReasoningLevel, str] = {
     "auto": "auto",
     "low": "low",
@@ -395,17 +632,11 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         height: auto;
     }
 
-    Input, Checkbox {
-        background: #3b4252;
-        color: #eceff4;
-        border: round #88c0d0;
-    }
-
     #setup-actions {
         height: auto;
         margin-top: 1;
     }
-    """
+    """ + ACE_FORM_CSS
 
     def __init__(self, *, default_model: OpenAIModel) -> None:
         super().__init__()
@@ -701,12 +932,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         display: none;
     }
 
-    Input, Checkbox {
-        background: #3b4252;
-        color: #eceff4;
-        border: round #88c0d0;
-    }
-
     #config-error {
         color: #bf616a;
         height: 1;
@@ -729,11 +954,13 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         width: 100%;
         height: 3;
         margin-bottom: 1;
-        align: center middle;
+        align: right middle;
     }
 
     #search-skills {
-        width: 20;
+        width: 24;
+        height: 3;
+        min-width: 24;
     }
 
     #skill-candidates {
@@ -771,8 +998,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     .tool-permission-table {
         width: 100%;
         height: auto;
-        background: #343b49;
-        border: round #4c566a;
+        background: transparent;
+        border: round #5e6b80;
     }
 
     .tool-permission-row {
@@ -787,7 +1014,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 2;
         min-height: 2;
         margin-bottom: 0;
-        background: #3b4252;
+        background: transparent;
         color: #a7b1c2;
         text-style: bold;
     }
@@ -836,6 +1063,26 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     .tool-max-calls-input {
         width: 17;
+        background: #343b49;
+        color: #eceff4;
+        border: round #5e6b80;
+        padding: 0 1;
+    }
+
+    .tool-max-calls-input:focus {
+        background: #3b4252;
+        background-tint: #3b4252 0%;
+        border: round #88c0d0;
+    }
+
+    .tool-max-calls-input.-invalid {
+        background: #3b4252;
+        border: round #bf616a;
+    }
+
+    .tool-max-calls-input > .input--placeholder {
+        color: #8f98a8;
+        text-style: dim;
     }
 
     .tool-permission-description {
@@ -868,6 +1115,19 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         margin-bottom: 1;
     }
 
+    .skill-entry > Checkbox {
+        width: 37;
+        height: 3;
+        background: #343b49;
+        border: round #5e6b80;
+    }
+
+    .skill-entry > Checkbox:focus {
+        background: #3b4252;
+        background-tint: #3b4252 0%;
+        border: round #88c0d0;
+    }
+
     .skill-description {
         color: #e5e9f0;
         margin-left: 3;
@@ -890,7 +1150,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: auto;
         margin-top: 1;
     }
-    """
+    """ + ACE_FORM_CSS
 
     def __init__(
         self,
@@ -1861,6 +2121,7 @@ class SelectablePanelListWidget(Static, Generic[PanelListItem]):
 
     def on_mount(self) -> None:
         self._refresh_renderable()
+        self._scroll_selected_into_view()
 
     def set_items(
         self,
@@ -1871,12 +2132,14 @@ class SelectablePanelListWidget(Static, Generic[PanelListItem]):
         self._items = items
         self.selected_index = self._clamp_index(selected_index)
         self._refresh_renderable()
+        self._scroll_selected_into_view()
 
     def move_selection(self, delta: int) -> None:
         if not self._items:
             return
         self.selected_index = self._clamp_index(self.selected_index + delta)
         self._refresh_renderable()
+        self._scroll_selected_into_view()
 
     def selected_item(self) -> PanelListItem | None:
         if not self._items:
@@ -1903,6 +2166,25 @@ class SelectablePanelListWidget(Static, Generic[PanelListItem]):
             )
             return
         self.update(Group(*self._render_items(self._items, self.selected_index)))
+
+    def _scroll_selected_into_view(self) -> None:
+        if not self._items:
+            return
+        parent = self.parent
+        if not isinstance(parent, VerticalScroll):
+            return
+        self.call_after_refresh(
+            parent.scroll_to_region,
+            Region(0, self._selected_item_top(), 1, self._selected_item_height()),
+            animate=False,
+            immediate=True,
+        )
+
+    def _selected_item_top(self) -> int:
+        return self.selected_index
+
+    def _selected_item_height(self) -> int:
+        return 1
 
 
 class SessionListWidget(SelectablePanelListWidget[SessionMetadata]):
@@ -1950,6 +2232,21 @@ class SessionListWidget(SelectablePanelListWidget[SessionMetadata]):
             selected_index=selected_index,
         )
 
+    def _selected_item_top(self) -> int:
+        y = 0
+        global_index = 0
+        for _project_id, _project_name, group_sessions in _session_groups(self.sessions()):
+            y += 1
+            for _session in group_sessions:
+                if global_index == self.selected_index:
+                    return y
+                y += 3
+                global_index += 1
+        return y
+
+    def _selected_item_height(self) -> int:
+        return 3
+
 
 class IdeaListWidget(SelectablePanelListWidget[Idea]):
     """Panel-rendered idea list."""
@@ -1970,6 +2267,15 @@ class IdeaListWidget(SelectablePanelListWidget[Idea]):
 
     def selected_idea(self) -> Idea | None:
         return self.selected_item()
+
+    def _selected_item_top(self) -> int:
+        return self.selected_index * 4
+
+    def _selected_item_height(self) -> int:
+        idea = self.selected_idea()
+        if idea is None:
+            return 4
+        return len(_at_least_preview_height(_idea_body_lines(idea))) + 2
 
 
 class IdeaPickerScreen(ModalScreen[Idea | None]):
@@ -2022,9 +2328,6 @@ class IdeaPickerScreen(ModalScreen[Idea | None]):
 
     #idea-add-input {
         height: 3;
-        border: round #88c0d0;
-        background: #3b4252;
-        color: #eceff4;
     }
 
     #idea-status {
@@ -2032,7 +2335,7 @@ class IdeaPickerScreen(ModalScreen[Idea | None]):
         margin-top: 1;
         color: #9aa3b2;
     }
-    """
+    """ + ACE_FORM_CSS
 
     def __init__(
         self,
@@ -2202,16 +2505,13 @@ class IdeaEditScreen(ModalScreen[tuple[int, str] | None]):
     #idea-editor {
         height: 1fr;
         margin-top: 1;
-        border: round #88c0d0;
-        background: #3b4252;
-        color: #eceff4;
     }
 
     #idea-edit-actions {
         height: 3;
         margin-top: 1;
     }
-    """
+    """ + ACE_FORM_CSS
 
     def __init__(self, *, index: int, content: str) -> None:
         super().__init__()

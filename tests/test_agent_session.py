@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
+from typing import Any
 
+import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import insert as sql_insert
 
@@ -8,6 +10,7 @@ from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,
     SessionEvent,
+    SessionEventKind,
     SessionMetadata,
     SessionRecorder,
     SessionState,
@@ -15,6 +18,7 @@ from aceai.agent.session import (
 )
 from aceai.agent.event_store import JsonlEventStore
 from aceai.agent.project import ProjectStore
+from aceai.core.helpers.string import uuid_str
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
@@ -36,18 +40,30 @@ def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
     assert store.get_session(metadata.session_id).session_id == metadata.session_id
 
 
-def test_session_store_lists_sessions_by_recent_update(tmp_path) -> None:
+def test_session_store_lists_sessions_by_created_at_not_recent_user_message(tmp_path) -> None:
     store = SessionStore(tmp_path)
     first = store.create_session()
     second = store.create_session()
 
     store.update_session_title(first.session_id, "first")
+    store.append_event(
+        second.session_id,
+        _user_message_at("second", "2026-05-08T10:00:00+00:00"),
+    )
+    store.append_event(
+        first.session_id,
+        _user_message_at("first", "2026-05-08T11:00:00+00:00"),
+    )
+    store.update_session_state(
+        second.session_id,
+        SessionState(selected_provider="openai", selected_model="gpt-5.5"),
+    )
 
     sessions = store.list_sessions()
 
     assert [session.session_id for session in sessions] == [
-        first.session_id,
         second.session_id,
+        first.session_id,
     ]
 
 
@@ -132,11 +148,15 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     path = tmp_path / "files" / f"{metadata.session_id}.events.jsonl"
+    artifact_dir = tmp_path / metadata.session_id / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "manifest.json").write_text("{}", encoding="utf-8")
 
     store.delete_session(metadata.session_id)
 
     assert store.list_sessions() == []
     assert not path.exists()
+    assert not artifact_dir.exists()
 
 
 def test_jsonl_event_store_round_trips_session_events(tmp_path) -> None:
@@ -302,6 +322,15 @@ def test_session_recorder_finalize_keeps_non_empty_session(tmp_path) -> None:
     assert saved is True
     assert recorder.saved is True
     assert store.get_session(metadata.session_id).title == "hello"
+
+
+def test_session_recorder_rejects_source_event_without_event_id(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+
+    with pytest.raises(ValueError, match="source event must include event_id"):
+        recorder.record(SessionEvent(kind="user_message", payload={"content": "hello"}))
 
 
 def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
@@ -473,6 +502,35 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
+def test_event_log_restores_model_output_for_tool_messages(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    recorder.record(_user_message("hello"))
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output='{"type":"subagent_audit","large":"body"}',
+        model_output='{"type":"subagent_handoff","handoff":"small"}',
+    )
+    recorder.record(_llm_completed("", tool_calls=[call]))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
+
+    event_log = store.load_event_log(metadata.session_id)
+    history = event_log.replay_llm_history()
+
+    tool_result_event = event_log.events[-1]
+    assert tool_result_event.payload["output"] == result.output
+    assert tool_result_event.payload["model_output"] == result.model_output
+    assert history[2].role == "tool"
+    assert history[2].content[0]["data"] == result.model_output
+
+
 def test_tool_call_assistant_content_is_not_recorded_or_replayed(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -517,7 +575,7 @@ def test_event_log_omits_pending_tool_call_from_llm_history(tmp_path) -> None:
     recorder.record(_llm_completed("running it", tool_calls=[call]))
     recorder.record(_tool_started(call))
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_requested",
             payload={
                 "content": "Tool 'run_shell_command' requires approval (shell_command)",
@@ -563,7 +621,7 @@ def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
 
     recorder.record(_tool_started(call))
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_requested",
             payload={
                 "content": "Tool 'write_text_file' requires approval (filesystem_write)",
@@ -574,7 +632,7 @@ def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
         )
     )
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_resolved",
             payload={
                 "content": "approved",
@@ -617,19 +675,27 @@ class StubEventStore:
 
 
 def _user_message(content: str) -> SessionEvent:
-    return SessionEvent(kind="user_message", payload={"content": content})
+    return _session_event("user_message", {"content": content})
+
+
+def _user_message_at(content: str, created_at: str) -> SessionEvent:
+    return _session_event(
+        kind="user_message",
+        created_at=created_at,
+        payload={"content": content},
+    )
 
 
 def _assistant_delta(content: str) -> SessionEvent:
-    return SessionEvent(kind="assistant_delta", payload={"content": content})
+    return _session_event("assistant_delta", {"content": content})
 
 
 def _thinking_delta(content: str) -> SessionEvent:
-    return SessionEvent(kind="thinking_delta", payload={"content": content})
+    return _session_event("thinking_delta", {"content": content})
 
 
 def _reasoning_summary(content: str) -> SessionEvent:
-    return SessionEvent(kind="reasoning_summary", payload={"content": content})
+    return _session_event("reasoning_summary", {"content": content})
 
 
 def _llm_completed(
@@ -655,21 +721,21 @@ def _llm_completed(
     cost = estimate_usage_cost(model, usage)
     if cost is not None:
         payload["cost"] = cost.asdict()
-    return SessionEvent(
+    return _session_event(
         kind="llm_completed",
         payload=payload,
     )
 
 
 def _tool_call_delta(call_id: str, content: str) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_call_delta",
         payload={"content": content, "tool_call_id": call_id},
     )
 
 
 def _tool_started(call: LLMToolCall) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_started",
         payload={
             "content": "",
@@ -684,7 +750,7 @@ def _tool_completed(
     call: LLMToolCall,
     result: ToolExecutionResult,
 ) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_completed",
         payload={
             "content": result.output,
@@ -693,7 +759,16 @@ def _tool_completed(
             "tool_call": call.asdict(),
             "tool_result": {
                 "output": result.output,
+                "model_output": result.model_output,
                 "error": result.error,
             },
         },
     )
+
+
+def _session_event(
+    kind: SessionEventKind,
+    payload: dict[str, Any],
+    **kwargs: Any,
+) -> SessionEvent:
+    return SessionEvent(event_id=uuid_str(), kind=kind, payload=payload, **kwargs)

@@ -22,6 +22,8 @@ from aceai.agent.tui.setup import (
     _session_picker_renderables,
 )
 from aceai.agent.tui.state import (
+    TUISubagentState,
+    TUISubagentToolResult,
     initial_state,
     reduce_events,
     reset_cache_rate,
@@ -36,7 +38,8 @@ from aceai.agent.tui.widgets import (
 )
 from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta, LLMUsage
 from rich.console import Console, Group
-from textual.events import Click
+from textual.events import Click, MouseScrollDown, MouseScrollUp
+from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 
@@ -58,6 +61,43 @@ def test_reduce_events_tracks_run_completion() -> None:
     assert state.final_answer == "Static TUI prototype is ready to inspect."
     assert state.error is None
     assert state.selected_event_id == events[-1].event_id
+
+
+def test_reduce_events_tracks_context_compaction_events() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.from_agent_event(
+            builder.context_compaction_started(
+                reason="threshold",
+                compression_count=1,
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compressed(
+                reason="threshold",
+                compression_count=1,
+                history=[],
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compaction_failed(
+                reason="context_window_retry",
+                compression_count=2,
+                error="summary request exceeded context window",
+            )
+        ),
+    ]
+
+    state = reduce_events(events)
+
+    assert [event.kind for event in state.events] == [
+        "context_compaction_started",
+        "context_compressed",
+        "context_compaction_failed",
+    ]
+    assert state.events[0].content == "Compacting context (preflight budget)..."
+    assert state.events[1].content == "Context compacted. Compression #1."
+    assert state.events[2].content == "summary request exceeded context window"
 
 
 def test_reduce_events_tracks_step_and_tool_state() -> None:
@@ -106,7 +146,17 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     subagent = state.subagents[0]
     assert subagent.call_id == "call-subagent-1"
     assert subagent.task == "Check whether README names the version"
+    assert subagent.instructions == "report evidence"
+    assert subagent.context_brief == "repo"
+    assert subagent.allowed_tools == []
     assert subagent.status == "completed"
+    assert subagent.agent_id == "child-1"
+    assert subagent.run_id == "run-1"
+    assert subagent.summary == "README has no version"
+    assert subagent.final_answer == "README has no version"
+    assert subagent.important_evidence == []
+    assert subagent.tool_results == []
+    assert subagent.step_count == 1
     assert subagent.output == result.output
 
 
@@ -380,11 +430,16 @@ def test_session_notification_uses_native_toast() -> None:
     ]
 
 
-def test_llm_retrying_uses_native_notification_without_stream_event() -> None:
-    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+def test_llm_retrying_uses_native_notification_and_stream_event() -> None:
+    builder = AgentEventBuilder(
+        step_index=0,
+        step_id="step-1",
+        run_id="12345678-1234-1234-1234-123456789abc",
+    )
     app = AceAITUI([])
     calls: list[tuple[str, dict[str, object]]] = []
     app.notify = lambda message, **kwargs: calls.append((message, kwargs))
+    app._refresh_widgets = lambda: None
 
     app.append_agent_event(
         builder.llm_retrying(
@@ -395,12 +450,14 @@ def test_llm_retrying_uses_native_notification_without_stream_event() -> None:
         )
     )
 
-    assert app._state.events == []
+    assert [event.kind for event in app._state.events] == ["llm_retrying"]
+    assert app._state.events[0].run_id == "12345678-1234-1234-1234-123456789abc"
+    assert app._state.events[0].retry_count == 1
     assert calls == [
         (
-            "Retrying LLM request 1/2 in 0.5s after RemoteProtocolError: peer closed",
+            "Retrying message 1/2 in 0.5s after RemoteProtocolError: peer closed",
             {
-                "title": "Retrying LLM",
+                "title": "Retrying message 1/2 · 12345678",
                 "severity": "warning",
                 "timeout": 3.0,
             },
@@ -442,9 +499,243 @@ async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
 
     async with app.run_test():
         subagents = app.query_one(SubagentStatusWidget)
+        detail = app.query_one(DetailWidget)
 
         assert not subagents.has_class("hidden")
-        assert subagents.renderable == "subagents\n1. running - Inspect version metadata"
+        assert detail.has_class("collapsed")
+        assert subagents.renderable == (
+            "subagents  1 total | 1 running | 0 done | 0 failed  page 1/1\n"
+            "\n"
+            "#1 [running] Inspect version metadata\n"
+            "   tools none | steps 0\n"
+            "   brief: repo\n"
+            "   ask: report evidence"
+        )
+
+
+@pytest.mark.anyio
+async def test_tui_hides_subagent_status_widget_after_success() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"final_answer":"version found","summary":"version found",'
+            '"important_evidence":[],"tool_results":[],"step_count":1}'
+        ),
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert not subagents.has_class("hidden")
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            )
+        )
+
+        assert subagents.has_class("hidden")
+
+        app.action_show_subagents()
+
+        assert not subagents.has_class("hidden")
+        assert "version found" in subagents.renderable
+
+
+@pytest.mark.anyio
+async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output="subagent failed",
+        error="child failed",
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_failed(
+                    tool_call=call,
+                    tool_result=result,
+                    error="child failed",
+                )
+            )
+        )
+
+        assert not subagents.has_class("hidden")
+        assert "[failed]" in subagents.renderable
+        assert "child failed" in subagents.renderable
+
+        app.append_event(TUIEvent.user_message("next question"))
+
+        assert subagents.has_class("hidden")
+
+
+def test_subagent_status_widget_paginates_full_agent_details() -> None:
+    widget = SubagentStatusWidget()
+    widget.clear = lambda: None
+    widget.write = lambda content, **kwargs: None
+    widget.call_after_refresh = lambda callback, **kwargs: None
+    widget.scroll_home = lambda **kwargs: None
+    first_summary = "first summary " + ("x" * 80)
+    second_brief = "second brief " + ("y" * 80)
+
+    widget.set_subagents(
+        [
+            TUISubagentState(
+                call_id="call-1",
+                task="First delegated investigation with a long title that should not be shortened",
+                instructions="Use the repo evidence and report exact files.",
+                context_brief="first context",
+                allowed_tools=["read_text_file"],
+                status="completed",
+                agent_id="child-first-full-id",
+                run_id="run-first-full-id",
+                summary=first_summary,
+                important_evidence=["first evidence " + ("z" * 80)],
+                tool_results=[
+                    TUISubagentToolResult(
+                        tool_name="read_text_file",
+                        call_id="call-read",
+                        output="tool output " + ("o" * 80),
+                    )
+                ],
+                step_count=2,
+            ),
+            TUISubagentState(
+                call_id="call-2",
+                task="Second delegated investigation",
+                instructions="Use hosted web search.",
+                context_brief=second_brief,
+                allowed_tools=["openai:web_search"],
+                status="running",
+                agent_id="child-second-full-id",
+                run_id="run-second-full-id",
+                step_count=1,
+            ),
+        ]
+    )
+
+    assert "page 1/2" in widget.renderable
+    assert "First delegated investigation with a long title that should not be shortened" in widget.renderable
+    assert first_summary in widget.renderable
+    assert "child-first-full-id" in widget.renderable
+    assert "tool output " + ("o" * 80) in widget.renderable
+    assert "Second delegated investigation" not in widget.renderable
+
+    widget.next_page()
+
+    assert "page 2/2" in widget.renderable
+    assert "Second delegated investigation" in widget.renderable
+    assert second_brief in widget.renderable
+    assert "openai:web_search" in widget.renderable
+    assert "First delegated investigation" not in widget.renderable
+
+
+@pytest.mark.anyio
+async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect a very long delegated report",'
+            '"instructions":"report every relevant observation",'
+            '"context_brief":"'
+            + "\\n".join(f"context line {index}" for index in range(80))
+            + '","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        subagents = app.query_one(SubagentStatusWidget)
+        await _wait_until(pilot, lambda: subagents.max_scroll_y > 0)
+        assert subagents.scroll_y == 0
+
+        await subagents._dispatch_message(
+            MouseScrollDown(
+                subagents,
+                x=1,
+                y=1,
+                delta_x=0,
+                delta_y=1,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
+        await pilot.pause()
+
+        assert subagents.scroll_y > 0
+
+
+@pytest.mark.anyio
+async def test_debug_mode_is_unavailable_while_subagents_are_visible() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+
+        stream = app.query_one(StreamWidget)
+        detail = app.query_one(DetailWidget)
+
+        assert not stream.debug_mode
+        assert detail.has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_debug_mode_is_unavailable_until_run_completes() -> None:
+    app = AceAITUI([TUIEvent.user_message("hello")])
+
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+
+        stream = app.query_one(StreamWidget)
+        detail = app.query_one(DetailWidget)
+
+        assert not stream.debug_mode
+        assert detail.has_class("collapsed")
 
 
 @pytest.mark.anyio
@@ -478,6 +769,97 @@ async def test_debug_mode_reuses_message_panel_and_opens_selected_detail() -> No
         assert stream.has_focus
         assert not detail.has_class("collapsed")
         assert app._state.selected_event_id is not None
+
+
+@pytest.mark.anyio
+async def test_debug_detail_panel_scrolls_with_page_keys() -> None:
+    long_notice = "\n".join(f"line {index}" for index in range(80))
+    app = AceAITUI(
+        [
+            TUIEvent.session_notice(long_notice),
+            TUIEvent(
+                kind="run_completed",
+                step_index=-1,
+                step_id="run",
+                title="run completed",
+                content="done",
+                raw_event=None,
+            ),
+        ]
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+
+        detail = app.query_one(DetailWidget)
+        assert detail.max_scroll_y > 0
+        assert detail.scroll_y == 0
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert detail.scroll_y > 0
+
+        detail.focus()
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert detail.scroll_y == 0
+
+
+@pytest.mark.anyio
+async def test_debug_detail_panel_scrolls_with_mouse_wheel() -> None:
+    long_notice = "\n".join(f"line {index}" for index in range(80))
+    app = AceAITUI(
+        [
+            TUIEvent.session_notice(long_notice),
+            TUIEvent(
+                kind="run_completed",
+                step_index=-1,
+                step_id="run",
+                title="run completed",
+                content="done",
+                raw_event=None,
+            ),
+        ]
+    )
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.press("d")
+        await pilot.pause()
+
+        detail = app.query_one(DetailWidget)
+        assert detail.max_scroll_y > 0
+        await detail._dispatch_message(
+            MouseScrollDown(
+                detail,
+                x=1,
+                y=1,
+                delta_x=0,
+                delta_y=1,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
+        await pilot.pause()
+        assert detail.scroll_y > 0
+
+        await detail._dispatch_message(
+            MouseScrollUp(
+                detail,
+                x=1,
+                y=1,
+                delta_x=0,
+                delta_y=-1,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+            )
+        )
+        await pilot.pause()
+        assert detail.scroll_y == 0
 
 
 @pytest.mark.anyio
@@ -1003,7 +1385,7 @@ async def test_detail_renders_tool_arguments_and_output() -> None:
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
 
-        rendered = _render_to_text(detail.render())
+        rendered = _render_to_text(detail._render_detail())
 
         assert '"query": "aceai tui"' in rendered
         assert '{"matches":["spec/tui.md","docs/tui.md"]}' in rendered
@@ -1023,7 +1405,7 @@ async def test_detail_omits_empty_raw_event_section() -> None:
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
 
-        rendered = _render_to_text(detail.render())
+        rendered = _render_to_text(detail._render_detail())
 
         assert "CONTENT" in rendered
         assert "show the readable part" in rendered
@@ -1048,7 +1430,7 @@ async def test_detail_shortens_long_ids() -> None:
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
 
-        rendered = _render_to_text(detail.render())
+        rendered = _render_to_text(detail._render_detail())
 
         assert "12345678...9abc" in rendered
         assert "12345678-1234-1234-1234-123456789abc" not in rendered
@@ -1072,7 +1454,7 @@ async def test_detail_renders_errors_as_separate_section() -> None:
         detail = app.query_one(DetailWidget)
         detail.set_state(app._state)
 
-        rendered = _render_to_text(detail.render())
+        rendered = _render_to_text(detail._render_detail())
 
         assert "ERROR" in rendered
         assert "boom" in rendered
@@ -1435,6 +1817,34 @@ async def test_session_selector_uses_panel_list(tmp_path) -> None:
         assert first.session_id in rendered
         status = app.screen.query_one("#session-status", Static)
         assert "Total cost: $0.000000" in str(status.render())
+
+
+@pytest.mark.anyio
+async def test_session_selector_scrolls_highlighted_row_into_view(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    sessions = [store.create_session() for _index in range(18)]
+    first = sessions[0]
+    app = AceAITUI(
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test(size=(100, 20)) as pilot:
+        app.open_session_selector()
+        await pilot.pause()
+        session_list = app.screen.query_one("#session-list", SessionListWidget)
+        scroll = app.screen.query_one("#session-list-scroll", VerticalScroll)
+
+        for _index in range(17):
+            await pilot.press("down")
+
+        await _wait_until(pilot, lambda: session_list.selected_index == 17)
+        await _wait_until(pilot, lambda: scroll.scroll_y > 0)
+
+        selected_top = session_list._selected_item_top()
+        assert scroll.scroll_y <= selected_top
+        assert selected_top < scroll.scroll_y + scroll.scrollable_content_region.height
 
 
 @pytest.mark.anyio

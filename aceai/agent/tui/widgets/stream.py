@@ -167,6 +167,16 @@ class StreamWidget(RichLog):
     def on_key(self, event: Key) -> None:
         if not self._debug_mode:
             return
+        if event.key == "pageup":
+            detail = self.app.query_one("#detail")
+            detail.scroll_page_up(animate=False, force=True)
+            event.stop()
+            return
+        if event.key == "pagedown":
+            detail = self.app.query_one("#detail")
+            detail.scroll_page_down(animate=False, force=True)
+            event.stop()
+            return
         if event.key in ("up", "k"):
             self._select_debug_event(self._selected_debug_index - 1)
             event.stop()
@@ -1125,13 +1135,27 @@ def _tool_output_summary(output: str) -> str:
         return f"{entry_count} entries"
     if '"bytes_written":' in output:
         return "file written"
-    if '"exit_code":0' in output:
-        return "command exited 0"
-    if '"exit_code":' in output:
-        return "command finished"
     if '"matches":' in output:
         return "search finished"
+    if '"exit_code":' in output:
+        return _shell_output_summary(output)
     return "result ready"
+
+
+def _shell_output_summary(output: str) -> str:
+    payload = json.loads(output)
+    exit_code = payload["exit_code"]
+    stdout = payload["stdout"]
+    stderr = payload["stderr"]
+    if type(exit_code) is not int:
+        raise TypeError("shell tool exit_code must be int")
+    if type(stdout) is not str:
+        raise TypeError("shell tool stdout must be str")
+    if type(stderr) is not str:
+        raise TypeError("shell tool stderr must be str")
+    if exit_code == 0:
+        return "succeeded"
+    return f"exit {exit_code}"
 
 
 def _render_assistant_block(content: str) -> RenderableType:
@@ -1245,7 +1269,13 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind in ("thinking_delta", "reasoning_summary"):
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "llm_retrying":
-        return None
+        return _render_text_block(label, event.content, event_kind=event.kind)
+    if event.kind in (
+        "context_compaction_started",
+        "context_compaction_failed",
+        "context_compressed",
+    ):
+        return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind in (
         "tool_started",
         "tool_approval_requested",
@@ -1264,6 +1294,8 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
         )
     if event.kind == "media":
         return _render_text_block(label, "media segment", event_kind=event.kind)
+    if event.kind in ("step_failed", "run_failed"):
+        return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind == "llm_completed":
         if event.content == "":
             return None

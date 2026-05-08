@@ -14,8 +14,18 @@ from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
+from aceai.agent.subagent_artifacts import SubagentArtifactStore
 from aceai.core import Agent, AgentRunContext, ToolApprovalDecision
-from aceai.core.events import AgentEvent, RunCompletedEvent
+from aceai.core.events import (
+    AgentEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
+    ContextCompressedEvent,
+    LLMCompletedEvent,
+    RunCompletedEvent,
+    ToolCompletedEvent,
+    ToolFailedEvent,
+)
 from aceai.core.models import ToolApprovalRequest
 from aceai.llm.models import LLMMessage, LLMRequestMeta
 
@@ -68,9 +78,16 @@ class AceAgentApp:
             session_id=session_id,
             project=self._project,
         )
+        self._subagent_artifacts = SubagentArtifactStore(self._session_service.store.root)
         self._trace_ctx = trace_ctx
-        self._llm_history = list(initial_history or [])
+        snapshot = None
+        if initial_history is None and self._session_service.session_id is not None:
+            snapshot = self._session_service.snapshot(self._session_service.session_id)
+            self._llm_history = list(snapshot.history)
+        else:
+            self._llm_history = list(initial_history or [])
         self._active_run: AgentRunContext | None = None
+        self._last_context_event_id: str | None = None
         self._queued_questions: list[str] = []
         self._idea_store = idea_store or IdeaStore()
         self._approved_tool_names: set[str] = set()
@@ -78,11 +95,12 @@ class AceAgentApp:
         self._update_check_lock = asyncio.Lock()
         session_id = self._session_service.session_id
         if session_id is not None:
+            if snapshot is None:
+                snapshot = self._session_service.snapshot(session_id)
             self._approved_tool_names.update(
-                _approved_tool_names_from_event_log(
-                    self._session_service.snapshot(session_id).event_log
-                )
+                _approved_tool_names_from_event_log(snapshot.event_log)
             )
+            self._last_context_event_id = _last_context_source_event_id(snapshot.event_log)
 
     @property
     def agent(self) -> Agent:
@@ -144,6 +162,7 @@ class AceAgentApp:
         self._approved_tool_names = _approved_tool_names_from_event_log(
             snapshot.event_log
         )
+        self._last_context_event_id = _last_context_source_event_id(snapshot.event_log)
         return snapshot
 
     def restore_history_from_active_session(self) -> None:
@@ -152,8 +171,11 @@ class AceAgentApp:
             self._llm_history = []
             self._active_run = None
             self._queued_questions = []
+            self._last_context_event_id = None
             return
-        self._llm_history = self._session_service.snapshot(session_id).history
+        snapshot = self._session_service.snapshot(session_id)
+        self._llm_history = snapshot.history
+        self._last_context_event_id = _last_context_source_event_id(snapshot.event_log)
         self._active_run = None
 
     def cancel_active_turn(self) -> None:
@@ -248,7 +270,7 @@ class AceAgentApp:
         self._active_run.run_state.tools.approved_tool_names = (
             self._approved_tool_names
         )
-        self._session_service.record_user_message(
+        self._last_context_event_id = self._session_service.record_user_message(
             question,
             citations=citations,
             run_id=self._active_run.run_id,
@@ -295,7 +317,21 @@ class AceAgentApp:
     ) -> AsyncGenerator[AgentEvent, None]:
         try:
             async for event in stream:
-                self._session_service.record_agent_event(event)
+                if isinstance(event, ContextCompressedEvent):
+                    self._record_context_checkpoint(event)
+                event = self._archive_subagent_artifact(event)
+                persisted_event_id: str | None = None
+                if not isinstance(
+                    event,
+                    ContextCompactionFailedEvent
+                    | ContextCompactionStartedEvent
+                    | ContextCompressedEvent,
+                ):
+                    persisted_event_id = self._session_service.record_agent_event(event)
+                if persisted_event_id is not None and _agent_event_updates_context(
+                    event
+                ):
+                    self._last_context_event_id = persisted_event_id
                 if isinstance(event, RunCompletedEvent):
                     self._finish_run_turn(run, event.final_answer)
                 yield event
@@ -312,6 +348,37 @@ class AceAgentApp:
         self._llm_history = list(run.context.context[1:])
         self._llm_history.append(LLMMessage.build(role="assistant", content=answer))
 
+    def _record_context_checkpoint(self, event: ContextCompressedEvent) -> None:
+        included_event_id = self._last_context_event_id
+        if included_event_id is None:
+            raise RuntimeError("Context checkpoint has no included transcript event")
+        self._session_service.record_context_checkpoint(
+            event,
+            included_event_id=included_event_id,
+        )
+
+    def _archive_subagent_artifact(self, event: AgentEvent) -> AgentEvent:
+        if not isinstance(event, ToolCompletedEvent):
+            return event
+        if event.tool_name != "delegate_to_subagent":
+            return event
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("subagent artifact archive requires an active session")
+        archived_result = self._subagent_artifacts.archive_tool_result(
+            session_id=session_id,
+            parent_run_id=event.run_id,
+            tool_result=event.tool_result,
+        )
+        return ToolCompletedEvent(
+            run_id=event.run_id,
+            step_index=event.step_index,
+            step_id=event.step_id,
+            tool_call=event.tool_call,
+            tool_name=event.tool_name,
+            tool_result=archived_result,
+        )
+
     def _request_meta_for_run(self) -> LLMRequestMeta:
         request_meta = _copy_request_meta(self._request_meta)
         request_meta["model"] = self._selected_model
@@ -324,6 +391,22 @@ def _copy_request_meta(request_meta: LLMRequestMeta | None) -> LLMRequestMeta:
     return {
         **request_meta,
     }
+
+
+def _agent_event_updates_context(event: AgentEvent) -> bool:
+    return isinstance(event, LLMCompletedEvent | ToolCompletedEvent | ToolFailedEvent)
+
+
+def _last_context_source_event_id(event_log: EventLog) -> str | None:
+    for event in reversed(event_log.events):
+        if event.kind in (
+            "assistant_message",
+            "assistant_tool_call",
+            "tool_result",
+            "user_message",
+        ):
+            return event.event_id
+    return None
 
 
 async def check_for_updates() -> UpdateCheckResult | None:

@@ -5,7 +5,7 @@ from ididi import Graph
 from openai import AsyncOpenAI
 
 from aceai.core import Agent, Executor
-from aceai.core.context_manager import CompressThreshold
+from aceai.core.context_manager import DEFAULT_CONTEXT_WINDOW_TOKENS, CompressThreshold
 from aceai.llm.interface import UNSET, Unset, is_set
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
@@ -15,6 +15,7 @@ from aceai.llm.service import LLMService
 
 from .features import build_delegate_to_subagent_tool, default_agent_tools
 from .permissions import ToolPermission
+from .provider_catalog import context_window_for_model
 
 
 ACE_AGENT_SYSTEM_PROMPT = """
@@ -69,6 +70,15 @@ def build_ace_agent(
     else:
         raise ValueError("Unsupported provider")
     llm_service = LLMService([provider], timeout_seconds=120.0)
+    context_window_tokens = context_window_for_model(provider_name, model)
+    if context_window_tokens is None:
+        context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
+    if hosted_tools is None and provider_name in ("openai", "codex"):
+        selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
+    elif hosted_tools is None:
+        selected_hosted_tools = []
+    else:
+        selected_hosted_tools = hosted_tools
     app_tools = default_agent_tools(
         tool_permissions=tool_permissions,
         tool_enabled=tool_enabled,
@@ -79,14 +89,11 @@ def build_ace_agent(
             llm_service=llm_service,
             default_model=model,
             available_tools=app_tools,
+            available_hosted_tools=selected_hosted_tools,
+            compress_threshold=compress_threshold,
+            context_window_tokens=context_window_tokens,
         )
     )
-    if hosted_tools is None and provider_name == "openai":
-        selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
-    elif hosted_tools is None:
-        selected_hosted_tools = []
-    else:
-        selected_hosted_tools = hosted_tools
     executor = Executor(
         Graph(),
         app_tools,
@@ -104,6 +111,7 @@ def build_ace_agent(
         llm_service=llm_service,
         executor=executor,
         compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
     )
 
 

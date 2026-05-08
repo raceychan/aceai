@@ -11,6 +11,7 @@ from aceai.llm.errors import AceAIError
 from aceai.llm.interface import UNSET, Unset, is_present, is_set
 from aceai.llm.models import LLMHostedToolSpec, LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
+from aceai.core.models import ToolExecutionOutput
 from aceai.core.tools import IToolSpec, Tool
 from aceai.core.run_state import ToolInvocation, ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry, format_skills_for_prompt
@@ -51,7 +52,7 @@ class IExecutor:
         invocation: ToolInvocation,
         *,
         tool_state: ToolRunState,
-    ) -> str:
+    ) -> ToolExecutionOutput:
         "execute a resolved tool invocation and return the result as string"
         raise NotImplementedError
 
@@ -88,7 +89,7 @@ class DummyExecutor(IExecutor):
         invocation: ToolInvocation,
         *,
         tool_state: ToolRunState,
-    ) -> str:
+    ) -> ToolExecutionOutput:
         raise KeyError(invocation.call.name)
 
 
@@ -178,7 +179,7 @@ class Executor(IExecutor):
         invocation: ToolInvocation,
         *,
         tool_state: ToolRunState,
-    ) -> str:
+    ) -> ToolExecutionOutput:
         tool_call = invocation.call
         tool = invocation.tool
         tool_name = tool.name
@@ -191,10 +192,11 @@ class Executor(IExecutor):
                 )
             current_count = tool_state.call_counts.get(tool_name, 0)
             if current_count >= max_calls_per_run:
-                return (
+                output = (
                     f"the tool {tool_name} exceeds its max calls in this run, "
                     "do not call it again"
                 )
+                return ToolExecutionOutput(output=output, model_output=output)
         trace_ctx = get_trace_ctx()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
@@ -219,7 +221,10 @@ class Executor(IExecutor):
                 tool_state.call_counts[tool_name] = (
                     tool_state.call_counts.get(tool_name, 0) + 1
                 )
-            return tool.encode_return(result)
+            if isinstance(result, ToolExecutionOutput):
+                return result
+            output = tool.encode_return(result)
+            return ToolExecutionOutput(output=output, model_output=output)
 
 
 class ILogger:
@@ -265,7 +270,7 @@ class LoggingExecutor(Executor):
         invocation: ToolInvocation,
         *,
         tool_state: ToolRunState,
-    ) -> str:
+    ) -> ToolExecutionOutput:
         call_id = invocation.call.call_id
         self.logger.info(
             f"Tool {invocation.tool.name} starting (call_id={call_id}) with {invocation.call.arguments}"
@@ -284,6 +289,6 @@ class LoggingExecutor(Executor):
             raise
         duration = self.timer() - start
         self.logger.success(
-            f"Tool {invocation.tool.name} finished in {duration:.2f}s, result: {result}",
+            f"Tool {invocation.tool.name} finished in {duration:.2f}s, result: {result.output}",
         )
         return result

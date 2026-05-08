@@ -1,14 +1,28 @@
+import json
+
 import pytest
 
 from aceai.agent.app import AceAgentApp
 from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
 from aceai.agent.session import SessionEvent, SessionStore
+from aceai.core import ToolExecutionOutput
 from aceai.core.agent import Agent
-from aceai.core.events import RunSuspendedEvent, ToolApprovalRequestedEvent
+from aceai.core.events import (
+    ContextCompactionStartedEvent,
+    ContextCompressedEvent,
+    ToolCompletedEvent,
+    RunSuspendedEvent,
+    ToolApprovalRequestedEvent,
+)
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMStreamEvent, LLMToolCall
+from aceai.llm.models import LLMMessage, LLMStreamEvent, LLMToolCall
 
-from tests.test_agent_behavior import StubExecutor, StubLLMService, make_stream
+from tests.test_agent_behavior import (
+    CompressingLLMService,
+    StubExecutor,
+    StubLLMService,
+    make_stream,
+)
 
 
 @pytest.mark.anyio
@@ -70,6 +84,121 @@ async def test_agent_app_reuses_approved_tool_name_across_session_turns(tmp_path
         event for event in second_events if isinstance(event, ToolApprovalRequestedEvent)
     ]
     assert not [event for event in second_events if isinstance(event, RunSuspendedEvent)]
+
+
+@pytest.mark.anyio
+async def test_agent_app_surfaces_context_compaction_events(tmp_path) -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        initial_history=[
+            LLMMessage.build(role="user", content=f"history message {index}")
+            for index in range(3)
+        ],
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    events = [event async for event in app.start_turn("new question")]
+
+    assert [event for event in events if isinstance(event, ContextCompactionStartedEvent)]
+    assert [event for event in events if isinstance(event, ContextCompressedEvent)]
+
+
+@pytest.mark.anyio
+async def test_agent_app_archives_subagent_result_under_session(tmp_path) -> None:
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-subagent",
+    )
+    llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[call]),
+                )
+            ],
+            make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+        ]
+    )
+    executor = StubExecutor(
+        {
+            "delegate_to_subagent": ToolExecutionOutput(
+                output=json.dumps(
+                    {
+                        "agent_id": "child-1",
+                        "run_id": "child-run-1",
+                        "status": "completed",
+                        "final_answer": "full child answer",
+                        "summary": "short child summary",
+                        "important_evidence": [],
+                        "tool_results": [],
+                        "step_count": 1,
+                    }
+                ),
+                model_output=json.dumps(
+                    {
+                        "type": "subagent_handoff",
+                        "agent_id": "child-1",
+                        "run_id": "child-run-1",
+                        "status": "completed",
+                        "task": "inspect",
+                        "handoff": "short child summary",
+                        "artifact_id": "artifact-1",
+                        "evidence": [],
+                        "step_count": 1,
+                        "tool_result_count": 0,
+                        "tool_names": [],
+                    }
+                ),
+            )
+        }
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+
+    events = [event async for event in app.start_turn("Delegate")]
+
+    tool_event = [
+        event for event in events if isinstance(event, ToolCompletedEvent)
+    ][0]
+    audit = json.loads(tool_event.tool_result.output)
+    assert audit["type"] == "subagent_audit"
+    assert tool_event.tool_result.model_output == executor._results[
+        "delegate_to_subagent"
+    ].model_output
+    session_id = app.session_id
+    assert session_id is not None
+    artifact_dir = store.root / session_id / "artifacts" / tool_event.run_id / "child-1"
+    assert (artifact_dir / "manifest.json").exists()
+    assert (artifact_dir / "final_answer.md").read_text(encoding="utf-8") == (
+        "full child answer"
+    )
 
 
 @pytest.mark.anyio
