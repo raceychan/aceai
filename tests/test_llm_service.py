@@ -154,7 +154,7 @@ class HangingStreamProvider(RecordingProvider):
         async def iterator():
             if self.hangs_remaining > 0:
                 self.hangs_remaining -= 1
-                await asyncio.sleep(60.0)
+                await asyncio.Event().wait()
             yield LLMStreamEvent(
                 event_type="response.completed",
                 response=LLMResponse(text="recovered"),
@@ -179,7 +179,7 @@ class SlowAfterFirstStreamProvider(RecordingProvider):
                     event_type="response.output_text.delta",
                     text_delta="hello",
                 )
-                await asyncio.sleep(60.0)
+                await asyncio.Event().wait()
             yield LLMStreamEvent(
                 event_type="response.completed",
                 response=LLMResponse(text="recovered"),

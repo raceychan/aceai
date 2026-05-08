@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -20,7 +21,12 @@ from aceai.agent.tui.setup import (
     _idea_body_text,
     _session_picker_renderables,
 )
-from aceai.agent.tui.state import initial_state, reduce_events, reset_cache_rate, select_event
+from aceai.agent.tui.state import (
+    initial_state,
+    reduce_events,
+    reset_cache_rate,
+    select_event,
+)
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
     CommandInput,
@@ -31,6 +37,15 @@ from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
 from rich.console import Console, Group
 from textual.events import Click
 from textual.widgets import Static
+
+
+async def _wait_until(pilot, predicate, timeout: float = 0.2) -> None:
+    async def wait_for_match() -> None:
+        while not predicate():
+            await pilot.pause()
+
+    await asyncio.wait_for(wait_for_match(), timeout=timeout)
+    assert predicate()
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -73,26 +88,22 @@ def test_reduce_events_assigns_global_step_numbers() -> None:
     assert [step.step_index for step in state.steps] == [0, 1]
 
 
-def test_reduce_events_does_not_add_user_questions_to_timeline() -> None:
-    state = reduce_events([TUIEvent.user_message("What changed?")])
+def test_reduce_events_does_not_add_non_step_events_to_timeline() -> None:
+    state = reduce_events(
+        [
+            TUIEvent.user_message("What changed?"),
+            TUIEvent.session_notice("Sessions"),
+        ]
+    )
 
     assert state.steps == []
     assert state.events[0].kind == "user_message"
-
-
-def test_reduce_events_does_not_add_session_notices_to_timeline() -> None:
-    state = reduce_events([TUIEvent.session_notice("Sessions")])
-
-    assert state.steps == []
-    assert state.events[0].kind == "session_notice"
+    assert state.events[1].kind == "session_notice"
 
 
 def test_idea_picker_collapses_unselected_body_to_two_lines() -> None:
     idea = _idea(
-        "title\n"
-        "first line is visible\n"
-        "second line is visible\n"
-        "third line is hidden"
+        "title\nfirst line is visible\nsecond line is visible\nthird line is hidden"
     )
 
     collapsed = _idea_body_text(idea, expanded=False)
@@ -105,16 +116,12 @@ def test_idea_picker_collapses_unselected_body_to_two_lines() -> None:
     assert "third line is hidden" in expanded.plain
 
 
-def test_idea_picker_short_unselected_body_keeps_two_line_height() -> None:
-    body = _idea_body_text(_idea("title"), expanded=False)
-
-    assert body.plain == " \n "
-
-
-def test_idea_picker_short_selected_body_keeps_two_line_height() -> None:
+def test_idea_picker_short_body_keeps_two_line_height() -> None:
+    collapsed = _idea_body_text(_idea("title"), expanded=False)
     title_only = _idea_body_text(_idea("title"), expanded=True)
     one_line = _idea_body_text(_idea("title\none line"), expanded=True)
 
+    assert collapsed.plain == " \n "
     assert title_only.plain == " \n "
     assert one_line.plain == "one line\n "
 
@@ -210,7 +217,9 @@ def test_reduce_events_tracks_usage_totals() -> None:
         )
     )
 
-    state = reduce_events([TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)])
+    state = reduce_events(
+        [TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)]
+    )
 
     assert state.usage.current_context_tokens == 150
     assert state.usage.session_input_tokens == 250
@@ -266,12 +275,16 @@ def test_reduce_events_tracks_cost_totals() -> None:
             llm_response=LLMResponse(
                 text="second",
                 model="gpt-5.4-mini",
-                usage=LLMUsage(input_tokens=1_000, output_tokens=100, total_tokens=1_100),
+                usage=LLMUsage(
+                    input_tokens=1_000, output_tokens=100, total_tokens=1_100
+                ),
             )
         )
     )
 
-    state = reduce_events([TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)])
+    state = reduce_events(
+        [TUIEvent.from_agent_event(first), TUIEvent.from_agent_event(second)]
+    )
 
     assert state.usage.current_cost_usd is not None
     assert state.usage.session_cost_usd is not None
@@ -964,17 +977,22 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello ")))
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world")))
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="hello "))
+        )
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="world"))
+        )
 
         assert refreshes == [1]
         assert len(app._state.events) == 1
         assert app._state.events[0].content == "hello "
 
-        for _ in range(20):
-            if len(refreshes) == 2:
-                break
-            await pilot.pause(STREAM_DELTA_REFRESH_SECONDS)
+        await _wait_until(
+            pilot,
+            lambda: len(refreshes) == 2,
+            timeout=STREAM_DELTA_REFRESH_SECONDS * 5,
+        )
 
         assert refreshes == [1, 1]
         assert app._state.events[0].content == "hello world"
@@ -1004,7 +1022,9 @@ async def test_tui_refreshes_first_stream_delta_immediately() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="h")))
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="h"))
+        )
 
         assert refreshes == [1]
         assert app._state.events[0].content == "h"
@@ -1023,8 +1043,14 @@ async def test_tui_flushes_pending_stream_delta_on_completion() -> None:
             refreshes.append(len(app._state.events))
 
         app._refresh_widgets = fake_refresh_widgets
-        app.append_event(TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="done")))
-        app.append_event(TUIEvent.from_agent_event(builder.run_completed(step=step, final_answer="done")))
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="done"))
+        )
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.run_completed(step=step, final_answer="done")
+            )
+        )
 
         assert refreshes == [1, 2]
 
@@ -1042,8 +1068,8 @@ async def test_stream_scrolls_to_latest_content() -> None:
     app = AceAITUI(events)
 
     async with app.run_test(size=(80, 20)) as pilot:
-        await pilot.pause(0.1)
         stream = app.query_one(StreamWidget)
+        await _wait_until(pilot, lambda: stream.scroll_y == stream.max_scroll_y)
 
         assert stream.max_scroll_y > 0
         assert stream.scroll_y == stream.max_scroll_y
@@ -1057,8 +1083,7 @@ async def test_stream_does_not_show_horizontal_scrollbar() -> None:
             builder.llm_text_delta(
                 text_delta=(
                     "This is a long assistant response that should wrap inside "
-                    "the stream instead of creating a horizontal scrollbar. "
-                    * 8
+                    "the stream instead of creating a horizontal scrollbar. " * 8
                 )
             )
         )
@@ -1066,7 +1091,10 @@ async def test_stream_does_not_show_horizontal_scrollbar() -> None:
     app = AceAITUI(events)
 
     async with app.run_test(size=(60, 20)) as pilot:
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: app.query_one(StreamWidget).max_scroll_x == 0,
+        )
         stream = app.query_one(StreamWidget)
 
         assert not stream.show_horizontal_scrollbar
@@ -1114,7 +1142,10 @@ async def test_input_sits_at_bottom_without_footer() -> None:
     app = AceAITUI([])
 
     async with app.run_test(size=(80, 20)) as pilot:
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: app.query_one(CommandInput).region.height == 4,
+        )
         command_input = app.query_one(CommandInput)
 
         assert command_input.region.height == 4
@@ -1208,7 +1239,9 @@ async def test_tui_replayed_incomplete_session_does_not_show_running(tmp_path) -
 
 
 @pytest.mark.anyio
-async def test_tui_switching_to_current_session_is_noop_for_empty_session(tmp_path) -> None:
+async def test_tui_switching_to_current_session_is_noop_for_empty_session(
+    tmp_path,
+) -> None:
     store = SessionStore(tmp_path)
     current = store.create_session()
     app = AceAITUI(
@@ -1258,7 +1291,17 @@ async def test_session_selector_uses_panel_list(tmp_path) -> None:
 
     async with app.run_test() as pilot:
         app.open_session_selector()
-        await pilot.pause(0.1)
+        await pilot.pause()
+        await _wait_until(
+            pilot,
+            lambda: (
+                app.screen.query_one(
+                    "#session-list",
+                    SessionListWidget,
+                ).selected_session_id()
+                == first.session_id
+            ),
+        )
 
         session_list = app.screen.query_one("#session-list", SessionListWidget)
         rendered = _render_to_text(
@@ -1298,20 +1341,48 @@ async def test_session_selector_deletes_highlighted_session_after_confirmation(
 
     async with app.run_test() as pilot:
         app.open_session_selector()
-        await pilot.pause(0.1)
+        await pilot.pause()
+        await _wait_until(
+            pilot,
+            lambda: (
+                app.screen.query_one(
+                    "#session-list",
+                    SessionListWidget,
+                ).selected_session_id()
+                == first.session_id
+            ),
+        )
 
         session_list = app.screen.query_one("#session-list", SessionListWidget)
         second_index = _session_widget_index(session_list, second.session_id)
         session_list.move_selection(second_index - session_list.selected_index)
 
         await pilot.press("d")
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                second.session_id
+                in str(app.screen.query_one("#delete-session-message", Static).content)
+            ),
+        )
 
         message = app.screen.query_one("#delete-session-message", Static)
         assert second.session_id in str(message.content)
 
         await pilot.press("enter")
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                second.session_id
+                not in [
+                    session.session_id
+                    for session in app.screen.query_one(
+                        "#session-list",
+                        SessionListWidget,
+                    ).sessions()
+                ]
+            ),
+        )
 
         session_list = app.screen.query_one("#session-list", SessionListWidget)
         rendered = _render_to_text(

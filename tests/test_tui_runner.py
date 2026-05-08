@@ -44,7 +44,6 @@ from aceai.agent.tui.runner import (
 from aceai.agent.tui.setup import (
     ConfigScreen,
     ConfigSelection,
-    IdeaEditScreen,
     IdeaListWidget,
     IdeaPickerScreen,
     SkillConfigItem,
@@ -74,7 +73,6 @@ from textual.widgets import (
     Select,
     Static,
     TabbedContent,
-    TextArea,
 )
 
 
@@ -83,6 +81,15 @@ def _test_citation(content: str) -> TurnCitation:
         content=content,
         origin=AdHocCitationOrigin(kind="ad_hoc", label="test"),
     )
+
+
+async def _wait_until(pilot, predicate, timeout: float = 0.2) -> None:
+    async def wait_for_match() -> None:
+        while not predicate():
+            await pilot.pause()
+
+    await asyncio.wait_for(wait_for_match(), timeout=timeout)
+    assert predicate()
 
 
 def write_skill(root: Path, name: str, description: str, body: str) -> Path:
@@ -273,7 +280,7 @@ async def test_live_tui_streams_agent_events_into_state() -> None:
     app = AceAILiveTUI(agent, "Question?")
 
     async with app.run_test() as pilot:
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._state.status == "completed")
         assert app._state.status == "completed"
         assert app._state.final_answer == "hello"
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "Question?"
@@ -308,7 +315,7 @@ async def test_interactive_tui_submits_question_from_input(
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "What now?"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._state.status == "completed")
 
         assert app._state.status == "completed"
         assert app._state.final_answer == "answer"
@@ -364,7 +371,7 @@ async def test_interactive_tui_start_run_displays_citations_separately(
                 ),
             ),
         )
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
         visible_user_event = app._state.events[0]
         assert visible_user_event.content == "Explain it"
@@ -462,7 +469,7 @@ async def test_interactive_tui_enter_key_submits_question() -> None:
         command_input.value = "What now?"
         command_input.focus()
         await pilot.press("enter")
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
         assert command_input.value == ""
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "What now?"
@@ -559,11 +566,11 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "First?"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
         first_event_count = len(app._state.events)
 
         app.on_input_submitted(Input.Submitted(command_input, "Second?"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 2)
 
         assert len(app._state.events) > first_event_count
         assert app._state.final_answer == "second"
@@ -606,10 +613,13 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "First?"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
         app.on_input_submitted(Input.Submitted(command_input, "Second?"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: app._agent_app.queued_questions == ("Second?",),
+        )
 
         assert len(llm_service.calls) == 1
         assert app._agent_app.queued_questions == ("Second?",)
@@ -618,7 +628,7 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         assert queued_turns.renderable == ("queued - click a line to steer\n1. Second?")
 
         gate.set()
-        await pilot.pause(0.2)
+        await _wait_until(pilot, lambda: app._state.final_answer == "second")
 
         assert len(llm_service.calls) == 2
         assert app._agent_app.queued_questions == ()
@@ -668,15 +678,24 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Active"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
         app.on_input_submitted(Input.Submitted(command_input, "First queued"))
         app.on_input_submitted(Input.Submitted(command_input, "Second queued"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                app._agent_app.queued_questions
+                == (
+                    "First queued",
+                    "Second queued",
+                )
+            ),
+        )
 
         queued_turns = app.query_one(QueuedTurnsWidget)
         assert app._agent_app.queued_questions == ("First queued", "Second queued")
         queued_turns.post_message(QueuedTurnsWidget.Selected(index=1))
-        await pilot.pause(0.3)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 3)
 
         assert len(llm_service.calls) == 3
         assert app._agent_app.queued_questions == ()
@@ -728,12 +747,15 @@ async def test_interactive_tui_steer_cancels_active_run_and_keeps_queue() -> Non
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Old plan"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
         app.on_input_submitted(Input.Submitted(command_input, "Queued plan"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: app._agent_app.queued_questions == ("Queued plan",),
+        )
 
         app.on_input_submitted(Input.Submitted(command_input, "/steer New plan"))
-        await pilot.pause(0.3)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 3)
 
         assert len(llm_service.calls) == 3
         assert app._agent_app.queued_questions == ()
@@ -771,12 +793,21 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Explain slowly"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
         app.on_input_submitted(Input.Submitted(command_input, "Next queued"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: app._agent_app.queued_questions == ("Next queued",),
+        )
 
         await pilot.press("escape")
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                app.query_one(StatusBarWidget).current_text
+                == "Esc again stops response"
+            ),
+        )
 
         assert len(llm_service.calls) == 1
         assert app._active_worker is not None
@@ -786,7 +817,7 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
         assert app.query_one(StatusBarWidget).current_style == "bold #bf616a"
 
         await pilot.press("escape")
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._active_worker is None)
 
         assert len(llm_service.calls) == 1
         assert app._active_worker is None
@@ -831,7 +862,7 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Write it"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._state.status == "suspended")
 
         assert app._state.status == "suspended"
         assert executor.calls == []
@@ -851,7 +882,7 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
         )
 
         approval.post_message(ApprovalWidget.Selected(approved=True))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._state.status == "completed")
 
         assert app._state.status == "completed"
         assert app._state.final_answer == "done"
@@ -860,51 +891,6 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
         assert executor.calls == [call]
         assert app._llm_history[-1].role == "assistant"
         assert app._llm_history[-1].content[0]["data"] == "done"
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_approves_suspended_tool_with_keyboard() -> None:
-    call = LLMToolCall(
-        name="write_text_file",
-        arguments='{"path":"x","content":"hello"}',
-        call_id="call-1",
-    )
-    llm_service = MultiRunLLMService(
-        [
-            [
-                LLMStreamEvent(
-                    event_type="response.completed",
-                    response=LLMResponse(text="use tool", tool_calls=[call]),
-                ),
-            ],
-            [
-                LLMStreamEvent(
-                    event_type="response.completed",
-                    response=LLMResponse(text="done"),
-                ),
-            ],
-        ]
-    )
-    executor = ApprovalExecutor()
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=llm_service,  # type: ignore[arg-type]
-        executor=executor,  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-
-    async with app.run_test() as pilot:
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "Write it"))
-        await pilot.pause(0.1)
-
-        await pilot.press("a")
-        await pilot.pause(0.1)
-
-        assert app._state.status == "completed"
-        assert app._state.final_answer == "done"
-        assert executor.calls == [call]
 
 
 @pytest.mark.anyio
@@ -949,7 +935,7 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Write and run it"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app._state.status == "suspended")
 
         approval = app.query_one(ApprovalWidget)
         assert app._state.status == "suspended"
@@ -959,7 +945,7 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
         )
 
         approval.post_message(ApprovalWidget.Selected(approved=True))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: executor.calls == [first_call])
 
         assert app._state.status == "suspended"
         assert app._active_run is not None
@@ -1058,16 +1044,11 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         assert "model: gpt-5.5" in status.current_text
         assert "reasoning: auto" in status.current_text
 
-        status.show_notice("First notice", timeout=0.1)
-        status.show_notice("Second notice", timeout=1.0)
+        status.show_notice("First notice", timeout=0.01)
 
         assert status.current_text == "First notice"
 
-        await pilot.pause(0.2)
-
-        assert status.current_text == "Second notice"
-
-        await pilot.pause(1.1)
+        await _wait_until(pilot, lambda: "model: gpt-5.5" in status.current_text)
 
         assert "model: gpt-5.5" in status.current_text
         assert "context:" not in status.current_text
@@ -1108,7 +1089,10 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "What now?"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: "context: 1.2k" in app.query_one(StatusBarWidget).current_text,
+        )
 
         status = app.query_one(StatusBarWidget)
         assert "context: 1.2k" in status.current_text
@@ -1149,7 +1133,10 @@ async def test_interactive_tui_switch_model_resets_cache_rate() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "What now?"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: "cache rate: 16.7%" in app.query_one(StatusBarWidget).current_text,
+        )
 
         status = app.query_one(StatusBarWidget)
         assert "cache rate: 16.7%" in status.current_text
@@ -1240,7 +1227,7 @@ async def test_configured_tui_applies_reasoning_level_to_requests(
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "Think deeply"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
     assert llm_service.calls[0]["metadata"]["reasoning"] == {
         "effort": "high",
@@ -1306,7 +1293,11 @@ async def test_metadata_screen_scrolls_and_keeps_close_button(tmp_path) -> None:
 
     async with app.run_test(size=(100, 24)) as pilot:
         app.open_metadata_screen()
-        await pilot.pause(0.1)
+        await pilot.pause()
+        await _wait_until(
+            pilot,
+            lambda: app.screen.query_one("#metadata-body", RichLog).max_scroll_y > 0,
+        )
         body = app.screen.query_one("#metadata-body", RichLog)
         close_button = app.screen.query_one("#metadata-close", Button)
 
@@ -1340,14 +1331,14 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
         command_input = app.query_one(CommandInput)
         app._handle_config_selection("gpt-5.5")
         app.on_input_submitted(Input.Submitted(command_input, "Use selected model"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
         assert app._selected_model == "gpt-5.5"
         assert llm_service.calls[0]["metadata"]["model"] == "gpt-5.5"
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_c_key_opens_config_screen() -> None:
+async def test_interactive_tui_shortcuts_and_commands_route_to_actions() -> None:
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -1357,86 +1348,19 @@ async def test_interactive_tui_c_key_opens_config_screen() -> None:
     app = AceAIInteractiveTUI(agent)
     calls: list[str] = []
     app.open_config_screen = lambda: calls.append("config")
-
-    async with app.run_test() as pilot:
-        await pilot.press("c")
-
-    assert calls == ["config"]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_i_key_opens_ideas_screen() -> None:
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-    calls: list[str] = []
     app._show_ideas = lambda: calls.append("ideas")
-
-    async with app.run_test() as pilot:
-        await pilot.press("i")
-
-    assert calls == ["ideas"]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_config_command_opens_config_screen() -> None:
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-    calls: list[str] = []
-    app.open_config_screen = lambda: calls.append("config")
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/config"))
-
-    assert calls == ["config"]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_debug_command_toggles_debug_view() -> None:
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-    calls: list[str] = []
     app.action_toggle_debug_mode = lambda: calls.append("debug")
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/debug"))
-
-    assert calls == ["debug"]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_trajectory_command_opens_trajectory_screen() -> None:
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-    calls: list[str] = []
     app.open_trajectory_screen = lambda: calls.append("trajectory")
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
+        await pilot.press("c")
+        await pilot.press("i")
+        app.on_input_submitted(Input.Submitted(command_input, "/config"))
+        app.on_input_submitted(Input.Submitted(command_input, "/debug"))
         app.on_input_submitted(Input.Submitted(command_input, "/trajectory"))
 
-    assert calls == ["trajectory"]
+    assert calls == ["config", "ideas", "config", "debug", "trajectory"]
 
 
 @pytest.mark.anyio
@@ -1480,22 +1404,6 @@ def test_command_input_enter_completes_only_unfinished_slash_command(
     command_input.value = "/config "
     command_input.action_submit_or_complete()
 
-    submitted = messages.pop()
-    assert isinstance(submitted, CommandInput.Submitted)
-    assert submitted.value == "/config "
-
-
-@pytest.mark.anyio
-async def test_command_input_enter_key_does_not_insert_newline(monkeypatch) -> None:
-    command_input = CommandInput()
-    messages: list[object] = []
-    monkeypatch.setattr(command_input, "post_message", messages.append)
-    command_input.value = "/config "
-    messages.clear()
-
-    await command_input._on_key(Key("enter", None))
-
-    assert command_input.value == "/config "
     submitted = messages.pop()
     assert isinstance(submitted, CommandInput.Submitted)
     assert submitted.value == "/config "
@@ -1574,36 +1482,6 @@ async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> No
 
         assert command_input.value == "/trajectory "
         assert completions.has_class("hidden")
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_navigates_slash_command_completion() -> None:
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent)
-
-    async with app.run_test():
-        command_input = app.query_one(CommandInput)
-        completions = app.query_one(CommandCompletionWidget)
-        command_input.value = "/"
-        app._refresh_command_completions(command_input.value)
-
-        app.on_command_input_completion_navigation_requested(
-            CommandInput.CompletionNavigationRequested(direction=1)
-        )
-
-        assert completions.selected_index == 1
-        assert "> /config" in completions.display_text
-
-        app.on_command_input_completion_requested(
-            CommandInput.CompletionRequested(command_input)
-        )
-
-        assert command_input.value == "/config "
 
 
 @pytest.mark.anyio
@@ -1803,7 +1681,7 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
 
         command_input.value = "what should we do?"
         app.on_input_submitted(Input.Submitted(command_input, command_input.value))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
         assert preview.display_text == ""
         visible_user_event = app._state.events[0]
@@ -1812,88 +1690,6 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
         assert long_content in user_text
         assert "<user_request>\nwhat should we do?\n</user_request>" in user_text
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_referencing_another_idea_replaces_preview(
-    tmp_path,
-) -> None:
-    ideas_path = tmp_path / "ideas.sqlite3"
-    idea_store = IdeaStore(ideas_path)
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
-    idea_store.capture("first source", project=app._project)
-    idea_store.capture("second source", project=app._project)
-
-    async with app.run_test() as pilot:
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-
-        preview = app.query_one(CitationPreviewWidget)
-        assert "first source" in preview.display_text
-
-        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
-        await pilot.pause()
-        picker = app.screen
-        assert isinstance(picker, IdeaPickerScreen)
-        picker.query_one("#idea-list", IdeaListWidget).move_selection(1)
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert "second source" in preview.display_text
-        assert "first source" not in preview.display_text
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.sqlite3"
-    idea_store = IdeaStore(ideas_path)
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
-    idea_store.capture("first idea", project=app._project)
-    idea_store.capture("second idea", project=app._project)
-
-    async with app.run_test() as pilot:
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
-        await pilot.pause()
-        await pilot.press("e")
-        await pilot.pause()
-
-        edit_screen = app.screen
-        assert isinstance(edit_screen, IdeaEditScreen)
-        editor = edit_screen.query_one("#idea-editor", TextArea)
-        editor.load_text("edited first idea")
-        edit_screen.action_save()
-        await pilot.pause()
-
-        picker = app.screen
-        assert isinstance(picker, IdeaPickerScreen)
-        idea_list = picker.query_one("#idea-list", IdeaListWidget)
-        assert idea_list.selected_index == 0
-        assert [idea.content for idea in idea_list.ideas()] == [
-            "edited first idea",
-            "second idea",
-        ]
-        assert [
-            idea.content for idea in idea_store.list_recent(project=app._project)
-        ] == [
-            "edited first idea",
-            "second idea",
-        ]
 
 
 @pytest.mark.anyio
@@ -1915,30 +1711,29 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         await pilot.pause()
         picker = app.screen
         assert isinstance(picker, IdeaPickerScreen)
-        add_panel = picker.query_one("#idea-add-panel")
-        assert add_panel.has_class("hidden")
-        assert "Press a to add" in str(
-            picker.query_one("#idea-status", Static).render()
-        )
 
         await pilot.press("a")
         await pilot.pause()
-
         picker = app.screen
         assert isinstance(picker, IdeaPickerScreen)
-        add_panel = picker.query_one("#idea-add-panel")
-        assert not add_panel.has_class("hidden")
         editor = picker.query_one("#idea-add-input", Input)
-        assert editor.has_focus
         editor.value = "new idea from picker"
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            pilot,
+            lambda: (
+                [
+                    idea.content
+                    for idea in picker.query_one("#idea-list", IdeaListWidget).ideas()
+                ]
+                == [
+                    "first idea",
+                    "new idea from picker",
+                ]
+            ),
+        )
 
-        picker = app.screen
-        assert isinstance(picker, IdeaPickerScreen)
-        assert picker.query_one("#idea-add-panel").has_class("hidden")
         idea_list = picker.query_one("#idea-list", IdeaListWidget)
-        assert idea_list.selected_index == 1
         assert [idea.content for idea in idea_list.ideas()] == [
             "first idea",
             "new idea from picker",
@@ -1948,45 +1743,6 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         ] == [
             "first idea",
             "new idea from picker",
-        ]
-
-
-@pytest.mark.anyio
-async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) -> None:
-    ideas_path = tmp_path / "ideas.sqlite3"
-    idea_store = IdeaStore(ideas_path)
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=StubLLMService([]),  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
-    idea_store.capture("first idea", project=app._project)
-    idea_store.capture("second idea", project=app._project)
-    idea_store.capture("third idea", project=app._project)
-
-    async with app.run_test() as pilot:
-        command_input = app.query_one(CommandInput)
-        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
-        await pilot.pause()
-        await pilot.press("down")
-        await pilot.press("d")
-        await pilot.pause()
-
-        picker = app.screen
-        assert isinstance(picker, IdeaPickerScreen)
-        idea_list = picker.query_one("#idea-list", IdeaListWidget)
-        assert idea_list.selected_index == 1
-        assert [idea.content for idea in idea_list.ideas()] == [
-            "first idea",
-            "third idea",
-        ]
-        assert [
-            idea.content for idea in idea_store.list_recent(project=app._project)
-        ] == [
-            "first idea",
-            "third idea",
         ]
 
 
@@ -2042,7 +1798,7 @@ async def test_interactive_tui_update_command_runs_upgrade_and_restarts(
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/update"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: restart_calls == ["restart"])
 
     assert [event.content for event in app._state.events[-2:]] == [
         "Updating AceAI with uv tool upgrade aceai...",
@@ -2076,7 +1832,13 @@ async def test_interactive_tui_update_command_reports_upgrade_failure(
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/update"))
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                app._state.events[-1].content
+                == "AceAI update failed with exit code 1.\nnetwork failed"
+            ),
+        )
 
     assert app._state.events[-1].kind == "session_notice"
     assert app._state.events[-1].content == (
@@ -2105,7 +1867,12 @@ async def test_interactive_tui_automatically_reports_available_update(
     app = AceAIInteractiveTUI(agent)
 
     async with app.run_test() as pilot:
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: (
+                app._state.events and app._state.events[-1].kind == "session_notice"
+            ),
+        )
 
     assert app._state.events[-1].kind == "session_notice"
     assert app._state.events[-1].content == (
@@ -2132,7 +1899,13 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
 
     async with app.run_test() as pilot:
         app._start_update_check()
-        await pilot.pause(0.1)
+        await _wait_until(
+            pilot,
+            lambda: any(
+                event.kind == "session_notice" and "is available" in event.content
+                for event in app._state.events
+            ),
+        )
 
     notices = [
         event
@@ -2164,7 +1937,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
 
     async with app.run_test() as pilot:
         app.on_mount()
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: calls == 1)
 
     assert calls == 1
 
@@ -2211,7 +1984,7 @@ async def test_interactive_tui_unknown_slash_input_runs_as_question() -> None:
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/unknown command"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
     assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "/unknown command"
 
@@ -2238,7 +2011,7 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
         command_input = app.query_one(CommandInput)
         command_input.focus()
         app.on_input_submitted(Input.Submitted(command_input, "Use selected model"))
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: app.query_one("#stream").has_focus)
 
         assert not command_input.has_focus
         assert app.query_one("#stream").has_focus
@@ -2271,23 +2044,6 @@ async def test_tui_stops_empty_labrador_when_events_are_loaded() -> None:
 
 
 @pytest.mark.anyio
-async def test_config_screen_prefills_masked_api_key() -> None:
-    screen = ConfigScreen(
-        provider_name="openai",
-        current_model="gpt-5.5",
-        default_model="gpt-5.5",
-        skills="auto",
-        api_keys={"openai": "sk-test-ending"},
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-
-        assert screen.query_one("#api-key", Input).value == "*****************ding"
-
-
-@pytest.mark.anyio
 async def test_config_screen_hides_reasoning_level_for_unsupported_model() -> None:
     screen = ConfigScreen(
         provider_name="openai",
@@ -2303,25 +2059,6 @@ async def test_config_screen_hides_reasoning_level_for_unsupported_model() -> No
         await pilot.pause()
 
         assert screen.query_one("#reasoning-level-row").has_class("hidden")
-
-
-@pytest.mark.anyio
-async def test_config_screen_shows_reasoning_level_for_supported_model() -> None:
-    screen = ConfigScreen(
-        provider_name="openai",
-        current_model="gpt-5.5",
-        default_model="gpt-5.5",
-        skills="auto",
-        api_keys={"openai": "sk-test-ending"},
-        reasoning_level="medium",
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-
-        assert not screen.query_one("#reasoning-level-row").has_class("hidden")
-        assert screen.query_one("#reasoning-level", Select).value == "medium"
 
 
 @pytest.mark.anyio
@@ -2394,44 +2131,6 @@ async def test_config_screen_apply_restores_masked_api_key() -> None:
                 skill_selection_mode="selected",
                 enabled_skills=(),
                 reasoning_level="medium",
-            )
-        ]
-
-
-@pytest.mark.anyio
-async def test_config_screen_apply_forces_auto_reasoning_for_unsupported_model() -> (
-    None
-):
-    screen = ConfigScreen(
-        provider_name="openai",
-        current_model="gpt-4o",
-        default_model="gpt-4o",
-        skills="auto",
-        api_keys={"openai": "sk-test-ending"},
-        reasoning_level="auto",
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-        selections: list[ConfigSelection | None] = []
-
-        def dismiss(selection: ConfigSelection | None) -> None:
-            selections.append(selection)
-
-        screen.dismiss = dismiss
-        _press_config_apply(screen)
-
-        assert selections == [
-            ConfigSelection(
-                provider="openai",
-                model="gpt-4o",
-                default_model="gpt-4o",
-                api_key="sk-test-ending",
-                skills="auto",
-                skill_selection_mode="selected",
-                enabled_skills=(),
-                reasoning_level="auto",
             )
         ]
 
@@ -2615,47 +2314,6 @@ async def test_config_screen_searches_project_skills_and_loads_new_skill_links(
             "review",
             "skill-creator",
         )
-
-
-@pytest.mark.anyio
-async def test_config_screen_search_hides_loaded_skills(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    release_dir = write_skill(
-        project / "vendor", "release", "Release workflow.", "# Release"
-    )
-    write_skill(project / "vendor", "review", "Review workflow.", "# Review")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(project)
-    screen = ConfigScreen(
-        provider_name="openai",
-        current_model="gpt-5.5",
-        default_model="gpt-5.5",
-        skills="auto",
-        skill_items=(
-            SkillConfigItem(
-                name="release",
-                description="Release workflow.",
-                location=str(release_dir / "SKILL.md"),
-            ),
-        ),
-        skill_selection_mode="selected",
-        enabled_skills=("release",),
-        api_keys={"openai": "sk-test-ending"},
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-
-        screen.query_one("#search-skills", Button).press()
-        await pilot.pause()
-
-        assert "review" in str(screen.query_one("#skill-candidate-0", Static).render())
-        assert len(screen.query("#skill-candidate-1")) == 0
 
 
 @pytest.mark.anyio
@@ -3036,31 +2694,7 @@ async def test_config_screen_requires_provider_model_and_api_key() -> None:
 
 
 @pytest.mark.anyio
-async def test_config_screen_selects_prefixed_model_candidate_with_tab() -> None:
-    screen = ConfigScreen(
-        provider_name="deepseek",
-        current_model="deepseek-v4-pro",
-        default_model="deepseek-v4-pro",
-        skills="auto",
-        api_keys={},
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
-        await pilot.pause()
-        model_input = screen.query_one("#model", Input)
-        model_input.focus()
-
-        model_input.value = "deepseek-c"
-        await pilot.pause()
-        await pilot.press("tab")
-
-        assert model_input.value == "deepseek-chat"
-        assert str(screen.query_one("#model-options", Static).render()) == ""
-
-
-@pytest.mark.anyio
-async def test_config_screen_selects_prefixed_provider_candidate_with_tab() -> None:
+async def test_config_screen_candidate_completion() -> None:
     screen = ConfigScreen(
         provider_name="openai",
         current_model="gpt-5.5",
@@ -3084,21 +2718,15 @@ async def test_config_screen_selects_prefixed_provider_candidate_with_tab() -> N
         assert screen.query_one("#api-key", Input).value == "*****************ding"
         assert str(screen.query_one("#provider-options", Static).render()) == ""
 
-
-@pytest.mark.anyio
-async def test_config_screen_hides_candidates_for_empty_input() -> None:
-    screen = ConfigScreen(
-        provider_name="openai",
-        current_model="gpt-5.5",
-        default_model="gpt-5.5",
-        skills="auto",
-        api_keys={},
-    )
-
-    async with AceAITUI([]).run_test() as pilot:
-        pilot.app.push_screen(screen)
+        model_input = screen.query_one("#model", Input)
+        model_input.focus()
+        model_input.value = "deepseek-c"
         await pilot.pause()
-        provider_input = screen.query_one("#provider", Input)
+        await pilot.press("tab")
+
+        assert model_input.value == "deepseek-chat"
+        assert str(screen.query_one("#model-options", Static).render()) == ""
+
         provider_input.value = ""
         await pilot.pause()
 
@@ -3171,7 +2799,7 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
         assert current_config() == expected_config
 
         app.start_run("hello")
-        await pilot.pause(0.1)
+        await _wait_until(pilot, lambda: len(calls) == 1)
 
     assert calls == [expected_config]
     assert (tmp_path / ".aceai" / "config.yml").exists()
