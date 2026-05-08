@@ -1,4 +1,4 @@
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
 from aceai.agent.session import EventLog, SessionEvent
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
@@ -22,6 +22,7 @@ def test_tui_event_to_session_event_keeps_storage_fields() -> None:
     session_event = tui_event_to_session_event(event)
 
     assert session_event == SessionEvent(
+        event_id=event.event_id,
         kind="llm_completed",
         step_id="step-1",
         step_index=0,
@@ -44,9 +45,14 @@ def test_tui_event_to_session_event_preserves_user_citations() -> None:
         "Explain it",
         citations=(
             TurnCitation(
-                label="assistant answer",
                 content="The job is pending.",
-                source="session:step-1",
+                origin=ConversationCitationOrigin(
+                    kind="conversation",
+                    event_id="event-1",
+                    role="assistant",
+                    span_start=0,
+                    span_end=19,
+                ),
             ),
         ),
     )
@@ -57,9 +63,14 @@ def test_tui_event_to_session_event_preserves_user_citations() -> None:
         "content": "Explain it",
         "citations": [
             {
-                "label": "assistant answer",
                 "content": "The job is pending.",
-                "source": "session:step-1",
+                "origin": {
+                    "kind": "conversation",
+                    "event_id": "event-1",
+                    "role": "assistant",
+                    "span_start": 0,
+                    "span_end": 19,
+                },
             }
         ],
     }
@@ -75,9 +86,14 @@ def test_event_log_to_tui_events_restores_user_citations() -> None:
                         "content": "Explain it",
                         "citations": [
                             {
-                                "label": "assistant answer",
                                 "content": "The job is pending.",
-                                "source": "session:step-1",
+                                "origin": {
+                                    "kind": "conversation",
+                                    "event_id": "event-1",
+                                    "role": "assistant",
+                                    "span_start": 0,
+                                    "span_end": 19,
+                                },
                             }
                         ],
                     },
@@ -89,11 +105,38 @@ def test_event_log_to_tui_events_restores_user_citations() -> None:
     assert events[0].content == "Explain it"
     assert events[0].citations == (
         TurnCitation(
-            label="assistant answer",
             content="The job is pending.",
-            source="session:step-1",
+            origin=ConversationCitationOrigin(
+                kind="conversation",
+                event_id="event-1",
+                role="assistant",
+                span_start=0,
+                span_end=19,
+            ),
         ),
     )
+
+
+def test_event_log_to_tui_events_preserves_message_event_ids() -> None:
+    events = event_log_to_tui_events(
+        EventLog(
+            [
+                SessionEvent(
+                    event_id="user-event",
+                    kind="user_message",
+                    payload={"content": "hello"},
+                ),
+                SessionEvent(
+                    event_id="assistant-event",
+                    kind="assistant_message",
+                    payload={"content": "answer"},
+                ),
+            ]
+        )
+    )
+
+    assert events[0].event_id == "user-event"
+    assert events[1].event_id == "assistant-event"
 
 
 def test_event_log_to_tui_events_restores_display_transcript() -> None:
@@ -272,6 +315,7 @@ def test_user_message_adapter_records_user_message() -> None:
     event = tui_event_to_session_event(TUIEvent.user_message("hello"))
 
     assert event == SessionEvent(
+        event_id=event.event_id,
         kind="user_message",
         step_id=event.step_id,
         step_index=-1,

@@ -9,6 +9,7 @@ from .events import TUIEvent
 
 def tui_event_to_session_event(event: TUIEvent) -> SessionEvent:
     return SessionEvent(
+        event_id=event.event_id,
         run_id="",
         step_id=event.step_id,
         step_index=event.step_index,

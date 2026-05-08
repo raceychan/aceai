@@ -3,11 +3,16 @@
 from dataclasses import dataclass
 from typing import Any, cast
 
+from rich.cells import cell_len, set_cell_size
+from rich.text import Text
 from textual.events import Click, Key
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
 from aceai.agent.citations import TurnCitation
+
+CITATION_PREVIEW_LINES = 3
+CITATION_PREVIEW_WIDTH = 88
 
 
 @dataclass(frozen=True)
@@ -46,12 +51,12 @@ class CommandInput(TextArea):
         height: 4;
         background: #3b4252;
         color: #eceff4;
-        border: solid #88c0d0;
+        border: round #8fbcbb;
     }
 
     CommandInput:focus {
         background: #3b4252;
-        border: solid #88c0d0;
+        border: round #8fbcbb;
     }
 
     CommandInput .text-area--cursor-line {
@@ -130,7 +135,7 @@ class CommandCompletionWidget(Static):
         padding: 0 1;
         background: #2e3440;
         color: #d8dee9;
-        border: tall #4c566a;
+        border: round #5e81ac;
     }
 
     CommandCompletionWidget.hidden {
@@ -192,8 +197,7 @@ class QueuedTurnsWidget(Static):
         padding: 0 1;
         background: #3b4252;
         color: #d8dee9;
-        border-top: solid #5e81ac;
-        border-bottom: none;
+        border: round #5e81ac;
     }
 
     QueuedTurnsWidget.hidden {
@@ -253,12 +257,13 @@ class CitationPreviewWidget(Static):
     DEFAULT_CSS = """
     CitationPreviewWidget {
         height: auto;
-        max-height: 5;
+        min-height: 6;
+        max-height: 6;
+        margin-bottom: 1;
         padding: 0 1;
-        background: #2e3440;
-        color: #d8dee9;
-        border-top: solid #4c566a;
-        border-bottom: none;
+        background: #252c37;
+        color: #eceff4;
+        border: round #88c0d0;
     }
 
     CitationPreviewWidget.hidden {
@@ -282,14 +287,8 @@ class CitationPreviewWidget(Static):
             return
         self.display = True
         self.remove_class("hidden")
-        self.display_text = "\n".join(
-            ["cited source"]
-            + [
-                _citation_preview_label(citation)
-                for citation in citations
-            ]
-        )
-        self.update(self.display_text)
+        self.display_text = _citation_preview_text(citations)
+        self.update(_citation_preview_renderable(self.display_text))
 
     @property
     def renderable(self) -> str:
@@ -297,10 +296,68 @@ class CitationPreviewWidget(Static):
 
 
 def _citation_preview_label(citation: TurnCitation) -> str:
-    first_line = citation.content.splitlines()[0] if citation.content.splitlines() else ""
-    if len(first_line) > 120:
-        first_line = f"{first_line[:117]}..."
-    return first_line
+    return "\n".join(_citation_content_preview_lines(citation.content))
+
+
+def _citation_preview_text(citations: tuple[TurnCitation, ...]) -> str:
+    content = "\n".join(citation.content for citation in citations)
+    return "\n".join(["cited source"] + _citation_content_preview_lines(content))
+
+
+def _citation_preview_renderable(display_text: str) -> Text:
+    lines = display_text.splitlines()
+    text = Text()
+    for index, line in enumerate(lines):
+        if index > 0:
+            text.append("\n")
+        if index == 0:
+            text.append(line, style="bold #8fbcbb")
+            continue
+        _append_citation_preview_line(text, line)
+    return text
+
+
+def _append_citation_preview_line(text: Text, line: str) -> None:
+    marker = "...more"
+    if not line.endswith(marker):
+        text.append(line, style="#eceff4")
+        return
+    body = line[: -len(marker)]
+    text.append(body, style="#eceff4")
+    text.append(marker, style="bold #ebcb8b")
+
+
+def _citation_content_preview_lines(content: str) -> list[str]:
+    chunks = _wrap_citation_preview_text(content)
+    truncated = len(chunks) > CITATION_PREVIEW_LINES
+    preview = chunks[:CITATION_PREVIEW_LINES]
+    while len(preview) < CITATION_PREVIEW_LINES:
+        preview.append(" ")
+    if truncated:
+        preview[-1] = _citation_more_line(preview[-1])
+    return preview
+
+
+def _wrap_citation_preview_text(content: str) -> list[str]:
+    if content == "":
+        return [" "]
+    wrapped: list[str] = []
+    for source_line in content.splitlines():
+        if source_line == "":
+            continue
+        line = source_line
+        while line != "":
+            if cell_len(line) <= CITATION_PREVIEW_WIDTH:
+                wrapped.append(line)
+                break
+            wrapped.append(set_cell_size(line, CITATION_PREVIEW_WIDTH).rstrip())
+            line = line[CITATION_PREVIEW_WIDTH:]
+    return wrapped
+
+
+def _citation_more_line(value: str) -> str:
+    suffix = " ...more"
+    return f"{set_cell_size(value, CITATION_PREVIEW_WIDTH - len(suffix)).rstrip()}{suffix}"
 
 
 def _is_slash_command_selection(value: str) -> bool:

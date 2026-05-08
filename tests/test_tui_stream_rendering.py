@@ -8,7 +8,7 @@ from textual.events import Click
 from textual.strip import Strip
 
 from aceai.agent.session import EventLog, SessionEvent
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
     LLMReasoningSegmentMeta,
@@ -153,9 +153,14 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
                 "Explain it",
                 citations=(
                     TurnCitation(
-                        label="assistant answer",
-                        source="session:step-1",
                         content="The job is pending.",
+                        origin=ConversationCitationOrigin(
+                            kind="conversation",
+                            event_id="event-1",
+                            role="assistant",
+                            span_start=0,
+                            span_end=19,
+                        ),
                     ),
                 ),
             )
@@ -168,8 +173,7 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
     question = group.renderables[1]
     assert isinstance(source, Panel)
     assert source.title == "cited source"
-    assert "assistant answer" in source.renderable.renderables[0].plain
-    assert "session:step-1" in source.renderable.renderables[0].plain
+    assert "conversation:assistant" in source.renderable.renderables[0].plain
     assert source.renderable.renderables[1].plain == "The job is pending."
     assert isinstance(question, Table)
     question_text = question.columns[0]._cells[0]

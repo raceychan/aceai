@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 from io import StringIO
 
 import pytest
 
+from aceai.agent.ideas import Idea
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
@@ -13,6 +15,11 @@ from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
+from aceai.agent.tui.setup import (
+    SessionListWidget,
+    _idea_body_text,
+    _session_picker_renderables,
+)
 from aceai.agent.tui.state import initial_state, reduce_events, reset_cache_rate, select_event
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
@@ -23,7 +30,7 @@ from aceai.agent.tui.widgets import (
 from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
 from rich.console import Console, Group
 from textual.events import Click
-from textual.widgets import DataTable, Label, Static
+from textual.widgets import Static
 
 
 def test_reduce_events_tracks_run_completion() -> None:
@@ -78,6 +85,38 @@ def test_reduce_events_does_not_add_session_notices_to_timeline() -> None:
 
     assert state.steps == []
     assert state.events[0].kind == "session_notice"
+
+
+def test_idea_picker_collapses_unselected_body_to_two_lines() -> None:
+    idea = _idea(
+        "title\n"
+        "first line is visible\n"
+        "second line is visible\n"
+        "third line is hidden"
+    )
+
+    collapsed = _idea_body_text(idea, expanded=False)
+    expanded = _idea_body_text(idea, expanded=True)
+
+    assert collapsed.plain.count("\n") == 1
+    assert "first line is visible" in collapsed.plain
+    assert "... more" in collapsed.plain
+    assert "third line is hidden" not in collapsed.plain
+    assert "third line is hidden" in expanded.plain
+
+
+def test_idea_picker_short_unselected_body_keeps_two_line_height() -> None:
+    body = _idea_body_text(_idea("title"), expanded=False)
+
+    assert body.plain == " \n "
+
+
+def test_idea_picker_short_selected_body_keeps_two_line_height() -> None:
+    title_only = _idea_body_text(_idea("title"), expanded=True)
+    one_line = _idea_body_text(_idea("title\none line"), expanded=True)
+
+    assert title_only.plain == " \n "
+    assert one_line.plain == "one line\n "
 
 
 def test_reduce_events_does_not_add_restored_transcript_to_timeline() -> None:
@@ -932,7 +971,10 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
         assert len(app._state.events) == 1
         assert app._state.events[0].content == "hello "
 
-        await pilot.pause(STREAM_DELTA_REFRESH_SECONDS * 2)
+        for _ in range(20):
+            if len(refreshes) == 2:
+                break
+            await pilot.pause(STREAM_DELTA_REFRESH_SECONDS)
 
         assert refreshes == [1, 1]
         assert app._state.events[0].content == "hello world"
@@ -1202,7 +1244,7 @@ async def test_tui_switching_to_missing_session_keeps_current_session(tmp_path) 
 
 
 @pytest.mark.anyio
-async def test_session_selector_uses_table_columns(tmp_path) -> None:
+async def test_session_selector_uses_panel_list(tmp_path) -> None:
     store = SessionStore(tmp_path)
     first = store.create_session()
     second = store.create_session()
@@ -1218,21 +1260,23 @@ async def test_session_selector_uses_table_columns(tmp_path) -> None:
         app.open_session_selector()
         await pilot.pause(0.1)
 
-        tables = list(app.screen.query(DataTable))
-        table = tables[0]
+        session_list = app.screen.query_one("#session-list", SessionListWidget)
+        rendered = _render_to_text(
+            Group(
+                *_session_picker_renderables(
+                    session_list.sessions(),
+                    current_session_id=first.session_id,
+                    selected_index=session_list.selected_index,
+                )
+            )
+        )
 
-        assert [column.label.plain for column in table.ordered_columns] == [
-            "Title",
-            "Updated",
-            "Created",
-            "Session ID",
-        ]
-        assert len(tables) == 1
-        assert table.row_count == 2
-        assert table.ordered_rows[table.cursor_row].key.value == first.session_id
-        assert table.get_row_at(table.cursor_row)[0] == "* first question"
-        project_title = app.screen.query_one(".session-project-title", Label)
-        assert "aceai (2)" in str(project_title.render())
+        assert session_list.selected_session_id() == first.session_id
+        assert "first question" in rendered
+        assert "second question" in rendered
+        assert "aceai  2" in rendered
+        assert "created" in rendered
+        assert first.session_id in rendered
         status = app.screen.query_one("#session-status", Static)
         assert "Total cost: $0.000000" in str(status.render())
 
@@ -1256,9 +1300,9 @@ async def test_session_selector_deletes_highlighted_session_after_confirmation(
         app.open_session_selector()
         await pilot.pause(0.1)
 
-        table = app.screen.query_one(DataTable)
-        second_row = _table_row_index(table, second.session_id)
-        table.move_cursor(row=second_row)
+        session_list = app.screen.query_one("#session-list", SessionListWidget)
+        second_index = _session_widget_index(session_list, second.session_id)
+        session_list.move_selection(second_index - session_list.selected_index)
 
         await pilot.press("d")
         await pilot.pause(0.1)
@@ -1269,20 +1313,38 @@ async def test_session_selector_deletes_highlighted_session_after_confirmation(
         await pilot.press("enter")
         await pilot.pause(0.1)
 
-        table = app.screen.query_one(DataTable)
-        assert second.session_id not in [
-            row.key.value for row in table.ordered_rows
-        ]
+        session_list = app.screen.query_one("#session-list", SessionListWidget)
+        rendered = _render_to_text(
+            Group(
+                *_session_picker_renderables(
+                    session_list.sessions(),
+                    current_session_id=first.session_id,
+                    selected_index=session_list.selected_index,
+                )
+            )
+        )
+        assert second.session_id not in rendered
         assert [session.session_id for session in store.list_sessions()] == [
             first.session_id
         ]
 
 
-def _table_row_index(table: DataTable, session_id: str) -> int:
-    for index, row in enumerate(table.ordered_rows):
-        if row.key.value == session_id:
+def _session_widget_index(widget: SessionListWidget, session_id: str) -> int:
+    for index, session in enumerate(widget.sessions()):
+        if session.session_id == session_id:
             return index
     raise ValueError(session_id)
+
+
+def _idea(content: str) -> Idea:
+    return Idea(
+        idea_id="idea-1",
+        created_at=datetime(2026, 5, 6, 11, 13, tzinfo=timezone.utc),
+        project_id="project-1",
+        project_name="aceai",
+        workspace="/tmp/aceai",
+        content=content,
+    )
 
 
 def _first_event(events: list[TUIEvent], kind: str) -> TUIEvent:
