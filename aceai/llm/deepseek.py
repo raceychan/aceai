@@ -164,6 +164,10 @@ class DeepSeek(OpenAI):
             kwargs["tool_choice"] = payload.tool_choice
         if "response_format" in data:
             kwargs["response_format"] = {"type": payload.response_format.type}
+        if "reasoning" in metadata:
+            reasoning = metadata["reasoning"]
+            kwargs["reasoning_effort"] = reasoning["effort"]
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         return kwargs
 
     def _usage_from_chat(self, usage: Any) -> Unset[LLMUsage]:

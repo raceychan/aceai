@@ -6,7 +6,10 @@ from aceai.agent.provider_catalog import (
     price_for_model,
     pricing_source,
     provider_options,
+    reasoning_effort_options,
     stale_default_models,
+    supports_reasoning_effort,
+    supports_reasoning_effort_any_provider,
     supported_models,
     supported_provider_names,
 )
@@ -68,6 +71,23 @@ def test_context_window_exact_match() -> None:
 
 def test_context_window_versioned_model_suffix() -> None:
     assert context_window_for_model("openai", "gpt-5.5-2026-05-04") == 1050000
+
+
+def test_reasoning_effort_support_is_declared_per_model() -> None:
+    assert supports_reasoning_effort("openai", "gpt-5.5")
+    assert supports_reasoning_effort("openai", "gpt-5.5-2026-05-04")
+    assert supports_reasoning_effort("openai", "o3")
+    assert not supports_reasoning_effort("openai", "gpt-4o")
+    assert supports_reasoning_effort("deepseek", "deepseek-v4-pro")
+    assert supports_reasoning_effort("deepseek", "deepseek-reasoner")
+    assert supports_reasoning_effort_any_provider("gpt-5.5")
+    assert not supports_reasoning_effort_any_provider("gpt-4o")
+    assert reasoning_effort_options("openai", "gpt-5.5") == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert reasoning_effort_options("deepseek", "deepseek-v4-pro") == ("high", "max")
 
 
 def test_context_window_returns_none_for_missing() -> None:

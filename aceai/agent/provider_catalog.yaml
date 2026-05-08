@@ -9,6 +9,7 @@ providers:
       - id: gpt-5.5
         label: GPT-5.5
         max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
         pricing:
           input_usd_per_million: 5.0
           cached_input_usd_per_million: 0.5
@@ -16,6 +17,7 @@ providers:
       - id: gpt-5.5-pro
         label: GPT-5.5 pro
         max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
         pricing:
           input_usd_per_million: 30.0
           cached_input_usd_per_million: 30.0
@@ -23,6 +25,7 @@ providers:
       - id: gpt-5.4
         label: GPT-5.4
         max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
         pricing:
           input_usd_per_million: 2.5
           cached_input_usd_per_million: 0.25
@@ -30,6 +33,7 @@ providers:
       - id: gpt-5.4-pro
         label: GPT-5.4 pro
         max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
         pricing:
           input_usd_per_million: 30.0
           cached_input_usd_per_million: 30.0
@@ -37,6 +41,7 @@ providers:
       - id: gpt-5.4-mini
         label: GPT-5.4 mini
         max_context_window: 400000
+        reasoning_effort_options: [low, medium, high]
         pricing:
           input_usd_per_million: 0.75
           cached_input_usd_per_million: 0.075
@@ -44,15 +49,19 @@ providers:
       - id: gpt-5.4-nano
         label: GPT-5.4 nano
         max_context_window: 400000
+        reasoning_effort_options: [low, medium, high]
       - id: gpt-5.2
         label: GPT-5.2
         max_context_window: 400000
+        reasoning_effort_options: [low, medium, high]
       - id: gpt-5.2-pro
         label: GPT-5.2 pro
         max_context_window: 400000
+        reasoning_effort_options: [low, medium, high]
       - id: gpt-5.1
         label: GPT-5.1
         max_context_window: 400000
+        reasoning_effort_options: [low, medium, high]
       - id: gpt-4o
         label: GPT-4o
         max_context_window: 128000
@@ -62,12 +71,15 @@ providers:
       - id: o3
         label: o3
         max_context_window: 200000
+        reasoning_effort_options: [low, medium, high]
       - id: o3-mini
         label: o3 mini
         max_context_window: 200000
+        reasoning_effort_options: [low, medium, high]
       - id: o4-mini
         label: o4 mini
         max_context_window: 200000
+        reasoning_effort_options: [low, medium, high]
   - name: deepseek
     label: DeepSeek
     api_key_env: DEEPSEEK_API_KEY
@@ -77,6 +89,7 @@ providers:
       - id: deepseek-v4-flash
         label: DeepSeek V4 Flash
         max_context_window: 1000000
+        reasoning_effort_options: [high, max]
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
@@ -84,6 +97,7 @@ providers:
       - id: deepseek-v4-pro
         label: DeepSeek V4 Pro
         max_context_window: 1000000
+        reasoning_effort_options: [high, max]
         pricing:
           input_usd_per_million: 0.435
           cached_input_usd_per_million: 0.003625
@@ -91,6 +105,7 @@ providers:
       - id: deepseek-chat
         label: DeepSeek Chat
         max_context_window: 1000000
+        reasoning_effort_options: [high, max]
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
@@ -98,6 +113,7 @@ providers:
       - id: deepseek-reasoner
         label: DeepSeek Reasoner
         max_context_window: 1000000
+        reasoning_effort_options: [high, max]
         pricing:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028

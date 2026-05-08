@@ -14,7 +14,10 @@ from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
-from aceai.agent.provider_catalog import context_window_for_model_any_provider
+from aceai.agent.provider_catalog import (
+    context_window_for_model_any_provider,
+    supports_reasoning_effort_any_provider,
+)
 from .events import TUIEvent
 from .metadata import MetadataScreen, MetadataSection
 from .session_adapter import tui_event_to_session_event
@@ -85,6 +88,7 @@ class AceAITUI(App[None]):
         events: list[TUIEvent] | None = None,
         *,
         model: str | None = None,
+        reasoning_level: str = "auto",
         session_recorder: SessionRecorder | None = None,
         session_id: str | None = None,
         idea_store: IdeaStore | None = None,
@@ -95,6 +99,7 @@ class AceAITUI(App[None]):
         self._events = list(events or [])
         self._state: TUIRunState = initial_state()
         self._status_model = model
+        self._status_reasoning_level = reasoning_level
         self._session_recorder = session_recorder
         self._session_id = session_id
         self._project = project or (
@@ -248,11 +253,19 @@ class AceAITUI(App[None]):
     def cancel_active_run(self) -> bool:
         return False
 
-    def set_status_model(self, model: str | None) -> None:
+    def set_status_model(
+        self,
+        model: str | None,
+        *,
+        reasoning_level: str | None = None,
+    ) -> None:
         self._status_model = model
+        if reasoning_level is not None:
+            self._status_reasoning_level = reasoning_level
         if self.is_mounted:
             self.query_one(StatusBarWidget).set_status(
                 model=self._status_model,
+                reasoning_level=self._status_reasoning_level,
                 status=self._state.status,
                 usage=self._state.usage,
             )
@@ -262,6 +275,7 @@ class AceAITUI(App[None]):
         if self.is_mounted:
             self.query_one(StatusBarWidget).set_status(
                 model=self._status_model,
+                reasoning_level=self._status_reasoning_level,
                 status=self._state.status,
                 usage=self._state.usage,
             )
@@ -422,9 +436,11 @@ class AceAITUI(App[None]):
 
     def _metadata_sections(self) -> list[MetadataSection]:
         usage = self._state.usage
-        max_ctx = context_window_for_model_any_provider(
-            self._status_model
-        ) if self._status_model else None
+        max_ctx = (
+            context_window_for_model_any_provider(self._status_model)
+            if self._status_model
+            else None
+        )
         ctx_pct = _context_window_pct(usage.current_context_tokens, max_ctx)
         lines = [
             f"session: {self._session_id or '-'}",
@@ -435,6 +451,10 @@ class AceAITUI(App[None]):
             f"status: {self._state.status}",
             f"events: {len(self._state.events)}",
         ]
+        if self._status_model is not None and supports_reasoning_effort_any_provider(
+            self._status_model
+        ):
+            lines.insert(5, f"reasoning: {self._status_reasoning_level}")
         cost_lines = [
             f"context: {_format_tokens(usage.current_context_tokens)}{ctx_pct}",
             f"session tokens: {_format_tokens(usage.session_total_tokens)}",
@@ -468,6 +488,7 @@ class AceAITUI(App[None]):
         self.query_one(DetailWidget).set_state(self._state)
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
+            reasoning_level=self._status_reasoning_level,
             status=self._state.status,
             usage=self._state.usage,
         )
