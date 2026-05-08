@@ -121,7 +121,7 @@ providers:
   - name: openai-codex
     label: OpenAI Codex
     api_key_env: ACEAI_OPENAI_CODEX_TOKEN
-    default_model: gpt-5.4
+    default_model: gpt-5.5
     stale_default_models: []
     models:
       - id: gpt-5.5
