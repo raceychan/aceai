@@ -5,9 +5,14 @@ from pathlib import Path
 import pytest
 from ididi import Graph
 from rich.console import Console
+from rich.text import Text
 
 from aceai import __version__
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import (
+    AdHocCitationOrigin,
+    ConversationCitationOrigin,
+    TurnCitation,
+)
 from aceai.core.agent import Agent
 from aceai.core.executor import Executor
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
@@ -56,6 +61,10 @@ from aceai.agent.tui.widgets import (
     StreamWidget,
     TopBarWidget,
 )
+from aceai.agent.tui.widgets.input import (
+    _citation_preview_renderable,
+    _citation_preview_text,
+)
 from textual.events import Key
 from textual.widgets import (
     Button,
@@ -67,6 +76,13 @@ from textual.widgets import (
     TabbedContent,
     TextArea,
 )
+
+
+def _test_citation(content: str) -> TurnCitation:
+    return TurnCitation(
+        content=content,
+        origin=AdHocCitationOrigin(kind="ad_hoc", label="test"),
+    )
 
 
 def write_skill(root: Path, name: str, description: str, body: str) -> Path:
@@ -337,9 +353,14 @@ async def test_interactive_tui_start_run_displays_citations_separately(
             "Explain it",
             citations=(
                 TurnCitation(
-                    label="assistant answer",
                     content="The job is pending.",
-                    source="session:step-1",
+                    origin=ConversationCitationOrigin(
+                        kind="conversation",
+                        event_id="event-1",
+                        role="assistant",
+                        span_start=0,
+                        span_end=19,
+                    ),
                 ),
             ),
         )
@@ -359,6 +380,59 @@ async def test_interactive_tui_start_run_displays_citations_separately(
         assert event_log.events[0].payload["citations"][0]["content"] == (
             "The job is pending."
         )
+
+
+def test_citation_preview_uses_three_content_lines() -> None:
+    display_text = _citation_preview_text(
+        (_test_citation("first line\nsecond line\nthird line\nfourth line"),)
+    )
+
+    assert display_text.count("\n") == 3
+    assert "first line" in display_text
+    assert "second line" in display_text
+    assert "...more" in display_text
+    assert "fourth line" not in display_text
+
+
+def test_citation_preview_more_marker_has_distinct_style() -> None:
+    renderable = _citation_preview_renderable("cited source\nbody ...more")
+
+    assert isinstance(renderable, Text)
+    assert renderable.plain == "cited source\nbody ...more"
+    marker_spans = [
+        span
+        for span in renderable.spans
+        if renderable.plain[span.start : span.end] == "...more"
+    ]
+    assert len(marker_spans) == 1
+    assert str(marker_spans[0].style) == "bold #ebcb8b"
+
+
+def test_citation_preview_short_content_keeps_three_content_lines() -> None:
+    display_text = _citation_preview_text((_test_citation("one line"),))
+
+    assert display_text == "cited source\none line\n \n "
+
+
+def test_citation_preview_truncates_across_multiple_citations() -> None:
+    display_text = _citation_preview_text(
+        (
+            _test_citation("one\ntwo"),
+            _test_citation("three\nfour"),
+        )
+    )
+
+    assert display_text == "cited source\none\ntwo\nthree ...more"
+
+
+def test_citation_preview_skips_blank_lines_for_compact_display() -> None:
+    display_text = _citation_preview_text(
+        (_test_citation("Add a Learn button\n\nBy default, save selected failures."),)
+    )
+
+    assert display_text == (
+        "cited source\nAdd a Learn button\nBy default, save selected failures.\n "
+    )
 
 
 @pytest.mark.anyio
@@ -433,7 +507,7 @@ async def test_interactive_tui_clear_command_resets_state() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app.load_events([])
         app._state = app._state.__class__(
             status="completed",
@@ -541,10 +615,7 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         assert app._agent_app.queued_questions == ("Second?",)
         queued_turns = app.query_one(QueuedTurnsWidget)
         assert not queued_turns.has_class("hidden")
-        assert queued_turns.renderable == (
-            "queued - click a line to steer\n"
-            "1. Second?"
-        )
+        assert queued_turns.renderable == ("queued - click a line to steer\n1. Second?")
 
         gate.set()
         await pilot.pause(0.2)
@@ -610,7 +681,9 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
         assert len(llm_service.calls) == 3
         assert app._agent_app.queued_questions == ()
         assert app._state.final_answer == "first"
-        assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second queued"
+        assert (
+            llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second queued"
+        )
         assert llm_service.calls[2]["messages"][-1].content[0]["data"] == "First queued"
 
 
@@ -769,9 +842,13 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
         assert "action: choose Approve or Reject" in status.current_text
         approval = app.query_one(ApprovalWidget)
         assert not approval.has_class("collapsed")
-        assert approval.query_one("#approval-approve", Button).label.plain == "A Approve"
+        assert (
+            approval.query_one("#approval-approve", Button).label.plain == "A Approve"
+        )
         assert approval.query_one("#approval-reject", Button).label.plain == "R Reject"
-        assert "content:" in str(approval.query_one("#approval-summary", Static).render())
+        assert "content:" in str(
+            approval.query_one("#approval-summary", Static).render()
+        )
 
         approval.post_message(ApprovalWidget.Selected(approved=True))
         await pilot.pause(0.1)
@@ -831,7 +908,9 @@ async def test_interactive_tui_approves_suspended_tool_with_keyboard() -> None:
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_shows_next_approval_after_resume_suspends_again() -> None:
+async def test_interactive_tui_shows_next_approval_after_resume_suspends_again() -> (
+    None
+):
     first_call = LLMToolCall(
         name="write_text_file",
         arguments='{"path":"x","content":"hello"}',
@@ -894,7 +973,9 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path) -> None:
+async def test_interactive_tui_persists_selected_model_in_session_state(
+    tmp_path,
+) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     SessionRecorder(store, metadata.session_id).record(
@@ -913,7 +994,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(tmp_path
         session_id=metadata.session_id,
     )
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         app.switch_model("gpt-5.5")
 
     assert store.get_session_state(metadata.session_id) == SessionState(
@@ -940,7 +1021,9 @@ async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -
     )
 
     async with app.run_test():
-        app.append_event(TUIEvent.session_notice(f"Resumed session {metadata.session_id}"))
+        app.append_event(
+            TUIEvent.session_notice(f"Resumed session {metadata.session_id}")
+        )
         app.switch_model("gpt-5.5")
 
     assert store.list_sessions() == []
@@ -961,16 +1044,19 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         status = app.query_one(StatusBarWidget)
 
         assert "model: gpt-4o" in status.current_text
+        assert "reasoning:" not in status.current_text
 
         event_count = len(app._state.events)
         app.switch_model("gpt-5.5")
 
         assert "model: gpt-5.5" in status.current_text
+        assert "reasoning: auto" in status.current_text
         assert len(app._state.events) == event_count
 
         await pilot.pause()
 
         assert "model: gpt-5.5" in status.current_text
+        assert "reasoning: auto" in status.current_text
 
         status.show_notice("First notice", timeout=0.1)
         status.show_notice("Second notice", timeout=1.0)
@@ -1115,15 +1201,61 @@ async def test_configured_tui_switch_model_saves_project_config(
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(tmp_path) -> None:
+async def test_configured_tui_applies_reasoning_level_to_requests(
+    tmp_path, monkeypatch
+) -> None:
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done"),
+            )
+        ]
+    )
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+            reasoning_level="high",
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Think deeply"))
+        await pilot.pause(0.1)
+
+    assert llm_service.calls[0]["metadata"]["reasoning"] == {
+        "effort": "high",
+        "summary": "auto",
+    }
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(
+    tmp_path,
+) -> None:
     skill_dir = tmp_path / "skills" / "debugger"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: debugger\n"
-        "description: Debug flaky tests.\n"
-        "---\n"
-        "# Debugger\n",
+        "---\nname: debugger\ndescription: Debug flaky tests.\n---\n# Debugger\n",
         encoding="utf-8",
     )
     llm_service = StubLLMService([])
@@ -1138,14 +1270,12 @@ async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(tmp_path)
     async with app.run_test():
         sections = app._metadata_sections()
 
-    section_lines = {
-        section.title: "\n".join(section.lines)
-        for section in sections
-    }
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
     assert "project: aceai" in section_lines["Runtime"]
     assert "project_id:" in section_lines["Runtime"]
     assert f"version: {__version__}" in section_lines["Runtime"]
     assert "model: gpt-4o" in section_lines["Runtime"]
+    assert "reasoning:" not in section_lines["Runtime"]
     assert "session cost: -" in section_lines["Usage"]
     assert "provider: openai" in section_lines["Agent"]
     assert "debugger: Debug flaky tests." in section_lines["Skills (1)"]
@@ -1272,6 +1402,25 @@ async def test_interactive_tui_config_command_opens_config_screen() -> None:
 
 
 @pytest.mark.anyio
+async def test_interactive_tui_debug_command_toggles_debug_view() -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent)
+    calls: list[str] = []
+    app.action_toggle_debug_mode = lambda: calls.append("debug")
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/debug"))
+
+    assert calls == ["debug"]
+
+
+@pytest.mark.anyio
 async def test_interactive_tui_trajectory_command_opens_trajectory_screen() -> None:
     agent = Agent(
         prompt="Prompt",
@@ -1316,7 +1465,9 @@ async def test_command_input_shift_enter_inserts_newline() -> None:
     assert command_input.value == "/idea first\n"
 
 
-def test_command_input_enter_completes_only_unfinished_slash_command(monkeypatch) -> None:
+def test_command_input_enter_completes_only_unfinished_slash_command(
+    monkeypatch,
+) -> None:
     command_input = CommandInput()
     messages: list[object] = []
     monkeypatch.setattr(command_input, "post_message", messages.append)
@@ -1372,7 +1523,7 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
         completions = app.query_one(CommandCompletionWidget)
         command_input.value = "/"
@@ -1383,6 +1534,12 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
         assert "> /clear" in completions.display_text
         assert "/clear" in completions.display_text
         assert "Clear the visible transcript" in completions.display_text
+        assert "/config" in completions.display_text
+        assert "/debug" in completions.display_text
+        assert "Toggle the debug detail view" in completions.display_text
+        assert "/idea" in completions.display_text
+        assert "/quit" in completions.display_text
+        assert "/sessions" in completions.display_text
         assert "/trajectory" in completions.display_text
         assert "/update" in completions.display_text
         assert "/model" not in completions.display_text
@@ -1550,7 +1707,7 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         assert isinstance(screen, IdeaPickerScreen)
         idea_list = screen.query_one("#idea-list", IdeaListWidget)
         assert idea_list.selected_index == 0
-        assert [idea.content for idea in idea_list._ideas] == [
+        assert [idea.content for idea in idea_list.ideas()] == [
             "first idea",
             "second idea",
         ]
@@ -1597,8 +1754,8 @@ async def test_interactive_tui_idea_picker_shows_other_project_when_current_empt
         screen = app.screen
         assert isinstance(screen, IdeaPickerScreen)
         idea_list = screen.query_one("#idea-list", IdeaListWidget)
-        assert [idea.content for idea in idea_list._ideas] == ["aceai idea"]
-        assert idea_list._ideas[0].project_id == other_project.project_id
+        assert [idea.content for idea in idea_list.ideas()] == ["aceai idea"]
+        assert idea_list.ideas()[0].project_id == other_project.project_id
 
 
 @pytest.mark.anyio
@@ -1640,7 +1797,8 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         preview = app.query_one(CitationPreviewWidget)
         assert command_input.value == ""
         assert "cited source" in preview.display_text
-        assert long_content[:117] in preview.display_text
+        assert "triggered, AceAI should save" in preview.display_text
+        assert "additional implementation detail" in preview.display_text
         assert long_content not in preview.display_text
 
         command_input.value = "what should we do?"
@@ -1654,6 +1812,44 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
         assert long_content in user_text
         assert "<user_request>\nwhat should we do?\n</user_request>" in user_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_referencing_another_idea_replaces_preview(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    idea_store.capture("first source", project=app._project)
+    idea_store.capture("second source", project=app._project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        preview = app.query_one(CitationPreviewWidget)
+        assert "first source" in preview.display_text
+
+        app.on_input_submitted(Input.Submitted(command_input, "/idea"))
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, IdeaPickerScreen)
+        picker.query_one("#idea-list", IdeaListWidget).move_selection(1)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert "second source" in preview.display_text
+        assert "first source" not in preview.display_text
 
 
 @pytest.mark.anyio
@@ -1688,11 +1884,13 @@ async def test_interactive_tui_idea_picker_edits_highlighted_idea(tmp_path) -> N
         assert isinstance(picker, IdeaPickerScreen)
         idea_list = picker.query_one("#idea-list", IdeaListWidget)
         assert idea_list.selected_index == 0
-        assert [idea.content for idea in idea_list._ideas] == [
+        assert [idea.content for idea in idea_list.ideas()] == [
             "edited first idea",
             "second idea",
         ]
-        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
+        assert [
+            idea.content for idea in idea_store.list_recent(project=app._project)
+        ] == [
             "edited first idea",
             "second idea",
         ]
@@ -1719,7 +1917,9 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         assert isinstance(picker, IdeaPickerScreen)
         add_panel = picker.query_one("#idea-add-panel")
         assert add_panel.has_class("hidden")
-        assert "Press a to add" in str(picker.query_one("#idea-status", Static).render())
+        assert "Press a to add" in str(
+            picker.query_one("#idea-status", Static).render()
+        )
 
         await pilot.press("a")
         await pilot.pause()
@@ -1739,11 +1939,13 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         assert picker.query_one("#idea-add-panel").has_class("hidden")
         idea_list = picker.query_one("#idea-list", IdeaListWidget)
         assert idea_list.selected_index == 1
-        assert [idea.content for idea in idea_list._ideas] == [
+        assert [idea.content for idea in idea_list.ideas()] == [
             "first idea",
             "new idea from picker",
         ]
-        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
+        assert [
+            idea.content for idea in idea_store.list_recent(project=app._project)
+        ] == [
             "first idea",
             "new idea from picker",
         ]
@@ -1776,18 +1978,22 @@ async def test_interactive_tui_idea_picker_deletes_highlighted_idea(tmp_path) ->
         assert isinstance(picker, IdeaPickerScreen)
         idea_list = picker.query_one("#idea-list", IdeaListWidget)
         assert idea_list.selected_index == 1
-        assert [idea.content for idea in idea_list._ideas] == [
+        assert [idea.content for idea in idea_list.ideas()] == [
             "first idea",
             "third idea",
         ]
-        assert [idea.content for idea in idea_store.list_recent(project=app._project)] == [
+        assert [
+            idea.content for idea in idea_store.list_recent(project=app._project)
+        ] == [
             "first idea",
             "third idea",
         ]
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path) -> None:
+async def test_interactive_tui_idea_delete_command_removes_recent_idea(
+    tmp_path,
+) -> None:
     ideas_path = tmp_path / "ideas.sqlite3"
     idea_store = IdeaStore(ideas_path)
     agent = Agent(
@@ -1812,7 +2018,9 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(tmp_path)
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_update_command_runs_upgrade_and_restarts(monkeypatch) -> None:
+async def test_interactive_tui_update_command_runs_upgrade_and_restarts(
+    monkeypatch,
+) -> None:
     async def update_command() -> UpdateCommandResult:
         return UpdateCommandResult(return_code=0, output="updated")
 
@@ -1844,7 +2052,9 @@ async def test_interactive_tui_update_command_runs_upgrade_and_restarts(monkeypa
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_update_command_reports_upgrade_failure(monkeypatch) -> None:
+async def test_interactive_tui_update_command_reports_upgrade_failure(
+    monkeypatch,
+) -> None:
     async def update_command() -> UpdateCommandResult:
         return UpdateCommandResult(return_code=1, output="network failed")
 
@@ -1876,7 +2086,9 @@ async def test_interactive_tui_update_command_reports_upgrade_failure(monkeypatc
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_automatically_reports_available_update(monkeypatch) -> None:
+async def test_interactive_tui_automatically_reports_available_update(
+    monkeypatch,
+) -> None:
     async def available_update() -> UpdateCheckResult:
         return UpdateCheckResult(
             current_version="0.2.7",
@@ -1897,8 +2109,7 @@ async def test_interactive_tui_automatically_reports_available_update(monkeypatc
 
     assert app._state.events[-1].kind == "session_notice"
     assert app._state.events[-1].content == (
-        "AceAI 0.2.8 is available (current 0.2.7).\n"
-        f"{UPDATE_INSTRUCTIONS}"
+        f"AceAI 0.2.8 is available (current 0.2.7).\n{UPDATE_INSTRUCTIONS}"
     )
 
 
@@ -1926,14 +2137,15 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
     notices = [
         event
         for event in app._state.events
-        if event.kind == "session_notice"
-        and "is available" in event.content
+        if event.kind == "session_notice" and "is available" in event.content
     ]
     assert len(notices) == 1
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_starts_update_check_once_when_mount_reenters(monkeypatch) -> None:
+async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
+    monkeypatch,
+) -> None:
     calls = 0
 
     async def no_update() -> None:
@@ -1967,7 +2179,9 @@ async def test_interactive_tui_stats_command_opens_config_stats_tab() -> None:
     )
     app = AceAIInteractiveTUI(agent)
     calls: list[str] = []
-    app.open_config_screen = lambda initial_tab="settings-tab": calls.append(initial_tab)
+    app.open_config_screen = lambda initial_tab="settings-tab": calls.append(
+        initial_tab
+    )
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -2074,6 +2288,81 @@ async def test_config_screen_prefills_masked_api_key() -> None:
 
 
 @pytest.mark.anyio
+async def test_config_screen_hides_reasoning_level_for_unsupported_model() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-4o",
+        default_model="gpt-4o",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        reasoning_level="auto",
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        assert screen.query_one("#reasoning-level-row").has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_config_screen_shows_reasoning_level_for_supported_model() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        reasoning_level="medium",
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        assert not screen.query_one("#reasoning-level-row").has_class("hidden")
+        assert screen.query_one("#reasoning-level", Select).value == "medium"
+
+
+@pytest.mark.anyio
+async def test_config_screen_supports_deepseek_reasoning_levels() -> None:
+    screen = ConfigScreen(
+        provider_name="deepseek",
+        current_model="deepseek-v4-pro",
+        default_model="deepseek-v4-pro",
+        skills="auto",
+        api_keys={"deepseek": "sk-test-ending"},
+        reasoning_level="max",
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        assert not screen.query_one("#reasoning-level-row").has_class("hidden")
+        assert screen.query_one("#reasoning-level", Select).value == "max"
+        _press_config_apply(screen)
+
+        assert selections == [
+            ConfigSelection(
+                provider="deepseek",
+                model="deepseek-v4-pro",
+                default_model="deepseek-v4-pro",
+                api_key="sk-test-ending",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=(),
+                reasoning_level="max",
+            )
+        ]
+
+
+@pytest.mark.anyio
 async def test_config_screen_apply_restores_masked_api_key() -> None:
     screen = ConfigScreen(
         provider_name="openai",
@@ -2081,6 +2370,7 @@ async def test_config_screen_apply_restores_masked_api_key() -> None:
         default_model="gpt-5.5",
         skills="auto",
         api_keys={"openai": "sk-test-ending"},
+        reasoning_level="medium",
     )
 
     async with AceAITUI([]).run_test() as pilot:
@@ -2103,12 +2393,53 @@ async def test_config_screen_apply_restores_masked_api_key() -> None:
                 skills="auto",
                 skill_selection_mode="selected",
                 enabled_skills=(),
+                reasoning_level="medium",
             )
         ]
 
 
 @pytest.mark.anyio
-async def test_config_screen_uses_model_as_default_model_and_places_skills_on_tools_tab() -> None:
+async def test_config_screen_apply_forces_auto_reasoning_for_unsupported_model() -> (
+    None
+):
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-4o",
+        default_model="gpt-4o",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        reasoning_level="auto",
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        _press_config_apply(screen)
+
+        assert selections == [
+            ConfigSelection(
+                provider="openai",
+                model="gpt-4o",
+                default_model="gpt-4o",
+                api_key="sk-test-ending",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=(),
+                reasoning_level="auto",
+            )
+        ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_uses_model_as_default_model_and_places_skills_on_tools_tab() -> (
+    None
+):
     skill_item = SkillConfigItem(
         name="developer",
         description=(
@@ -2146,9 +2477,8 @@ async def test_config_screen_uses_model_as_default_model_and_places_skills_on_to
             "#tool-permissions-tab"
         ).query("*")
         assert str(screen.query_one("#skill-0", Checkbox).label) == "developer"
-        assert (
-            "Practical software development workflow"
-            in str(screen.query_one("#skill-description-0", Static).render())
+        assert "Practical software development workflow" in str(
+            screen.query_one("#skill-description-0", Static).render()
         )
         assert selections == [
             ConfigSelection(
@@ -2174,7 +2504,9 @@ async def test_config_screen_labels_skill_sources(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(project)
     write_skill(home / ".aceai" / "skills", "global", "Global skill.", "# Global")
-    write_skill(project / ".agents" / "skills", "project", "Project skill.", "# Project")
+    write_skill(
+        project / ".agents" / "skills", "project", "Project skill.", "# Project"
+    )
     registry = SkillLoader.load_registry(
         "auto",
         extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
@@ -2219,8 +2551,12 @@ async def test_config_screen_searches_project_skills_and_loads_new_skill_links(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    release_dir = write_skill(project / "vendor", "release", "Release workflow.", "# Release")
-    review_dir = write_skill(project / "vendor", "review", "Review workflow.", "# Review")
+    release_dir = write_skill(
+        project / "vendor", "release", "Release workflow.", "# Release"
+    )
+    review_dir = write_skill(
+        project / "vendor", "review", "Review workflow.", "# Review"
+    )
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(project)
     screen = ConfigScreen(
@@ -2288,7 +2624,9 @@ async def test_config_screen_search_hides_loaded_skills(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    release_dir = write_skill(project / "vendor", "release", "Release workflow.", "# Release")
+    release_dir = write_skill(
+        project / "vendor", "release", "Release workflow.", "# Release"
+    )
     write_skill(project / "vendor", "review", "Review workflow.", "# Review")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(project)
@@ -2358,7 +2696,9 @@ async def test_config_screen_reports_skill_search_failure(
 
 
 @pytest.mark.anyio
-async def test_config_screen_checks_builtin_skills_by_default_in_selected_mode() -> None:
+async def test_config_screen_checks_builtin_skills_by_default_in_selected_mode() -> (
+    None
+):
     project_skill = SkillConfigItem(
         name="aceai-release",
         description="Release workflow.",
@@ -2478,9 +2818,9 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
         assert screen.query_one("#tool-enabled-0", Checkbox).has_class(
             "tool-enabled-toggle"
         )
-        assert str(screen.query_one("#tool-permission-description-1", Static).render()) == (
-            "Read a file."
-        )
+        assert str(
+            screen.query_one("#tool-permission-description-1", Static).render()
+        ) == ("Read a file.")
         assert screen.query_one("#tool-permission-description-1", Static).has_class(
             "tool-disabled"
         )
@@ -2490,12 +2830,12 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
 
         enabled_toggle.value = True
         await pilot.pause()
-        assert str(screen.query_one("#tool-permission-description-0", Static).render()) == (
-            "Run a shell command."
-        )
-        assert str(screen.query_one("#tool-permission-description-1", Static).render()) == (
-            "Read a file."
-        )
+        assert str(
+            screen.query_one("#tool-permission-description-0", Static).render()
+        ) == ("Run a shell command.")
+        assert str(
+            screen.query_one("#tool-permission-description-1", Static).render()
+        ) == ("Read a file.")
         tool_select = screen.query_one("#tool-permission-0", Select)
         max_calls_input = screen.query_one("#tool-max-calls-0", Input)
         tool_select.value = "always"

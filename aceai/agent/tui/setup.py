@@ -3,10 +3,11 @@
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Generic, TypeVar, cast
 
+from rich import box
 from rich.console import Group
-from rich.cells import set_cell_size
+from rich.cells import cell_len, set_cell_size
 from rich.panel import Panel
 from rich.text import Text
 from msgspec import field
@@ -19,7 +20,6 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
-    DataTable,
     Input,
     Label,
     RichLog,
@@ -34,8 +34,10 @@ from aceai.agent.ideas import Idea
 from aceai.agent.provider_catalog import (
     api_key_env,
     default_model,
+    reasoning_effort_options,
     supported_models,
     supported_provider_names,
+    supports_reasoning_effort,
 )
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS, ACE_AGENT_SKILL_PATH
 from aceai.agent.config import config_schema
@@ -46,11 +48,23 @@ from aceai.core.skills import Skill, SkillLoader, SkillLoadingError, SkillRegist
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-from aceai.agent.config import AgentAppConfig
+from aceai.agent.config import AgentAppConfig, ReasoningLevel
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
 from .metadata import MetadataSection, _metadata_renderables
 from .session_display import session_display_title
+
+PanelListItem = TypeVar("PanelListItem")
+PanelListRenderer = Callable[[list[PanelListItem], int], list[Text | Panel]]
+IDEA_PREVIEW_LINES = 2
+IDEA_PREVIEW_WIDTH = 112
+REASONING_LEVEL_LABELS: dict[ReasoningLevel, str] = {
+    "auto": "auto",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
 
 
 class ConfigSelection(Record, kw_only=True):
@@ -67,6 +81,7 @@ class ConfigSelection(Record, kw_only=True):
     tool_enabled: dict[str, bool] = field(default_factory=dict[str, bool])
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
     compress_threshold: CompressThreshold = "100%"
+    reasoning_level: ReasoningLevel = "auto"
 
 
 class SkillConfigItem(Record, kw_only=True):
@@ -243,11 +258,7 @@ def _project_skill_link_paths() -> tuple[Path, ...]:
     skills_dir = _project_skill_dir()
     if not skills_dir.exists():
         return ()
-    return tuple(
-        child
-        for child in sorted(skills_dir.iterdir())
-        if child.is_symlink()
-    )
+    return tuple(child for child in sorted(skills_dir.iterdir()) if child.is_symlink())
 
 
 def _skill_candidate_controls(
@@ -325,7 +336,7 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
     #setup-panel {
         width: 72;
         height: auto;
-        border: solid #88c0d0;
+        border: round #88c0d0;
         padding: 1 2;
         background: #2e3440;
         color: #e5e9f0;
@@ -378,7 +389,7 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
     Input, Checkbox {
         background: #3b4252;
         color: #eceff4;
-        border: solid #88c0d0;
+        border: round #88c0d0;
     }
 
     #setup-actions {
@@ -430,7 +441,9 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
             )
             yield Static(
                 _candidate_text(
-                    _matching_candidates(supported_models("openai"), self._default_model),
+                    _matching_candidates(
+                        supported_models("openai"), self._default_model
+                    ),
                     self._model_highlight,
                 ),
                 id="model-options",
@@ -486,7 +499,10 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         if event.input.id == "provider":
             self._provider_highlight = 0
             self._refresh_provider_candidates()
-            if event.value in supported_provider_names():
+            if (
+                event.value in supported_provider_names()
+                and event.value != self._provider_name
+            ):
                 self._select_provider(event.value)
             return
         if event.input.id == "model":
@@ -646,10 +662,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         margin-bottom: 1;
     }
 
+    #reasoning-level-row {
+        height: auto;
+    }
+
+    #reasoning-level-row.hidden {
+        display: none;
+    }
+
     Input, Checkbox {
         background: #3b4252;
         color: #eceff4;
-        border: solid #88c0d0;
+        border: round #88c0d0;
     }
 
     #config-error {
@@ -717,7 +741,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         width: 100%;
         height: auto;
         background: #343b49;
-        border: solid #4c566a;
+        border: round #4c566a;
     }
 
     .tool-permission-row {
@@ -850,6 +874,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
         compress_threshold: CompressThreshold = "100%",
+        reasoning_level: ReasoningLevel = "auto",
         stats_sections: list[MetadataSection] | None = None,
         initial_tab: str = "settings-tab",
     ) -> None:
@@ -879,6 +904,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             if item.max_calls_per_run is not None
         }
         self._compress_threshold = compress_threshold
+        self._reasoning_level = reasoning_level
         self._stats_sections = list(stats_sections or [])
         self._initial_tab = initial_tab
         self._sync_tool_order()
@@ -929,6 +955,20 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             ),
                             id="model-options",
                         )
+                        with Container(
+                            id="reasoning-level-row",
+                            classes=self._reasoning_level_row_classes(),
+                        ):
+                            yield Label(_field_label("reasoning_level"))
+                            yield Select(
+                                _reasoning_level_options_for(
+                                    self._provider_name,
+                                    self._current_model,
+                                ),
+                                value=self._reasoning_level,
+                                allow_blank=False,
+                                id="reasoning-level",
+                            )
                         yield Label(_field_label("api_key"))
                         yield Input(
                             value=_masked_api_key(
@@ -998,7 +1038,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         if event.input.id == "provider":
             self._provider_highlight = 0
             self._refresh_provider_candidates()
-            if event.value in supported_provider_names():
+            if (
+                event.value in supported_provider_names()
+                and event.value != self._provider_name
+            ):
                 self._select_provider(event.value)
             return
         if event.input.id == "model":
@@ -1082,12 +1125,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             model_input.value,
         )
         self._refresh_model_candidates()
-        self.query_one("#api-key", Input).placeholder = (
-            api_key_env(self._provider_name)
-        )
+        self.query_one("#api-key", Input).placeholder = api_key_env(self._provider_name)
         self.query_one("#api-key", Input).value = _masked_api_key(
             self._api_key_for_provider(self._provider_name)
         )
+        self._sync_reasoning_level_visibility()
 
     def _provider_candidates(self) -> tuple[str, ...]:
         return _matching_candidates(
@@ -1115,6 +1157,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self.query_one("#api-key", Input).value = _masked_api_key(
                 self._api_key_for_provider(self._provider_name)
             )
+        self._sync_reasoning_level_visibility()
 
     def _api_key_for_provider(self, provider: str) -> str:
         if provider in self._api_keys:
@@ -1148,6 +1191,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             return
         provider = self.query_one("#provider", Input).value
         model = self.query_one("#model", Input).value
+        reasoning_level = self._selected_reasoning_level(provider, model)
         self._skills = ACE_AGENT_SKILL_PATH
         enabled_skills = self._selected_skill_names()
         stored_api_key = (
@@ -1164,6 +1208,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             model,
             api_key,
             self._skills,
+            reasoning_level,
         )
         if error is not None:
             self.query_one("#config-error", Static).update(error)
@@ -1189,8 +1234,51 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 tool_enabled=dict(self._tool_enabled),
                 tool_max_calls=dict(self._tool_max_calls),
                 compress_threshold=compress_threshold,
+                reasoning_level=reasoning_level,
             )
         )
+
+    def _selected_reasoning_level(
+        self,
+        provider: str,
+        model: str,
+    ) -> ReasoningLevel:
+        if provider not in supported_provider_names():
+            return "auto"
+        if model not in supported_models(provider):
+            return "auto"
+        if not supports_reasoning_effort(provider, model):
+            return "auto"
+        reasoning_level = self.query_one("#reasoning-level", Select).value
+        options = reasoning_effort_options(provider, model)
+        if reasoning_level not in ("auto", *options):
+            raise ValueError("Unsupported reasoning level")
+        return reasoning_level
+
+    def _sync_reasoning_level_visibility(self) -> None:
+        row = self.query_one("#reasoning-level-row", Container)
+        provider = self._provider_name
+        model = self.query_one("#model", Input).value
+        if supports_reasoning_effort(provider, model):
+            select = self.query_one("#reasoning-level", Select)
+            current_value = select.value
+            select.set_options(_reasoning_level_options_for(provider, model))
+            options = reasoning_effort_options(provider, model)
+            if current_value in ("auto", *options):
+                select.value = current_value
+            elif self._reasoning_level in options:
+                select.value = self._reasoning_level
+            else:
+                select.value = "auto"
+            row.remove_class("hidden")
+            return
+        row.add_class("hidden")
+        self.query_one("#reasoning-level", Select).value = "auto"
+
+    def _reasoning_level_row_classes(self) -> str:
+        if supports_reasoning_effort(self._provider_name, self._current_model):
+            return ""
+        return "hidden"
 
     def _checked_skill_items(self) -> tuple[SkillConfigItem, ...]:
         if self._skill_selection_mode == "all":
@@ -1271,7 +1359,9 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         target = skill_dir.resolve()
         if link_path.exists() or link_path.is_symlink():
             if not link_path.is_symlink() or link_path.resolve() != target:
-                raise SkillLoadingError(f"Project skill link {link_path} already exists")
+                raise SkillLoadingError(
+                    f"Project skill link {link_path} already exists"
+                )
             return
         link_path.symlink_to(target, target_is_directory=True)
 
@@ -1316,6 +1406,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id is None:
+            return
+        if event.select.id == "reasoning-level":
+            if event.value not in ("auto", "low", "medium", "high", "max"):
+                raise ValueError("Unsupported reasoning level")
+            self._reasoning_level = cast(ReasoningLevel, event.value)
             return
         if not event.select.id.startswith("tool-permission-"):
             return
@@ -1394,7 +1489,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def _sync_tool_order(self) -> None:
         self._tool_names = tuple(
-            sorted(self._tool_order, key=lambda tool_name: not self._tool_enabled[tool_name])
+            sorted(
+                self._tool_order,
+                key=lambda tool_name: not self._tool_enabled[tool_name],
+            )
         )
         self._tool_control_names = {
             f"tool-permission-{index}": tool_name
@@ -1493,6 +1591,7 @@ def _config_selection_error(
     model: str,
     api_key: str,
     skills: str,
+    reasoning_level: ReasoningLevel,
 ) -> str | None:
     if provider == "":
         return "Provider is required"
@@ -1506,7 +1605,24 @@ def _config_selection_error(
         return "Unsupported provider"
     if model not in supported_models(provider):
         return "Unsupported model"
+    if reasoning_level != "auto" and reasoning_level not in reasoning_effort_options(
+        provider, model
+    ):
+        return "Reasoning level is unsupported for this model"
     return None
+
+
+def _reasoning_level_options_for(
+    provider: str,
+    model: str,
+) -> tuple[tuple[str, ReasoningLevel], ...]:
+    options: list[tuple[str, ReasoningLevel]] = [("auto", "auto")]
+    for option in reasoning_effort_options(provider, model):
+        if option not in REASONING_LEVEL_LABELS:
+            raise ValueError("Unsupported reasoning level")
+        reasoning_level = cast(ReasoningLevel, option)
+        options.append((REASONING_LEVEL_LABELS[reasoning_level], reasoning_level))
+    return tuple(options)
 
 
 def _field_label(name: str) -> str:
@@ -1525,10 +1641,16 @@ def _skills_field_label() -> str:
     raise ValueError("Unknown config field")
 
 
-class SessionSelectScreen(ModalScreen[str]):
+class SessionSelectScreen(ModalScreen[str | None]):
     """Select a saved session to resume in the TUI."""
 
     BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("up", "cursor_up", "Up", priority=True),
+        Binding("k", "cursor_up", "Up"),
+        Binding("down", "cursor_down", "Down", priority=True),
+        Binding("j", "cursor_down", "Down"),
+        Binding("enter", "resume_session", "Resume"),
         Binding("d", "confirm_delete_session", "Delete", priority=True),
     ]
 
@@ -1538,54 +1660,29 @@ class SessionSelectScreen(ModalScreen[str]):
     }
 
     #session-panel {
-        width: 120;
-        height: auto;
-        border: solid #88c0d0;
+        width: 92%;
+        height: 88%;
+        border: round #81a1c1;
         padding: 1 2;
         background: #2e3440;
         color: #e5e9f0;
     }
 
     #session-title {
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #session-table {
-        height: auto;
-        max-height: 8;
-        background: #3b4252;
-        color: #eceff4;
-        border: solid #88c0d0;
-    }
-
-    #session-table > .datatable--header {
-        text-style: bold;
-        background: #2e3440;
-        color: #88c0d0;
-    }
-
-    #session-table > .datatable--cursor {
-        background: #007acc;
-        color: #ffffff;
-        text-style: bold;
-    }
-
-    .session-project-title {
-        margin-top: 1;
+        height: 1;
         color: #8fbcbb;
         text-style: bold;
     }
 
-    #session-actions {
-        height: auto;
+    #session-list-scroll {
+        height: 1fr;
         margin-top: 1;
     }
 
     #session-status {
         height: 1;
         margin-top: 1;
-        color: #d8dee9;
+        color: #9aa3b2;
     }
     """
 
@@ -1603,58 +1700,43 @@ class SessionSelectScreen(ModalScreen[str]):
 
     def compose(self) -> ComposeResult:
         session_ids = {session.session_id for session in self._sessions}
-        value = (
+        selected_session_id = (
             self._current_session_id
             if self._current_session_id in session_ids
             else self._sessions[0].session_id
         )
         with Container(id="session-panel"):
-            yield Label("Sessions", id="session-title")
+            yield Label(f"Sessions  {len(self._sessions)}", id="session-title")
             with VerticalScroll(id="session-list-scroll"):
-                for project_id, project_name, sessions in _session_groups(self._sessions):
-                    yield Label(
-                        f"{project_name} ({len(sessions)})",
-                        classes="session-project-title",
-                        id=f"session-project-{project_id}",
-                    )
-                    table = _session_project_table(
-                        sessions,
-                        current_session_id=self._current_session_id,
-                        selected_session_id=value,
-                    )
-                    table.id = f"session-table-{project_id}"
-                    yield table
+                yield SessionListWidget(
+                    sessions=self._sessions,
+                    current_session_id=self._current_session_id,
+                    selected_session_id=selected_session_id,
+                    id="session-list",
+                )
             yield Static(
-                f"Total cost: {format_usd(self._store.total_cost_usd())}. "
-                "Press d to delete the highlighted session.",
+                f"Enter resumes the highlighted session. Press d to delete. "
+                f"Total cost: {format_usd(self._store.total_cost_usd())}.",
                 id="session-status",
             )
-            with Horizontal(id="session-actions"):
-                yield Button("Resume", variant="primary", id="resume")
-                yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
-        table = _table_with_session(self, self._current_session_id)
-        if table is None:
-            table = self.query_one(DataTable)
-        table.focus()
+        self.query_one("#session-list", SessionListWidget).focus()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        if event.button.id != "resume":
-            return
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#session-list", SessionListWidget).move_selection(-1)
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#session-list", SessionListWidget).move_selection(1)
+
+    def action_resume_session(self) -> None:
         session_id = self._selected_session_id()
         if session_id is None:
             self.query_one("#session-status", Static).update("Select a session row.")
             return
-        self.dismiss(session_id)
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        session_id = event.row_key.value
-        if type(session_id) is not str:
-            raise TypeError("Selected session id must be str")
         self.dismiss(session_id)
 
     def action_confirm_delete_session(self) -> None:
@@ -1682,36 +1764,162 @@ class SessionSelectScreen(ModalScreen[str]):
         session_id: str,
     ) -> None:
         if confirmed is not True:
-            table = _table_with_session(self, session_id)
-            if table is not None:
-                table.focus()
+            self.query_one("#session-list", SessionListWidget).focus()
             return
         self._store.delete_session(session_id)
-        table = _table_with_session(self, session_id)
-        if table is None:
-            raise ValueError(session_id)
-        deleted_row = table.cursor_row
-        table.remove_row(session_id)
+        session_list = self.query_one("#session-list", SessionListWidget)
+        selected_index = session_list.selected_index
         self._sessions = [
             session for session in self._sessions if session.session_id != session_id
         ]
-        if table.row_count > 0:
-            table.move_cursor(row=min(deleted_row, table.row_count - 1))
-        table.focus()
+        session_list.set_sessions(self._sessions, selected_index=selected_index)
+        session_list.focus()
+        self._update_title()
         self.query_one("#session-status", Static).update("Session deleted.")
 
     def _selected_session_id(self) -> str | None:
-        table = _focused_session_table(self)
-        if table is None:
+        return self.query_one("#session-list", SessionListWidget).selected_session_id()
+
+    def _update_title(self) -> None:
+        self.query_one("#session-title", Label).update(
+            f"Sessions  {len(self._sessions)}"
+        )
+
+
+class SelectablePanelListWidget(Static, Generic[PanelListItem]):
+    """Reusable panel-rendered list with one highlighted selection."""
+
+    can_focus = True
+
+    def __init__(
+        self,
+        *,
+        items: list[PanelListItem],
+        render_items: PanelListRenderer[PanelListItem],
+        empty_message: str,
+        selected_index: int = 0,
+        id: str | None = None,
+    ) -> None:
+        super().__init__(id=id)
+        self._items = items
+        self._render_items = render_items
+        self._empty_message = empty_message
+        self.selected_index = self._clamp_index(selected_index)
+
+    def on_mount(self) -> None:
+        self._refresh_renderable()
+
+    def set_items(
+        self,
+        items: list[PanelListItem],
+        *,
+        selected_index: int,
+    ) -> None:
+        self._items = items
+        self.selected_index = self._clamp_index(selected_index)
+        self._refresh_renderable()
+
+    def move_selection(self, delta: int) -> None:
+        if not self._items:
+            return
+        self.selected_index = self._clamp_index(self.selected_index + delta)
+        self._refresh_renderable()
+
+    def selected_item(self) -> PanelListItem | None:
+        if not self._items:
             return None
-        row = table.ordered_rows[table.cursor_row]
-        session_id = row.key.value
-        if type(session_id) is not str:
-            raise TypeError("Selected session id must be str")
-        return session_id
+        return self._items[self.selected_index]
+
+    def items(self) -> list[PanelListItem]:
+        return self._items
+
+    def _clamp_index(self, index: int) -> int:
+        if not self._items:
+            return 0
+        return max(0, min(index, len(self._items) - 1))
+
+    def _refresh_renderable(self) -> None:
+        if not self._items:
+            self.update(
+                Panel(
+                    Text(self._empty_message, style="#d8dee9"),
+                    box=box.ROUNDED,
+                    border_style="#4c566a",
+                    padding=(0, 1),
+                )
+            )
+            return
+        self.update(Group(*self._render_items(self._items, self.selected_index)))
 
 
-class IdeaPickerScreen(ModalScreen[str | None]):
+class SessionListWidget(SelectablePanelListWidget[SessionMetadata]):
+    """Panel-rendered session list."""
+
+    def __init__(
+        self,
+        *,
+        sessions: list[SessionMetadata],
+        current_session_id: str | None,
+        selected_session_id: str,
+        id: str | None = None,
+    ) -> None:
+        self._current_session_id = current_session_id
+        super().__init__(
+            items=sessions,
+            render_items=self._render_sessions,
+            empty_message="No saved sessions yet.",
+            selected_index=_session_index(sessions, selected_session_id),
+            id=id,
+        )
+
+    def set_sessions(
+        self, sessions: list[SessionMetadata], *, selected_index: int
+    ) -> None:
+        self.set_items(sessions, selected_index=selected_index)
+
+    def selected_session_id(self) -> str | None:
+        session = self.selected_item()
+        if session is None:
+            return None
+        return session.session_id
+
+    def sessions(self) -> list[SessionMetadata]:
+        return self.items()
+
+    def _render_sessions(
+        self,
+        sessions: list[SessionMetadata],
+        selected_index: int,
+    ) -> list[Text | Panel]:
+        return _session_picker_renderables(
+            sessions,
+            current_session_id=self._current_session_id,
+            selected_index=selected_index,
+        )
+
+
+class IdeaListWidget(SelectablePanelListWidget[Idea]):
+    """Panel-rendered idea list."""
+
+    def __init__(self, ideas: list[Idea], *, id: str | None = None) -> None:
+        super().__init__(
+            items=ideas,
+            render_items=_idea_picker_renderables,
+            empty_message="No saved ideas yet.",
+            id=id,
+        )
+
+    def set_ideas(self, ideas: list[Idea], *, selected_index: int) -> None:
+        self.set_items(ideas, selected_index=selected_index)
+
+    def ideas(self) -> list[Idea]:
+        return self.items()
+
+    def selected_idea(self) -> Idea | None:
+        return self.selected_item()
+
+
+class IdeaPickerScreen(ModalScreen[Idea | None]):
     """Pick, reference, or edit saved ideas."""
 
     BINDINGS = [
@@ -1735,7 +1943,7 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         width: 92%;
         height: 88%;
         background: #2e3440;
-        border: solid #81a1c1;
+        border: round #81a1c1;
         padding: 1 2;
     }
 
@@ -1761,7 +1969,7 @@ class IdeaPickerScreen(ModalScreen[str | None]):
 
     #idea-add-input {
         height: 3;
-        border: solid #88c0d0;
+        border: round #88c0d0;
         background: #3b4252;
         color: #eceff4;
     }
@@ -1821,7 +2029,7 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         if not self._ideas:
             self.query_one("#idea-status", Static).update("No idea selected.")
             return
-        self.dismiss(self._selected_idea().content)
+        self.dismiss(self._selected_idea())
 
     def action_edit_idea(self) -> None:
         if not self._ideas:
@@ -1911,59 +2119,6 @@ class IdeaPickerScreen(ModalScreen[str | None]):
         return self._ideas[self._selected_index() - 1]
 
 
-class IdeaListWidget(Static):
-    """Panel-rendered idea list with a single highlighted selection."""
-
-    can_focus = True
-
-    def __init__(self, ideas: list[Idea], *, id: str | None = None) -> None:
-        super().__init__(id=id)
-        self._ideas = ideas
-        self.selected_index = 0
-
-    def on_mount(self) -> None:
-        self._refresh_renderable()
-
-    def set_ideas(self, ideas: list[Idea], *, selected_index: int) -> None:
-        self._ideas = ideas
-        self.selected_index = self._clamp_index(selected_index)
-        self._refresh_renderable()
-
-    def move_selection(self, delta: int) -> None:
-        if not self._ideas:
-            return
-        self.selected_index = self._clamp_index(self.selected_index + delta)
-        self._refresh_renderable()
-
-    def _clamp_index(self, index: int) -> int:
-        if not self._ideas:
-            return 0
-        return max(0, min(index, len(self._ideas) - 1))
-
-    def _refresh_renderable(self) -> None:
-        if not self._ideas:
-            self.update(
-                Panel(
-                    Text("No saved ideas yet.", style="#d8dee9"),
-                    border_style="#4c566a",
-                    padding=(0, 1),
-                )
-            )
-            return
-        self.update(
-            Group(
-                *[
-                    _idea_panel(
-                        idea,
-                        index=index,
-                        selected=index == self.selected_index,
-                    )
-                    for index, idea in enumerate(self._ideas)
-                ]
-            )
-        )
-
-
 class IdeaEditScreen(ModalScreen[tuple[int, str] | None]):
     """Edit a saved idea."""
 
@@ -1981,7 +2136,7 @@ class IdeaEditScreen(ModalScreen[tuple[int, str] | None]):
         width: 82%;
         height: 64%;
         background: #2e3440;
-        border: solid #81a1c1;
+        border: round #81a1c1;
         padding: 1 2;
     }
 
@@ -1994,7 +2149,7 @@ class IdeaEditScreen(ModalScreen[tuple[int, str] | None]):
     #idea-editor {
         height: 1fr;
         margin-top: 1;
-        border: solid #88c0d0;
+        border: round #88c0d0;
         background: #3b4252;
         color: #eceff4;
     }
@@ -2047,7 +2202,7 @@ def _idea_title(idea: Idea) -> str:
     return ""
 
 
-def _idea_body(idea: Idea) -> str:
+def _idea_body_lines(idea: Idea) -> list[str]:
     lines = idea.content.splitlines()
     body_lines: list[str] = []
     found_title = False
@@ -2057,8 +2212,21 @@ def _idea_body(idea: Idea) -> str:
             continue
         if found_title:
             body_lines.append(line)
-    body = "\n".join(body_lines)
-    return body if body != "" else " "
+    return body_lines
+
+
+def _idea_picker_renderables(
+    ideas: list[Idea],
+    selected_index: int,
+) -> list[Panel]:
+    return [
+        _idea_panel(
+            idea,
+            index=index,
+            selected=index == selected_index,
+        )
+        for index, idea in enumerate(ideas)
+    ]
 
 
 def _idea_panel(idea: Idea, *, index: int, selected: bool) -> Panel:
@@ -2072,7 +2240,8 @@ def _idea_panel(idea: Idea, *, index: int, selected: bool) -> Panel:
     title.append(f"{idea.project_name}  ", style="#8fbcbb")
     title.append(created_at, style="#9aa3b2")
     return Panel(
-        Text(_idea_body(idea), style="#d8dee9"),
+        _idea_body_text(idea, expanded=selected),
+        box=box.ROUNDED,
         title=title,
         title_align="left",
         border_style="#88c0d0" if selected else "#4c566a",
@@ -2081,12 +2250,84 @@ def _idea_panel(idea: Idea, *, index: int, selected: bool) -> Panel:
     )
 
 
+def _idea_body_text(idea: Idea, *, expanded: bool) -> Text:
+    body_lines = _idea_body_lines(idea)
+    if expanded:
+        display_lines = _at_least_preview_height(body_lines)
+        body = "\n".join(display_lines)
+        return Text(body if body != "" else " ", style="#d8dee9")
+    preview = _idea_preview_lines(body_lines)
+    text = Text()
+    for index, line in enumerate(preview):
+        if index > 0:
+            text.append("\n")
+        text.append(line, style="#d8dee9")
+    return text
+
+
+def _at_least_preview_height(lines: list[str]) -> list[str]:
+    display_lines = [line if line != "" else " " for line in lines]
+    while len(display_lines) < IDEA_PREVIEW_LINES:
+        display_lines.append(" ")
+    return display_lines
+
+
+def _idea_preview_lines(body_lines: list[str]) -> list[str]:
+    body = "\n".join(body_lines)
+    if body == "":
+        return [" ", " "]
+    chunks = _wrap_preview_text(body, width=IDEA_PREVIEW_WIDTH)
+    truncated = len(chunks) > IDEA_PREVIEW_LINES
+    preview = chunks[:IDEA_PREVIEW_LINES]
+    while len(preview) < IDEA_PREVIEW_LINES:
+        preview.append(" ")
+    if truncated:
+        preview[-1] = _preview_more_line(preview[-1])
+    return preview
+
+
+def _wrap_preview_text(value: str, *, width: int) -> list[str]:
+    wrapped: list[str] = []
+    for source_line in value.splitlines():
+        if source_line == "":
+            wrapped.append(" ")
+            continue
+        line = source_line
+        while line != "":
+            if cell_len(line) <= width:
+                wrapped.append(line)
+                break
+            wrapped.append(set_cell_size(line, width).rstrip())
+            line = line[width:]
+    return wrapped
+
+
+def _preview_more_line(value: str) -> str:
+    suffix = " ... more"
+    return f"{set_cell_size(value, IDEA_PREVIEW_WIDTH - len(suffix)).rstrip()}{suffix}"
+
+
 def _fixed_width(value: str, *, width: int) -> str:
     return set_cell_size(value, width)
 
 
+def _delete_session_actions() -> Text:
+    text = Text()
+    text.append("Enter ", style="#9aa3b2")
+    text.append("Delete", style="bold #bf616a")
+    text.append("   ")
+    text.append("Esc ", style="#9aa3b2")
+    text.append("Cancel", style="#d8dee9")
+    return text
+
+
 class DeleteSessionConfirmScreen(ModalScreen[bool]):
     """Confirm deletion of a saved session."""
+
+    BINDINGS = [
+        Binding("enter", "confirm", "Delete"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
 
     DEFAULT_CSS = """
     DeleteSessionConfirmScreen {
@@ -2094,9 +2335,9 @@ class DeleteSessionConfirmScreen(ModalScreen[bool]):
     }
 
     #delete-session-panel {
-        width: 76;
+        width: 64;
         height: auto;
-        border: solid #bf616a;
+        border: round #bf616a;
         padding: 1 2;
         background: #2e3440;
         color: #e5e9f0;
@@ -2113,8 +2354,9 @@ class DeleteSessionConfirmScreen(ModalScreen[bool]):
     }
 
     #delete-session-actions {
-        height: auto;
+        height: 1;
         margin-top: 1;
+        color: #9aa3b2;
     }
     """
 
@@ -2130,62 +2372,86 @@ class DeleteSessionConfirmScreen(ModalScreen[bool]):
                 f"{self._session.session_id}",
                 id="delete-session-message",
             )
-            with Horizontal(id="delete-session-actions"):
-                yield Button("Delete", variant="error", id="delete")
-                yield Button("Cancel", id="cancel")
+            yield Static(_delete_session_actions(), id="delete-session-actions")
 
-    def on_mount(self) -> None:
-        self.query_one("#delete", Button).focus()
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(False)
-            return
-        if event.button.id != "delete":
-            return
+    def action_confirm(self) -> None:
         self.dismiss(True)
 
 
-def _session_row_cells(
-    session: SessionMetadata,
-    *,
-    current_session_id: str | None,
-) -> tuple[str, str, str, str]:
-    marker = "* " if session.session_id == current_session_id else "  "
-    return (
-        _fit_cell(f"{marker}{session_display_title(session.title)}", 67),
-        _session_second(session.updated_at),
-        _session_second(session.created_at),
-        session.session_id,
-    )
+def _session_index(
+    sessions: list[SessionMetadata],
+    selected_session_id: str,
+) -> int:
+    for index, session in enumerate(sessions):
+        if session.session_id == selected_session_id:
+            return index
+    return 0
 
 
-def _session_project_table(
+def _session_picker_renderables(
     sessions: list[SessionMetadata],
     *,
     current_session_id: str | None,
-    selected_session_id: str,
-) -> DataTable:
-    table = DataTable()
-    table.cursor_type = "row"
-    table.zebra_stripes = True
-    table.add_column("Title", width=67)
-    table.add_column("Updated", width=19)
-    table.add_column("Created", width=19)
-    table.add_column("Session ID", width=36)
-    selected_row = 0
-    for index, session in enumerate(sessions):
-        table.add_row(
-            *_session_row_cells(
-                session,
-                current_session_id=current_session_id,
-            ),
-            key=session.session_id,
-        )
-        if session.session_id == selected_session_id:
-            selected_row = index
-    table.move_cursor(row=selected_row)
-    return table
+    selected_index: int,
+) -> list[Text | Panel]:
+    renderables: list[Text | Panel] = []
+    global_index = 0
+    for _project_id, project_name, group_sessions in _session_groups(sessions):
+        header = Text()
+        header.append(project_name, style="bold #8fbcbb")
+        header.append(f"  {len(group_sessions)}", style="#9aa3b2")
+        renderables.append(header)
+        for session in group_sessions:
+            renderables.append(
+                _session_panel(
+                    session,
+                    index=global_index,
+                    selected=global_index == selected_index,
+                    current=session.session_id == current_session_id,
+                )
+            )
+            global_index += 1
+    return renderables
+
+
+def _session_panel(
+    session: SessionMetadata,
+    *,
+    index: int,
+    selected: bool,
+    current: bool,
+) -> Panel:
+    title = Text()
+    marker = "> " if selected else "  "
+    title.append(marker, style="#88c0d0" if selected else "#4c566a")
+    title.append(f"{index + 1:>2}. ", style="bold #9aa3b2")
+    title.append(
+        _fixed_width(session_display_title(session.title), width=58),
+        style="bold #eceff4",
+    )
+    title.append("  ")
+    title.append(session.project_name, style="#8fbcbb")
+    title.append("  ")
+    title.append(_session_second(session.updated_at), style="#9aa3b2")
+    if current:
+        title.append("  current", style="#88c0d0")
+    body = Text()
+    body.append("created ", style="#9aa3b2")
+    body.append(_session_second(session.created_at), style="#d8dee9")
+    body.append("  ")
+    body.append(session.session_id, style="#9aa3b2")
+    return Panel(
+        body,
+        box=box.ROUNDED,
+        title=title,
+        title_align="left",
+        border_style="#88c0d0" if selected else "#4c566a",
+        style="on #3b4252" if selected else "",
+        padding=(0, 1),
+    )
 
 
 def _session_groups(
@@ -2203,29 +2469,6 @@ def _session_groups(
     return groups
 
 
-def _focused_session_table(screen: SessionSelectScreen) -> DataTable | None:
-    focused = screen.focused
-    if isinstance(focused, DataTable):
-        return focused
-    tables = list(screen.query(DataTable))
-    if not tables:
-        return None
-    return tables[0]
-
-
-def _table_with_session(
-    screen: SessionSelectScreen,
-    session_id: str | None,
-) -> DataTable | None:
-    if session_id is None:
-        return None
-    for table in screen.query(DataTable):
-        for row in table.ordered_rows:
-            if row.key.value == session_id:
-                return table
-    return None
-
-
 def _session_by_id(
     sessions: list[SessionMetadata],
     session_id: str,
@@ -2238,9 +2481,3 @@ def _session_by_id(
 
 def _session_second(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _fit_cell(value: str, width: int) -> str:
-    if len(value) <= width:
-        return value
-    return f"{value[: width - 3]}..."

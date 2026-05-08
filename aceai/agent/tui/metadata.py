@@ -28,7 +28,7 @@ class MetadataScreen(ModalScreen[None]):
         width: 100;
         height: 34;
         max-height: 34;
-        border: solid #88c0d0;
+        border: round #88c0d0;
         padding: 1 2;
         background: #2e3440;
         color: #e5e9f0;

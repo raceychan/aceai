@@ -28,7 +28,7 @@ class TrajectoryScreen(ModalScreen[None]):
         width: 128;
         height: 42;
         max-height: 42;
-        border: solid #88c0d0;
+        border: round #88c0d0;
         padding: 1 2;
         background: #2e3440;
         color: #e5e9f0;

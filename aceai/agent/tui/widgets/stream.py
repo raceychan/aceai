@@ -2,6 +2,7 @@
 
 from hashlib import sha1
 
+from rich import box
 from rich.align import Align
 from msgspec import Struct
 from rich.console import Group, RenderableType
@@ -17,7 +18,7 @@ from textual.widgets import RichLog
 
 from aceai import __version__
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import TurnCitation, citation_origin_name
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
@@ -81,7 +82,7 @@ class StreamWidget(RichLog):
 
     DEFAULT_CSS = """
     StreamWidget {
-        border: solid #81a1c1;
+        border: round #5e81ac;
         background: #2e3440;
         color: #e5e9f0;
         padding: 0 1;
@@ -708,6 +709,7 @@ def _selectable_debug_events(events: list[TUIEvent]) -> list[TUIEvent]:
 def _selected_debug_panel(renderable: RenderableType) -> RenderableType:
     return Panel(
         renderable,
+        box=box.ROUNDED,
         border_style="#88c0d0",
         style="on #3b4252",
         padding=(0, 0),
@@ -1174,6 +1176,7 @@ def _render_idea_item(item: TUIIdeaItem) -> Panel:
     body.append(item.body if item.body != "" else " ", style="#d8dee9")
     return Panel(
         body,
+        box=box.ROUNDED,
         title=title,
         title_align="left",
         border_style="#4c566a",
@@ -1274,14 +1277,13 @@ def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:
     for index, citation in enumerate(citations, start=1):
         title = Text()
         title.append(f"[{index}] ", style=SUBTLE_BULLET_STYLE)
-        title.append(citation.label, style="bold #d8dee9")
-        if citation.source != "":
-            title.append(f"  {citation.source}", style="#9aa3b2")
+        title.append(citation_origin_name(citation.origin), style="bold #d8dee9")
         body = Text(citation.content, style="#d8dee9")
         lines.append(title)
         lines.append(body)
     return Panel(
         Group(*lines),
+        box=box.ROUNDED,
         title="cited source",
         title_align="left",
         border_style="#4c566a",
