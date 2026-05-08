@@ -29,6 +29,9 @@ from openai.types.responses.response_image_gen_call_partial_image_event import (
     ResponseImageGenCallPartialImageEvent,
 )
 from openai.types.responses.response_output_item import ImageGenerationCall
+from openai.types.responses.response_output_item_done_event import (
+    ResponseOutputItemDoneEvent,
+)
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_reasoning_summary_text_delta_event import (
     ResponseReasoningSummaryTextDeltaEvent,
@@ -559,19 +562,55 @@ class OpenAI(LLMProviderBase):
         calls: list[LLMToolCall] = []
         for item in response.output:
             if isinstance(item, ResponseFunctionToolCall):
-                call_id = item.call_id or item.id
-                if call_id is None:
-                    raise AceAIRuntimeError(
-                        "OpenAI function call response did not include a call identifier"
-                    )
-                calls.append(
-                    LLMToolCall(
-                        name=item.name,
-                        arguments=item.arguments,
-                        call_id=call_id,
-                    )
-                )
+                calls.append(self._tool_call_from_response_item(item))
         return calls
+
+    def _tool_call_from_response_item(
+        self,
+        item: ResponseFunctionToolCall,
+    ) -> LLMToolCall:
+        call_id = item.call_id or item.id
+        if call_id is None:
+            raise AceAIRuntimeError(
+                "OpenAI function call response did not include a call identifier"
+            )
+        return LLMToolCall(
+            name=item.name,
+            arguments=item.arguments,
+            call_id=call_id,
+        )
+
+    def _patch_response_tool_calls(
+        self,
+        response: LLMResponse,
+        tool_calls: list[LLMToolCall],
+    ) -> LLMResponse:
+        if response.tool_calls or not tool_calls:
+            return response
+        segments = list(response.segments)
+        for call in tool_calls:
+            segments.append(
+                LLMSegment(
+                    type="tool_call",
+                    content=call.arguments or "",
+                    meta=LLMToolCallSegmentMeta(
+                        call_id=call.call_id,
+                        tool_name=call.name,
+                    ),
+                )
+            )
+        return LLMResponse(
+            id=response.id,
+            model=response.model,
+            text=response.text,
+            tool_calls=tool_calls,
+            usage=response.usage,
+            segments=segments,
+            provider_meta=response.provider_meta,
+            status=response.status,
+            reasoning=response.reasoning,
+            reasoning_content=response.reasoning_content,
+        )
 
     def _to_llm_response(
         self, response: Response, *, latency_ms: float | None = None
@@ -787,9 +826,17 @@ class OpenAI(LLMProviderBase):
             attributes=attributes,
         )
         stream_manager = self._client.responses.stream(**kwargs)
+        streamed_tool_calls: list[LLMToolCall] = []
         try:
             async with stream_manager as stream:
                 async for event in stream:
+                    if isinstance(event, ResponseOutputItemDoneEvent) and isinstance(
+                        event.item,
+                        ResponseFunctionToolCall,
+                    ):
+                        streamed_tool_calls.append(
+                            self._tool_call_from_response_item(event.item)
+                        )
                     mapped = self._map_stream_event(event, model_name=kwargs["model"])
                     if mapped is None:
                         continue
@@ -799,6 +846,10 @@ class OpenAI(LLMProviderBase):
                 latency_ms = (time.perf_counter() - start) * 1000.0
                 final_llm_response = self._to_llm_response(
                     parsed, latency_ms=latency_ms
+                )
+                final_llm_response = self._patch_response_tool_calls(
+                    final_llm_response,
+                    streamed_tool_calls,
                 )
                 yield LLMStreamEvent(
                     event_type="response.completed",
