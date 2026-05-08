@@ -16,6 +16,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supported_provider_names,
 )
+from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.core import Agent
 from aceai.llm.interface import UNSET
 from aceai.llm.models import LLMMessage
@@ -157,6 +158,27 @@ def resolve_initial_config(
                 compress_threshold="100%",
             )
         )
+    default_api_key = default_api_key_for_provider(provider)
+    if default_api_key != "":
+        selected_model = model
+        if not model_from_env:
+            selected_model = default_model(provider)
+        return replace_config(
+            AgentAppConfig(
+                provider=provider,
+                api_key=default_api_key,
+                model=selected_model,
+                default_model=default_model(provider),
+                skills=ACE_AGENT_SKILL_PATH,
+                skill_selection_mode="all",
+                enabled_skills=[],
+                api_keys={provider: default_api_key},
+                tool_permissions={},
+                tool_enabled={},
+                tool_max_calls={},
+                compress_threshold="100%",
+            )
+        )
     return None
 
 
@@ -216,6 +238,32 @@ def apply_session_state_to_initial_config(
             AgentAppConfig(
                 provider=provider,
                 api_key=os.environ[env_name],
+                model=model,
+                default_model=default_model(provider),
+                skills=config.skills if config is not None else ACE_AGENT_SKILL_PATH,
+                skill_selection_mode=config.skill_selection_mode
+                if config is not None
+                else "all",
+                enabled_skills=config.enabled_skills if config is not None else [],
+                api_keys=api_keys,
+                tool_permissions=config.tool_permissions if config is not None else {},
+                tool_enabled=config.tool_enabled if config is not None else {},
+                tool_max_calls=config.tool_max_calls if config is not None else {},
+                compress_threshold=config.compress_threshold
+                if config is not None
+                else "100%",
+            )
+        )
+    default_api_key = default_api_key_for_provider(provider)
+    if default_api_key != "":
+        api_keys = {}
+        if config is not None:
+            api_keys.update(config.api_keys)
+        api_keys[provider] = default_api_key
+        return replace_config(
+            AgentAppConfig(
+                provider=provider,
+                api_key=default_api_key,
                 model=model,
                 default_model=default_model(provider),
                 skills=config.skills if config is not None else ACE_AGENT_SKILL_PATH,

@@ -34,12 +34,15 @@ The installed package exposes an `aceai` command:
 aceai = "aceai.agent.tui.cli:main"
 ```
 
-`aceai` launches the terminal UI after installation. It uses `OPENAI_API_KEY`
-for the default OpenAI-backed agent and `ACEAI_MODEL` to override the default
-model.
+`aceai` launches the terminal UI after installation. Provider authentication is
+declared in `aceai/agent/provider_catalog.yaml`: API key providers show an API
+key field, while subscription providers such as `openai-codex` use a local
+subscription login and do not show API key configuration. `ACEAI_MODEL`
+overrides the default model.
 
-If no API key is available from the environment or saved config, the TUI opens a
-provider setup screen. The user can choose the provider, enter the API key,
+If no usable provider credential is available from the environment, saved
+config, or subscription login, the TUI opens a provider setup screen. The user
+can choose the provider, provide the credential when the provider needs one,
 choose the model, and decide whether to persist the config. AceAI reads
 `.aceai/config.yml` in the current project first, then falls back to
 `~/.aceai/config.yaml`. Persisted config is stored at `.aceai/config.yml` with
@@ -152,8 +155,8 @@ Use redundant signals so the UI does not rely on color alone.
    aceai
    ```
 
-   If no `OPENAI_API_KEY` is set, the TUI asks for provider settings before the
-   first run. Persisting those settings is opt-in.
+   If no usable provider credential is available, the TUI asks for provider
+   settings before the first run. Persisting those settings is opt-in.
 
 7. Debugging features:
    Add raw event toggle, JSONL trace export, event filtering, collapsed long

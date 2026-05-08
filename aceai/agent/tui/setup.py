@@ -31,6 +31,11 @@ from textual.widgets import (
 )
 
 from aceai.agent.ideas import Idea
+from aceai.agent.provider_auth import (
+    api_key_placeholder,
+    default_api_key_for_provider,
+    provider_uses_api_key,
+)
 from aceai.agent.provider_catalog import (
     api_key_env,
     default_model,
@@ -358,6 +363,10 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         border-top: solid #4c566a;
     }
 
+    #api-key-row.hidden {
+        display: none;
+    }
+
     #setup-skills-list {
         height: auto;
     }
@@ -448,12 +457,13 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
                 ),
                 id="model-options",
             )
-            yield Label(_field_label("api_key"))
-            yield Input(
-                password=True,
-                placeholder=api_key_env("openai"),
-                id="api-key",
-            )
+            with Container(id="api-key-row", classes=self._api_key_row_classes()):
+                yield Label(_field_label("api_key"))
+                yield Input(
+                    password=True,
+                    placeholder=api_key_placeholder("openai"),
+                    id="api-key",
+                )
             yield Static("", id="setup-divider")
             yield Label(_skills_field_label())
             with Container(id="setup-skills-list"):
@@ -471,6 +481,8 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         if event.button.id != "start":
             return
         api_key = self.query_one("#api-key", Input).value
+        if api_key == "":
+            api_key = default_api_key_for_provider(self._selected_provider())
         if api_key == "":
             self.query_one("#setup-error", Static).update("API key is required")
             return
@@ -586,7 +598,10 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
             model_input.value,
         )
         self._refresh_model_candidates()
-        self.query_one("#api-key", Input).placeholder = api_key_env(self._provider)
+        self.query_one("#api-key", Input).placeholder = api_key_placeholder(
+            self._provider
+        )
+        self._sync_api_key_visibility()
 
     def _provider_candidates(self) -> tuple[str, ...]:
         return _matching_candidates(
@@ -615,6 +630,18 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         if value not in supported_provider_names():
             raise ValueError("Unsupported provider")
         return value
+
+    def _sync_api_key_visibility(self) -> None:
+        row = self.query_one("#api-key-row", Container)
+        if provider_uses_api_key(self._provider):
+            row.remove_class("hidden")
+            return
+        row.add_class("hidden")
+
+    def _api_key_row_classes(self) -> str:
+        if provider_uses_api_key(self._provider):
+            return ""
+        return "hidden"
 
     def _selected_skill_names(self) -> tuple[str, ...]:
         return _selected_skill_names(self, self._skill_items)
@@ -667,6 +694,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     }
 
     #reasoning-level-row.hidden {
+        display: none;
+    }
+
+    #api-key-row.hidden {
         display: none;
     }
 
@@ -969,14 +1000,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                                 allow_blank=False,
                                 id="reasoning-level",
                             )
-                        yield Label(_field_label("api_key"))
-                        yield Input(
-                            value=_masked_api_key(
-                                self._api_key_for_provider(self._provider_name)
-                            ),
-                            placeholder=api_key_env(self._provider_name),
-                            id="api-key",
-                        )
+                        with Container(
+                            id="api-key-row",
+                            classes=self._api_key_row_classes(),
+                        ):
+                            yield Label(_field_label("api_key"))
+                            yield Input(
+                                value=_masked_api_key(
+                                    self._api_key_for_provider(self._provider_name)
+                                ),
+                                placeholder=api_key_placeholder(self._provider_name),
+                                id="api-key",
+                            )
                         yield Static(
                             "",
                             classes="config-divider",
@@ -1125,10 +1160,13 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             model_input.value,
         )
         self._refresh_model_candidates()
-        self.query_one("#api-key", Input).placeholder = api_key_env(self._provider_name)
+        self.query_one("#api-key", Input).placeholder = api_key_placeholder(
+            self._provider_name
+        )
         self.query_one("#api-key", Input).value = _masked_api_key(
             self._api_key_for_provider(self._provider_name)
         )
+        self._sync_api_key_visibility()
         self._sync_reasoning_level_visibility()
 
     def _provider_candidates(self) -> tuple[str, ...]:
@@ -1157,6 +1195,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self.query_one("#api-key", Input).value = _masked_api_key(
                 self._api_key_for_provider(self._provider_name)
             )
+            self._sync_api_key_visibility()
         self._sync_reasoning_level_visibility()
 
     def _api_key_for_provider(self, provider: str) -> str:
@@ -1165,7 +1204,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         env_name = api_key_env(provider)
         if env_name in os.environ:
             return os.environ[env_name]
-        return ""
+        return default_api_key_for_provider(provider)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -1203,6 +1242,8 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self.query_one("#api-key", Input).value,
             stored_api_key,
         )
+        if api_key == "":
+            api_key = default_api_key_for_provider(provider)
         error = _config_selection_error(
             provider,
             model,
@@ -1277,6 +1318,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def _reasoning_level_row_classes(self) -> str:
         if supports_reasoning_effort(self._provider_name, self._current_model):
+            return ""
+        return "hidden"
+
+    def _sync_api_key_visibility(self) -> None:
+        row = self.query_one("#api-key-row", Container)
+        if provider_uses_api_key(self._provider_name):
+            row.remove_class("hidden")
+            return
+        row.add_class("hidden")
+
+    def _api_key_row_classes(self) -> str:
+        if provider_uses_api_key(self._provider_name):
             return ""
         return "hidden"
 

@@ -26,6 +26,7 @@ from aceai.agent.provider_catalog import (
     supported_models,
     supports_reasoning_effort,
 )
+from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.session import SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import (
@@ -1289,6 +1290,8 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             env_name = api_key_env(selection.provider)
             if env_name in os.environ:
                 api_key = os.environ[env_name]
+        if api_key == "":
+            api_key = default_api_key_for_provider(selection.provider)
         if api_key == "":
             self.append_event(
                 TUIEvent.session_notice(

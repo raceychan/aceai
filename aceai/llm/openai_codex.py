@@ -13,6 +13,7 @@ from aceai.llm.openai import OpenAI, OpenAIMeta, OpenAIPayload
 
 
 OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+OPENAI_CODEX_PROVIDER_NAME = "openai-codex"
 CODEX_CLI_AUTH_SENTINEL = "codex-cli"
 OPENAI_CODEX_DEFAULT_INSTRUCTIONS = "You are AceAI, a concise coding agent."
 
@@ -33,7 +34,7 @@ class OpenAICodex(OpenAI):
                 base_url=base_url,
             ),
             default_meta=default_meta,
-            provider_name="openai-codex",
+            provider_name=OPENAI_CODEX_PROVIDER_NAME,
         )
 
     def _build_response_kwargs(self, payload: OpenAIPayload) -> dict[str, Any]:

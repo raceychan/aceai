@@ -27,6 +27,7 @@ from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import clear_config, current_config, load_config
+from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
 from aceai.agent.ideas import IdeaStore
@@ -514,7 +515,7 @@ async def test_interactive_tui_clear_command_resets_state() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.load_events([])
         app._state = app._state.__class__(
             status="completed",
@@ -980,7 +981,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(
         session_id=metadata.session_id,
     )
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.switch_model("gpt-5.5")
 
     assert store.get_session_state(metadata.session_id) == SessionState(
@@ -1431,7 +1432,7 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
     )
     app = AceAIInteractiveTUI(agent)
 
-    async with app.run_test() as pilot:
+    async with app.run_test():
         command_input = app.query_one(CommandInput)
         completions = app.query_one(CommandCompletionWidget)
         command_input.value = "/"
@@ -2694,6 +2695,62 @@ async def test_config_screen_requires_provider_model_and_api_key() -> None:
 
 
 @pytest.mark.anyio
+async def test_config_screen_uses_codex_cli_auth_when_key_is_blank() -> None:
+    screen = ConfigScreen(
+        provider_name="openai-codex",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        assert screen.query_one("#api-key-row").has_class("hidden")
+        screen.query_one("#api-key", Input).value = ""
+        _press_config_apply(screen)
+
+        assert selections[-1] == ConfigSelection(
+            provider="openai-codex",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_key=CODEX_CLI_AUTH_SENTINEL,
+            skills="auto",
+            skill_selection_mode="selected",
+            enabled_skills=(),
+            compress_threshold="100%",
+        )
+
+
+@pytest.mark.anyio
+async def test_config_screen_hides_api_key_when_switching_to_subscription_provider() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        assert not screen.query_one("#api-key-row").has_class("hidden")
+        screen.query_one("#provider", Input).value = "openai-codex"
+        await pilot.pause()
+
+        assert screen.query_one("#api-key-row").has_class("hidden")
+
+
+@pytest.mark.anyio
 async def test_config_screen_candidate_completion() -> None:
     screen = ConfigScreen(
         provider_name="openai",
@@ -2803,6 +2860,79 @@ async def test_configured_tui_switches_provider_without_reusing_current_key(
 
     assert calls == [expected_config]
     assert (tmp_path / ".aceai" / "config.yml").exists()
+
+
+@pytest.mark.anyio
+async def test_configured_tui_switches_to_codex_with_cli_auth_default(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[AgentAppConfig] = []
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done"),
+            )
+        ]
+    )
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        calls.append(config)
+        return Agent(
+            prompt="Prompt",
+            default_model=config.model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    clear_config()
+    async with app.run_test() as pilot:
+        app._handle_config_selection(
+            ConfigSelection(
+                provider="openai-codex",
+                model="gpt-5.5",
+                default_model="gpt-5.5",
+                api_key="",
+                skills="auto",
+                skill_selection_mode="selected",
+                enabled_skills=(),
+            )
+        )
+        expected_config = AgentAppConfig(
+            provider="openai-codex",
+            api_key=CODEX_CLI_AUTH_SENTINEL,
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            skills="auto",
+            skill_selection_mode="selected",
+            enabled_skills=[],
+            api_keys={
+                "openai": "openai-key",
+                "openai-codex": CODEX_CLI_AUTH_SENTINEL,
+            },
+        )
+
+        assert calls == []
+        assert current_config() == expected_config
+
+        app.start_run("hello")
+        await _wait_until(pilot, lambda: len(calls) == 1)
+
+    assert calls == [expected_config]
 
 
 @pytest.mark.anyio

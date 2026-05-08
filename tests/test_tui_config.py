@@ -1,5 +1,6 @@
 import pytest
 
+from aceai.agent.provider_catalog import auth_mode
 from aceai.agent.config import (
     AgentAppConfig,
     LEGACY_AGENT_SKILLS_DIR,
@@ -12,6 +13,12 @@ from aceai.agent.config import (
     replace_config,
     save_config,
 )
+
+
+def test_provider_catalog_records_provider_auth_modes() -> None:
+    assert auth_mode("openai") == "api_key"
+    assert auth_mode("deepseek") == "api_key"
+    assert auth_mode("openai-codex") == "subscription"
 
 
 def test_config_schema_lists_required_fields() -> None:

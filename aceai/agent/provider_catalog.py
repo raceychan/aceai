@@ -2,6 +2,7 @@
 
 from functools import cache
 from importlib import resources
+from typing import Literal
 
 import yaml
 from typing_extensions import Self
@@ -10,6 +11,7 @@ from aceai.llm.interface import Record
 
 
 CATALOG_RESOURCE = "provider_catalog.yaml"
+ProviderAuthMode = Literal["api_key", "subscription"]
 
 
 class ModelTokenPrice(Record, kw_only=True):
@@ -92,6 +94,7 @@ class ModelCatalogEntry(Record, kw_only=True):
 class ProviderCatalogEntry(Record, kw_only=True):
     name: str
     label: str
+    auth_mode: ProviderAuthMode
     api_key_env: str
     default_model: str
     stale_default_models: tuple[str, ...]
@@ -103,6 +106,7 @@ class ProviderCatalogEntry(Record, kw_only=True):
             raise TypeError("Provider catalog provider must be a mapping")
         name = raw["name"]
         label = raw["label"]
+        auth_mode = raw["auth_mode"]
         api_key_env_value = raw["api_key_env"]
         default_model_value = raw["default_model"]
         stale_default_model_values = raw["stale_default_models"]
@@ -111,6 +115,8 @@ class ProviderCatalogEntry(Record, kw_only=True):
             raise TypeError("Provider catalog provider name must be str")
         if type(label) is not str:
             raise TypeError("Provider catalog provider label must be str")
+        if auth_mode not in ("api_key", "subscription"):
+            raise ValueError("Provider catalog auth_mode is unsupported")
         if type(api_key_env_value) is not str:
             raise TypeError("Provider catalog api_key_env must be str")
         if type(default_model_value) is not str:
@@ -127,6 +133,7 @@ class ProviderCatalogEntry(Record, kw_only=True):
         return cls(
             name=name,
             label=label,
+            auth_mode=auth_mode,
             api_key_env=api_key_env_value,
             default_model=default_model_value,
             stale_default_models=parsed_stale_models,
@@ -212,6 +219,10 @@ def stale_default_models(provider_name: str) -> tuple[str, ...]:
 
 def api_key_env(provider_name: str) -> str:
     return get_provider_catalog(provider_name).api_key_env
+
+
+def auth_mode(provider_name: str) -> ProviderAuthMode:
+    return get_provider_catalog(provider_name).auth_mode
 
 
 def price_for_model(provider_name: str, model: str) -> ModelTokenPrice | None:
