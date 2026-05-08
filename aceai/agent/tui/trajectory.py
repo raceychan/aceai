@@ -359,6 +359,7 @@ def _event_table(
     *,
     suppress_llm_completed_body: bool = False,
 ) -> Table:
+    events = _compact_tool_call_delta_events(events)
     rejected_call_ids = _rejected_tool_call_ids(events)
     table = Table.grid(expand=True)
     table.add_column(width=6, style="#4c566a")
@@ -380,6 +381,45 @@ def _event_table(
             ),
         )
     return table
+
+
+def _compact_tool_call_delta_events(events: list[TUIEvent]) -> list[TUIEvent]:
+    compacted: list[TUIEvent] = []
+    for event in events:
+        if (
+            event.kind == "tool_call_delta"
+            and compacted
+            and compacted[-1].kind == "tool_call_delta"
+            and compacted[-1].tool_call_id == event.tool_call_id
+        ):
+            compacted[-1] = _merge_tool_call_delta_events(compacted[-1], event)
+        else:
+            compacted.append(event)
+    return compacted
+
+
+def _merge_tool_call_delta_events(previous: TUIEvent, event: TUIEvent) -> TUIEvent:
+    return TUIEvent(
+        kind=previous.kind,
+        step_index=previous.step_index,
+        step_id=previous.step_id,
+        title=previous.title,
+        raw_event=event.raw_event,
+        event_id=previous.event_id,
+        content=previous.content + event.content,
+        tool_name=previous.tool_name,
+        tool_call_id=previous.tool_call_id,
+        tool_call=previous.tool_call,
+        tool_calls=previous.tool_calls,
+        tool_call_delta=event.tool_call_delta,
+        tool_result=previous.tool_result,
+        segment=event.segment,
+        usage=event.usage,
+        cost=event.cost,
+        error=event.error,
+        idea_items=previous.idea_items,
+        citations=previous.citations,
+    )
 
 
 def _outcome_table(events: list[TUIEvent]) -> Table:

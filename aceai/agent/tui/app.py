@@ -43,6 +43,7 @@ from .widgets import (
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
+    SubagentStatusWidget,
     TopBarWidget,
 )
 
@@ -120,6 +121,7 @@ class AceAITUI(App[None]):
         with Horizontal(id="main"):
             yield StreamWidget(id="stream", project_name=self._project.name)
             yield DetailWidget(id="detail", classes="collapsed")
+        yield SubagentStatusWidget(id="subagents", classes="hidden")
         yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
         yield CommandCompletionWidget(id="command-completions", classes="hidden")
@@ -486,6 +488,7 @@ class AceAITUI(App[None]):
         stream.set_project_name(self._project.name)
         stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
+        self.query_one(SubagentStatusWidget).set_subagents(self._state.subagents)
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
             reasoning_level=self._status_reasoning_level,

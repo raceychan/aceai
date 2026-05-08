@@ -32,8 +32,9 @@ from aceai.agent.tui.widgets import (
     CommandInput,
     DetailWidget,
     StreamWidget,
+    SubagentStatusWidget,
 )
-from aceai.llm.models import LLMResponse, LLMToolCall, LLMUsage
+from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta, LLMUsage
 from rich.console import Console, Group
 from textual.events import Click
 from textual.widgets import Static
@@ -71,6 +72,57 @@ def test_reduce_events_tracks_step_and_tool_state() -> None:
     assert tool_state.status == "completed"
     assert tool_state.arguments == '{"query":"aceai tui"}'
     assert tool_state.output == '{"matches":["spec/tui.md","docs/tui.md"]}'
+
+
+def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Check whether README names the version",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"final_answer":"README has no version","summary":"README has no version",'
+            '"important_evidence":[],"tool_results":[],"step_count":1}'
+        ),
+    )
+
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ]
+    )
+
+    assert len(state.subagents) == 1
+    subagent = state.subagents[0]
+    assert subagent.call_id == "call-subagent-1"
+    assert subagent.task == "Check whether README names the version"
+    assert subagent.status == "completed"
+    assert subagent.output == result.output
+
+
+def test_reduce_events_does_not_track_regular_tool_as_subagent() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"README.md"}',
+        call_id="call-tool-1",
+    )
+
+    state = reduce_events(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))]
+    )
+
+    assert state.subagents == []
 
 
 def test_reduce_events_assigns_global_step_numbers() -> None:
@@ -365,10 +417,34 @@ async def test_static_tui_loads_fixture_events() -> None:
         assert app._state.status == "completed"
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
+        subagents = app.query_one(SubagentStatusWidget)
         assert stream.can_focus
         assert detail.can_focus
+        assert subagents.has_class("hidden")
         assert not stream.debug_mode
         assert detail.has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert not subagents.has_class("hidden")
+        assert subagents.renderable == "subagents\n1. running - Inspect version metadata"
 
 
 @pytest.mark.anyio
@@ -709,6 +785,43 @@ def test_trajectory_does_not_repeat_streamed_answer_on_llm_completion() -> None:
 
     assert rendered.count("streamed answer") == 1
     assert "llm completed" in rendered
+
+
+def test_trajectory_compacts_streamed_tool_call_arguments() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-arguments")
+    events = [
+        TUIEvent.user_message("delegate check"),
+        TUIEvent.from_agent_event(builder.llm_started()),
+        TUIEvent.from_agent_event(
+            builder.llm_tool_call_delta(
+                tool_call_delta=LLMToolCallDelta(
+                    id="call-delegate",
+                    arguments_delta='{"task":"检查',
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.llm_tool_call_delta(
+                tool_call_delta=LLMToolCallDelta(
+                    id="call-delegate",
+                    arguments_delta="当前项目",
+                )
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.llm_tool_call_delta(
+                tool_call_delta=LLMToolCallDelta(
+                    id="call-delegate",
+                    arguments_delta=' README"}',
+                )
+            )
+        ),
+    ]
+
+    rendered = _render_to_text(Group(*_trajectory_renderables(events)))
+
+    assert rendered.count("arguments") == 1
+    assert '{"task":"检查当前项目 README"}' in rendered
 
 
 def test_trajectory_renders_session_notices_without_running_step() -> None:
