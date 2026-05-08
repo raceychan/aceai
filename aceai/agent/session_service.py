@@ -197,6 +197,7 @@ class SessionService:
 
 def agent_event_to_session_event(event: AgentEvent) -> SessionEvent:
     return SessionEvent(
+        event_id=uuid_str(),
         run_id=event.run_id,
         step_id=event.step_id,
         step_index=event.step_index,

@@ -460,24 +460,13 @@ class SessionStore:
         sessions = [
             SessionMetadata.from_row(row, files_dir=self.files_dir) for row in rows
         ]
-        last_user_message_at = {
-            session.session_id: self.load_event_log(
-                session.session_id
-            ).last_user_message_created_at()
-            or session.created_at
-            for session in sessions
-        }
-        sessions.sort(
-            key=lambda session: last_user_message_at[session.session_id],
-            reverse=True,
-        )
         if project_id is not None:
             return sessions
         sessions.sort(
             key=lambda session: (
                 0 if session.project_id == self.project_id else 1,
                 session.project_name,
-                -last_user_message_at[session.session_id].timestamp(),
+                -session.created_at.timestamp(),
             )
         )
         return sessions
@@ -816,11 +805,12 @@ class SessionRecorder:
         payload: dict[str, Any],
         source_event: SessionEvent | None,
     ) -> str:
-        event_id = (
-            uuid_str()
-            if source_event is None or source_event.event_id == ""
-            else source_event.event_id
-        )
+        if source_event is None:
+            event_id = uuid_str()
+        else:
+            event_id = source_event.event_id
+            if event_id == "":
+                raise ValueError("source event must include event_id")
         self.store.append_event(
             self.session_id,
             SessionEvent(

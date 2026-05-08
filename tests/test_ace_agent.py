@@ -97,6 +97,7 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
 
     assert agent.default_model == "gpt-5.5"
     assert agent.max_steps is UNSET
+    assert agent._compression_policy.context_window_tokens == 1050000
     assert ACE_AGENT_SKILL_PATH == "auto"
     assert isinstance(agent._executor, Executor)
     assert agent._executor.hosted_tools[0].provider_name == "openai"
@@ -183,6 +184,7 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
     )
 
     assert agent.default_model == "deepseek-v4-flash"
+    assert agent._compression_policy.context_window_tokens == 1000000
     assert agent._executor.hosted_tools == []
 
 

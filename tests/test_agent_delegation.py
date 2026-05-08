@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.features.delegation import build_delegate_to_subagent_tool
+from aceai.agent.features.delegation import (
+    _build_child_agent,
+    build_delegate_to_subagent_tool,
+)
 from aceai.agent.features.tools import (
     default_agent_tools,
     read_text_file,
@@ -199,6 +202,22 @@ def test_delegate_to_subagent_schema_lists_available_hosted_tools() -> None:
 
     description = schema["parameters"]["properties"]["allowed_tools"]["description"]
     assert "Available hosted tool identifiers: openai:web_search." in description
+
+
+def test_delegated_child_agent_inherits_context_window_tokens() -> None:
+    agent = _build_child_agent(
+        llm_service=RecordingDelegationLLMService([]),
+        default_model="gpt-5.5",
+        instructions="Report concisely.",
+        tools=[],
+        hosted_tools=[],
+        child_max_steps=4,
+        compress_threshold=0.5,
+        context_window_tokens=1050000,
+    )
+
+    assert agent._compression_policy.threshold == 0.5
+    assert agent._compression_policy.context_window_tokens == 1050000
 
 
 @pytest.mark.anyio

@@ -207,7 +207,7 @@ Regression target:
 
 ### 9. Agent context-window settings can disagree with provider limits
 
-Status: pending.
+Status: implemented, keep regression coverage.
 
 Symptom:
 
@@ -226,46 +226,23 @@ Regression target:
 
 - Building AceAI for a known model sets `Agent.context.context_window_tokens` to
   the provider catalog value.
+- Delegated child agents inherit the same effective context-window token limit.
 
 ### 10. Child-agent results can bloat the parent context
 
-Status: pending, high priority.
+Status: pending, high priority. Tracked separately in
+`spec/subagent_result_artifact_plan.md`.
 
-Symptom:
+Summary:
 
-- A delegated child returns `final_answer`, `summary`, `important_evidence`, and
-  `tool_results`.
-- `summary` may duplicate `final_answer`.
-- `important_evidence` and `tool_results` may duplicate large tool outputs.
-- When several child agents finish, the parent context receives all of those
-  large tool-result payloads together.
-- Recent messages may be preserved by compression, so compression alone may not
-  solve the oversized request.
+- Child-agent audit data must stay complete for UI/export/debug.
+- Parent-model context must receive only a bounded handoff summary plus stable
+  artifact ids.
+- Full child final answers, tool calls, tool arguments, tool results, errors,
+  and hosted-tool metadata belong behind artifact references and bounded
+  inspection tools.
 
-Expected behavior:
-
-- The child tool result fed back to the parent model is context-safe.
-- Full child details are preserved for TUI/session inspection, not blindly fed
-  into the parent model as tool output.
-- The parent receives a concise structured result: agent id, run id, status,
-  task, concise summary, small evidence list, step count, and tool-result count.
-- Raw child tool outputs stay in detail/raw storage.
-
-Likely changes:
-
-- Split child-agent display payload from parent-model tool-result payload.
-- Stop setting `summary` equal to the full final answer.
-- Add a compact child result formatter for `delegate_to_subagent`.
-- Add explicit limits for evidence/tool-result material that enters parent
-  context.
-
-Regression target:
-
-- Three child agents with large internal outputs produce bounded parent-context
-  tool results.
-- The TUI can still display the full child details.
-
-### 11. Session ordering should follow the last user message
+### 11. Session ordering should follow session creation time
 
 Status: implemented, keep regression coverage.
 
@@ -275,17 +252,19 @@ Symptom:
   events, or notifications.
 - Sorting sessions by metadata update time makes the resume list move in ways
   that do not match user intent.
+- Sorting by last user message can also move older sessions ahead of newer
+  sessions after late edits or replayed messages.
 
 Expected behavior:
 
-- Session list ordering uses the last user message `created_at`.
+- Session list ordering uses session `created_at`.
 - Session metadata remains metadata and does not need to be repurposed as the
   conversation ordering source.
 
 Regression target:
 
-- A session with a newer non-user event does not sort above a session with a
-  newer user message.
+- A session with later user or metadata events does not sort above a newer
+  session.
 
 ### 12. Codex provider complete path must stream
 
@@ -330,10 +309,9 @@ Regression target:
 
 ## Repair Order
 
-1. Fix child-agent result/context payload size.
-2. Persist compressed context checkpoints for session replay.
-3. Align agent compression limits with provider/model context-window limits.
-4. Re-run the parallel subagent scenario and validate TUI pagination, scrolling,
+1. Implement child-agent handoff, audit envelope, artifact workspace, and
+   bounded inspection tools. See `spec/subagent_result_artifact_plan.md`.
+2. Re-run the parallel subagent scenario and validate TUI pagination, scrolling,
    hosted tools, retry rendering, and bounded parent context together.
-5. Update older specs that still describe sequential tool execution as the
+3. Update older specs that still describe sequential tool execution as the
    current behavior.

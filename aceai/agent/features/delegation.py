@@ -13,6 +13,10 @@ from aceai.core.events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
+from aceai.core.context_manager import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    CompressThreshold,
+)
 from aceai.core.tools import Annotated, Tool, spec, tool
 from aceai.llm import ILLMService
 from aceai.llm.interface import UNSET, Unset
@@ -66,6 +70,8 @@ def build_delegate_to_subagent_tool(
     available_tools: list[Tool[Any, Any]],
     available_hosted_tools: list[LLMHostedToolSpec] | None = None,
     child_max_steps: Unset[int] = 4,
+    compress_threshold: CompressThreshold = "100%",
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ) -> Tool[Any, Any]:
     tool_map = {available_tool.name: available_tool for available_tool in available_tools}
     hosted_tool_map = {
@@ -137,6 +143,8 @@ def build_delegate_to_subagent_tool(
             tools=selected_tools,
             hosted_tools=selected_hosted_tools,
             child_max_steps=child_max_steps,
+            compress_threshold=compress_threshold,
+            context_window_tokens=context_window_tokens,
         )
         child_question = _format_child_question(
             task=task,
@@ -241,6 +249,8 @@ def _build_child_agent(
     tools: list[Tool[Any, Any]],
     hosted_tools: list[LLMHostedToolSpec],
     child_max_steps: Unset[int],
+    compress_threshold: CompressThreshold,
+    context_window_tokens: int,
 ) -> Agent:
     return Agent(
         prompt=_format_child_prompt(instructions),
@@ -248,6 +258,8 @@ def _build_child_agent(
         llm_service=llm_service,
         executor=Executor(Graph(), tools, hosted_tools=hosted_tools),
         max_steps=child_max_steps,
+        compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
         agent_id=f"child-{uuid4()}",
     )
 

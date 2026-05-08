@@ -52,8 +52,12 @@ This means:
 
 - Do not delete or rewrite old session events.
 - Do not change the human-readable transcript/export format.
-- Do not solve oversized recent tool results in this change. That remains a
-  separate subagent-result payload issue.
+- Do not solve oversized recent tool results in this change. That remains the
+  separate subagent-result payload issue documented in
+  `spec/subagent_runtime_repair_plan.md`.
+- When subagent artifact storage lands, checkpoint histories must store the
+  effective model-facing tool message (`model_output`) and artifact references,
+  not raw artifact bodies.
 - Do not introduce a database schema migration for sessions. Checkpoints use a
   separate append-only store.
 

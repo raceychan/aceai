@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
+from typing import Any
 
+import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import insert as sql_insert
 
@@ -8,6 +10,7 @@ from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,
     SessionEvent,
+    SessionEventKind,
     SessionMetadata,
     SessionRecorder,
     SessionState,
@@ -15,6 +18,7 @@ from aceai.agent.session import (
 )
 from aceai.agent.event_store import JsonlEventStore
 from aceai.agent.project import ProjectStore
+from aceai.core.helpers.string import uuid_str
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (
     LLMMessage,
@@ -36,7 +40,7 @@ def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
     assert store.get_session(metadata.session_id).session_id == metadata.session_id
 
 
-def test_session_store_lists_sessions_by_recent_user_message(tmp_path) -> None:
+def test_session_store_lists_sessions_by_created_at_not_recent_user_message(tmp_path) -> None:
     store = SessionStore(tmp_path)
     first = store.create_session()
     second = store.create_session()
@@ -58,8 +62,8 @@ def test_session_store_lists_sessions_by_recent_user_message(tmp_path) -> None:
     sessions = store.list_sessions()
 
     assert [session.session_id for session in sessions] == [
-        first.session_id,
         second.session_id,
+        first.session_id,
     ]
 
 
@@ -316,6 +320,15 @@ def test_session_recorder_finalize_keeps_non_empty_session(tmp_path) -> None:
     assert store.get_session(metadata.session_id).title == "hello"
 
 
+def test_session_recorder_rejects_source_event_without_event_id(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+
+    with pytest.raises(ValueError, match="source event must include event_id"):
+        recorder.record(SessionEvent(kind="user_message", payload={"content": "hello"}))
+
+
 def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -529,7 +542,7 @@ def test_event_log_omits_pending_tool_call_from_llm_history(tmp_path) -> None:
     recorder.record(_llm_completed("running it", tool_calls=[call]))
     recorder.record(_tool_started(call))
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_requested",
             payload={
                 "content": "Tool 'run_shell_command' requires approval (shell_command)",
@@ -575,7 +588,7 @@ def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
 
     recorder.record(_tool_started(call))
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_requested",
             payload={
                 "content": "Tool 'write_text_file' requires approval (filesystem_write)",
@@ -586,7 +599,7 @@ def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
         )
     )
     recorder.record(
-        SessionEvent(
+        _session_event(
             kind="tool_approval_resolved",
             payload={
                 "content": "approved",
@@ -629,11 +642,11 @@ class StubEventStore:
 
 
 def _user_message(content: str) -> SessionEvent:
-    return SessionEvent(kind="user_message", payload={"content": content})
+    return _session_event("user_message", {"content": content})
 
 
 def _user_message_at(content: str, created_at: str) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="user_message",
         created_at=created_at,
         payload={"content": content},
@@ -641,15 +654,15 @@ def _user_message_at(content: str, created_at: str) -> SessionEvent:
 
 
 def _assistant_delta(content: str) -> SessionEvent:
-    return SessionEvent(kind="assistant_delta", payload={"content": content})
+    return _session_event("assistant_delta", {"content": content})
 
 
 def _thinking_delta(content: str) -> SessionEvent:
-    return SessionEvent(kind="thinking_delta", payload={"content": content})
+    return _session_event("thinking_delta", {"content": content})
 
 
 def _reasoning_summary(content: str) -> SessionEvent:
-    return SessionEvent(kind="reasoning_summary", payload={"content": content})
+    return _session_event("reasoning_summary", {"content": content})
 
 
 def _llm_completed(
@@ -675,21 +688,21 @@ def _llm_completed(
     cost = estimate_usage_cost(model, usage)
     if cost is not None:
         payload["cost"] = cost.asdict()
-    return SessionEvent(
+    return _session_event(
         kind="llm_completed",
         payload=payload,
     )
 
 
 def _tool_call_delta(call_id: str, content: str) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_call_delta",
         payload={"content": content, "tool_call_id": call_id},
     )
 
 
 def _tool_started(call: LLMToolCall) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_started",
         payload={
             "content": "",
@@ -704,7 +717,7 @@ def _tool_completed(
     call: LLMToolCall,
     result: ToolExecutionResult,
 ) -> SessionEvent:
-    return SessionEvent(
+    return _session_event(
         kind="tool_completed",
         payload={
             "content": result.output,
@@ -717,3 +730,11 @@ def _tool_completed(
             },
         },
     )
+
+
+def _session_event(
+    kind: SessionEventKind,
+    payload: dict[str, Any],
+    **kwargs: Any,
+) -> SessionEvent:
+    return SessionEvent(event_id=uuid_str(), kind=kind, payload=payload, **kwargs)
