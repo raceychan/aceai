@@ -1564,7 +1564,11 @@ async def test_stream_scrolls_to_latest_content() -> None:
 
     async with app.run_test(size=(80, 20)) as pilot:
         stream = app.query_one(StreamWidget)
-        await _wait_until(pilot, lambda: stream.scroll_y == stream.max_scroll_y)
+        await _wait_until(
+            pilot,
+            lambda: stream.scroll_y == stream.max_scroll_y,
+            timeout=1.0,
+        )
 
         assert stream.max_scroll_y > 0
         assert stream.scroll_y == stream.max_scroll_y
