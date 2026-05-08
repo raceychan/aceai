@@ -1,4 +1,5 @@
 import base64
+from importlib.util import find_spec
 import time
 from typing import Any, AsyncGenerator, BinaryIO, Literal, TypedDict, cast
 from warnings import warn
@@ -7,13 +8,11 @@ from msgspec import Struct, convert, to_builtins
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-try:
-    import openai  # type: ignore[unused-import]
-except ImportError as exc:
+if find_spec("openai") is None:
     raise RuntimeError(
         "openai provider requires the `openai` package. "
         "Install with `uv add openai` or `pip install openai`."
-    ) from exc
+    )
 
 from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam
@@ -737,10 +736,13 @@ class OpenAI(LLMProviderBase):
         payload = OpenAIPayload.from_input(request)
         return self._apply_default_meta(payload)
 
+    def _build_response_kwargs(self, payload: OpenAIPayload) -> dict[str, Any]:
+        return payload.build_response_kwargs()
+
     async def complete(self, request: LLMInput) -> LLMResponse:
         """Complete using OpenAI Responses API."""
         payload = self.request_to_payload(request)
-        params = payload.build_response_kwargs()
+        params = self._build_response_kwargs(payload)
         start = time.perf_counter()
         tool_names = payload.tool_names
         attributes = {
@@ -767,7 +769,7 @@ class OpenAI(LLMProviderBase):
     async def stream(self, request: LLMInput) -> AsyncGenerator[LLMStreamEvent, None]:
         """Stream tokens and tool calls using OpenAI Responses streaming API."""
         payload = self.request_to_payload(request)
-        kwargs = payload.build_response_kwargs()
+        kwargs = self._build_response_kwargs(payload)
         start = time.perf_counter()
         tool_names = payload.tool_names
         attributes = {

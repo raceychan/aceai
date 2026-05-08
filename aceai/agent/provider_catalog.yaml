@@ -118,4 +118,18 @@ providers:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
           output_usd_per_million: 0.28
+  - name: openai-codex
+    label: OpenAI Codex
+    api_key_env: ACEAI_OPENAI_CODEX_TOKEN
+    default_model: gpt-5.4
+    stale_default_models: []
+    models:
+      - id: gpt-5.5
+        label: GPT-5.5
+        max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
+      - id: gpt-5.4
+        label: GPT-5.4
+        max_context_window: 1050000
+        reasoning_effort_options: [low, medium, high]
 pricing_source: provider-api-pricing-2026-05-04
