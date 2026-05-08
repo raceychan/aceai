@@ -26,6 +26,7 @@ from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import (
+    TUISubagentState,
     TUIRunState,
     apply_tui_event,
     initial_state,
@@ -115,6 +116,7 @@ class AceAITUI(App[None]):
         self._pending_stream_delta: TUIEvent | None = None
         self._pending_stream_delta_timer: Timer | None = None
         self._command_completion_selected_index = 0
+        self._subagent_panel_visible = False
         self.title = self._window_title()
 
     def compose(self) -> ComposeResult:
@@ -151,6 +153,9 @@ class AceAITUI(App[None]):
         if self.is_mounted:
             self.clear_approval_request()
         self._state = reduce_events(events)
+        self._subagent_panel_visible = _initial_subagent_panel_visible(
+            self._state.subagents
+        )
         self._refresh_widgets()
 
     def show_sessions(self) -> None:
@@ -235,6 +240,7 @@ class AceAITUI(App[None]):
 
     def _append_event_to_state(self, event: TUIEvent) -> None:
         self._state = apply_tui_event(self._state, event)
+        self._sync_subagent_panel_visibility(event)
         if self._record_events and self._session_recorder is not None:
             self._session_recorder.record(tui_event_to_session_event(event))
 
@@ -403,7 +409,7 @@ class AceAITUI(App[None]):
         return matches[0]
 
     def action_toggle_debug_mode(self) -> None:
-        if self._state.subagents:
+        if self._subagent_panel_visible and self._state.subagents:
             self.notify_session("Debug mode is unavailable while subagents are visible.")
             return
         if (
@@ -438,6 +444,13 @@ class AceAITUI(App[None]):
 
     def action_trajectory(self) -> None:
         self.open_trajectory_screen()
+
+    def action_show_subagents(self) -> None:
+        if not self._state.subagents:
+            self.notify_session("No subagent details in this session.")
+            return
+        self._subagent_panel_visible = True
+        self._refresh_widgets()
 
     def open_metadata_screen(self) -> None:
         self.push_screen(MetadataScreen(self._metadata_sections()))
@@ -483,7 +496,9 @@ class AceAITUI(App[None]):
         self,
         event: StreamWidget.EventSelected,
     ) -> None:
-        if self._state.subagents or self._state.status != "completed":
+        if (
+            self._subagent_panel_visible and self._state.subagents
+        ) or self._state.status != "completed":
             event.stop()
             return
         self._select_debug_event(event.event_id)
@@ -500,7 +515,8 @@ class AceAITUI(App[None]):
         stream.set_project_name(self._project.name)
         stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
-        self.query_one(SubagentStatusWidget).set_subagents(self._state.subagents)
+        subagents = self._state.subagents if self._subagent_panel_visible else []
+        self.query_one(SubagentStatusWidget).set_subagents(subagents)
         self._sync_side_layout()
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
@@ -517,12 +533,27 @@ class AceAITUI(App[None]):
     def _sync_side_layout(self) -> None:
         stream = self.query_one(StreamWidget)
         detail = self.query_one(DetailWidget)
-        has_subagents = len(self._state.subagents) > 0
+        has_subagents = self._subagent_panel_visible and len(self._state.subagents) > 0
         if has_subagents:
             if stream.debug_mode:
                 stream.set_debug_mode(False)
             detail.add_class("collapsed")
             return
+
+    def _sync_subagent_panel_visibility(self, event: TUIEvent) -> None:
+        if event.kind == "user_message":
+            self._subagent_panel_visible = False
+            return
+        if event.tool_call_id is None:
+            return
+        subagent = _find_subagent_by_call_id(self._state.subagents, event.tool_call_id)
+        if subagent is None:
+            return
+        if subagent.status in ("pending", "running", "failed"):
+            self._subagent_panel_visible = True
+            return
+        if _all_subagents_completed(self._state.subagents):
+            self._subagent_panel_visible = False
 
     def _window_title(self) -> str:
         if self._session_id is None:
@@ -666,6 +697,32 @@ def _format_tokens(value: int | None) -> str:
     if value is None:
         return "-"
     return f"{value:,}"
+
+
+def _initial_subagent_panel_visible(subagents: list[TUISubagentState]) -> bool:
+    for subagent in subagents:
+        if subagent.status in ("pending", "running", "failed"):
+            return True
+    return False
+
+
+def _find_subagent_by_call_id(
+    subagents: list[TUISubagentState],
+    call_id: str,
+) -> TUISubagentState | None:
+    for subagent in subagents:
+        if subagent.call_id == call_id:
+            return subagent
+    return None
+
+
+def _all_subagents_completed(subagents: list[TUISubagentState]) -> bool:
+    if not subagents:
+        return False
+    for subagent in subagents:
+        if subagent.status != "completed":
+            return False
+    return True
 
 
 def _context_window_pct(

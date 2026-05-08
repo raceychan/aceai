@@ -11,6 +11,7 @@ from aceai.agent.session import EventLog, SessionEvent
 from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
+    LLMMessage,
     LLMReasoningSegmentMeta,
     LLMResponse,
     LLMSegment,
@@ -81,6 +82,48 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     block = renderables[0]
     assert isinstance(block, Text)
     assert block.plain == "  Hi!"
+
+
+def test_context_compaction_events_render_progress_and_summary() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.from_agent_event(
+            builder.context_compaction_started(
+                reason="threshold",
+                compression_count=1,
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compressed(
+                reason="threshold",
+                compression_count=1,
+                history=[
+                    LLMMessage.build(
+                        role="system",
+                        content=(
+                            '<aceai_context_summary scope="prior_runs">\n'
+                            "Earlier decisions and tool results.\n"
+                            "</aceai_context_summary>"
+                        ),
+                    )
+                ],
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compaction_failed(
+                reason="context_window_retry",
+                compression_count=2,
+                error="summary request exceeded context window",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events)
+    texts = [renderable.plain for renderable in renderables if isinstance(renderable, Text)]
+
+    assert "  ● compact  Compacting context (preflight budget)..." in texts
+    assert any("Earlier decisions and tool results." in text for text in texts)
+    assert any("summary request exceeded context window" in text for text in texts)
 
 
 def test_llm_retry_progress_renders_in_stream() -> None:

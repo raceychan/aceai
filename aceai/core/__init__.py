@@ -7,6 +7,7 @@ from .executor import ToolExecutionError as ToolExecutionError
 from .events import ContextCompressedEvent as ContextCompressedEvent
 from .models import ToolApprovalDecision as ToolApprovalDecision
 from .models import ToolApprovalRequest as ToolApprovalRequest
+from .models import ToolExecutionOutput as ToolExecutionOutput
 from .run_loop import AgentRunContext as AgentRunContext
 from .run_loop import execute_agent_run as execute_agent_run
 from .run_loop import resume_agent_approval as resume_agent_approval

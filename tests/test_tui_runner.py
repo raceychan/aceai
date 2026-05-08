@@ -1496,6 +1496,8 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
         assert "/idea" in completions.display_text
         assert "/quit" in completions.display_text
         assert "/sessions" in completions.display_text
+        assert "/subagents" in completions.display_text
+        assert "Show delegated subagent details" in completions.display_text
         assert "/trajectory" in completions.display_text
         assert "/update" in completions.display_text
         assert "/model" not in completions.display_text

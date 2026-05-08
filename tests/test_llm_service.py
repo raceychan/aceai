@@ -224,6 +224,41 @@ class ContextWindowStreamProvider(RecordingProvider):
         return iterator()
 
 
+class ContextWindowStreamErrorEventProvider(RecordingProvider):
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            yield LLMStreamEvent(
+                event_type="response.error",
+                error=(
+                    "Your input exceeds the context window of this model. "
+                    "Please adjust your input and try again."
+                ),
+            )
+
+        return iterator()
+
+
+class ContextWindowFailedCompletionProvider(RecordingProvider):
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text=(
+                        "APIError: Your input exceeds the context window of this model. "
+                        "Please adjust your input and try again."
+                    ),
+                    status="failed",
+                ),
+            )
+
+        return iterator()
+
+
 class HangingStreamProvider(RecordingProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -433,6 +468,38 @@ async def test_llm_service_stream_retries_openai_api_error_events() -> None:
 @pytest.mark.anyio
 async def test_llm_service_stream_does_not_retry_context_window_errors() -> None:
     provider = ContextWindowStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    with pytest.raises(LLMContextWindowExceededError):
+        async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+            raise AssertionError(f"unexpected stream event: {event.event_type}")
+
+    assert len(provider.stream_requests) == 1
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_maps_context_window_error_events() -> None:
+    provider = ContextWindowStreamErrorEventProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    with pytest.raises(LLMContextWindowExceededError):
+        async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+            raise AssertionError(f"unexpected stream event: {event.event_type}")
+
+    assert len(provider.stream_requests) == 1
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_maps_failed_context_window_completion() -> None:
+    provider = ContextWindowFailedCompletionProvider()
     service = LLMService(
         [provider],
         timeout_seconds=1.0,

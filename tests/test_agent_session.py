@@ -148,11 +148,15 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     path = tmp_path / "files" / f"{metadata.session_id}.events.jsonl"
+    artifact_dir = tmp_path / metadata.session_id / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "manifest.json").write_text("{}", encoding="utf-8")
 
     store.delete_session(metadata.session_id)
 
     assert store.list_sessions() == []
     assert not path.exists()
+    assert not artifact_dir.exists()
 
 
 def test_jsonl_event_store_round_trips_session_events(tmp_path) -> None:
@@ -498,6 +502,35 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
+def test_event_log_restores_model_output_for_tool_messages(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    recorder = SessionRecorder(store, metadata.session_id)
+    recorder.record(_user_message("hello"))
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output='{"type":"subagent_audit","large":"body"}',
+        model_output='{"type":"subagent_handoff","handoff":"small"}',
+    )
+    recorder.record(_llm_completed("", tool_calls=[call]))
+    recorder.record(_tool_started(call))
+    recorder.record(_tool_completed(call, result))
+
+    event_log = store.load_event_log(metadata.session_id)
+    history = event_log.replay_llm_history()
+
+    tool_result_event = event_log.events[-1]
+    assert tool_result_event.payload["output"] == result.output
+    assert tool_result_event.payload["model_output"] == result.model_output
+    assert history[2].role == "tool"
+    assert history[2].content[0]["data"] == result.model_output
+
+
 def test_tool_call_assistant_content_is_not_recorded_or_replayed(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -726,6 +759,7 @@ def _tool_completed(
             "tool_call": call.asdict(),
             "tool_result": {
                 "output": result.output,
+                "model_output": result.model_output,
                 "error": result.error,
             },
         },

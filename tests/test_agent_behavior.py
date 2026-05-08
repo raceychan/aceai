@@ -9,6 +9,8 @@ from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillRegistry
 from aceai.core.events import (
     AgentEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
     ContextCompressedEvent,
     LLMMediaEvent,
     LLMOutputDeltaEvent,
@@ -35,7 +37,9 @@ from aceai.llm.models import (
     LLMSegment,
     LLMStreamEvent,
     LLMToolCall,
+    LLMToolCallMessage,
     LLMToolCallDelta,
+    LLMToolUseMessage,
 )
 
 
@@ -104,6 +108,27 @@ class StubTool:
 
 class StubToolMetadata:
     approval_policy = "test_policy"
+
+
+class LargeToolSpec:
+    name = "large_tool"
+
+    def generate_schema(self) -> dict:
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": "x" * 360,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "y" * 360,
+                    },
+                },
+                "required": ["query"],
+            },
+        }
 
 
 class StubLLMService:
@@ -203,6 +228,25 @@ class CompressingLLMService:
         return LLMResponse(text="Earlier discussion summary.")
 
 
+class CompressingMultiStreamLLMService:
+    def __init__(self, streams: list[list[LLMStreamEvent]]) -> None:
+        self._streams = [list(stream) for stream in streams]
+        self.complete_calls: list[dict] = []
+        self.stream_calls: list[dict] = []
+
+    async def stream(self, **request):
+        if not self._streams:
+            raise AssertionError("CompressingMultiStreamLLMService has no streams")
+        self.stream_calls.append(request)
+        events = self._streams.pop(0)
+        for event in events:
+            yield event
+
+    async def complete(self, **request) -> LLMResponse:
+        self.complete_calls.append(request)
+        return LLMResponse(text="Earlier discussion summary.")
+
+
 class ContextWindowThenRecoveringLLMService:
     def __init__(self, stream_events: list[LLMStreamEvent]) -> None:
         self._stream_events = list(stream_events)
@@ -224,6 +268,15 @@ class ContextWindowThenRecoveringLLMService:
     async def complete(self, **request) -> LLMResponse:
         self.complete_calls.append(request)
         return LLMResponse(text="Earlier discussion summary.")
+
+
+class ContextWindowDuringCompactionLLMService(ContextWindowThenRecoveringLLMService):
+    async def complete(self, **request) -> LLMResponse:
+        self.complete_calls.append(request)
+        raise LLMContextWindowExceededError(
+            "APIError: Your input exceeds the context window of this model. "
+            "Please adjust your input and try again."
+        )
 
 
 def make_stream(
@@ -282,12 +335,206 @@ async def test_agent_compresses_resume_history_before_llm_call() -> None:
     messages = llm_service.stream_calls[0]["messages"]
     assert messages[0].role == "system"
     assert messages[1].role == "system"
-    assert "<aceai_context_summary>" in messages[1].content[0]["data"]
+    assert (
+        '<aceai_context_summary scope="prior_runs">' in messages[1].content[0]["data"]
+    )
     assert "Earlier discussion summary." in messages[1].content[0]["data"]
     assert messages[-1].content[0]["data"] == "new question"
     assert "history message 0" not in "\n".join(
         message.content[0]["data"] for message in messages
     )
+
+
+@pytest.mark.anyio
+async def test_agent_preflight_compresses_before_full_context_window() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold="100%",
+        context_window_tokens=100,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(9)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert len(llm_service.complete_calls) > 1
+    assert len([event for event in events if isinstance(event, ContextCompressedEvent)]) == 1
+    messages = llm_service.stream_calls[0]["messages"]
+    assert '<aceai_context_summary scope="prior_runs">' in messages[1].content[0]["data"]
+
+
+@pytest.mark.anyio
+async def test_agent_preflight_counts_tool_schema_budget() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    executor = StubExecutor()
+    executor.tool_specs = [LargeToolSpec()]
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        max_steps=1,
+        compress_threshold="100%",
+        context_window_tokens=180,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(3)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert len(llm_service.complete_calls) == 1
+    assert len([event for event in events if isinstance(event, ContextCompressedEvent)]) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_compression_keeps_recent_run_as_unit() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    call = LLMToolCall(name="lookup", arguments="{}", call_id="call-lookup")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    history = [
+        LLMMessage.build(role="user", content="older question"),
+        LLMMessage.build(role="assistant", content="older answer"),
+        LLMMessage.build(role="user", content="history message 0"),
+        LLMToolCallMessage.from_content(content=[], tool_calls=[call]),
+        LLMToolUseMessage.from_content(
+            name="lookup",
+            call_id=call.call_id,
+            content="lookup result",
+        ),
+        LLMMessage.build(role="user", content="history message 1"),
+        LLMMessage.build(role="user", content="history message 2"),
+        LLMMessage.build(role="user", content="history message 3"),
+        LLMMessage.build(role="user", content="history message 4"),
+        LLMMessage.build(role="user", content="history message 5"),
+        LLMMessage.build(role="user", content="history message 6"),
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert len(llm_service.complete_calls) == 1
+    messages = llm_service.stream_calls[0]["messages"]
+    message_text = "\n".join(
+        part["data"]
+        for message in messages
+        for part in message.content
+        if part["type"] == "text"
+    )
+    assert "Earlier discussion summary." in message_text
+    assert "older question" not in message_text
+    assert "history message 0" not in message_text
+    assert "history message 6" not in message_text
+    assert not any(isinstance(message, LLMToolCallMessage) for message in messages)
+    assert not any(isinstance(message, LLMToolUseMessage) for message in messages)
+
+
+@pytest.mark.anyio
+async def test_agent_compression_rejects_history_without_run_boundary() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    history = [
+        LLMMessage.build(role="assistant", content=f"orphan message {index}")
+        for index in range(10)
+    ]
+
+    with pytest.raises(
+        AceAIRuntimeError,
+        match="context compression requires user-message run boundaries",
+    ):
+        [event async for event in agent.resume("new question", history)]
+
+
+@pytest.mark.anyio
+async def test_agent_compression_rejects_tool_output_without_same_run_call() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    history = [
+        LLMMessage.build(role="user", content="previous question"),
+        LLMToolUseMessage.from_content(
+            name="lookup",
+            call_id="missing-call",
+            content="lookup result",
+        ),
+    ]
+
+    with pytest.raises(
+        AceAIRuntimeError,
+        match="tool output without a tool call in the same step",
+    ):
+        [event async for event in agent.resume("new question", history)]
+
+
+@pytest.mark.anyio
+async def test_agent_validates_orphan_tool_output_before_llm_call() -> None:
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="should not be called"))]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold="100%",
+    )
+    history = [
+        LLMMessage.build(role="user", content="previous question"),
+        LLMToolUseMessage.from_content(
+            name="lookup",
+            call_id="missing-call",
+            content="lookup result",
+        ),
+    ]
+
+    with pytest.raises(
+        AceAIRuntimeError,
+        match="tool output without a tool call in the same step",
+    ):
+        [event async for event in agent.resume("new question", history)]
+
+    assert llm_service.calls == []
 
 
 @pytest.mark.anyio
@@ -325,10 +572,129 @@ async def test_agent_compresses_and_retries_current_step_after_context_window_er
     assert "history message 0" in "\n".join(
         message.content[0]["data"] for message in first_messages
     )
-    assert "<aceai_context_summary>" in second_messages[1].content[0]["data"]
+    assert (
+        '<aceai_context_summary scope="prior_runs">'
+        in second_messages[1].content[0]["data"]
+    )
     assert "Earlier discussion summary." in second_messages[1].content[0]["data"]
     assert "history message 0" not in "\n".join(
         message.content[0]["data"] for message in second_messages
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_chunks_large_context_compaction_inputs() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold="60%",
+        context_window_tokens=500,
+    )
+    history = [
+        LLMMessage.build(
+            role="user",
+            content=f"history message {index}: " + ("detail " * 30),
+        )
+        for index in range(8)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert len(llm_service.complete_calls) > 1
+    assert [event for event in events if isinstance(event, ContextCompressedEvent)]
+
+
+@pytest.mark.anyio
+async def test_agent_emits_context_compaction_failed_when_summary_exceeds_window() -> (
+    None
+):
+    llm_service = ContextWindowDuringCompactionLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    history = [LLMMessage.build(role="user", content="older context")]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunFailedEvent)
+    assert [event for event in events if isinstance(event, ContextCompactionStartedEvent)]
+    failed_events = [
+        event for event in events if isinstance(event, ContextCompactionFailedEvent)
+    ]
+    assert failed_events
+    assert "exceeds the context window" in failed_events[0].error
+
+
+@pytest.mark.anyio
+async def test_agent_compresses_older_completed_steps_inside_current_run() -> None:
+    first_call = LLMToolCall(
+        name="first", arguments='{"value":"old"}', call_id="call-1"
+    )
+    second_call = LLMToolCall(
+        name="second",
+        arguments='{"value":"recent"}',
+        call_id="call-2",
+    )
+    llm_service = CompressingMultiStreamLLMService(
+        [
+            make_stream(response=LLMResponse(text="", tool_calls=[first_call])),
+            make_stream(response=LLMResponse(text="", tool_calls=[second_call])),
+            make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(
+            {
+                "first": "old tool result " * 30,
+                "second": "recent tool result",
+            }
+        ),
+        max_steps=3,
+        compress_threshold=50,
+        context_window_tokens=256,
+    )
+
+    events = await collect_events(agent, "Need two lookups")
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    context_events = [
+        event for event in events if isinstance(event, ContextCompressedEvent)
+    ]
+    assert len(context_events) == 1
+    messages = llm_service.stream_calls[2]["messages"]
+    message_text = "\n".join(
+        part["data"]
+        for message in messages
+        for part in message.content
+        if part["type"] == "text"
+    )
+    assert '<aceai_context_summary scope="current_run">' in message_text
+    assert "Earlier discussion summary." in message_text
+    assert any(
+        isinstance(message, LLMToolCallMessage)
+        and message.tool_calls[0].call_id == "call-2"
+        for message in messages
+    )
+    assert not any(
+        isinstance(message, LLMToolCallMessage)
+        and message.tool_calls[0].call_id == "call-1"
+        for message in messages
     )
 
 
@@ -350,12 +716,15 @@ async def test_agent_does_not_retry_context_window_error_without_compressible_co
     events = await collect_events(agent, "new question")
 
     assert isinstance(events[-1], RunFailedEvent)
-    assert events[-1].error == (
-        "APIError: Your input exceeds the context window of this model. "
-        "Please adjust your input and try again."
-    )
+    assert "Context compaction could not reduce this context-window retry" in events[
+        -1
+    ].error
+    assert "no completed prior runs or completed current-run steps" in events[-1].error
     assert len(llm_service.stream_calls) == 1
     assert len(llm_service.complete_calls) == 0
+    assert not [
+        event for event in events if isinstance(event, ContextCompactionStartedEvent)
+    ]
 
 
 @pytest.mark.anyio
@@ -1055,17 +1424,19 @@ async def test_agent_emits_streaming_reasoning_before_text() -> None:
     events = await collect_events(agent, "Question")
 
     reasoning_index = next(
-        index for index, event in enumerate(events) if isinstance(event, LLMReasoningEvent)
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, LLMReasoningEvent)
     )
     text_index = next(
-        index for index, event in enumerate(events) if isinstance(event, LLMOutputDeltaEvent)
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, LLMOutputDeltaEvent)
     )
     assert reasoning_index < text_index
-    assert [
-        event
-        for event in events
-        if isinstance(event, LLMReasoningEvent)
-    ][0].segment is reasoning_segment
+    assert [event for event in events if isinstance(event, LLMReasoningEvent)][
+        0
+    ].segment is reasoning_segment
     assert len([event for event in events if isinstance(event, LLMReasoningEvent)]) == 1
 
 
@@ -1229,7 +1600,9 @@ async def test_agent_suspends_before_approval_required_tool() -> None:
 
     events = [event async for event in agent.execute(run)]
 
-    requested = [event for event in events if isinstance(event, ToolApprovalRequestedEvent)]
+    requested = [
+        event for event in events if isinstance(event, ToolApprovalRequestedEvent)
+    ]
     suspended = [event for event in events if isinstance(event, RunSuspendedEvent)]
     assert requested
     assert suspended
@@ -1266,7 +1639,9 @@ async def test_agent_resumes_approved_tool_and_continues_conversation() -> None:
     run = agent.create_run("Write it")
     suspend_events = [event async for event in agent.execute(run)]
     request = [
-        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+        event
+        for event in suspend_events
+        if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [
@@ -1326,7 +1701,9 @@ async def test_agent_reuses_approved_tool_name_in_same_run() -> None:
     run = agent.create_run("Write both")
     suspend_events = [event async for event in agent.execute(run)]
     request = [
-        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+        event
+        for event in suspend_events
+        if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [
@@ -1371,7 +1748,9 @@ async def test_agent_rejects_tool_and_returns_rejection_to_model() -> None:
     run = agent.create_run("Write it")
     suspend_events = [event async for event in agent.execute(run)]
     request = [
-        event for event in suspend_events if isinstance(event, ToolApprovalRequestedEvent)
+        event
+        for event in suspend_events
+        if isinstance(event, ToolApprovalRequestedEvent)
     ][0].request
 
     resume_events = [

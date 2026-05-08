@@ -341,6 +341,10 @@ class LLMService:
                         timeout_seconds=timeout_seconds,
                     )
                     received_stream_event = True
+                    if _stream_event_is_context_window_error(event):
+                        raise LLMContextWindowExceededError(
+                            _stream_event_error_message(event)
+                        )
                     yield event
             except StopAsyncIteration:
                 return
@@ -436,3 +440,34 @@ def _is_context_window_error(err: BaseException) -> bool:
     if "type" in error and error["type"] == "context_length_exceeded":
         return True
     return False
+
+
+def _stream_event_is_context_window_error(event: LLMStreamEvent) -> bool:
+    if event.event_type == "response.error" and isinstance(event.error, str):
+        return _is_context_window_error_text(event.error)
+    if (
+        event.event_type == "response.completed"
+        and isinstance(event.response, LLMResponse)
+        and event.response.status == "failed"
+    ):
+        return _is_context_window_error_text(event.response.text)
+    return False
+
+
+def _stream_event_error_message(event: LLMStreamEvent) -> str:
+    if event.event_type == "response.error" and isinstance(event.error, str):
+        return event.error
+    if event.event_type == "response.completed" and isinstance(
+        event.response,
+        LLMResponse,
+    ):
+        return event.response.text
+    raise LLMProviderError("LLM stream event does not contain an error message")
+
+
+def _is_context_window_error_text(message: str) -> bool:
+    return (
+        "Your input exceeds the context window of this model" in message
+        or "context_length_exceeded" in message
+        or message == LLM_CONTEXT_WINDOW_EXCEEDED_MESSAGE
+    )

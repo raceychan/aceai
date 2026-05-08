@@ -217,7 +217,8 @@ async def test_agent_base_registers_skill_tools_on_tool_executor(
         executor.resolve_invocation(call),
         tool_state=ToolRunState(),
     )
-    assert "Do release work." in result
+    assert "Do release work." in result.output
+    assert result.model_output == result.output
 
 
 def test_agent_base_requires_positive_or_unset_max_steps() -> None:

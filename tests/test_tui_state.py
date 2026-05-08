@@ -63,6 +63,43 @@ def test_reduce_events_tracks_run_completion() -> None:
     assert state.selected_event_id == events[-1].event_id
 
 
+def test_reduce_events_tracks_context_compaction_events() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.from_agent_event(
+            builder.context_compaction_started(
+                reason="threshold",
+                compression_count=1,
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compressed(
+                reason="threshold",
+                compression_count=1,
+                history=[],
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.context_compaction_failed(
+                reason="context_window_retry",
+                compression_count=2,
+                error="summary request exceeded context window",
+            )
+        ),
+    ]
+
+    state = reduce_events(events)
+
+    assert [event.kind for event in state.events] == [
+        "context_compaction_started",
+        "context_compressed",
+        "context_compaction_failed",
+    ]
+    assert state.events[0].content == "Compacting context (preflight budget)..."
+    assert state.events[1].content == "Context compacted. Compression #1."
+    assert state.events[2].content == "summary request exceeded context window"
+
+
 def test_reduce_events_tracks_step_and_tool_state() -> None:
     state = reduce_events(static_demo_events())
 
@@ -474,6 +511,90 @@ async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
             "   brief: repo\n"
             "   ask: report evidence"
         )
+
+
+@pytest.mark.anyio
+async def test_tui_hides_subagent_status_widget_after_success() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"final_answer":"version found","summary":"version found",'
+            '"important_evidence":[],"tool_results":[],"step_count":1}'
+        ),
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert not subagents.has_class("hidden")
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            )
+        )
+
+        assert subagents.has_class("hidden")
+
+        app.action_show_subagents()
+
+        assert not subagents.has_class("hidden")
+        assert "version found" in subagents.renderable
+
+
+@pytest.mark.anyio
+async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect version metadata",'
+            '"instructions":"report evidence","context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output="subagent failed",
+        error="child failed",
+    )
+    app = AceAITUI(
+        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_failed(
+                    tool_call=call,
+                    tool_result=result,
+                    error="child failed",
+                )
+            )
+        )
+
+        assert not subagents.has_class("hidden")
+        assert "[failed]" in subagents.renderable
+        assert "child failed" in subagents.renderable
+
+        app.append_event(TUIEvent.user_message("next question"))
+
+        assert subagents.has_class("hidden")
 
 
 def test_subagent_status_widget_paginates_full_agent_details() -> None:

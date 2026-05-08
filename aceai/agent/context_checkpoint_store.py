@@ -15,7 +15,7 @@ from aceai.llm.models import (
 )
 
 
-CONTEXT_CHECKPOINT_VERSION = 1
+CONTEXT_CHECKPOINT_VERSION = 2
 ContextCheckpointReason = Literal["threshold", "context_window_retry"]
 
 
@@ -30,6 +30,7 @@ class ContextCheckpoint(Struct, frozen=True, kw_only=True):
     message_count: int
     estimated_tokens: int
     history: list[LLMMessage]
+    units: list[dict[str, Any]]
     version: int = CONTEXT_CHECKPOINT_VERSION
 
 
@@ -62,10 +63,13 @@ class ContextCheckpointStore:
             message_count=len(history),
             estimated_tokens=estimate_message_tokens(history),
             history=list(history),
+            units=context_units_payload_from_messages(history),
         )
         path = self._path_for(session_id)
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(_checkpoint_to_payload(checkpoint), ensure_ascii=False))
+            stream.write(
+                json.dumps(_checkpoint_to_payload(checkpoint), ensure_ascii=False)
+            )
             stream.write("\n")
         return checkpoint
 
@@ -80,6 +84,8 @@ class ContextCheckpointStore:
             payload = json.loads(line)
             if not isinstance(payload, dict):
                 raise TypeError("context checkpoint payload must be a mapping")
+            if payload["version"] != CONTEXT_CHECKPOINT_VERSION:
+                continue
             latest = _checkpoint_from_payload(payload)
         return latest
 
@@ -134,6 +140,103 @@ def llm_message_from_payload(payload: dict[str, Any]) -> LLMMessage:
     raise ValueError("Unsupported context checkpoint message_type")
 
 
+def context_units_payload_from_messages(
+    messages: list[LLMMessage],
+) -> list[dict[str, Any]]:
+    units: list[dict[str, Any]] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if message.role == "system":
+            scope = _context_summary_scope(message)
+            if scope == "prior_runs":
+                units.append(
+                    {
+                        "type": "prior_run_summary",
+                        "message": llm_message_to_payload(message),
+                    }
+                )
+            elif scope == "current_run":
+                units.append(
+                    {
+                        "type": "current_run_summary",
+                        "message": llm_message_to_payload(message),
+                    }
+                )
+            else:
+                raise ValueError("checkpoint system message must be a context summary")
+            index += 1
+            continue
+        if message.role == "user":
+            units.append(
+                {
+                    "type": "current_user_message",
+                    "message": llm_message_to_payload(message),
+                }
+            )
+            index += 1
+            continue
+        unit_type = "step"
+        step_messages: list[LLMMessage] = []
+        if isinstance(message, LLMToolCallMessage):
+            pending_call_ids = {call.call_id for call in message.tool_calls}
+            step_messages.append(message)
+            index += 1
+            while index < len(messages):
+                next_message = messages[index]
+                if not isinstance(next_message, LLMToolUseMessage):
+                    break
+                if next_message.call_id not in pending_call_ids:
+                    raise ValueError(
+                        "checkpoint tool output has no matching tool call in step"
+                    )
+                step_messages.append(next_message)
+                pending_call_ids.remove(next_message.call_id)
+                index += 1
+            if pending_call_ids:
+                unit_type = "open_step"
+        elif isinstance(message, LLMToolUseMessage):
+            raise ValueError("checkpoint tool output has no matching tool call in step")
+        else:
+            step_messages.append(message)
+            index += 1
+        units.append(
+            {
+                "type": unit_type,
+                "messages": [
+                    llm_message_to_payload(step_message)
+                    for step_message in step_messages
+                ],
+            }
+        )
+    return units
+
+
+def messages_from_context_units_payload(
+    units: list[dict[str, Any]],
+) -> list[LLMMessage]:
+    messages: list[LLMMessage] = []
+    for unit in units:
+        unit_type = unit["type"]
+        if unit_type in (
+            "prior_run_summary",
+            "current_run_summary",
+            "current_user_message",
+        ):
+            messages.append(llm_message_from_payload(unit["message"]))
+        elif unit_type in ("step", "open_step"):
+            unit_messages = unit["messages"]
+            if type(unit_messages) is not list:
+                raise TypeError("context checkpoint step messages must be list")
+            messages.extend(
+                llm_message_from_payload(message_payload)
+                for message_payload in unit_messages
+            )
+        else:
+            raise ValueError("Unsupported context checkpoint unit type")
+    return messages
+
+
 def _checkpoint_to_payload(checkpoint: ContextCheckpoint) -> dict[str, Any]:
     return {
         "version": checkpoint.version,
@@ -146,7 +249,7 @@ def _checkpoint_to_payload(checkpoint: ContextCheckpoint) -> dict[str, Any]:
         "included_event_id": checkpoint.included_event_id,
         "message_count": checkpoint.message_count,
         "estimated_tokens": checkpoint.estimated_tokens,
-        "history": [llm_message_to_payload(message) for message in checkpoint.history],
+        "units": checkpoint.units,
     }
 
 
@@ -154,9 +257,11 @@ def _checkpoint_from_payload(payload: dict[str, Any]) -> ContextCheckpoint:
     version = payload["version"]
     if version != CONTEXT_CHECKPOINT_VERSION:
         raise ValueError("Unsupported context checkpoint version")
-    history_payload = payload["history"]
-    if type(history_payload) is not list:
-        raise TypeError("context checkpoint history must be list")
+    units_payload = payload["units"]
+    if type(units_payload) is not list:
+        raise TypeError("context checkpoint units must be list")
+    units = _context_units_from_payload(units_payload)
+    history = messages_from_context_units_payload(units)
     return ContextCheckpoint(
         version=version,
         checkpoint_id=payload["checkpoint_id"],
@@ -168,10 +273,8 @@ def _checkpoint_from_payload(payload: dict[str, Any]) -> ContextCheckpoint:
         included_event_id=payload["included_event_id"],
         message_count=payload["message_count"],
         estimated_tokens=payload["estimated_tokens"],
-        history=[
-            llm_message_from_payload(message_payload)
-            for message_payload in history_payload
-        ],
+        history=history,
+        units=units,
     )
 
 
@@ -199,3 +302,26 @@ def _tool_calls_from_payload(payload: Any) -> list[dict[str, Any]]:
             raise TypeError("context checkpoint tool_call must be mapping")
         tool_calls.append(tool_call)
     return tool_calls
+
+
+def _context_units_from_payload(payload: list[Any]) -> list[dict[str, Any]]:
+    units: list[dict[str, Any]] = []
+    for unit in payload:
+        if type(unit) is not dict:
+            raise TypeError("context checkpoint unit must be mapping")
+        units.append(cast(dict[str, Any], unit))
+    return units
+
+
+def _context_summary_scope(message: LLMMessage) -> str:
+    if len(message.content) != 1:
+        return ""
+    part = message.content[0]
+    if part["type"] != "text" or "data" not in part:
+        return ""
+    text = part["data"]
+    if text.startswith('<aceai_context_summary scope="prior_runs">'):
+        return "prior_runs"
+    if text.startswith('<aceai_context_summary scope="current_run">'):
+        return "current_run"
+    return ""

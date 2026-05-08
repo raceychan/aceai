@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from aceai.agent.features.tools import (
     search_text,
 )
 from aceai.core import ToolExecutionError
+from aceai.llm.interface import UNSET
 from aceai.llm.models import (
     LLMHostedToolSpec,
     LLMResponse,
@@ -46,6 +48,10 @@ def completed_stream(response: LLMResponse) -> list[LLMStreamEvent]:
     ]
 
 
+def test_delegate_to_subagent_defaults_child_max_steps_to_unset() -> None:
+    assert build_delegate_to_subagent_tool.__kwdefaults__["child_max_steps"] is UNSET
+
+
 @pytest.mark.anyio
 async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions() -> None:
     llm_service = RecordingDelegationLLMService(
@@ -74,13 +80,17 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
         allowed_tools=[],
     )
 
-    assert result.status == "completed"
-    assert result.final_answer.startswith("Summary:\nReviewed")
-    assert result.summary == result.final_answer
-    assert result.step_count == 1
-    assert result.important_evidence == []
-    assert result.tool_results == []
-    assert result.agent_id.startswith("child-")
+    payload = json.loads(result.output)
+    model_payload = json.loads(result.model_output)
+    assert payload["status"] == "completed"
+    assert payload["final_answer"].startswith("Summary:\nReviewed")
+    assert payload["summary"] == payload["final_answer"]
+    assert payload["step_count"] == 1
+    assert payload["important_evidence"] == []
+    assert payload["tool_results"] == []
+    assert payload["agent_id"].startswith("child-")
+    assert model_payload["type"] == "subagent_handoff"
+    assert model_payload["handoff"].startswith("Summary:\nReviewed")
 
     messages = llm_service.stream_calls[0]["messages"]
     system_text = messages[0].content[0]["data"]
@@ -134,13 +144,19 @@ async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path
         allowed_tools=["read_text_file"],
     )
 
-    assert result.status == "completed"
-    assert result.step_count == 2
-    assert len(result.tool_results) == 1
-    assert result.tool_results[0].tool_name == "read_text_file"
-    assert result.tool_results[0].call_id == "call-read"
-    assert "delegated evidence" in result.tool_results[0].output
-    assert result.important_evidence == [result.tool_results[0].output]
+    payload = json.loads(result.output)
+    model_payload = json.loads(result.model_output)
+    assert payload["status"] == "completed"
+    assert payload["step_count"] == 2
+    assert len(payload["tool_results"]) == 1
+    assert payload["tool_results"][0]["tool_name"] == "read_text_file"
+    assert payload["tool_results"][0]["call_id"] == "call-read"
+    assert payload["tool_results"][0]["arguments"] == '{"path":"' + str(target) + '"}'
+    assert "delegated evidence" in payload["tool_results"][0]["output"]
+    assert payload["important_evidence"] == [payload["tool_results"][0]["output"]]
+    assert model_payload["tool_result_count"] == 1
+    assert model_payload["tool_names"] == ["read_text_file"]
+    assert "delegated evidence" in model_payload["evidence"][0]
 
     first_call_tools = llm_service.stream_calls[0]["tools"]
     assert [tool.name for tool in first_call_tools] == ["read_text_file"]
@@ -181,8 +197,9 @@ async def test_delegate_to_subagent_allows_child_hosted_tools() -> None:
         allowed_tools=["openai:web_search"],
     )
 
-    assert result.status == "completed"
-    assert result.final_answer.startswith("Summary:\nFound current news.")
+    payload = json.loads(result.output)
+    assert payload["status"] == "completed"
+    assert payload["final_answer"].startswith("Summary:\nFound current news.")
     assert llm_service.stream_calls[0]["tools"] == [hosted_tool]
 
 

@@ -1271,6 +1271,12 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
     if event.kind == "llm_retrying":
         return _render_text_block(label, event.content, event_kind=event.kind)
     if event.kind in (
+        "context_compaction_started",
+        "context_compaction_failed",
+        "context_compressed",
+    ):
+        return _render_text_block(label, event.content, event_kind=event.kind)
+    if event.kind in (
         "tool_started",
         "tool_approval_requested",
         "tool_approval_resolved",

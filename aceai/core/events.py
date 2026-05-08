@@ -20,6 +20,8 @@ AgentEventType = Literal[
     "agent.llm.reasoning",
     "agent.llm.retrying",
     "agent.llm.completed",
+    "agent.context.compaction_started",
+    "agent.context.compaction_failed",
     "agent.context.compressed",
     "agent.tool.started",
     "agent.tool.output",
@@ -99,6 +101,19 @@ class ContextCompressedEvent(AgentLifecycleEvent):
     history: list[LLMMessage]
 
 
+class ContextCompactionStartedEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.context.compaction_started"
+    reason: Literal["threshold", "context_window_retry"]
+    compression_count: int
+
+
+class ContextCompactionFailedEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.context.compaction_failed"
+    reason: Literal["threshold", "context_window_retry"]
+    compression_count: int
+    error: str
+
+
 class ToolLifecycleEvent(AgentLifecycleEvent):
     tool_call: LLMToolCall
     tool_name: str
@@ -171,6 +186,8 @@ type AgentEvent = (
     | LLMReasoningEvent
     | LLMRetryingEvent
     | LLMCompletedEvent
+    | ContextCompactionStartedEvent
+    | ContextCompactionFailedEvent
     | ContextCompressedEvent
     | ToolStartedEvent
     | ToolOutputEvent
@@ -278,6 +295,36 @@ class AgentEventBuilder:
             reason=reason,
             compression_count=compression_count,
             history=history,
+        )
+
+    def context_compaction_started(
+        self,
+        *,
+        reason: Literal["threshold", "context_window_retry"],
+        compression_count: int,
+    ) -> ContextCompactionStartedEvent:
+        return ContextCompactionStartedEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            reason=reason,
+            compression_count=compression_count,
+        )
+
+    def context_compaction_failed(
+        self,
+        *,
+        reason: Literal["threshold", "context_window_retry"],
+        compression_count: int,
+        error: str,
+    ) -> ContextCompactionFailedEvent:
+        return ContextCompactionFailedEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            reason=reason,
+            compression_count=compression_count,
+            error=error,
         )
 
     def tool_started(self, *, tool_call: LLMToolCall) -> ToolStartedEvent:

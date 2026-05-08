@@ -78,6 +78,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "sessions": "Open the session picker",
     "stats": "Open runtime and usage details in config",
     "steer": "Interrupt or redirect the current run",
+    "subagents": "Show delegated subagent details",
     "trajectory": "Open the event trajectory view",
     "update": "Upgrade AceAI and restart",
 }
@@ -382,6 +383,10 @@ class _RuntimeStreamMixin:
     @tui_command("debug")
     def _command_debug(self, arg: str) -> None:
         self.action_toggle_debug_mode()
+
+    @tui_command("subagents")
+    def _command_subagents(self, arg: str) -> None:
+        self.action_show_subagents()
 
     @tui_command("trajectory")
     def _command_trajectory(self, arg: str) -> None:

@@ -6,6 +6,7 @@ from aceai.agent.app import AceAgentApp
 from aceai.agent.context_checkpoint_store import (
     ContextCheckpoint,
     ContextCheckpointStore,
+    context_units_payload_from_messages,
     llm_message_from_payload,
     llm_message_to_payload,
 )
@@ -13,7 +14,12 @@ from aceai.agent.context_history import build_context_history
 from aceai.agent.session import EventLog, SessionEvent, SessionStore
 from aceai.core.agent import Agent
 from aceai.llm import LLMResponse
-from aceai.llm.models import LLMMessage, LLMToolCall, LLMToolCallMessage, LLMToolUseMessage
+from aceai.llm.models import (
+    LLMMessage,
+    LLMToolCall,
+    LLMToolCallMessage,
+    LLMToolUseMessage,
+)
 
 from tests.test_agent_behavior import (
     CompressingLLMService,
@@ -93,6 +99,17 @@ def test_context_history_uses_checkpoint_without_changing_transcript_replay() ->
             ),
         ]
     )
+    checkpoint_history = [
+        LLMMessage.build(
+            role="system",
+            content=(
+                '<aceai_context_summary scope="prior_runs">\n'
+                "summary of old context\n"
+                "</aceai_context_summary>"
+            ),
+        ),
+        LLMMessage.build(role="user", content="new question"),
+    ]
     checkpoint = ContextCheckpoint(
         checkpoint_id="checkpoint-1",
         session_id="session-1",
@@ -103,10 +120,8 @@ def test_context_history_uses_checkpoint_without_changing_transcript_replay() ->
         included_event_id="event-3",
         message_count=2,
         estimated_tokens=10,
-        history=[
-            LLMMessage.build(role="system", content="summary of old context"),
-            LLMMessage.build(role="user", content="new question"),
-        ],
+        history=checkpoint_history,
+        units=context_units_payload_from_messages(checkpoint_history),
     )
 
     transcript_history = event_log.replay_llm_history()
@@ -122,7 +137,11 @@ def test_context_history_uses_checkpoint_without_changing_transcript_replay() ->
         "new answer",
     ]
     assert [message.content[0]["data"] for message in context_history] == [
-        "summary of old context",
+        (
+            '<aceai_context_summary scope="prior_runs">\n'
+            "summary of old context\n"
+            "</aceai_context_summary>"
+        ),
         "new question",
         "new answer",
     ]
@@ -135,7 +154,7 @@ def test_context_checkpoint_store_rejects_malformed_payload(tmp_path) -> None:
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "checkpoint_id": "checkpoint-1",
                 "session_id": "session-1",
                 "run_id": "run-1",
@@ -145,14 +164,14 @@ def test_context_checkpoint_store_rejects_malformed_payload(tmp_path) -> None:
                 "included_event_id": "event-1",
                 "message_count": 1,
                 "estimated_tokens": 1,
-                "history": {"bad": "shape"},
+                "units": {"bad": "shape"},
             }
         ),
         encoding="utf-8",
     )
     store = ContextCheckpointStore(checkpoint_dir)
 
-    with pytest.raises(TypeError, match="context checkpoint history must be list"):
+    with pytest.raises(TypeError, match="context checkpoint units must be list"):
         store.latest_checkpoint("session-1")
 
 
@@ -193,9 +212,10 @@ async def test_agent_app_persists_checkpoint_and_restores_context_history(
     )
     assert checkpoint is not None
     assert checkpoint.reason == "threshold"
-    assert checkpoint.included_event_id == session_store.load_event_log(
-        session_id
-    ).events[0].event_id
+    assert (
+        checkpoint.included_event_id
+        == session_store.load_event_log(session_id).events[0].event_id
+    )
 
     restored_app = AceAgentApp(
         Agent(

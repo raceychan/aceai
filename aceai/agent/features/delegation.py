@@ -3,8 +3,9 @@ from uuid import uuid4
 
 from ididi import Graph
 from msgspec import Struct
+from msgspec.json import encode as msg_encode
 
-from aceai.core import Agent, ToolExecutionError, Executor
+from aceai.core import Agent, ToolExecutionError, Executor, ToolExecutionOutput
 from aceai.core.events import (
     AgentEvent,
     RunCompletedEvent,
@@ -42,12 +43,16 @@ Evidence:
 
 Risks:
 - Any uncertainty, missing evidence, or follow-up the main agent should know.
+
+Next:
+- The next action the main agent should take, if any.
 """
 
 
 class ChildToolResult(Struct, frozen=True, kw_only=True):
     tool_name: str
     call_id: str
+    arguments: str
     output: str
     error: str | None = None
 
@@ -63,13 +68,29 @@ class ChildAgentResult(Struct, frozen=True, kw_only=True):
     step_count: int
 
 
+class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
+    type: str
+    agent_id: str
+    run_id: str
+    status: str
+    task: str
+    handoff: str
+    artifact_id: str
+    evidence: list[str]
+    step_count: int
+    tool_result_count: int
+    tool_names: list[str]
+
+
 def build_delegate_to_subagent_tool(
     *,
     llm_service: ILLMService,
     default_model: str,
     available_tools: list[Tool[Any, Any]],
     available_hosted_tools: list[LLMHostedToolSpec] | None = None,
-    child_max_steps: Unset[int] = 4,
+    # max_steps is a hard stop. Keep child agents unlimited by default; only set
+    # this for a deliberate execution-budget policy.
+    child_max_steps: Unset[int] = UNSET,
     compress_threshold: CompressThreshold = "100%",
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ) -> Tool[Any, Any]:
@@ -126,7 +147,7 @@ def build_delegate_to_subagent_tool(
                 description=allowed_tools_description
             ),
         ],
-    ) -> ChildAgentResult:
+    ) -> ToolExecutionOutput:
         selected_tools = _select_child_tools(
             tool_map,
             hosted_tool_map,
@@ -166,15 +187,36 @@ def build_delegate_to_subagent_tool(
             elif isinstance(event, RunFailedEvent):
                 raise ToolExecutionError(event.error)
 
-        return ChildAgentResult(
+        result = ChildAgentResult(
             agent_id=child_agent.agent_id,
             run_id=child_run.run_id,
             status=child_run.status,
             final_answer=final_answer,
-            summary=final_answer,
+            summary=_bounded_text(final_answer, 1200),
             important_evidence=_collect_child_evidence(events),
             tool_results=_collect_child_tool_results(events),
             step_count=len(child_run.steps),
+        )
+        artifact_id = uuid4().hex
+        handoff = ChildAgentHandoff(
+            type="subagent_handoff",
+            agent_id=result.agent_id,
+            run_id=result.run_id,
+            status=result.status,
+            task=task,
+            handoff=result.summary,
+            artifact_id=artifact_id,
+            evidence=[
+                _bounded_text(evidence, 240)
+                for evidence in result.important_evidence[:3]
+            ],
+            step_count=result.step_count,
+            tool_result_count=len(result.tool_results),
+            tool_names=_tool_names(result.tool_results),
+        )
+        return ToolExecutionOutput(
+            output=msg_encode(result).decode("utf-8"),
+            model_output=msg_encode(handoff).decode("utf-8"),
         )
 
     return delegate_to_subagent
@@ -294,8 +336,23 @@ def _collect_child_tool_results(events: list[AgentEvent]) -> list[ChildToolResul
                 ChildToolResult(
                     tool_name=event.tool_call.name,
                     call_id=event.tool_call.call_id,
+                    arguments=event.tool_call.arguments,
                     output=event.tool_result.output,
                     error=event.tool_result.error,
                 )
             )
     return tool_results
+
+
+def _tool_names(tool_results: list[ChildToolResult]) -> list[str]:
+    names: list[str] = []
+    for result in tool_results:
+        if result.tool_name not in names:
+            names.append(result.tool_name)
+    return names
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n[truncated]"

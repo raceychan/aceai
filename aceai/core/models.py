@@ -42,13 +42,26 @@ class ToolExecutionResult(Record, kw_only=True):
     """Tool call metadata provided by the LLM response."""
 
     output: str = ""
-    """Serialized tool output returned to the model or end-user."""
+    """Serialized tool output returned to app/UI/audit consumers."""
+
+    model_output: str = ""
+    """Serialized tool output returned to future model context."""
 
     error: str | None = None
     """Optional error message when execution fails."""
 
     annotations: StrDict = field(default_factory=StrDict)
     """Optional executor-provided metadata (latency, logs, etc.)."""
+
+
+class ToolExecutionOutput(Record, kw_only=True):
+    """Executor output split between audit/UI and model context surfaces."""
+
+    output: str
+    """Serialized output for app/UI/audit consumers."""
+
+    model_output: str
+    """Serialized output for future model context."""
 
 
 class ToolApprovalRequest(Record, kw_only=True):

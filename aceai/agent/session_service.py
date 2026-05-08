@@ -316,6 +316,7 @@ def _payload_for_agent_event(event: AgentEvent) -> dict[str, Any]:
             "content": event.tool_result.output,
             "tool_result": {
                 "output": event.tool_result.output,
+                "model_output": event.tool_result.model_output,
                 "error": event.tool_result.error,
             },
         }
@@ -326,6 +327,7 @@ def _payload_for_agent_event(event: AgentEvent) -> dict[str, Any]:
             "error": event.error,
             "tool_result": {
                 "output": event.tool_result.output,
+                "model_output": event.tool_result.model_output,
                 "error": event.tool_result.error,
             },
         }

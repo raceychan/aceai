@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -322,7 +323,8 @@ class EventLog:
                     pending_tool_call_recorded = True
                 history.append(
                     LLMToolUseMessage.from_content(
-                        content=event.payload["output"],
+                        content=event.payload.get("model_output")
+                        or event.payload["output"],
                         name=event.payload["tool_name"],
                         call_id=event.payload["tool_call_id"],
                     )
@@ -512,6 +514,7 @@ class SessionStore:
                 )
             )
         self.event_store.delete_event_log(metadata)
+        shutil.rmtree(self.root / session_id, ignore_errors=True)
 
     def finalize_session_title(self, session_id: str) -> str:
         title_source = self.load_event_log(session_id).title_source()
@@ -782,6 +785,10 @@ class SessionRecorder:
                 "tool_call_id": event.payload["tool_call_id"],
                 "tool_arguments": tool_buffer.arguments,
                 "output": tool_buffer.output,
+                "model_output": event.payload.get("tool_result", {}).get(
+                    "model_output",
+                    tool_buffer.output,
+                ),
                 "status": "failed" if event.kind == "tool_failed" else "completed",
             },
             event,

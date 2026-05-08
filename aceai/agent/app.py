@@ -14,9 +14,12 @@ from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
+from aceai.agent.subagent_artifacts import SubagentArtifactStore
 from aceai.core import Agent, AgentRunContext, ToolApprovalDecision
 from aceai.core.events import (
     AgentEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
     ContextCompressedEvent,
     LLMCompletedEvent,
     RunCompletedEvent,
@@ -75,6 +78,7 @@ class AceAgentApp:
             session_id=session_id,
             project=self._project,
         )
+        self._subagent_artifacts = SubagentArtifactStore(self._session_service.store.root)
         self._trace_ctx = trace_ctx
         snapshot = None
         if initial_history is None and self._session_service.session_id is not None:
@@ -315,8 +319,15 @@ class AceAgentApp:
             async for event in stream:
                 if isinstance(event, ContextCompressedEvent):
                     self._record_context_checkpoint(event)
-                    continue
-                persisted_event_id = self._session_service.record_agent_event(event)
+                event = self._archive_subagent_artifact(event)
+                persisted_event_id: str | None = None
+                if not isinstance(
+                    event,
+                    ContextCompactionFailedEvent
+                    | ContextCompactionStartedEvent
+                    | ContextCompressedEvent,
+                ):
+                    persisted_event_id = self._session_service.record_agent_event(event)
                 if persisted_event_id is not None and _agent_event_updates_context(
                     event
                 ):
@@ -344,6 +355,28 @@ class AceAgentApp:
         self._session_service.record_context_checkpoint(
             event,
             included_event_id=included_event_id,
+        )
+
+    def _archive_subagent_artifact(self, event: AgentEvent) -> AgentEvent:
+        if not isinstance(event, ToolCompletedEvent):
+            return event
+        if event.tool_name != "delegate_to_subagent":
+            return event
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("subagent artifact archive requires an active session")
+        archived_result = self._subagent_artifacts.archive_tool_result(
+            session_id=session_id,
+            parent_run_id=event.run_id,
+            tool_result=event.tool_result,
+        )
+        return ToolCompletedEvent(
+            run_id=event.run_id,
+            step_index=event.step_index,
+            step_id=event.step_id,
+            tool_call=event.tool_call,
+            tool_name=event.tool_name,
+            tool_result=archived_result,
         )
 
     def _request_meta_for_run(self) -> LLMRequestMeta:

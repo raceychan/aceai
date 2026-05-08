@@ -36,6 +36,7 @@ from .models import (
     AgentStep,
     ToolApprovalDecision,
     ToolApprovalRequest,
+    ToolExecutionOutput,
     ToolExecutionResult,
 )
 from .run_state import AgentRunState, AgentRunStatus
@@ -278,9 +279,28 @@ async def _call_llm(
     compressed_after_context_window_error = False
     while True:
         compression_count_before_prepare = run_context.context.compression_count
-        messages = await run_context.context.prepare_for_llm(
-            llm_service=llm_service,
-        )
+        preflight_compaction_started = False
+        if run_context.context.needs_compression(
+            tools=tools
+        ) and run_context.context.has_compressible_context():
+            preflight_compaction_started = True
+            yield event_builder.context_compaction_started(
+                reason="threshold",
+                compression_count=compression_count_before_prepare + 1,
+            )
+        try:
+            messages = await run_context.context.prepare_for_llm(
+                llm_service=llm_service,
+                tools=tools,
+            )
+        except LLMProviderError as exc:
+            if preflight_compaction_started:
+                yield event_builder.context_compaction_failed(
+                    reason="threshold",
+                    compression_count=compression_count_before_prepare + 1,
+                    error=str(exc),
+                )
+            raise
         if run_context.context.compression_count > compression_count_before_prepare:
             yield event_builder.context_compressed(
                 reason="threshold",
@@ -357,9 +377,37 @@ async def _call_llm(
         except LLMContextWindowExceededError:
             if compressed_after_context_window_error:
                 raise
-            compressed = await run_context.context.compress(llm_service=llm_service)
-            if not compressed:
+            compression_started = False
+            if run_context.context.has_compressible_context(
+                force_current_run_steps=True,
+            ):
+                compression_started = True
+                yield event_builder.context_compaction_started(
+                    reason="context_window_retry",
+                    compression_count=run_context.context.compression_count + 1,
+                )
+            try:
+                compressed = await run_context.context.compress(
+                    llm_service=llm_service,
+                    force_current_run_steps=True,
+                )
+            except LLMProviderError as exc:
+                if compression_started:
+                    yield event_builder.context_compaction_failed(
+                        reason="context_window_retry",
+                        compression_count=run_context.context.compression_count + 1,
+                        error=str(exc),
+                    )
                 raise
+            if not compressed:
+                raise LLMProviderError(
+                    "Context compaction could not reduce this context-window retry "
+                    "because there are no completed prior runs or completed "
+                    "current-run steps available to summarize. The oversized "
+                    "content is in required context such as the current user "
+                    "message, open tool exchange, system instructions, tool "
+                    "schemas, or attached context."
+                )
             yield event_builder.context_compressed(
                 reason="context_window_retry",
                 compression_count=run_context.context.compression_count,
@@ -506,6 +554,7 @@ async def _execute_invocation_event(
         tool_result = ToolExecutionResult(
             call=call,
             output=f"Tool execution failed: {error_msg}",
+            model_output=f"Tool execution failed: {error_msg}",
             error=error_msg,
         )
         current_step.tool_results.append(tool_result)
@@ -515,7 +564,16 @@ async def _execute_invocation_event(
             error=error_msg,
         )
 
-    tool_result = ToolExecutionResult(call=call, output=tool_output)
+    if type(tool_output) is str:
+        tool_output = ToolExecutionOutput(
+            output=tool_output,
+            model_output=tool_output,
+        )
+    tool_result = ToolExecutionResult(
+        call=call,
+        output=tool_output.output,
+        model_output=tool_output.model_output,
+    )
     current_step.tool_results.append(tool_result)
     return event_builder.tool_completed(
         tool_call=call,
@@ -528,7 +586,7 @@ async def _execute_tool_invocation(
     executor: IExecutor,
     run_context: AgentRunContext,
     invocation: ToolInvocation,
-) -> str:
+) -> ToolExecutionOutput:
     return await executor.execute(
         invocation,
         tool_state=run_context.run_state.tools,
@@ -545,6 +603,7 @@ async def _reject_invocation(
     tool_result = ToolExecutionResult(
         call=request.call,
         output=f"Tool execution rejected: {error_msg}",
+        model_output=f"Tool execution rejected: {error_msg}",
         error=error_msg,
     )
     current_step.tool_results.append(tool_result)

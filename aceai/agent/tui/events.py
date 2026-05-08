@@ -7,6 +7,9 @@ from typing_extensions import Self
 
 from aceai.core.events import (
     AgentEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
+    ContextCompressedEvent,
     LLMCompletedEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
@@ -55,6 +58,9 @@ TUIEventKind = Literal[
     "thinking_delta",
     "reasoning_summary",
     "llm_retrying",
+    "context_compaction_started",
+    "context_compaction_failed",
+    "context_compressed",
     "tool_call_delta",
     "tool_started",
     "tool_output",
@@ -98,6 +104,8 @@ class TUIEvent(Record, kw_only=True):
     retry_count: int = 0
     retry_max: int = 0
     retry_delay_seconds: float = 0.0
+    compression_count: int = 0
+    compression_reason: str = ""
     idea_items: list[TUIIdeaItem] = field(default_factory=list[TUIIdeaItem])
     citations: tuple[TurnCitation, ...] = ()
 
@@ -231,6 +239,7 @@ class TUIEvent(Record, kw_only=True):
             tool_result=ToolExecutionResult(
                 call=call,
                 output=event.payload["output"],
+                model_output=event.payload.get("model_output", event.payload["output"]),
                 error=event.payload["content"] if status == "failed" else None,
             ),
             error=event.payload["content"] if status == "failed" else None,
@@ -441,6 +450,43 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             cost=cost,
             raw_event=event,
         )
+    if isinstance(event, ContextCompactionStartedEvent):
+        return TUIEvent(
+            kind="context_compaction_started",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title="context compaction",
+            content=_context_compaction_started_content(event),
+            run_id=event.run_id,
+            compression_count=event.compression_count,
+            compression_reason=event.reason,
+            raw_event=event,
+        )
+    if isinstance(event, ContextCompactionFailedEvent):
+        return TUIEvent(
+            kind="context_compaction_failed",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title="context compaction failed",
+            content=event.error,
+            error=event.error,
+            run_id=event.run_id,
+            compression_count=event.compression_count,
+            compression_reason=event.reason,
+            raw_event=event,
+        )
+    if isinstance(event, ContextCompressedEvent):
+        return TUIEvent(
+            kind="context_compressed",
+            step_index=event.step_index,
+            step_id=event.step_id,
+            title="context compressed",
+            content=_context_compressed_content(event),
+            run_id=event.run_id,
+            compression_count=event.compression_count,
+            compression_reason=event.reason,
+            raw_event=event,
+        )
     if isinstance(event, ToolStartedEvent):
         return TUIEvent(
             kind="tool_started",
@@ -591,6 +637,41 @@ def _retrying_content(
         f"Retrying message {retry_count}/{retry_max} "
         f"in {retry_delay_seconds:.1f}s after {error}"
     )
+
+
+def _context_compaction_started_content(event: ContextCompactionStartedEvent) -> str:
+    reason = "context window retry" if event.reason == "context_window_retry" else "preflight budget"
+    return f"Compacting context ({reason})..."
+
+
+def _context_compressed_content(event: ContextCompressedEvent) -> str:
+    summary_text = _latest_context_summary_text(event)
+    if summary_text == "":
+        return f"Context compacted. Compression #{event.compression_count}."
+    return f"Context compacted. Compression #{event.compression_count}.\n\n{summary_text}"
+
+
+def _latest_context_summary_text(event: ContextCompressedEvent) -> str:
+    for message in event.history:
+        if message.role != "system":
+            continue
+        if len(message.content) != 1:
+            continue
+        part = message.content[0]
+        if part["type"] != "text" or "data" not in part:
+            continue
+        text = part["data"]
+        if text.startswith("<aceai_context_summary"):
+            return _strip_context_summary_tags(text)
+    return ""
+
+
+def _strip_context_summary_tags(text: str) -> str:
+    start = text.find(">")
+    end = text.rfind("</aceai_context_summary>")
+    if start == -1 or end == -1:
+        return text
+    return text[start + 1 : end]
 
 
 def _session_cost(event: SessionEvent) -> CostEstimate | None:

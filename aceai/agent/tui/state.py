@@ -1,5 +1,6 @@
 """State reducer for the read-only TUI prototype."""
 
+import json
 from typing import Literal
 
 from msgspec import field
@@ -213,6 +214,8 @@ def _merge_stream_delta(previous: TUIEvent, event: TUIEvent) -> TUIEvent:
         retry_count=previous.retry_count,
         retry_max=previous.retry_max,
         retry_delay_seconds=previous.retry_delay_seconds,
+        compression_count=previous.compression_count,
+        compression_reason=previous.compression_reason,
     )
 
 
@@ -476,6 +479,18 @@ def _subagent_arguments(event: TUIEvent) -> TUISubagentArguments | None:
 def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
     if event.kind != "tool_completed":
         return None
+    payload = json.loads(event.content)
+    if payload.get("type") == "subagent_audit":
+        return TUISubagentResult(
+            agent_id=payload["agent_id"],
+            run_id=payload["run_id"],
+            status=payload["status"],
+            final_answer="",
+            summary=payload["summary"],
+            important_evidence=[],
+            tool_results=[],
+            step_count=payload["step_count"],
+        )
     return msg_decode(event.content.encode("utf-8"), type=TUISubagentResult)
 
 
@@ -497,6 +512,8 @@ def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if event.kind == "run_suspended":
         return "suspended"
     if event.kind == "run_failed":
+        return "failed"
+    if event.kind == "context_compaction_failed":
         return "failed"
     if status == "suspended" and event.kind == "tool_approval_resolved":
         return "running"
