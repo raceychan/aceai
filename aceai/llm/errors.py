@@ -26,6 +26,10 @@ class LLMProviderError(AceAIError):
     """Wrapper for LLM provider errors bubbled up through AceAI."""
 
 
+class LLMContextWindowExceededError(LLMProviderError):
+    """Raised when a provider rejects a request for exceeding context limits."""
+
+
 __all__ = [
     "AceAIError",
     "AceAIConfigurationError",
@@ -34,4 +38,5 @@ __all__ = [
     "AceAIRuntimeError",
     "AceAIImplementationError",
     "LLMProviderError",
+    "LLMContextWindowExceededError",
 ]

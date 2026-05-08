@@ -1,3 +1,4 @@
+import asyncio
 from itertools import count
 from typing import AsyncGenerator
 from uuid import uuid4
@@ -8,7 +9,11 @@ from opentelemetry.context import Context
 from opentelemetry.trace import SpanKind, set_span_in_context
 
 from aceai.llm import ILLMService, LLMResponse
-from aceai.llm.errors import AceAIRuntimeError, LLMProviderError
+from aceai.llm.errors import (
+    AceAIRuntimeError,
+    LLMContextWindowExceededError,
+    LLMProviderError,
+)
 from aceai.llm.interface import Unset, is_set
 from aceai.llm.models import LLMRequestMeta, LLMToolCallDelta, LLMToolSpec
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
@@ -270,78 +275,99 @@ async def _call_llm(
     tools.extend(executor.select_tools())
     tools.extend(executor.hosted_tools)
 
-    messages = await run_context.context.prepare_for_llm(
-        llm_service=llm_service,
-    )
-
-    if tools:
-        stream = llm_service.stream(
-            messages=messages,
-            tools=tools,
-            metadata=run_context.request_meta,
+    compressed_after_context_window_error = False
+    while True:
+        compression_count_before_prepare = run_context.context.compression_count
+        messages = await run_context.context.prepare_for_llm(
+            llm_service=llm_service,
         )
-    else:
-        stream = llm_service.stream(
-            messages=messages,
-            metadata=run_context.request_meta,
-        )
+        if run_context.context.compression_count > compression_count_before_prepare:
+            yield event_builder.context_compressed(
+                reason="threshold",
+                compression_count=run_context.context.compression_count,
+                history=list(run_context.context.context[1:]),
+            )
 
-    try:
-        reasoning_streamed = False
-        async for stream_event in stream:
-            match stream_event.event_type:
-                case "response.output_text.delta":
-                    chunk = stream_event.text_delta
-                    if isinstance(chunk, str):
-                        yield event_builder.llm_text_delta(text_delta=chunk)
-                case "response.reasoning.delta":
-                    reasoning_streamed = True
-                    for segment in stream_event.segments:
-                        if segment.type == "reasoning":
-                            yield event_builder.llm_reasoning(segment=segment)
-                case "response.media":
-                    yield event_builder.llm_media(segments=stream_event.segments)
-                case "response.function_call_arguments.delta":
-                    tool_call_delta = stream_event.tool_call_delta
-                    if isinstance(tool_call_delta, LLMToolCallDelta):
-                        yield event_builder.llm_tool_call_delta(
-                            tool_call_delta=tool_call_delta,
+        if tools:
+            stream = llm_service.stream(
+                messages=messages,
+                tools=tools,
+                metadata=run_context.request_meta,
+            )
+        else:
+            stream = llm_service.stream(
+                messages=messages,
+                metadata=run_context.request_meta,
+            )
+
+        try:
+            reasoning_streamed = False
+            async for stream_event in stream:
+                match stream_event.event_type:
+                    case "response.output_text.delta":
+                        chunk = stream_event.text_delta
+                        if isinstance(chunk, str):
+                            yield event_builder.llm_text_delta(text_delta=chunk)
+                    case "response.reasoning.delta":
+                        reasoning_streamed = True
+                        for segment in stream_event.segments:
+                            if segment.type == "reasoning":
+                                yield event_builder.llm_reasoning(segment=segment)
+                    case "response.media":
+                        yield event_builder.llm_media(segments=stream_event.segments)
+                    case "response.function_call_arguments.delta":
+                        tool_call_delta = stream_event.tool_call_delta
+                        if isinstance(tool_call_delta, LLMToolCallDelta):
+                            yield event_builder.llm_tool_call_delta(
+                                tool_call_delta=tool_call_delta,
+                            )
+                    case "response.error":
+                        if isinstance(stream_event.error, str):
+                            raise LLMProviderError(stream_event.error)
+                        raise LLMProviderError("LLM streaming error")
+                    case "response.retrying":
+                        if not isinstance(stream_event.error, str):
+                            raise AceAIRuntimeError("LLM retry event missing error")
+                        yield event_builder.llm_retrying(
+                            retry_count=stream_event.retry_count,
+                            retry_max=stream_event.retry_max,
+                            retry_delay_seconds=stream_event.retry_delay_seconds,
+                            error=stream_event.error,
                         )
-                case "response.error":
-                    if isinstance(stream_event.error, str):
-                        raise LLMProviderError(stream_event.error)
-                    raise LLMProviderError("LLM streaming error")
-                case "response.retrying":
-                    if not isinstance(stream_event.error, str):
-                        raise AceAIRuntimeError("LLM retry event missing error")
-                    yield event_builder.llm_retrying(
-                        retry_count=stream_event.retry_count,
-                        retry_max=stream_event.retry_max,
-                        retry_delay_seconds=stream_event.retry_delay_seconds,
-                        error=stream_event.error,
-                    )
-                case "response.completed":
-                    response = stream_event.response
-                    if not isinstance(response, LLMResponse):
+                    case "response.completed":
+                        response = stream_event.response
+                        if not isinstance(response, LLMResponse):
+                            raise AceAIRuntimeError(
+                                "LLM stream completed without a response payload"
+                            )
+                        if response.status == "failed":
+                            raise LLMProviderError(response.text)
+                        for segment in response.segments:
+                            if segment.type == "reasoning" and not reasoning_streamed:
+                                yield event_builder.llm_reasoning(segment=segment)
+                        yield AgentStep(
+                            step_id=event_builder.step_id,
+                            llm_response=response,
+                        )
+                        return
+                    case _:
                         raise AceAIRuntimeError(
-                            "LLM stream completed without a response payload"
+                            f"Unsupported LLM stream event: {stream_event.event_type}"
                         )
-                    if response.status == "failed":
-                        raise LLMProviderError(response.text)
-                    for segment in response.segments:
-                        if segment.type == "reasoning" and not reasoning_streamed:
-                            yield event_builder.llm_reasoning(segment=segment)
-                    yield AgentStep(
-                        step_id=event_builder.step_id,
-                        llm_response=response,
-                    )
-                    return
-                case _:
-                    raise AceAIRuntimeError(
-                        f"Unsupported LLM stream event: {stream_event.event_type}"
-                    )
-    finally:
-        await stream.aclose()
+        except LLMContextWindowExceededError:
+            if compressed_after_context_window_error:
+                raise
+            compressed = await run_context.context.compress(llm_service=llm_service)
+            if not compressed:
+                raise
+            yield event_builder.context_compressed(
+                reason="context_window_retry",
+                compression_count=run_context.context.compression_count,
+                history=list(run_context.context.context[1:]),
+            )
+            compressed_after_context_window_error = True
+        finally:
+            await stream.aclose()
 
 
 async def _make_toolcalls(
@@ -357,40 +383,90 @@ async def _make_toolcalls(
     if not tool_calls:
         return
 
-    for index, call in enumerate(tool_calls[start_index:], start=start_index):
-        invocation = executor.resolve_invocation(call)
-        yield event_builder.tool_started(tool_call=call)
-        if (
-            invocation.approval_required
-            and invocation.tool.name
-            not in run_context.run_state.tools.approved_tool_names
-        ):
-            request = ToolApprovalRequest(
-                call=call,
-                tool_name=invocation.tool.name,
-                reason=f"Tool {invocation.tool.name!r} requires approval",
-                policy=invocation.tool.metadata.approval_policy,
-            )
-            run_context.run_state.suspend_for_approval(
-                step=current_step,
-                invocation=invocation,
-                request=request,
-                run_id=event_builder.run_id,
-                step_index=event_builder.step_index,
-                step_id=event_builder.step_id,
-                tool_index=index,
-            )
-            yield event_builder.tool_approval_requested(request=request)
-            yield event_builder.run_suspended(request=request)
-            return
-        async for event in _execute_invocation(
+    index = start_index
+    while index < len(tool_calls):
+        invocations: list[ToolInvocation] = []
+        while index < len(tool_calls):
+            call = tool_calls[index]
+            invocation = executor.resolve_invocation(call)
+            if (
+                invocation.approval_required
+                and invocation.tool.name
+                not in run_context.run_state.tools.approved_tool_names
+            ):
+                break
+            yield event_builder.tool_started(tool_call=call)
+            invocations.append(invocation)
+            index += 1
+
+        async for event in _execute_invocations(
             executor=executor,
             run_context=run_context,
             current_step=current_step,
             event_builder=event_builder,
-            invocation=invocation,
+            invocations=invocations,
         ):
             yield event
+
+        if index == len(tool_calls):
+            return
+
+        call = tool_calls[index]
+        invocation = executor.resolve_invocation(call)
+        yield event_builder.tool_started(tool_call=call)
+        request = ToolApprovalRequest(
+            call=call,
+            tool_name=invocation.tool.name,
+            reason=f"Tool {invocation.tool.name!r} requires approval",
+            policy=invocation.tool.metadata.approval_policy,
+        )
+        run_context.run_state.suspend_for_approval(
+            step=current_step,
+            invocation=invocation,
+            request=request,
+            run_id=event_builder.run_id,
+            step_index=event_builder.step_index,
+            step_id=event_builder.step_id,
+            tool_index=index,
+        )
+        yield event_builder.tool_approval_requested(request=request)
+        yield event_builder.run_suspended(request=request)
+        return
+
+
+async def _execute_invocations(
+    *,
+    executor: IExecutor,
+    run_context: AgentRunContext,
+    current_step: AgentStep,
+    event_builder: AgentEventBuilder,
+    invocations: list[ToolInvocation],
+):
+    if len(invocations) == 1:
+        yield await _execute_invocation_event(
+            executor=executor,
+            run_context=run_context,
+            current_step=current_step,
+            event_builder=event_builder,
+            invocation=invocations[0],
+        )
+        return
+    tasks: list[asyncio.Task[ToolCompletedEvent | ToolFailedEvent]] = []
+    async with asyncio.TaskGroup() as task_group:
+        for invocation in invocations:
+            tasks.append(
+                task_group.create_task(
+                    _execute_invocation_event(
+                        executor=executor,
+                        run_context=run_context,
+                        current_step=current_step,
+                        event_builder=event_builder,
+                        invocation=invocation,
+                    )
+                )
+            )
+    for task in tasks:
+        yield task.result()
 
 
 async def _execute_invocation(
@@ -401,6 +477,23 @@ async def _execute_invocation(
     event_builder: AgentEventBuilder,
     invocation: ToolInvocation,
 ):
+    yield await _execute_invocation_event(
+        executor=executor,
+        run_context=run_context,
+        current_step=current_step,
+        event_builder=event_builder,
+        invocation=invocation,
+    )
+
+
+async def _execute_invocation_event(
+    *,
+    executor: IExecutor,
+    run_context: AgentRunContext,
+    current_step: AgentStep,
+    event_builder: AgentEventBuilder,
+    invocation: ToolInvocation,
+) -> ToolCompletedEvent | ToolFailedEvent:
     call = invocation.call
     try:
         tool_output = await _execute_tool_invocation(
@@ -416,16 +509,15 @@ async def _execute_invocation(
             error=error_msg,
         )
         current_step.tool_results.append(tool_result)
-        yield event_builder.tool_failed(
+        return event_builder.tool_failed(
             tool_call=call,
             tool_result=tool_result,
             error=error_msg,
         )
-        return
 
     tool_result = ToolExecutionResult(call=call, output=tool_output)
     current_step.tool_results.append(tool_result)
-    yield event_builder.tool_completed(
+    return event_builder.tool_completed(
         tool_call=call,
         tool_result=tool_result,
     )

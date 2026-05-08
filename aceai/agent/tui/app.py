@@ -1,6 +1,7 @@
 """Read-only Textual application for AceAI event streams."""
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.timer import Timer
@@ -76,12 +77,12 @@ class AceAITUI(App[None]):
     """
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("ctrl+c", "quit", "Quit"),
-        ("d", "toggle_debug_mode", "Debug"),
-        ("c", "config", "Config"),
-        ("i", "ideas", "Ideas"),
-        ("s", "session_switcher", "Sessions"),
+        Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit"),
+        Binding("d", "toggle_debug_mode", "Debug"),
+        Binding("c", "config", "Config"),
+        Binding("i", "ideas", "Ideas"),
+        Binding("s", "session_switcher", "Sessions"),
     ]
 
     def __init__(
@@ -120,8 +121,8 @@ class AceAITUI(App[None]):
         yield TopBarWidget(id="topbar")
         with Horizontal(id="main"):
             yield StreamWidget(id="stream", project_name=self._project.name)
+            yield SubagentStatusWidget(id="subagents", classes="hidden")
             yield DetailWidget(id="detail", classes="collapsed")
-        yield SubagentStatusWidget(id="subagents", classes="hidden")
         yield ApprovalWidget(id="approval", classes="collapsed")
         yield StatusBarWidget(id="status")
         yield CommandCompletionWidget(id="command-completions", classes="hidden")
@@ -242,11 +243,10 @@ class AceAITUI(App[None]):
         if tui_event.kind == "llm_retrying":
             self.notify(
                 tui_event.content,
-                title="Retrying LLM",
+                title=_retrying_title(tui_event),
                 severity="warning",
                 timeout=3.0,
             )
-            return
         self.append_event(tui_event)
 
     def notify_session(self, content: str) -> None:
@@ -403,6 +403,15 @@ class AceAITUI(App[None]):
         return matches[0]
 
     def action_toggle_debug_mode(self) -> None:
+        if self._state.subagents:
+            self.notify_session("Debug mode is unavailable while subagents are visible.")
+            return
+        if (
+            not self.query_one(StreamWidget).debug_mode
+            and self._state.status != "completed"
+        ):
+            self.notify_session("Debug mode is available after the run completes.")
+            return
         stream = self.query_one(StreamWidget)
         selected_event_id = stream.set_debug_mode(not stream.debug_mode)
         stream.focus()
@@ -474,6 +483,9 @@ class AceAITUI(App[None]):
         self,
         event: StreamWidget.EventSelected,
     ) -> None:
+        if self._state.subagents or self._state.status != "completed":
+            event.stop()
+            return
         self._select_debug_event(event.event_id)
         event.stop()
 
@@ -489,6 +501,7 @@ class AceAITUI(App[None]):
         stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
         self.query_one(SubagentStatusWidget).set_subagents(self._state.subagents)
+        self._sync_side_layout()
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
             reasoning_level=self._status_reasoning_level,
@@ -500,6 +513,16 @@ class AceAITUI(App[None]):
             command_input.placeholder = "Choose Approve or Reject"
         else:
             command_input.placeholder = "Ask AceAI or type /quit"
+
+    def _sync_side_layout(self) -> None:
+        stream = self.query_one(StreamWidget)
+        detail = self.query_one(DetailWidget)
+        has_subagents = len(self._state.subagents) > 0
+        if has_subagents:
+            if stream.debug_mode:
+                stream.set_debug_mode(False)
+            detail.add_class("collapsed")
+            return
 
     def _window_title(self) -> str:
         if self._session_id is None:
@@ -604,6 +627,10 @@ def _merge_pending_stream_delta(previous: TUIEvent | None, event: TUIEvent) -> T
         usage=event.usage,
         cost=event.cost,
         error=event.error,
+        run_id=previous.run_id,
+        retry_count=previous.retry_count,
+        retry_max=previous.retry_max,
+        retry_delay_seconds=previous.retry_delay_seconds,
     )
 
 
@@ -620,6 +647,19 @@ def _same_as_last_stream_delta(events: list[TUIEvent], event: TUIEvent) -> bool:
     if not events:
         return False
     return _same_stream_delta(events[-1], event)
+
+
+def _retrying_title(event: TUIEvent) -> str:
+    title = f"Retrying message {event.retry_count}/{event.retry_max}"
+    if event.run_id == "":
+        return title
+    return f"{title} · {_short_id(event.run_id)}"
+
+
+def _short_id(value: str) -> str:
+    if len(value) <= 8:
+        return value
+    return value[:8]
 
 
 def _format_tokens(value: int | None) -> str:

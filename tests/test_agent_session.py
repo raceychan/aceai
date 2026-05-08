@@ -36,12 +36,24 @@ def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
     assert store.get_session(metadata.session_id).session_id == metadata.session_id
 
 
-def test_session_store_lists_sessions_by_recent_update(tmp_path) -> None:
+def test_session_store_lists_sessions_by_recent_user_message(tmp_path) -> None:
     store = SessionStore(tmp_path)
     first = store.create_session()
     second = store.create_session()
 
     store.update_session_title(first.session_id, "first")
+    store.append_event(
+        second.session_id,
+        _user_message_at("second", "2026-05-08T10:00:00+00:00"),
+    )
+    store.append_event(
+        first.session_id,
+        _user_message_at("first", "2026-05-08T11:00:00+00:00"),
+    )
+    store.update_session_state(
+        second.session_id,
+        SessionState(selected_provider="openai", selected_model="gpt-5.5"),
+    )
 
     sessions = store.list_sessions()
 
@@ -618,6 +630,14 @@ class StubEventStore:
 
 def _user_message(content: str) -> SessionEvent:
     return SessionEvent(kind="user_message", payload={"content": content})
+
+
+def _user_message_at(content: str, created_at: str) -> SessionEvent:
+    return SessionEvent(
+        kind="user_message",
+        created_at=created_at,
+        payload={"content": content},
+    )
 
 
 def _assistant_delta(content: str) -> SessionEvent:

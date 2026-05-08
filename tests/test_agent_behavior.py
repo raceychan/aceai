@@ -1,12 +1,15 @@
+import asyncio
+
 import pytest
 
 from aceai.core.agent import Agent
-from aceai.llm.errors import AceAIRuntimeError
+from aceai.llm.errors import AceAIRuntimeError, LLMContextWindowExceededError
 from aceai.core.executor import ToolExecutionError
 from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillRegistry
 from aceai.core.events import (
     AgentEvent,
+    ContextCompressedEvent,
     LLMMediaEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
@@ -134,6 +137,26 @@ class RaisingExecutor(StubExecutor):
         raise self._error
 
 
+class BlockingExecutor(StubExecutor):
+    def __init__(self, results: dict[str, str]) -> None:
+        super().__init__(results)
+        self.both_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(
+        self,
+        invocation,
+        *,
+        tool_state: ToolRunState,
+    ) -> str:
+        tool_call = invocation.call
+        self.calls.append(tool_call)
+        if len(self.calls) == 2:
+            self.both_started.set()
+        await self.release.wait()
+        return self._results[tool_call.name]
+
+
 class RaisingStreamLLMService:
     def __init__(self, events: list[LLMStreamEvent], error: Exception) -> None:
         self._events = list(events)
@@ -172,6 +195,29 @@ class CompressingLLMService:
 
     async def stream(self, **request):
         self.stream_calls.append(request)
+        for event in self._stream_events:
+            yield event
+
+    async def complete(self, **request) -> LLMResponse:
+        self.complete_calls.append(request)
+        return LLMResponse(text="Earlier discussion summary.")
+
+
+class ContextWindowThenRecoveringLLMService:
+    def __init__(self, stream_events: list[LLMStreamEvent]) -> None:
+        self._stream_events = list(stream_events)
+        self.failures_remaining = 1
+        self.complete_calls: list[dict] = []
+        self.stream_calls: list[dict] = []
+
+    async def stream(self, **request):
+        self.stream_calls.append(request)
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise LLMContextWindowExceededError(
+                "APIError: Your input exceeds the context window of this model. "
+                "Please adjust your input and try again."
+            )
         for event in self._stream_events:
             yield event
 
@@ -227,6 +273,11 @@ async def test_agent_compresses_resume_history_before_llm_call() -> None:
     events = [event async for event in agent.resume("new question", history)]
 
     assert isinstance(events[-1], RunCompletedEvent)
+    context_events = [
+        event for event in events if isinstance(event, ContextCompressedEvent)
+    ]
+    assert len(context_events) == 1
+    assert context_events[0].reason == "threshold"
     assert len(llm_service.complete_calls) == 1
     messages = llm_service.stream_calls[0]["messages"]
     assert messages[0].role == "system"
@@ -237,6 +288,74 @@ async def test_agent_compresses_resume_history_before_llm_call() -> None:
     assert "history message 0" not in "\n".join(
         message.content[0]["data"] for message in messages
     )
+
+
+@pytest.mark.anyio
+async def test_agent_compresses_and_retries_current_step_after_context_window_error() -> (
+    None
+):
+    llm_service = ContextWindowThenRecoveringLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(10)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
+    context_events = [
+        event for event in events if isinstance(event, ContextCompressedEvent)
+    ]
+    assert len(context_events) == 1
+    assert context_events[0].reason == "context_window_retry"
+    assert len(llm_service.stream_calls) == 2
+    assert len(llm_service.complete_calls) == 1
+    first_messages = llm_service.stream_calls[0]["messages"]
+    second_messages = llm_service.stream_calls[1]["messages"]
+    assert "history message 0" in "\n".join(
+        message.content[0]["data"] for message in first_messages
+    )
+    assert "<aceai_context_summary>" in second_messages[1].content[0]["data"]
+    assert "Earlier discussion summary." in second_messages[1].content[0]["data"]
+    assert "history message 0" not in "\n".join(
+        message.content[0]["data"] for message in second_messages
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_does_not_retry_context_window_error_without_compressible_context() -> (
+    None
+):
+    llm_service = ContextWindowThenRecoveringLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+
+    events = await collect_events(agent, "new question")
+
+    assert isinstance(events[-1], RunFailedEvent)
+    assert events[-1].error == (
+        "APIError: Your input exceeds the context window of this model. "
+        "Please adjust your input and try again."
+    )
+    assert len(llm_service.stream_calls) == 1
+    assert len(llm_service.complete_calls) == 0
 
 
 @pytest.mark.anyio
@@ -1040,6 +1159,44 @@ async def test_agent_executes_all_tool_calls_in_step() -> None:
     )
 
     events = await collect_events(agent, "Finish?")
+
+    assert executor.calls == [first_call, second_call]
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert events[-1].final_answer == "done"
+
+
+@pytest.mark.anyio
+async def test_agent_executes_approval_free_tool_calls_concurrently() -> None:
+    first_call = LLMToolCall(name="lookup", arguments="{}", call_id="lookup-1")
+    second_call = LLMToolCall(name="calc", arguments="{}", call_id="calc-1")
+    streams = [
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(
+                    text="tool outputs",
+                    tool_calls=[first_call, second_call],
+                ),
+            )
+        ],
+        make_stream(
+            response=LLMResponse(text="done"),
+            deltas=["done"],
+        ),
+    ]
+    executor = BlockingExecutor({"lookup": '{"value":42}', "calc": "3"})
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(streams),
+        executor=executor,
+        max_steps=2,
+    )
+
+    events_task = asyncio.create_task(collect_events(agent, "Finish?"))
+    await asyncio.wait_for(executor.both_started.wait(), timeout=0.2)
+    executor.release.set()
+    events = await events_task
 
     assert executor.calls == [first_call, second_call]
     assert isinstance(events[-1], RunCompletedEvent)

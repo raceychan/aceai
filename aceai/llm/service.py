@@ -27,6 +27,7 @@ from openai import (
 from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIValidationError,
+    LLMContextWindowExceededError,
     LLMProviderError,
 )
 
@@ -41,6 +42,7 @@ from .models import (
 
 JSONDecodeErrors = (ValidationError, DecodeError)
 LLM_RETRY_EXHAUSTED_MESSAGE = "LLM request failed after retries. Please try again later."
+LLM_CONTEXT_WINDOW_EXCEEDED_MESSAGE = "LLM request exceeds the model context window."
 RetryableProviderErrors = (
     TimeoutError,
     httpx.TransportError,
@@ -231,6 +233,8 @@ class LLMService:
             try:
                 return await self._complete_request(request)
             except RetryableProviderErrors as err:
+                if _is_context_window_error(err):
+                    raise LLMContextWindowExceededError(_provider_error_message(err))
                 if not _is_retryable_provider_error(err) or retries_remaining == 0:
                     raise
                 retry_count += 1
@@ -341,10 +345,19 @@ class LLMService:
             except StopAsyncIteration:
                 return
             except RetryableProviderErrors as err:
-                if (
-                    not _is_retryable_provider_error(err)
-                    or retry_count == self._max_retries
-                ):
+                if _is_context_window_error(err):
+                    raise LLMContextWindowExceededError(_provider_error_message(err))
+                if not _is_retryable_provider_error(err):
+                    yield LLMStreamEvent(
+                        event_type="response.completed",
+                        response=LLMResponse(
+                            text=_provider_error_message(err),
+                            status="failed",
+                        ),
+                        segments=[],
+                    )
+                    return
+                if retry_count == self._max_retries:
                     yield LLMStreamEvent(
                         event_type="response.completed",
                         response=LLMResponse(
@@ -387,6 +400,39 @@ async def _next_stream_event(
 
 
 def _is_retryable_provider_error(err: BaseException) -> bool:
+    if _is_context_window_error(err):
+        return False
     if isinstance(err, APIStatusError):
         return err.status_code == 429 or 500 <= err.status_code
     return True
+
+
+def _is_context_window_error(err: BaseException) -> bool:
+    if not isinstance(err, APIError):
+        return False
+    if err.code == "context_length_exceeded":
+        return True
+    if err.type == "context_length_exceeded":
+        return True
+    if err.message == LLM_CONTEXT_WINDOW_EXCEEDED_MESSAGE:
+        return True
+    if "Your input exceeds the context window of this model" in err.message:
+        return True
+    if "context_length_exceeded" in err.message:
+        return True
+    if not isinstance(err.body, dict):
+        return False
+    if "code" in err.body and err.body["code"] == "context_length_exceeded":
+        return True
+    if "type" in err.body and err.body["type"] == "context_length_exceeded":
+        return True
+    if "error" not in err.body:
+        return False
+    error = err.body["error"]
+    if not isinstance(error, dict):
+        return False
+    if "code" in error and error["code"] == "context_length_exceeded":
+        return True
+    if "type" in error and error["type"] == "context_length_exceeded":
+        return True
+    return False

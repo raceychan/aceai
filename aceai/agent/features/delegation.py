@@ -16,6 +16,7 @@ from aceai.core.events import (
 from aceai.core.tools import Annotated, Tool, spec, tool
 from aceai.llm import ILLMService
 from aceai.llm.interface import UNSET, Unset
+from aceai.llm.models import LLMHostedToolSpec
 
 
 DELEGATED_AGENT_SYSTEM_BOUNDARY = """
@@ -63,9 +64,15 @@ def build_delegate_to_subagent_tool(
     llm_service: ILLMService,
     default_model: str,
     available_tools: list[Tool[Any, Any]],
+    available_hosted_tools: list[LLMHostedToolSpec] | None = None,
     child_max_steps: Unset[int] = 4,
 ) -> Tool[Any, Any]:
     tool_map = {available_tool.name: available_tool for available_tool in available_tools}
+    hosted_tool_map = {
+        _hosted_tool_key(hosted_tool): hosted_tool
+        for hosted_tool in available_hosted_tools or []
+    }
+    allowed_tools_description = _allowed_tools_description(hosted_tool_map)
 
     @tool(
         tags=["agent_app", "delegation"],
@@ -110,20 +117,25 @@ def build_delegate_to_subagent_tool(
         allowed_tools: Annotated[
             list[str],
             spec(
-                description=(
-                    "Exact local tool names the subagent may use. Keep this narrow. "
-                    "Use an empty list when no tool access is needed. Do not include "
-                    "approval-required tools."
-                )
+                description=allowed_tools_description
             ),
         ],
     ) -> ChildAgentResult:
-        selected_tools = _select_child_tools(tool_map, allowed_tools)
+        selected_tools = _select_child_tools(
+            tool_map,
+            hosted_tool_map,
+            allowed_tools,
+        )
+        selected_hosted_tools = _select_child_hosted_tools(
+            hosted_tool_map,
+            allowed_tools,
+        )
         child_agent = _build_child_agent(
             llm_service=llm_service,
             default_model=default_model,
             instructions=instructions,
             tools=selected_tools,
+            hosted_tools=selected_hosted_tools,
             child_max_steps=child_max_steps,
         )
         child_question = _format_child_question(
@@ -162,11 +174,14 @@ def build_delegate_to_subagent_tool(
 
 def _select_child_tools(
     tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
     allowed_tools: list[str],
 ) -> list[Tool[Any, Any]]:
     selected_tools: list[Tool[Any, Any]] = []
     approval_tools: list[str] = []
     for tool_name in allowed_tools:
+        if tool_name in hosted_tool_map:
+            continue
         if tool_name not in tool_map:
             raise ToolExecutionError(
                 "delegate_to_subagent received unknown child tool: " + tool_name
@@ -184,19 +199,54 @@ def _select_child_tools(
     return selected_tools
 
 
+def _select_child_hosted_tools(
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+    allowed_tools: list[str],
+) -> list[LLMHostedToolSpec]:
+    selected_tools: list[LLMHostedToolSpec] = []
+    for tool_name in allowed_tools:
+        if tool_name in hosted_tool_map:
+            selected_tools.append(hosted_tool_map[tool_name])
+    return selected_tools
+
+
+def _hosted_tool_key(hosted_tool: LLMHostedToolSpec) -> str:
+    return hosted_tool.provider_name + ":" + hosted_tool.native_name
+
+
+def _allowed_tools_description(
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+) -> str:
+    description = (
+        "Exact local tool names or hosted tool identifiers the subagent may use. "
+        "Hosted tool identifiers use provider:native_name. Keep this narrow. Use "
+        "an empty list when no tool access is needed. Do not include "
+        "approval-required local tools."
+    )
+    if not hosted_tool_map:
+        return description
+    return (
+        description
+        + " Available hosted tool identifiers: "
+        + ", ".join(hosted_tool_map)
+        + "."
+    )
+
+
 def _build_child_agent(
     *,
     llm_service: ILLMService,
     default_model: str,
     instructions: str,
     tools: list[Tool[Any, Any]],
+    hosted_tools: list[LLMHostedToolSpec],
     child_max_steps: Unset[int],
 ) -> Agent:
     return Agent(
         prompt=_format_child_prompt(instructions),
         default_model=default_model,
         llm_service=llm_service,
-        executor=Executor(Graph(), tools),
+        executor=Executor(Graph(), tools, hosted_tools=hosted_tools),
         max_steps=child_max_steps,
         agent_id=f"child-{uuid4()}",
     )

@@ -186,7 +186,7 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
     assert agent._executor.hosted_tools == []
 
 
-def test_build_ace_agent_supports_openai_codex_without_hosted_tools(
+def test_build_ace_agent_supports_openai_codex_with_hosted_tools(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -198,7 +198,8 @@ def test_build_ace_agent_supports_openai_codex_without_hosted_tools(
     )
 
     assert agent.default_model == "gpt-5.4"
-    assert agent._executor.hosted_tools == []
+    assert agent._executor.hosted_tools[0].provider_name == "openai"
+    assert agent._executor.hosted_tools[0].native_name == "web_search"
 
 
 def test_build_ace_agent_can_use_codex_cli_auth_sentinel(
@@ -227,7 +228,8 @@ def test_build_ace_agent_can_use_codex_cli_auth_sentinel(
     )
 
     assert agent.default_model == "gpt-5.4"
-    assert agent._executor.hosted_tools == []
+    assert agent._executor.hosted_tools[0].provider_name == "openai"
+    assert agent._executor.hosted_tools[0].native_name == "web_search"
 
 
 def test_app_file_tool_reports_missing_file_as_tool_execution_error(tmp_path) -> None:

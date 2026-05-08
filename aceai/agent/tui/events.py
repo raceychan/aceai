@@ -94,6 +94,10 @@ class TUIEvent(Record, kw_only=True):
     usage: LLMUsage | None = None
     cost: CostEstimate | None = None
     error: str | None = None
+    run_id: str = ""
+    retry_count: int = 0
+    retry_max: int = 0
+    retry_delay_seconds: float = 0.0
     idea_items: list[TUIIdeaItem] = field(default_factory=list[TUIIdeaItem])
     citations: tuple[TurnCitation, ...] = ()
 
@@ -104,6 +108,7 @@ class TUIEvent(Record, kw_only=True):
         *,
         citations: tuple[TurnCitation, ...] = (),
         event_id: str = "",
+        run_id: str = "",
     ) -> Self:
         return cls(
             kind="user_message",
@@ -112,6 +117,7 @@ class TUIEvent(Record, kw_only=True):
             title="you",
             event_id=event_id or uuid_str(),
             content=question,
+            run_id=run_id,
             citations=citations,
             raw_event=None,
         )
@@ -164,6 +170,7 @@ class TUIEvent(Record, kw_only=True):
                 event.payload["content"],
                 citations=citations,
                 event_id=event.event_id,
+                run_id=event.run_id,
             )
         if event.kind == "assistant_message":
             return cls._from_session_assistant_event(event)
@@ -299,8 +306,17 @@ class TUIEvent(Record, kw_only=True):
             step_index=_session_step_index(event),
             step_id=event.step_id or uuid_str(),
             title="llm retrying",
-            content=event.payload["content"],
+            content=_retrying_content(
+                retry_count=event.payload["retry_count"],
+                retry_max=event.payload["retry_max"],
+                retry_delay_seconds=event.payload["retry_delay_seconds"],
+                error=event.payload["error"],
+            ),
             error=event.payload["error"],
+            run_id=event.run_id,
+            retry_count=event.payload["retry_count"],
+            retry_max=event.payload["retry_max"],
+            retry_delay_seconds=event.payload["retry_delay_seconds"],
             raw_event=None,
         )
 
@@ -372,11 +388,17 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
             step_index=event.step_index,
             step_id=event.step_id,
             title="llm retrying",
-            content=(
-                f"Retrying LLM request {event.retry_count}/{event.retry_max} "
-                f"in {event.retry_delay_seconds:.1f}s after {event.error}"
+            content=_retrying_content(
+                retry_count=event.retry_count,
+                retry_max=event.retry_max,
+                retry_delay_seconds=event.retry_delay_seconds,
+                error=event.error,
             ),
             error=event.error,
+            run_id=event.run_id,
+            retry_count=event.retry_count,
+            retry_max=event.retry_max,
+            retry_delay_seconds=event.retry_delay_seconds,
             raw_event=event,
         )
     if isinstance(event, LLMToolCallDeltaEvent):
@@ -556,6 +578,19 @@ def _session_usage(event: SessionEvent) -> LLMUsage | None:
     if "usage" not in event.payload:
         return None
     return LLMUsage.from_payload(event.payload["usage"])
+
+
+def _retrying_content(
+    *,
+    retry_count: int,
+    retry_max: int,
+    retry_delay_seconds: float,
+    error: str,
+) -> str:
+    return (
+        f"Retrying message {retry_count}/{retry_max} "
+        f"in {retry_delay_seconds:.1f}s after {error}"
+    )
 
 
 def _session_cost(event: SessionEvent) -> CostEstimate | None:

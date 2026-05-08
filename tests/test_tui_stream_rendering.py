@@ -83,7 +83,7 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     assert block.plain == "  Hi!"
 
 
-def test_llm_retry_progress_is_hidden_from_stream() -> None:
+def test_llm_retry_progress_renders_in_stream() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [
         TUIEvent.from_agent_event(
@@ -98,7 +98,13 @@ def test_llm_retry_progress_is_hidden_from_stream() -> None:
 
     renderables = _render_events(events)
 
-    assert renderables == []
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert (
+        text.plain
+        == "  ● retry  Retrying message 1/2 in 0.5s after RemoteProtocolError: peer closed"
+    )
 
 
 def test_main_stream_renders_question_before_answer() -> None:
@@ -1126,7 +1132,87 @@ def test_short_shell_command_arguments_render_inline() -> None:
     assert len(renderables) == 1
     text = renderables[0]
     assert isinstance(text, Text)
-    assert text.plain == '  ● run_shell_command("bash ls")  command exited 0'
+    assert text.plain == '  ● run_shell_command("bash ls")  succeeded'
+
+
+def test_shell_command_result_summarizes_success_without_stdout_details() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"bash ls"}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output='{"exit_code":0,"stdout":"a.py\\nb.py\\n","stderr":""}',
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == '  ● run_shell_command("bash ls")  succeeded'
+
+
+def test_search_result_with_exit_code_summarizes_as_search() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="search_text",
+        arguments='{"query":"delegate_to_subagent","path":"/Users/raceychan/mylab/aceai"}',
+        call_id="call-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"query":"delegate_to_subagent",'
+            '"path":"/Users/raceychan/mylab/aceai",'
+            '"exit_code":0,'
+            '"matches":"/Users/raceychan/mylab/aceai/aceai/agent/ace_agent.py",'
+            '"errors":""}'
+        ),
+    )
+    events = [
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+        TUIEvent.from_agent_event(builder.tool_completed(tool_call=call, tool_result=result)),
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert text.plain == '  ● search_text(query: "delegate_to_subagent", path: "/Users/raceychan/mylab/aceai")  search finished'
+
+
+def test_run_failed_event_renders_error() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    step = AgentStep(
+        step_id="step-1",
+        llm_response=LLMResponse(text=""),
+    )
+    events = [
+        TUIEvent.from_agent_event(
+            builder.run_failed(
+                step=step,
+                error="LLM request failed after retries. Please try again later.",
+            )
+        )
+    ]
+
+    renderables = _render_events(events)
+
+    assert len(renderables) == 1
+    text = renderables[0]
+    assert isinstance(text, Text)
+    assert (
+        text.plain
+        == "  ● failed  LLM request failed after retries. Please try again later."
+    )
 
 
 def test_long_and_complex_tool_arguments_render_collapsed_preview() -> None:

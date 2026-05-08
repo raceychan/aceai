@@ -7,15 +7,18 @@ from rich.pretty import Pretty
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from textual.containers import ScrollableContainer
+from textual.events import Key, Resize
+from textual.widgets import RichLog
 
 from aceai.agent.tui.events import TUIEvent
 from aceai.agent.tui.state import TUIRunState
 from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 
 
-class DetailWidget(ScrollableContainer):
+class DetailWidget(RichLog):
     """Render readable details for the selected event."""
+
+    can_focus = True
 
     DEFAULT_CSS = """
     DetailWidget {
@@ -26,6 +29,7 @@ class DetailWidget(ScrollableContainer):
         width: 38;
         height: 1fr;
         overflow-y: auto;
+        overflow-x: hidden;
     }
     """
 
@@ -36,15 +40,49 @@ class DetailWidget(ScrollableContainer):
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
-        super().__init__(id=id, classes=classes, can_focus=True)
+        super().__init__(id=id, classes=classes, wrap=True, auto_scroll=False)
         self._state = state or TUIRunState()
 
     def set_state(self, state: TUIRunState) -> None:
         self._state = state
-        self.refresh()
-        self.call_after_refresh(self.scroll_end, animate=False)
+        self.clear()
+        self.call_after_refresh(self._render_state)
 
-    def render(self) -> RenderableType:
+    def on_resize(self, event: Resize) -> None:
+        self._render_state()
+
+    def on_key(self, event: Key) -> None:
+        if event.key in ("up", "k"):
+            self.scroll_up(animate=False, force=True, immediate=True)
+            event.stop()
+            return
+        if event.key in ("down", "j"):
+            self.scroll_down(animate=False, force=True, immediate=True)
+            event.stop()
+            return
+        if event.key == "pageup":
+            self.scroll_page_up(animate=False, force=True)
+            event.stop()
+            return
+        if event.key == "pagedown":
+            self.scroll_page_down(animate=False, force=True)
+            event.stop()
+            return
+        if event.key == "home":
+            self.scroll_home(animate=False, force=True)
+            event.stop()
+            return
+        if event.key == "end":
+            self.scroll_end(animate=False, force=True)
+            event.stop()
+
+    def _render_state(self) -> None:
+        self.clear()
+        width = max(1, self.scrollable_content_region.width)
+        self.write(self._render_detail(), width=width)
+        self.call_after_refresh(self.scroll_home, animate=False)
+
+    def _render_detail(self) -> RenderableType:
         event = _selected_event(self._state)
         if event is None:
             return "No event selected"

@@ -13,5 +13,6 @@ from .errors import AceAIError as AceAIError
 from .errors import AceAIImplementationError as AceAIImplementationError
 from .errors import AceAIRuntimeError as AceAIRuntimeError
 from .errors import AceAIValidationError as AceAIValidationError
+from .errors import LLMContextWindowExceededError as LLMContextWindowExceededError
 from .errors import LLMProviderError as LLMProviderError
 from .errors import UnannotatedToolParamError as UnannotatedToolParamError

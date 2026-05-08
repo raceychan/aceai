@@ -3,7 +3,7 @@
 from typing import ClassVar, Literal
 
 from aceai.llm.interface import Record
-from aceai.llm.models import LLMSegment, LLMToolCall, LLMToolCallDelta
+from aceai.llm.models import LLMMessage, LLMSegment, LLMToolCall, LLMToolCallDelta
 
 from .models import (
     AgentStep,
@@ -20,6 +20,7 @@ AgentEventType = Literal[
     "agent.llm.reasoning",
     "agent.llm.retrying",
     "agent.llm.completed",
+    "agent.context.compressed",
     "agent.tool.started",
     "agent.tool.output",
     "agent.tool.approval_requested",
@@ -89,6 +90,13 @@ class LLMRetryingEvent(AgentLifecycleEvent):
 class LLMCompletedEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.llm.completed"
     step: AgentStep
+
+
+class ContextCompressedEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.context.compressed"
+    reason: Literal["threshold", "context_window_retry"]
+    compression_count: int
+    history: list[LLMMessage]
 
 
 class ToolLifecycleEvent(AgentLifecycleEvent):
@@ -163,6 +171,7 @@ type AgentEvent = (
     | LLMReasoningEvent
     | LLMRetryingEvent
     | LLMCompletedEvent
+    | ContextCompressedEvent
     | ToolStartedEvent
     | ToolOutputEvent
     | ToolApprovalRequestedEvent
@@ -253,6 +262,22 @@ class AgentEventBuilder:
             step_index=self.step_index,
             step_id=self.step_id,
             step=step,
+        )
+
+    def context_compressed(
+        self,
+        *,
+        reason: Literal["threshold", "context_window_retry"],
+        compression_count: int,
+        history: list[LLMMessage],
+    ) -> ContextCompressedEvent:
+        return ContextCompressedEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            reason=reason,
+            compression_count=compression_count,
+            history=history,
         )
 
     def tool_started(self, *, tool_call: LLMToolCall) -> ToolStartedEvent:

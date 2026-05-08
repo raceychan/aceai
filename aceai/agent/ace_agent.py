@@ -69,6 +69,12 @@ def build_ace_agent(
     else:
         raise ValueError("Unsupported provider")
     llm_service = LLMService([provider], timeout_seconds=120.0)
+    if hosted_tools is None and provider_name in ("openai", "codex"):
+        selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
+    elif hosted_tools is None:
+        selected_hosted_tools = []
+    else:
+        selected_hosted_tools = hosted_tools
     app_tools = default_agent_tools(
         tool_permissions=tool_permissions,
         tool_enabled=tool_enabled,
@@ -79,14 +85,9 @@ def build_ace_agent(
             llm_service=llm_service,
             default_model=model,
             available_tools=app_tools,
+            available_hosted_tools=selected_hosted_tools,
         )
     )
-    if hosted_tools is None and provider_name == "openai":
-        selected_hosted_tools = ACE_AGENT_HOSTED_TOOLS
-    elif hosted_tools is None:
-        selected_hosted_tools = []
-    else:
-        selected_hosted_tools = hosted_tools
     executor = Executor(
         Graph(),
         app_tools,

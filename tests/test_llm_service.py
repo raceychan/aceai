@@ -10,6 +10,7 @@ from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIRuntimeError,
     AceAIValidationError,
+    LLMContextWindowExceededError,
     LLMProviderError,
 )
 from aceai.llm.models import (
@@ -180,6 +181,49 @@ class FlakyAPIErrorStreamProvider(RecordingProvider):
         return iterator()
 
 
+class ContextWindowCompleteProvider(RecordingProvider):
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        self.complete_requests.append(request)
+        raise APIError(
+            "Your input exceeds the context window of this model. "
+            "Please adjust your input and try again.",
+            request=httpx.Request(
+                "POST",
+                "https://api.openai.com/v1/responses",
+            ),
+            body={
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "Your input exceeds the context window of this model.",
+                },
+            },
+        )
+
+
+class ContextWindowStreamProvider(RecordingProvider):
+    def stream(self, request: LLMInput):
+        self.stream_requests.append(request)
+
+        async def iterator():
+            raise APIError(
+                "Your input exceeds the context window of this model. "
+                "Please adjust your input and try again.",
+                request=httpx.Request(
+                    "POST",
+                    "https://api.openai.com/v1/responses",
+                ),
+                body={
+                    "error": {
+                        "code": "context_length_exceeded",
+                        "message": "Your input exceeds the context window of this model.",
+                    },
+                },
+            )
+            yield LLMStreamEvent(event_type="response.completed")
+
+        return iterator()
+
+
 class HangingStreamProvider(RecordingProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -301,6 +345,21 @@ async def test_llm_service_complete_retries_retryable_provider_errors() -> None:
 
 
 @pytest.mark.anyio
+async def test_llm_service_complete_does_not_retry_context_window_errors() -> None:
+    provider = ContextWindowCompleteProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    with pytest.raises(LLMContextWindowExceededError):
+        await service.complete(messages=[LLMMessage.build("system", "Prompt")])
+
+    assert len(provider.complete_requests) == 1
+
+
+@pytest.mark.anyio
 async def test_llm_service_stream_preserves_request_metadata() -> None:
     event = LLMStreamEvent(
         event_type="response.output_text.delta",
@@ -369,6 +428,22 @@ async def test_llm_service_stream_retries_openai_api_error_events() -> None:
         "APIError: Our servers are currently overloaded. Please try again later."
     )
     assert len(provider.stream_requests) == 2
+
+
+@pytest.mark.anyio
+async def test_llm_service_stream_does_not_retry_context_window_errors() -> None:
+    provider = ContextWindowStreamProvider()
+    service = LLMService(
+        [provider],
+        timeout_seconds=1.0,
+        retry_initial_delay_seconds=0.0,
+    )
+
+    with pytest.raises(LLMContextWindowExceededError):
+        async for event in service.stream(messages=[LLMMessage.build("system", "s")]):
+            raise AssertionError(f"unexpected stream event: {event.event_type}")
+
+    assert len(provider.stream_requests) == 1
 
 
 @pytest.mark.anyio

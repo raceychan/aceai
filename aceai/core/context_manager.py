@@ -201,15 +201,15 @@ class ContextManager:
         self,
         *,
         llm_service: ILLMService,
-    ) -> None:
+    ) -> bool:
         policy = self._compression_policy
         if len(self._context) <= policy.keep_recent_messages + 1:
-            return
+            return False
         system_message = self._context[0]
         old_messages = self._context[1 : -policy.keep_recent_messages]
         recent_messages = self._context[-policy.keep_recent_messages :]
         if not old_messages:
-            return
+            return False
         response = await llm_service.complete(
             messages=[
                 LLMMessage.build(
@@ -237,6 +237,7 @@ class ContextManager:
         )
         self._context = [system_message, summary_message] + recent_messages
         self._compression_count += 1
+        return True
 
     def add_tool_call(self, tool_call_resp: LLMResponse) -> None:
         assistant_msg = LLMToolCallMessage.from_content(

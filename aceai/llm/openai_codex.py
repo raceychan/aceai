@@ -7,7 +7,7 @@ from typing import Any, AsyncGenerator
 
 from openai import AsyncOpenAI
 
-from aceai.llm.errors import AceAIConfigurationError
+from aceai.llm.errors import AceAIConfigurationError, AceAIRuntimeError
 from aceai.llm.models import LLMInput, LLMResponse, LLMSegment, LLMStreamEvent
 from aceai.llm.openai import OpenAI, OpenAIMeta, OpenAIPayload
 
@@ -44,6 +44,15 @@ class OpenAICodex(OpenAI):
         if "max_output_tokens" in kwargs:
             del kwargs["max_output_tokens"]
         return kwargs
+
+    async def complete(self, request: LLMInput) -> LLMResponse:
+        response: LLMResponse | None = None
+        async for event in self.stream(request):
+            if event.event_type == "response.completed" and event.response is not None:
+                response = event.response
+        if response is None:
+            raise AceAIRuntimeError("OpenAI Codex stream did not complete")
+        return response
 
     async def stream(self, request: LLMInput) -> AsyncGenerator[LLMStreamEvent, None]:
         text = ""

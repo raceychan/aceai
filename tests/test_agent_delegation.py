@@ -10,7 +10,12 @@ from aceai.agent.features.tools import (
     search_text,
 )
 from aceai.core import ToolExecutionError
-from aceai.llm.models import LLMResponse, LLMStreamEvent, LLMToolCall
+from aceai.llm.models import (
+    LLMHostedToolSpec,
+    LLMResponse,
+    LLMStreamEvent,
+    LLMToolCall,
+)
 
 
 class RecordingDelegationLLMService:
@@ -138,6 +143,62 @@ async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path
     assert [tool.name for tool in first_call_tools] == ["read_text_file"]
     second_call_tools = llm_service.stream_calls[1]["tools"]
     assert [tool.name for tool in second_call_tools] == ["read_text_file"]
+
+
+@pytest.mark.anyio
+async def test_delegate_to_subagent_allows_child_hosted_tools() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+    llm_service = RecordingDelegationLLMService(
+        [
+            completed_stream(
+                LLMResponse(
+                    text=(
+                        "Summary:\nFound current news.\n\n"
+                        "Evidence:\nUsed hosted web search.\n\n"
+                        "Risks:\nNone."
+                    )
+                )
+            )
+        ]
+    )
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-5.5",
+        available_tools=[],
+        available_hosted_tools=[hosted_tool],
+    )
+
+    result = await delegate_to_subagent(
+        task="Search current Iran news.",
+        instructions="Use hosted web search.",
+        context_brief="Current date is 2026-05-08.",
+        allowed_tools=["openai:web_search"],
+    )
+
+    assert result.status == "completed"
+    assert result.final_answer.startswith("Summary:\nFound current news.")
+    assert llm_service.stream_calls[0]["tools"] == [hosted_tool]
+
+
+def test_delegate_to_subagent_schema_lists_available_hosted_tools() -> None:
+    hosted_tool = LLMHostedToolSpec(
+        provider_name="openai",
+        native_name="web_search",
+    )
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=RecordingDelegationLLMService([]),
+        default_model="gpt-5.5",
+        available_tools=[],
+        available_hosted_tools=[hosted_tool],
+    )
+
+    schema = delegate_to_subagent.tool_spec.generate_schema()
+
+    description = schema["parameters"]["properties"]["allowed_tools"]["description"]
+    assert "Available hosted tool identifiers: openai:web_search." in description
 
 
 @pytest.mark.anyio

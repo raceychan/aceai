@@ -35,6 +35,7 @@ from aceai.llm import LLMMessage
 from aceai.llm.models import (
     LLMHostedToolSpec,
     LLMMessagePart,
+    LLMResponse,
     LLMResponseFormat,
     LLMStreamEvent,
     LLMToolCall,
@@ -42,6 +43,7 @@ from aceai.llm.models import (
     LLMToolUseMessage,
 )
 from aceai.llm.openai import OpenAI, OpenAIPayload
+from aceai.llm.openai_codex import OpenAICodex
 from aceai.core.tools import tool
 from aceai.core.tools._tool_sig import Annotated, spec
 
@@ -754,6 +756,21 @@ async def test_complete_uses_default_metadata(
     create_call = fake_openai_client.responses.create_calls[0]
     assert create_call["model"] == "gpt-4o"
     assert response.provider_meta[0].response_id == "fake-response"
+
+
+@pytest.mark.anyio
+async def test_codex_complete_uses_stream() -> None:
+    class StreamingCodex(OpenAICodex):
+        async def stream(self, request):
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done"),
+            )
+
+    provider = StreamingCodex.__new__(StreamingCodex)
+    response = await provider.complete({})
+
+    assert response.text == "done"
 
 
 @pytest.mark.anyio

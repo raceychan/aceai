@@ -4,6 +4,7 @@ from .executor import Executor as Executor
 from .executor import IExecutor as IExecutor
 from .executor import LoggingExecutor as LoggingExecutor
 from .executor import ToolExecutionError as ToolExecutionError
+from .events import ContextCompressedEvent as ContextCompressedEvent
 from .models import ToolApprovalDecision as ToolApprovalDecision
 from .models import ToolApprovalRequest as ToolApprovalRequest
 from .run_loop import AgentRunContext as AgentRunContext

@@ -3,6 +3,11 @@ from typing import Any
 from msgspec import Struct
 
 from aceai.agent.citations import TurnCitation, citation_payload
+from aceai.agent.context_checkpoint_store import (
+    ContextCheckpoint,
+    ContextCheckpointStore,
+)
+from aceai.agent.context_history import build_context_history
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,
@@ -13,8 +18,10 @@ from aceai.agent.session import (
     SessionStore,
 )
 from aceai.agent.project import ProjectMetadata
+from aceai.core.helpers.string import uuid_str
 from aceai.core.events import (
     AgentEvent,
+    ContextCompressedEvent,
     LLMCompletedEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
@@ -55,6 +62,7 @@ class SessionService:
         recorder: SessionRecorder | None = None,
         session_id: str | None = None,
         project: ProjectMetadata | None = None,
+        context_checkpoint_store: ContextCheckpointStore | None = None,
     ) -> None:
         if recorder is not None and session_id is not None:
             if recorder.session_id != session_id:
@@ -66,6 +74,11 @@ class SessionService:
         )
         self._recorder = recorder
         self._session_id = session_id or (recorder.session_id if recorder is not None else None)
+        self._context_checkpoint_store = (
+            context_checkpoint_store
+            if context_checkpoint_store is not None
+            else ContextCheckpointStore(self._store.root / "context_checkpoints")
+        )
 
     @property
     def store(self) -> SessionStore:
@@ -74,6 +87,10 @@ class SessionService:
     @property
     def recorder(self) -> SessionRecorder | None:
         return self._recorder
+
+    @property
+    def context_checkpoint_store(self) -> ContextCheckpointStore:
+        return self._context_checkpoint_store
 
     @property
     def session_id(self) -> str | None:
@@ -98,10 +115,14 @@ class SessionService:
     def snapshot(self, session_id: str) -> AgentSessionSnapshot:
         metadata = self._store.get_session(session_id)
         event_log = self._store.load_event_log(session_id)
+        checkpoint = self._context_checkpoint_store.latest_checkpoint(session_id)
         return AgentSessionSnapshot(
             metadata=metadata,
             event_log=event_log,
-            history=event_log.replay_llm_history(),
+            history=build_context_history(
+                event_log=event_log,
+                checkpoint=checkpoint,
+            ),
             state=self._store.get_session_state(session_id),
         )
 
@@ -123,12 +144,13 @@ class SessionService:
         *,
         run_id: str,
         citations: tuple[TurnCitation, ...] = (),
-    ) -> None:
+    ) -> str:
         payload: dict[str, Any] = {"content": content}
         if citations:
             payload["citations"] = citation_payload(citations)
-        self.record_session_event(
+        event_id = self.record_session_event(
             SessionEvent(
+                event_id=uuid_str(),
                 run_id=run_id,
                 step_id=None,
                 step_index=None,
@@ -136,14 +158,36 @@ class SessionService:
                 payload=payload,
             )
         )
+        if event_id is None:
+            raise RuntimeError("user_message did not persist a session event")
+        return event_id
 
-    def record_agent_event(self, event: AgentEvent) -> None:
-        self.record_session_event(agent_event_to_session_event(event))
+    def record_agent_event(self, event: AgentEvent) -> str | None:
+        return self.record_session_event(agent_event_to_session_event(event))
 
-    def record_session_event(self, event: SessionEvent) -> None:
+    def record_context_checkpoint(
+        self,
+        event: ContextCompressedEvent,
+        *,
+        included_event_id: str,
+    ) -> ContextCheckpoint:
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
+        return self._context_checkpoint_store.record_checkpoint(
+            session_id=session_id,
+            run_id=event.run_id,
+            step_id=event.step_id,
+            reason=event.reason,
+            compression_count=event.compression_count,
+            included_event_id=included_event_id,
+            history=event.history,
+        )
+
+    def record_session_event(self, event: SessionEvent) -> str | None:
         if self._recorder is None:
             raise RuntimeError("AceAI session is not active")
-        self._recorder.record(event)
+        return self._recorder.record(event)
 
     def finalize(self) -> bool:
         if self._recorder is None:
@@ -304,6 +348,6 @@ def _tool_payload(event) -> dict[str, Any]:
 
 def _retrying_content(event: LLMRetryingEvent) -> str:
     return (
-        f"Retrying LLM request {event.retry_count}/{event.retry_max} "
+        f"Retrying message {event.retry_count}/{event.retry_max} "
         f"in {event.retry_delay_seconds:.1f}s after {event.error}"
     )
