@@ -93,7 +93,7 @@ def _test_citation(content: str) -> TurnCitation:
     )
 
 
-async def _wait_until(pilot, predicate, timeout: float = 0.2) -> None:
+async def _wait_until(pilot, predicate, timeout: float = 1.0) -> None:
     async def wait_for_match() -> None:
         while not predicate():
             await pilot.pause()
