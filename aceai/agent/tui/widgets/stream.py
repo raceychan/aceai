@@ -1,6 +1,8 @@
 """Main event stream pane for the read-only TUI prototype."""
 
 import json
+import shutil
+import subprocess
 from hashlib import sha1
 
 from rich import box
@@ -102,10 +104,12 @@ class StreamWidget(RichLog):
         *,
         id: str | None = None,
         project_name: str = "",
+        project_root_path: str = "",
     ) -> None:
         super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
         self._project_name = project_name
+        self._project_root_path = project_root_path
         self._debug_mode = False
         self._selected_debug_index = 0
         self._empty_state_frame_index = 0
@@ -120,6 +124,9 @@ class StreamWidget(RichLog):
 
     def set_project_name(self, project_name: str) -> None:
         self._project_name = project_name
+
+    def set_project_root_path(self, project_root_path: str) -> None:
+        self._project_root_path = project_root_path
 
     def set_debug_mode(self, enabled: bool) -> str | None:
         self._debug_mode = enabled
@@ -301,20 +308,25 @@ class StreamWidget(RichLog):
                 self._empty_state_frame_index % len(EMPTY_STATE_DOG_PIXELS)
             ]
         )
-        prompt = _center_empty_state_text(
-            "Ask AceAI Anything",
+        title = _center_empty_state_text(
+            f"AceAI v{__version__}",
             style="bold #8fbcbb",
         )
         project = _center_empty_state_text(
             f"Project: {self._project_name}",
             style="bold #d8dee9",
         )
-        version = _center_empty_state_text(
-            f"v{__version__}",
-            style="#a7b1c2",
+        branch_name = _git_branch_name(self._project_root_path)
+        branch = (
+            _center_empty_state_text(
+                f"Git: {branch_name}",
+                style="#a7b1c2",
+            )
+            if branch_name is not None
+            else Text("")
         )
         content = Align.center(
-            Group(dog, Text(""), prompt, project, version),
+            Group(dog, Text(""), title, project, branch),
             vertical="middle",
         )
         top_padding = _empty_state_top_padding(self)
@@ -1390,6 +1402,23 @@ def _render_empty_state_dog(frame: tuple[str, ...]) -> RenderableType:
 def _center_empty_state_text(value: str, *, style: str) -> Text:
     left_padding = max(0, (EMPTY_STATE_DOG_WIDTH - len(value)) // 2)
     return Text(f"{' ' * left_padding}{value}", style=style)
+
+
+def _git_branch_name(project_root_path: str) -> str | None:
+    if project_root_path == "" or shutil.which("git") is None:
+        return None
+    completed = subprocess.run(
+        ["git", "-C", project_root_path, "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    branch = completed.stdout.strip()
+    if branch == "":
+        return None
+    return branch
 
 
 def _empty_state_top_padding(stream: StreamWidget) -> int:

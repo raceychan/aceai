@@ -27,7 +27,7 @@ Session 是 agent app 层能力，当前归属 `aceai/agent/session.py`，不下
 - Session 和 Ideas 都通过 `project_id` 关联 Project；`project_name` 只作为展示/导出快照，不作为主关联键。这样同名目录不会混在一起，后续 project rename 或路径迁移也有明确升级空间。
 - SQLite 只保存 session 索引和元数据，例如 `session_id`、创建/更新时间、标题、消息文件路径。查询必须通过 SQLAlchemy Core query builder，不写手拼 SQL 字符串。
 - Session metadata 必须包含 `project_id` 和 `project_name`。默认 `/sessions` 和 `aceai resume` 的最新会话选择展示全部 session，但当前 Project 下的 session 排在最前；显式 `aceai resume <session_id>` 仍可按全局唯一 session id 直接恢复。
-- Ideas 是结构化存储，当前归属 `aceai/agent/ideas.py`，默认使用 SQLite；不要把 Markdown 文件当作读写存储格式。Idea 记录必须包含 `idea_id`、`project_id`、`project_name`、`workspace` 和可选 `source_session_id`。默认 idea picker 展示全部 ideas，但当前 Project 下的 ideas 排在最前；如果当前 Project 没有 ideas，就自然展示下一个有内容的 Project。`workspace` 作为来源路径证据保留。Markdown 只作为结构化 ideas 的渲染/导出结果。
+- Ideas 是结构化 memory 存储，当前归属 `aceai/agent/memory/ideas.py`，默认使用 SQLite；不要把 Markdown 文件当作读写存储格式。Idea 记录必须包含 `idea_id`、`project_id`、`project_name`、`workspace` 和可选 `source_session_id`。默认 idea picker 展示全部 ideas，但当前 Project 下的 ideas 排在最前；如果当前 Project 没有 ideas，就自然展示下一个有内容的 Project。`workspace` 作为来源路径证据保留。Markdown 只作为结构化 ideas 的渲染/导出结果。
 - Session metadata 使用正确的数据类型：`created_at`、`updated_at` 在 Python 侧是 `datetime`，数据库列是 datetime 类型，方便后续排序和过滤。
 - 文件保存 compact transcript，当前使用 JSONL，一行是一条合并后的用户、assistant、tool 或 error 消息。
 - 不要把 streaming event 原样持久化。`assistant_delta`、`tool_call_delta`、`tool_output` 这类高频事件必须在写入前合并，否则一次回答会产生大量无意义存储。

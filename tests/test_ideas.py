@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import insert as sql_insert
 
-from aceai.agent.ideas import Idea, IdeaStore, ideas_to_markdown
+from aceai.agent.memory.ideas import Idea, IdeaStore, ideas_to_markdown
 from aceai.agent.project import ProjectMetadata
 
 

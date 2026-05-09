@@ -16,12 +16,14 @@ from aceai.llm.models import (
 
 
 CONTEXT_CHECKPOINT_VERSION = 2
+MAIN_CONTEXT_THREAD_ID = "main"
 ContextCheckpointReason = Literal["threshold", "context_window_retry"]
 
 
 class ContextCheckpoint(Struct, frozen=True, kw_only=True):
     checkpoint_id: str
     session_id: str
+    thread_id: str
     run_id: str
     step_id: str
     reason: ContextCheckpointReason
@@ -43,6 +45,7 @@ class ContextCheckpointStore:
         self,
         *,
         session_id: str,
+        thread_id: str = MAIN_CONTEXT_THREAD_ID,
         run_id: str,
         step_id: str,
         reason: ContextCheckpointReason,
@@ -55,6 +58,7 @@ class ContextCheckpointStore:
         checkpoint = ContextCheckpoint(
             checkpoint_id=uuid_str(),
             session_id=session_id,
+            thread_id=thread_id,
             run_id=run_id,
             step_id=step_id,
             reason=reason,
@@ -65,7 +69,7 @@ class ContextCheckpointStore:
             history=list(history),
             units=context_units_payload_from_messages(history),
         )
-        path = self._path_for(session_id)
+        path = self._path_for(session_id, thread_id)
         with path.open("a", encoding="utf-8") as stream:
             stream.write(
                 json.dumps(_checkpoint_to_payload(checkpoint), ensure_ascii=False)
@@ -73,8 +77,14 @@ class ContextCheckpointStore:
             stream.write("\n")
         return checkpoint
 
-    def latest_checkpoint(self, session_id: str) -> ContextCheckpoint | None:
-        path = self._path_for(session_id)
+    def latest_checkpoint(
+        self,
+        session_id: str,
+        thread_id: str = MAIN_CONTEXT_THREAD_ID,
+    ) -> ContextCheckpoint | None:
+        path = self._path_for(session_id, thread_id)
+        if not path.exists() and thread_id == MAIN_CONTEXT_THREAD_ID:
+            path = self._legacy_path_for(session_id)
         if not path.exists():
             return None
         latest: ContextCheckpoint | None = None
@@ -89,7 +99,10 @@ class ContextCheckpointStore:
             latest = _checkpoint_from_payload(payload)
         return latest
 
-    def _path_for(self, session_id: str) -> Path:
+    def _path_for(self, session_id: str, thread_id: str) -> Path:
+        return self.root / f"{session_id}.{thread_id}.checkpoints.jsonl"
+
+    def _legacy_path_for(self, session_id: str) -> Path:
         return self.root / f"{session_id}.checkpoints.jsonl"
 
 
@@ -242,6 +255,7 @@ def _checkpoint_to_payload(checkpoint: ContextCheckpoint) -> dict[str, Any]:
         "version": checkpoint.version,
         "checkpoint_id": checkpoint.checkpoint_id,
         "session_id": checkpoint.session_id,
+        "thread_id": checkpoint.thread_id,
         "run_id": checkpoint.run_id,
         "step_id": checkpoint.step_id,
         "reason": checkpoint.reason,
@@ -262,10 +276,15 @@ def _checkpoint_from_payload(payload: dict[str, Any]) -> ContextCheckpoint:
         raise TypeError("context checkpoint units must be list")
     units = _context_units_from_payload(units_payload)
     history = messages_from_context_units_payload(units)
+    if "thread_id" in payload:
+        thread_id = payload["thread_id"]
+    else:
+        thread_id = MAIN_CONTEXT_THREAD_ID
     return ContextCheckpoint(
         version=version,
         checkpoint_id=payload["checkpoint_id"],
         session_id=payload["session_id"],
+        thread_id=thread_id,
         run_id=payload["run_id"],
         step_id=payload["step_id"],
         reason=payload["reason"],

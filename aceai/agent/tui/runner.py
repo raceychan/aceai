@@ -17,7 +17,7 @@ from aceai.agent.citations import (
     IdeaCitationOrigin,
     TurnCitation,
 )
-from aceai.agent.ideas import Idea, IdeaStore
+from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import (
@@ -27,7 +27,7 @@ from aceai.agent.provider_catalog import (
     supports_reasoning_effort,
 )
 from aceai.agent.provider_auth import default_api_key_for_provider
-from aceai.agent.session import SessionRecorder, SessionState
+from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import (
     AgentAppConfig,
@@ -76,7 +76,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "idea": "Show ideas, save an idea, or delete one",
     "quit": "Exit AceAI",
     "sessions": "Open the session picker",
-    "stats": "Open runtime and usage details in config",
+    "stats": "Open runtime and usage stats",
     "steer": "Interrupt or redirect the current run",
     "subagents": "Show delegated subagent details",
     "trajectory": "Open the event trajectory view",
@@ -241,6 +241,7 @@ class _RuntimeStreamMixin:
         self._session_id = self._agent_app.session_id
         self._llm_history = self._agent_app.llm_history
         self._active_run = self._agent_app.active_run
+        self._active_thread_id = self._agent_app.active_thread_id
         self._refresh_queued_turns()
         if self._session_id is not None:
             self.title = self._window_title()
@@ -374,7 +375,7 @@ class _RuntimeStreamMixin:
 
     @tui_command("stats")
     def _command_stats(self, arg: str) -> None:
-        self.open_config_screen(initial_tab="stats-tab")
+        self.open_stats_screen()
 
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
@@ -386,6 +387,12 @@ class _RuntimeStreamMixin:
 
     @tui_command("subagents")
     def _command_subagents(self, arg: str) -> None:
+        if arg != "":
+            if arg == "main":
+                self.switch_thread(MAIN_THREAD_ID)
+                return
+            self.switch_thread(arg)
+            return
         self.action_show_subagents()
 
     @tui_command("trajectory")
@@ -490,6 +497,22 @@ class _RuntimeStreamMixin:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
         self._start_run_now(question)
+
+    def switch_thread(self, thread_id: str) -> None:
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before switching threads.")
+            )
+            return
+        try:
+            snapshot = agent_app.switch_thread(thread_id)
+        except (KeyError, RuntimeError) as exc:
+            self.append_event(TUIEvent.session_notice(str(exc)))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.notify_session(f"Switched thread {thread_id}")
 
     def _start_run_now(
         self,
@@ -883,7 +906,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
+    def open_config_screen(self) -> None:
         self.push_screen(
             ConfigScreen(
                 provider_name=self._provider_name,
@@ -895,8 +918,6 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
-                stats_sections=self._metadata_sections(),
-                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1174,6 +1195,13 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
         self._restore_session_state()
 
+    def switch_thread(self, thread_id: str) -> None:
+        if self._current_config is None:
+            AceAITUI.switch_thread(self, thread_id)
+            return
+        self._ensure_agent_app()
+        _RuntimeStreamMixin.switch_thread(self, thread_id)
+
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()
         if request is None:
@@ -1231,7 +1259,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
+    def open_config_screen(self) -> None:
         api_keys: dict[str, str] = {}
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
@@ -1259,8 +1287,6 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 if self._current_config is not None
                 else "100%",
                 reasoning_level=self._reasoning_level,
-                stats_sections=self._metadata_sections(),
-                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1452,6 +1478,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     permission=permission,
                     enabled=configured_enabled.get(configured_tool.name, True),
                     max_calls_per_run=configured_max_calls.get(configured_tool.name),
+                    tags=tuple(configured_tool.metadata.tags),
                 )
             )
         return tuple(items)

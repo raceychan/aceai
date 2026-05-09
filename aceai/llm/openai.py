@@ -386,7 +386,16 @@ class OpenAIPayload(Struct, kw_only=True):
     def _format_tool(self, tool: LLMToolSpec) -> dict[str, Any]:
         if isinstance(tool, IToolSpec):
             schema = tool.generate_schema()
-            return cast(dict[str, Any], cast(FunctionToolParam, schema))
+            return cast(
+                dict[str, Any],
+                cast(
+                    FunctionToolParam,
+                    {
+                        "type": "function",
+                        **schema,
+                    },
+                ),
+            )
         if tool.provider_name != "openai":
             raise AceAIConfigurationError(
                 f"OpenAI cannot serialize hosted tool for provider {tool.provider_name}"

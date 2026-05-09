@@ -32,6 +32,7 @@ from aceai.llm.models import (
 
 SESSION_EVENT_VERSION = 1
 SESSION_STATE_VERSION = 1
+MAIN_THREAD_ID = "main"
 
 SessionEventKind = Literal[
     "assistant_delta",
@@ -85,6 +86,45 @@ class SessionMetadata(Struct, frozen=True, kw_only=True):
         )
 
 
+AgentThreadRole = Literal["main", "subagent"]
+AgentThreadStatus = Literal["idle", "running", "suspended", "completed", "failed"]
+
+
+class AgentThreadMetadata(Struct, frozen=True, kw_only=True):
+    session_id: str
+    thread_id: str
+    agent_id: str
+    role: AgentThreadRole
+    title: str
+    status: AgentThreadStatus
+    parent_thread_id: str | None
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_row(cls, row: RowMapping) -> Self:
+        metadata = json.loads(row["metadata_json"])
+        if not isinstance(metadata, dict):
+            raise TypeError("thread metadata must be a mapping")
+        return cls(
+            session_id=row["session_id"],
+            thread_id=row["thread_id"],
+            agent_id=row["agent_id"],
+            role=row["role"],
+            title=row["title"],
+            status=row["status"],
+            parent_thread_id=row["parent_thread_id"],
+            parent_run_id=row["parent_run_id"],
+            parent_tool_call_id=row["parent_tool_call_id"],
+            metadata=metadata,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
 class SessionState(Struct, frozen=True, kw_only=True):
     selected_provider: str = ""
     selected_model: str = ""
@@ -127,6 +167,8 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
     version: int = SESSION_EVENT_VERSION
     event_id: str = ""
     session_id: str = ""
+    thread_id: str = MAIN_THREAD_ID
+    agent_id: str = ""
     run_id: str = ""
     step_id: str | None = None
     step_index: int | None = None
@@ -164,10 +206,20 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "user_message",
         ):
             raise ValueError("Unsupported session event kind")
+        if "thread_id" in payload:
+            thread_id = payload["thread_id"]
+        else:
+            thread_id = MAIN_THREAD_ID
+        if "agent_id" in payload:
+            agent_id = payload["agent_id"]
+        else:
+            agent_id = ""
         return cls(
             version=payload["version"],
             event_id=payload["event_id"],
             session_id=payload["session_id"],
+            thread_id=thread_id,
+            agent_id=agent_id,
             run_id=payload["run_id"],
             step_id=payload["step_id"],
             step_index=payload["step_index"],
@@ -181,6 +233,8 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             version=self.version,
             event_id=self.event_id or uuid_str(),
             session_id=self.session_id or session_id,
+            thread_id=self.thread_id,
+            agent_id=self.agent_id,
             run_id=self.run_id,
             step_id=self.step_id,
             step_index=self.step_index,
@@ -194,6 +248,8 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "version": self.version,
             "event_id": self.event_id,
             "session_id": self.session_id,
+            "thread_id": self.thread_id,
+            "agent_id": self.agent_id,
             "run_id": self.run_id,
             "step_id": self.step_id,
             "step_index": self.step_index,
@@ -236,6 +292,9 @@ class EventLog:
 
     def append(self, event: SessionEvent) -> None:
         self.events.append(event)
+
+    def for_thread(self, thread_id: str) -> Self:
+        return EventLog([event for event in self.events if event.thread_id == thread_id])
 
     def has_transcript(self) -> bool:
         for event in self.events:
@@ -353,6 +412,44 @@ class EventLog:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
+    def replay_thread_export_text(
+        self,
+        metadata: SessionMetadata,
+        thread: AgentThreadMetadata,
+    ) -> str:
+        lines = [
+            f"# AceAI thread {thread.thread_id}",
+            f"session_id: {metadata.session_id}",
+            f"project_id: {metadata.project_id}",
+            f"project: {metadata.project_name}",
+            f"thread_id: {thread.thread_id}",
+            f"agent_id: {thread.agent_id}",
+            f"role: {thread.role}",
+            f"title: {thread.title}",
+            f"status: {thread.status}",
+        ]
+        if thread.parent_thread_id is not None:
+            lines.append(f"parent_thread_id: {thread.parent_thread_id}")
+        if thread.parent_run_id is not None:
+            lines.append(f"parent_run_id: {thread.parent_run_id}")
+        if thread.parent_tool_call_id is not None:
+            lines.append(f"parent_tool_call_id: {thread.parent_tool_call_id}")
+        lines.extend(
+            [
+                f"created_at: {thread.created_at.isoformat()}",
+                f"updated_at: {thread.updated_at.isoformat()}",
+                "",
+            ]
+        )
+        for event in self.events:
+            event_lines = _event_to_export_lines(event)
+            if not event_lines:
+                continue
+            lines.extend(_event_diagnostic_lines(event))
+            lines.extend(event_lines)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
     def total_cost_usd(self) -> float:
         total = 0.0
         for event in self.events:
@@ -389,6 +486,23 @@ _sessions_table = Table(
     Column("title", String, nullable=False),
     Column("path", String, nullable=False),
     Column("state_json", String, nullable=False),
+)
+
+_threads_table = Table(
+    "agent_threads",
+    _metadata,
+    Column("session_id", String, primary_key=True),
+    Column("thread_id", String, primary_key=True),
+    Column("agent_id", String, nullable=False),
+    Column("role", String, nullable=False),
+    Column("title", String, nullable=False),
+    Column("status", String, nullable=False),
+    Column("parent_thread_id", String, nullable=True),
+    Column("parent_run_id", String, nullable=True),
+    Column("parent_tool_call_id", String, nullable=True),
+    Column("metadata_json", String, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -433,6 +547,22 @@ class SessionStore:
                     state_json=json.dumps(SessionState.empty().as_json()),
                 )
             )
+            conn.execute(
+                sql_insert(_threads_table).values(
+                    session_id=session_id,
+                    thread_id=MAIN_THREAD_ID,
+                    agent_id="",
+                    role="main",
+                    title="Main",
+                    status="idle",
+                    parent_thread_id=None,
+                    parent_run_id=None,
+                    parent_tool_call_id=None,
+                    metadata_json="{}",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
         return SessionMetadata(
             session_id=session_id,
             project_id=self.project_id,
@@ -442,6 +572,118 @@ class SessionStore:
             title="New session",
             path=str(self.files_dir / path),
         )
+
+    def get_thread(
+        self,
+        session_id: str,
+        thread_id: str = MAIN_THREAD_ID,
+    ) -> AgentThreadMetadata:
+        self.ensure_main_thread(session_id)
+        query = sql_select(_threads_table).where(
+            _threads_table.c.session_id == session_id,
+            _threads_table.c.thread_id == thread_id,
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(query).mappings().fetchone()
+        if row is None:
+            raise KeyError(thread_id)
+        return AgentThreadMetadata.from_row(row)
+
+    def list_threads(self, session_id: str) -> list[AgentThreadMetadata]:
+        self.ensure_main_thread(session_id)
+        query = (
+            sql_select(_threads_table)
+            .where(_threads_table.c.session_id == session_id)
+            .order_by(_threads_table.c.created_at.asc())
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(query).mappings().fetchall()
+        return [AgentThreadMetadata.from_row(row) for row in rows]
+
+    def ensure_main_thread(self, session_id: str) -> AgentThreadMetadata:
+        self.get_session(session_id)
+        query = sql_select(_threads_table).where(
+            _threads_table.c.session_id == session_id,
+            _threads_table.c.thread_id == MAIN_THREAD_ID,
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(query).mappings().fetchone()
+        if row is not None:
+            return AgentThreadMetadata.from_row(row)
+        now = _utc_now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_insert(_threads_table).values(
+                    session_id=session_id,
+                    thread_id=MAIN_THREAD_ID,
+                    agent_id="",
+                    role="main",
+                    title="Main",
+                    status="idle",
+                    parent_thread_id=None,
+                    parent_run_id=None,
+                    parent_tool_call_id=None,
+                    metadata_json="{}",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return self.get_thread(session_id, MAIN_THREAD_ID)
+
+    def create_thread(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        agent_id: str,
+        role: AgentThreadRole,
+        title: str,
+        status: AgentThreadStatus = "idle",
+        parent_thread_id: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AgentThreadMetadata:
+        self.get_session(session_id)
+        now = _utc_now()
+        if metadata is None:
+            metadata = {}
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_insert(_threads_table).values(
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    agent_id=agent_id,
+                    role=role,
+                    title=title,
+                    status=status,
+                    parent_thread_id=parent_thread_id,
+                    parent_run_id=parent_run_id,
+                    parent_tool_call_id=parent_tool_call_id,
+                    metadata_json=json.dumps(metadata, ensure_ascii=False),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return self.get_thread(session_id, thread_id)
+
+    def update_thread_status(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        status: AgentThreadStatus,
+    ) -> None:
+        self.get_thread(session_id, thread_id)
+        with self.engine.begin() as conn:
+            conn.execute(
+                sql_update(_threads_table)
+                .where(
+                    _threads_table.c.session_id == session_id,
+                    _threads_table.c.thread_id == thread_id,
+                )
+                .values(status=status, updated_at=_utc_now())
+            )
 
     def get_session(self, session_id: str) -> SessionMetadata:
         query = sql_select(_sessions_table).where(
@@ -509,6 +751,11 @@ class SessionStore:
         metadata = self.get_session(session_id)
         with self.engine.begin() as conn:
             conn.execute(
+                sql_delete(_threads_table).where(
+                    _threads_table.c.session_id == session_id
+                )
+            )
+            conn.execute(
                 sql_delete(_sessions_table).where(
                     _sessions_table.c.session_id == session_id
                 )
@@ -523,6 +770,10 @@ class SessionStore:
 
     def append_event(self, session_id: str, event: SessionEvent) -> None:
         metadata = self.get_session(session_id)
+        if event.thread_id == MAIN_THREAD_ID:
+            self.ensure_main_thread(session_id)
+        else:
+            self.get_thread(session_id, event.thread_id)
         self.event_store.append_event(metadata, event)
         with self.engine.begin() as conn:
             conn.execute(
@@ -535,9 +786,26 @@ class SessionStore:
         metadata = self.get_session(session_id)
         return self.event_store.load_event_log(metadata)
 
-    def export_text(self, session_id: str) -> str:
+    def load_thread_event_log(self, session_id: str, thread_id: str) -> EventLog:
+        self.get_thread(session_id, thread_id)
+        return self.load_event_log(session_id).for_thread(thread_id)
+
+    def export_text(self, session_id: str, *, include_threads: bool = False) -> str:
         metadata = self.get_session(session_id)
-        return self.load_event_log(session_id).replay_export_text(metadata)
+        if not include_threads:
+            return self.load_thread_event_log(
+                session_id,
+                MAIN_THREAD_ID,
+            ).replay_export_text(metadata)
+        parts: list[str] = []
+        for thread in self.list_threads(session_id):
+            parts.append(
+                self.load_thread_event_log(
+                    session_id,
+                    thread.thread_id,
+                ).replay_thread_export_text(metadata, thread)
+            )
+        return "\n---\n\n".join(parts)
 
     def total_cost_usd(self) -> float:
         total = 0.0
@@ -582,14 +850,23 @@ class SessionStore:
                 .where(_sessions_table.c.project_name == "")
                 .values(project_name=self.project_name)
             )
+        thread_column_names = {
+            column["name"]
+            for column in sql_inspect(self.engine).get_columns("agent_threads")
+        }
+        if "metadata_json" not in thread_column_names:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE agent_threads ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
 
 class SessionRecorder:
     def __init__(self, store: SessionStore, session_id: str) -> None:
         self.store = store
         self.session_id = session_id
-        self._assistant_buffer = ""
-        self._tools: dict[str, _ToolBuffer] = {}
+        self._assistant_buffers: dict[str, str] = {}
+        self._tools: dict[tuple[str, str], _ToolBuffer] = {}
         self._finalized = False
         self._saved = True
         self._last_recorded_event_id: str | None = None
@@ -606,7 +883,9 @@ class SessionRecorder:
         if event.kind == "session_notice":
             return None
         if event.kind == "assistant_delta":
-            self._assistant_buffer += event.payload["content"]
+            self._assistant_buffers[event.thread_id] = (
+                self._assistant_buffer(event.thread_id) + event.payload["content"]
+            )
             return None
         if event.kind == "tool_call_delta":
             self._tool_for(event).arguments += event.payload["content"]
@@ -621,7 +900,7 @@ class SessionRecorder:
         if event.kind == "llm_completed":
             return self._record_llm_completed(event)
 
-        self.flush_assistant()
+        self.flush_assistant(event.thread_id)
         if event.kind == "user_message":
             return self._append_event(
                 "user_message",
@@ -654,22 +933,35 @@ class SessionRecorder:
 
     def flush_assistant(
         self,
+        thread_id: str = MAIN_THREAD_ID,
         usage: LLMUsage | None = None,
         cost: CostEstimate | None = None,
     ) -> str | None:
-        if self._assistant_buffer == "":
+        assistant_buffer = self._assistant_buffer(thread_id)
+        if assistant_buffer == "":
             return None
-        payload: dict[str, Any] = {"content": self._assistant_buffer}
+        payload: dict[str, Any] = {"content": assistant_buffer}
         payload.update(_usage_payload(usage))
         payload.update(_cost_payload(cost))
-        event_id = self._append_event("assistant_message", payload, None)
-        self._assistant_buffer = ""
+        event_id = self._append_event(
+            "assistant_message",
+            payload,
+            SessionEvent(
+                event_id=uuid_str(),
+                session_id=self.session_id,
+                thread_id=thread_id,
+                kind="assistant_message",
+                payload=payload,
+            ),
+        )
+        self._assistant_buffers[thread_id] = ""
         return event_id
 
     def finalize(self) -> bool:
         if self._finalized:
             return self._saved
-        self.flush_assistant()
+        for thread_id in list(self._assistant_buffers):
+            self.flush_assistant(thread_id)
         if not self.store.load_event_log(self.session_id).has_transcript():
             self.store.delete_session(self.session_id)
             self._saved = False
@@ -681,8 +973,8 @@ class SessionRecorder:
         return self._saved
 
     def _record_llm_completed(self, event: SessionEvent) -> str | None:
-        content = self._assistant_buffer or event.payload["content"]
-        self._assistant_buffer = ""
+        content = self._assistant_buffer(event.thread_id) or event.payload["content"]
+        self._assistant_buffers[event.thread_id] = ""
         tool_calls = LLMToolCall.list_from_payload(event.payload)
         if tool_calls:
             return self._append_event(
@@ -793,18 +1085,24 @@ class SessionRecorder:
             },
             event,
         )
-        self._tools.pop(event.payload["tool_call_id"], None)
+        self._tools.pop((event.thread_id, event.payload["tool_call_id"]), None)
         return event_id
 
     def _tool_for(self, event: SessionEvent) -> _ToolBuffer:
         if "tool_call_id" not in event.payload:
             raise ValueError("tool event must include tool_call_id")
         call_id = event.payload["tool_call_id"]
-        tool_buffer = self._tools.get(call_id)
+        key = (event.thread_id, call_id)
+        tool_buffer = self._tools.get(key)
         if tool_buffer is None:
             tool_buffer = _ToolBuffer()
-            self._tools[call_id] = tool_buffer
+            self._tools[key] = tool_buffer
         return tool_buffer
+
+    def _assistant_buffer(self, thread_id: str) -> str:
+        if thread_id not in self._assistant_buffers:
+            self._assistant_buffers[thread_id] = ""
+        return self._assistant_buffers[thread_id]
 
     def _append_event(
         self,
@@ -823,6 +1121,8 @@ class SessionRecorder:
             SessionEvent(
                 event_id=event_id,
                 session_id=self.session_id,
+                thread_id=MAIN_THREAD_ID if source_event is None else source_event.thread_id,
+                agent_id="" if source_event is None else source_event.agent_id,
                 run_id="" if source_event is None else source_event.run_id,
                 step_id=None if source_event is None else source_event.step_id,
                 step_index=None if source_event is None else source_event.step_index,
@@ -948,6 +1248,24 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
         status = event.payload["status"]
         return [f"## error ({status})", event.payload["content"]]
     return []
+
+
+def _event_diagnostic_lines(event: SessionEvent) -> list[str]:
+    lines = [
+        f"event_id: {event.event_id}",
+        f"thread_id: {event.thread_id}",
+        f"agent_id: {event.agent_id}",
+        f"run_id: {event.run_id}",
+    ]
+    if event.step_id is not None:
+        lines.append(f"step_id: {event.step_id}")
+    if event.step_index is not None:
+        lines.append(f"step_index: {event.step_index}")
+    tool_call_id = event.payload.get("tool_call_id")
+    if type(tool_call_id) is str:
+        lines.append(f"tool_call_id: {tool_call_id}")
+    lines.append("")
+    return lines
 
 
 def _usage_payload(usage: LLMUsage | None) -> dict[str, Any]:

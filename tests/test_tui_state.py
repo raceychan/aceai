@@ -1,11 +1,18 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from io import StringIO
 
 import pytest
 
-from aceai.agent.ideas import Idea
-from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
+from aceai.agent.memory.ideas import Idea
+from aceai.agent.session import (
+    EventLog,
+    MAIN_THREAD_ID,
+    SessionEvent,
+    SessionRecorder,
+    SessionStore,
+)
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
 from aceai.agent.tui import app as tui_app_module
@@ -14,6 +21,7 @@ from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_SECONDS
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
+from aceai.agent.tui.metadata import MetadataSection, _metadata_renderables
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.setup import (
@@ -29,6 +37,7 @@ from aceai.agent.tui.state import (
     reset_cache_rate,
     select_event,
 )
+from aceai.agent.tui.tool_stats import format_tool_call_stats, tool_call_stats
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
     CommandInput,
@@ -40,7 +49,7 @@ from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta, LLMUsag
 from rich.console import Console, Group
 from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import RichLog, Static
 
 
 async def _wait_until(pilot, predicate, timeout: float = 0.2) -> None:
@@ -114,7 +123,7 @@ def test_reduce_events_tracks_step_and_tool_state() -> None:
     assert tool_state.output == '{"matches":["spec/tui.md","docs/tui.md"]}'
 
 
-def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
+def test_reduce_events_tracks_threaded_delegate_to_subagent_status() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -127,9 +136,9 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     result = ToolExecutionResult(
         call=call,
         output=(
-            '{"agent_id":"child-1","run_id":"run-1","status":"completed",'
-            '"final_answer":"README has no version","summary":"README has no version",'
-            '"important_evidence":[],"tool_results":[],"step_count":1}'
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"summary":"README has no version","step_count":1}'
         ),
     )
 
@@ -145,6 +154,7 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     assert len(state.subagents) == 1
     subagent = state.subagents[0]
     assert subagent.call_id == "call-subagent-1"
+    assert subagent.thread_id == "child-thread-1"
     assert subagent.task == "Check whether README names the version"
     assert subagent.instructions == "report evidence"
     assert subagent.context_brief == "repo"
@@ -153,11 +163,40 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     assert subagent.agent_id == "child-1"
     assert subagent.run_id == "run-1"
     assert subagent.summary == "README has no version"
-    assert subagent.final_answer == "README has no version"
+    assert subagent.final_answer == ""
     assert subagent.important_evidence == []
     assert subagent.tool_results == []
     assert subagent.step_count == 1
     assert subagent.output == result.output
+
+
+def test_reduce_events_excludes_delegate_to_subagent_without_thread_id() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"Inspect","instructions":"","context_brief":"","allowed_tools":[]}',
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output="subagent failed",
+        error="child failed",
+    )
+
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_failed(
+                    tool_call=call,
+                    tool_result=result,
+                    error="child failed",
+                )
+            ),
+        ]
+    )
+
+    assert state.subagents == []
 
 
 def test_reduce_events_does_not_track_regular_tool_as_subagent() -> None:
@@ -330,6 +369,319 @@ def test_reduce_events_tracks_usage_totals() -> None:
     assert state.usage.session_total_tokens == 300
 
 
+def test_tool_call_stats_include_parent_and_child_tool_results(tmp_path) -> None:
+    parent_call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"ls"}',
+        call_id="call-parent",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-parent",
+            title="tool run_shell_command",
+            tool_name="run_shell_command",
+            tool_call_id=parent_call.call_id,
+            tool_call=parent_call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_failed",
+            step_index=0,
+            step_id="step-parent",
+            title="tool run_shell_command failed",
+            content="exit 1",
+            tool_name="run_shell_command",
+            tool_call_id=parent_call.call_id,
+            tool_call=parent_call,
+            tool_result=ToolExecutionResult(
+                call=parent_call,
+                output="exit 1",
+                error="exit 1",
+            ),
+            error="exit 1",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=1,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "final_answer": "done",
+                    "summary": "done",
+                    "important_evidence": [],
+                    "tool_results": [
+                        {
+                            "tool_name": "read_text_file",
+                            "call_id": "call-child-ok",
+                            "arguments": '{"path":"README.md"}',
+                            "output": "readme",
+                            "error": None,
+                        },
+                        {
+                            "tool_name": "search_text",
+                            "call_id": "call-child-failed",
+                            "arguments": '{"query":"missing"}',
+                            "output": "failed",
+                            "error": "failed",
+                        },
+                    ],
+                    "step_count": 2,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=2,
+            step_id="step-delegate-2",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "agent_id": "child-2",
+                    "run_id": "child-run-2",
+                    "status": "completed",
+                    "final_answer": "done",
+                    "summary": "done",
+                    "important_evidence": [],
+                    "tool_results": [
+                        {
+                            "tool_name": "read_text_file",
+                            "call_id": "call-child-ok",
+                            "arguments": '{"path":"CHANGELOG.md"}',
+                            "output": "changelog",
+                            "error": None,
+                        }
+                    ],
+                    "step_count": 2,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id="call-delegate-2",
+            tool_call=LLMToolCall(
+                name="delegate_to_subagent",
+                arguments='{"task":"inspect again"}',
+                call_id="call-delegate-2",
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    lines = format_tool_call_stats(tool_call_stats(events, artifact_root=tmp_path))
+
+    assert "delegate_to_subagent: calls 2  ok 2  failed 0" in lines
+    assert "run_shell_command: calls 1  ok 0  failed 1" in lines
+    assert "read_text_file: calls 2  ok 2  failed 0" in lines
+    assert "search_text: calls 1  ok 0  failed 1" in lines
+
+
+def test_tool_call_stats_read_archived_subagent_manifest(tmp_path) -> None:
+    manifest_path = "session-1/artifacts/parent-run-1/child-1/manifest.json"
+    manifest_file = tmp_path / manifest_path
+    manifest_file.parent.mkdir(parents=True)
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "type": "subagent_artifact_manifest",
+                "tool_results": [
+                    {
+                        "tool_name": "read_text_file",
+                        "tool_call_id": "call-child-ok",
+                        "has_error": False,
+                    },
+                    {
+                        "tool_name": "read_text_file",
+                        "tool_call_id": "call-child-failed",
+                        "has_error": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "type": "subagent_audit",
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "manifest_path": manifest_path,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        )
+    ]
+
+    lines = format_tool_call_stats(tool_call_stats(events, artifact_root=tmp_path))
+
+    assert "delegate_to_subagent: calls 1  ok 1  failed 0" in lines
+    assert "read_text_file: calls 2  ok 1  failed 1" in lines
+
+
+def test_metadata_sections_include_tool_call_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: SessionStore(tmp_path, project=project),
+    )
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"README.md"}',
+        call_id="call-read",
+    )
+    event = TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id="step-read",
+        title="tool read_text_file completed",
+        content="README",
+        tool_name="read_text_file",
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="README"),
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+    app._state = reduce_events([event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Session Tool Calls"]
+    )
+    assert "Global Tool Calls" not in section_lines
+
+
+def test_metadata_sections_omit_empty_tool_call_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: SessionStore(tmp_path, project=project),
+    )
+    app = AceAITUI([])
+
+    sections = app._metadata_sections()
+
+    titles = [section.title for section in sections]
+    assert "Session Tool Calls" not in titles
+    assert "Global Tool Calls" not in titles
+
+
+def test_metadata_sections_include_global_tool_stats_without_active_session(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session = store.create_session()
+    event = _tool_completed_event("read_text_file", "call-global")
+    SessionRecorder(store, session.session_id).record(tui_event_to_session_event(event))
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: store,
+    )
+    app = AceAITUI([])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert "Session Tool Calls" not in section_lines
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Global Tool Calls"]
+    )
+
+
+def test_metadata_sections_include_global_tool_call_stats(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    current = store.create_session()
+    other = store.create_session()
+    current_event = _tool_completed_event("read_text_file", "call-current")
+    other_event = _tool_failed_event("run_shell_command", "call-other")
+    SessionRecorder(store, current.session_id).record(
+        tui_event_to_session_event(current_event)
+    )
+    SessionRecorder(store, other.session_id).record(tui_event_to_session_event(other_event))
+    app = AceAITUI(
+        [current_event],
+        session_recorder=SessionRecorder(store, current.session_id),
+        session_id=current.session_id,
+    )
+    app._state = reduce_events([current_event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Session Tool Calls"]
+    )
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Global Tool Calls"]
+    )
+    assert (
+        "run_shell_command: calls 1  ok 0  failed 1"
+        in section_lines["Global Tool Calls"]
+    )
+    assert "run_shell_command" not in section_lines["Session Tool Calls"]
+
+
+def test_tool_call_metadata_renders_as_stats_table() -> None:
+    rendered = _render_to_text(
+        Group(
+            *_metadata_renderables(
+                [
+                    MetadataSection(
+                        title="Global Tool Calls",
+                        lines=[
+                            "delegate_to_subagent: calls 16  ok 8  failed 8",
+                            "read_text_file: calls 5  ok 5  failed 0",
+                        ],
+                    )
+                ]
+            )
+        )
+    )
+
+    assert "tool" in rendered
+    assert "calls" in rendered
+    assert "ok" in rendered
+    assert "failed" in rendered
+    assert "delegate_to_subagent" in rendered
+    assert "read_text_file" in rendered
+
+
 def test_reset_cache_rate_clears_current_cache_only() -> None:
     event = AgentEventBuilder(step_index=0, step_id="step-1").llm_completed(
         step=AgentStep(
@@ -493,28 +845,45 @@ async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
         ),
         call_id="call-subagent-1",
     )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"running",'
+            '"summary":"","step_count":0}'
+        ),
+    )
     app = AceAITUI(
-        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ],
     )
 
     async with app.run_test():
         subagents = app.query_one(SubagentStatusWidget)
         detail = app.query_one(DetailWidget)
 
+        app.action_show_subagents()
+
         assert not subagents.has_class("hidden")
         assert detail.has_class("collapsed")
-        assert subagents.renderable == (
-            "subagents  1 total | 1 running | 0 done | 0 failed  page 1/1\n"
-            "\n"
-            "#1 [running] Inspect version metadata\n"
-            "   tools none | steps 0\n"
-            "   brief: repo\n"
-            "   ask: report evidence"
-        )
+        assert "subagents  1 total | 0 running | 1 done | 0 failed\n" in subagents.renderable
+        assert "                 < [1] >" in subagents.renderable
+        assert "#1 [completed] Inspect version metadata" in subagents.renderable
+        assert "run" in subagents.renderable
+        assert "status: completed" in subagents.renderable
+        assert "steps: 0" in subagents.renderable
+        assert "results: 0" in subagents.renderable
+        assert "tools\n     - none" in subagents.renderable
+        assert "task / context\n     repo" in subagents.renderable
+        assert "task / ask\n     report evidence" in subagents.renderable
 
 
 @pytest.mark.anyio
-async def test_tui_hides_subagent_status_widget_after_success() -> None:
+async def test_tui_excludes_completed_delegate_without_thread_id() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -539,8 +908,6 @@ async def test_tui_hides_subagent_status_widget_after_success() -> None:
     async with app.run_test():
         subagents = app.query_one(SubagentStatusWidget)
 
-        assert not subagents.has_class("hidden")
-
         app.append_event(
             TUIEvent.from_agent_event(
                 builder.tool_completed(tool_call=call, tool_result=result)
@@ -551,12 +918,11 @@ async def test_tui_hides_subagent_status_widget_after_success() -> None:
 
         app.action_show_subagents()
 
-        assert not subagents.has_class("hidden")
-        assert "version found" in subagents.renderable
+        assert subagents.has_class("hidden")
 
 
 @pytest.mark.anyio
-async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
+async def test_tui_excludes_failed_delegate_without_thread_id() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -587,12 +953,6 @@ async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
                 )
             )
         )
-
-        assert not subagents.has_class("hidden")
-        assert "[failed]" in subagents.renderable
-        assert "child failed" in subagents.renderable
-
-        app.append_event(TUIEvent.user_message("next question"))
 
         assert subagents.has_class("hidden")
 
@@ -642,20 +1002,69 @@ def test_subagent_status_widget_paginates_full_agent_details() -> None:
         ]
     )
 
-    assert "page 1/2" in widget.renderable
+    assert "< [1] 2 >" in widget.renderable
     assert "First delegated investigation with a long title that should not be shortened" in widget.renderable
     assert first_summary in widget.renderable
+    assert "run" in widget.renderable
+    assert "steps: 2" in widget.renderable
+    assert "tools\n     - read_text_file" in widget.renderable
+    assert "results: 1" in widget.renderable
+    assert "task / context\n     first context" in widget.renderable
+    assert "task / ask\n     Use the repo evidence and report exact files." in widget.renderable
+    assert "task / summary\n     " + first_summary in widget.renderable
     assert "child-first-full-id" in widget.renderable
     assert "tool output " + ("o" * 80) in widget.renderable
     assert "Second delegated investigation" not in widget.renderable
 
     widget.next_page()
 
-    assert "page 2/2" in widget.renderable
+    assert "< 1 [2] >" in widget.renderable
     assert "Second delegated investigation" in widget.renderable
     assert second_brief in widget.renderable
     assert "openai:web_search" in widget.renderable
     assert "First delegated investigation" not in widget.renderable
+
+
+@pytest.mark.anyio
+async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    for index, status in enumerate(("running", "completed", "failed"), 1):
+        store.create_thread(
+            session_id=metadata.session_id,
+            thread_id=f"child-thread-{index}",
+            agent_id=f"child-agent-{index}",
+            role="subagent",
+            title=f"Child {index}",
+            status=status,
+            parent_thread_id=MAIN_THREAD_ID,
+            metadata={
+                "instructions": f"Ask {index}",
+                "context_brief": f"Context {index}",
+                "allowed_tools": ["read_text_file"],
+            },
+        )
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.action_show_subagents()
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert not subagents.has_class("hidden")
+        assert "subagents  3 total | 1 running | 1 done | 1 failed" in subagents.renderable
+        assert "Child 1" in subagents.renderable
+        app.action_show_subagents()
+        assert subagents.has_class("hidden")
+        app.action_show_subagents()
+        assert not subagents.has_class("hidden")
+        subagents.next_page()
+        assert "Child 2" in subagents.renderable
+        subagents.next_page()
+        assert "Child 3" in subagents.renderable
 
 
 @pytest.mark.anyio
@@ -672,14 +1081,29 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         ),
         call_id="call-subagent-1",
     )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"summary":"","step_count":1}'
+        ),
+    )
     app = AceAITUI(
-        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ],
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        app.action_show_subagents()
         subagents = app.query_one(SubagentStatusWidget)
-        await _wait_until(pilot, lambda: subagents.max_scroll_y > 0)
-        assert subagents.scroll_y == 0
+        detail = subagents.query_one("#subagent-detail", RichLog)
+        await _wait_until(pilot, lambda: detail.max_scroll_y > 0)
+        assert detail.scroll_y == 0
 
         await subagents._dispatch_message(
             MouseScrollDown(
@@ -696,7 +1120,7 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         )
         await pilot.pause()
 
-        assert subagents.scroll_y > 0
+        assert detail.scroll_y > 0
 
 
 @pytest.mark.anyio
@@ -1685,6 +2109,24 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
     second = store.create_session()
     _record_user_message(store, first.session_id, "first question")
     _record_user_message(store, second.session_id, "second question")
+    store.create_thread(
+        session_id=second.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+    )
+    store.append_event(
+        second.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child question"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
     app = AceAITUI(
         event_log_to_tui_events(store.load_event_log(first.session_id)),
         session_recorder=SessionRecorder(store, first.session_id),
@@ -1703,6 +2145,7 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
         assert app.title == f"AceAI {second.project_name} {second.session_id}"
         assert app._state.events[0].content == "second question"
+        assert [event.content for event in app._state.events] == ["second question"]
 
 
 @pytest.mark.anyio
@@ -1961,4 +2404,45 @@ def _render_to_text(renderable) -> str:
 def _record_user_message(store: SessionStore, session_id: str, content: str) -> None:
     SessionRecorder(store, session_id).record(
         tui_event_to_session_event(TUIEvent.user_message(content))
+    )
+
+
+def _tool_completed_event(tool_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name=tool_name,
+        arguments='{"path":"README.md"}',
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title=f"tool {tool_name} completed",
+        content="ok",
+        tool_name=tool_name,
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="ok"),
+        raw_event=None,
+    )
+
+
+def _tool_failed_event(tool_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name=tool_name,
+        arguments='{"command":"bad"}',
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_failed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title=f"tool {tool_name} failed",
+        content="failed",
+        tool_name=tool_name,
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="failed", error="failed"),
+        error="failed",
+        raw_event=None,
     )

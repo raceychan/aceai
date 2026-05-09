@@ -9,6 +9,7 @@ from sqlalchemy import insert as sql_insert
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,
+    MAIN_THREAD_ID,
     SessionEvent,
     SessionEventKind,
     SessionMetadata,
@@ -38,6 +39,11 @@ def test_session_store_creates_sqlite_index_and_message_file(tmp_path) -> None:
     assert (tmp_path / "sessions.sqlite3").exists()
     assert (tmp_path / "files" / f"{metadata.session_id}.events.jsonl").exists()
     assert store.get_session(metadata.session_id).session_id == metadata.session_id
+    thread = store.get_thread(metadata.session_id)
+    assert thread.session_id == metadata.session_id
+    assert thread.thread_id == MAIN_THREAD_ID
+    assert thread.role == "main"
+    assert thread.status == "idle"
 
 
 def test_session_store_lists_sessions_by_created_at_not_recent_user_message(tmp_path) -> None:
@@ -144,6 +150,49 @@ def test_session_store_backfills_empty_project_to_current_project(tmp_path) -> N
     assert session.project_name == "aceai"
 
 
+def test_session_store_backfills_main_thread_for_existing_session(tmp_path) -> None:
+    root = tmp_path / "sessions"
+    files_dir = root / "files"
+    files_dir.mkdir(parents=True)
+    engine = create_engine(f"sqlite:///{root / 'sessions.sqlite3'}")
+    metadata = MetaData()
+    sessions_table = Table(
+        "sessions",
+        metadata,
+        Column("session_id", String, primary_key=True),
+        Column("project_id", String, nullable=False),
+        Column("project_name", String, nullable=False),
+        Column("created_at", DateTime(timezone=True), nullable=False),
+        Column("updated_at", DateTime(timezone=True), nullable=False),
+        Column("title", String, nullable=False),
+        Column("path", String, nullable=False),
+        Column("state_json", String, nullable=False),
+    )
+    metadata.create_all(engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(
+            sql_insert(sessions_table).values(
+                session_id="session-1",
+                project_id="project-1",
+                project_name="project",
+                created_at=now,
+                updated_at=now,
+                title="old session",
+                path="session-1.events.jsonl",
+                state_json=json.dumps(SessionState.empty().as_json()),
+            )
+        )
+    (files_dir / "session-1.events.jsonl").write_text("", encoding="utf-8")
+
+    store = SessionStore(root)
+    thread = store.ensure_main_thread("session-1")
+
+    assert thread.session_id == "session-1"
+    assert thread.thread_id == MAIN_THREAD_ID
+    assert store.list_threads("session-1") == [thread]
+
+
 def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
@@ -155,6 +204,8 @@ def test_session_store_deletes_session_index_and_file(tmp_path) -> None:
     store.delete_session(metadata.session_id)
 
     assert store.list_sessions() == []
+    with pytest.raises(KeyError):
+        store.get_thread(metadata.session_id)
     assert not path.exists()
     assert not artifact_dir.exists()
 
@@ -179,11 +230,31 @@ def test_jsonl_event_store_round_trips_session_events(tmp_path) -> None:
     assert (tmp_path / path).exists()
     assert [event.kind for event in event_log.events] == ["user_message"]
     assert event_log.events[0].session_id == session_id
+    assert event_log.events[0].thread_id == MAIN_THREAD_ID
     assert event_log.events[0].payload["content"] == "hello"
 
     event_store.delete_event_log(metadata)
 
     assert not (tmp_path / path).exists()
+
+
+def test_session_event_json_round_trips_thread_metadata() -> None:
+    event = SessionEvent(
+        event_id="event-1",
+        session_id="session-1",
+        thread_id="thread-1",
+        agent_id="agent-1",
+        run_id="run-1",
+        step_id="step-1",
+        step_index=1,
+        kind="user_message",
+        created_at="2026-05-09T00:00:00+00:00",
+        payload={"content": "hello"},
+    )
+
+    restored = SessionEvent.from_json(event.as_json())
+
+    assert restored == event
 
 
 def test_session_store_delegates_event_log_operations_to_event_store(tmp_path) -> None:
@@ -607,6 +678,113 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     assert text.startswith(f"# AceAI session {metadata.session_id}\n")
     assert "## user\nhello\n" in text
     assert "## assistant\nanswer\n" in text
+
+
+def test_session_store_export_defaults_to_main_thread(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+        parent_run_id="parent-run-1",
+        parent_tool_call_id="call-subagent-1",
+    )
+    store.append_event(metadata.session_id, _user_message("main only"))
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child secret"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
+
+    text = store.export_text(metadata.session_id)
+
+    assert "main only" in text
+    assert "child secret" not in text
+    assert "child-thread-1" not in text
+
+
+def test_session_store_exports_thread_aware_text(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+        parent_run_id="parent-run-1",
+        parent_tool_call_id="call-subagent-1",
+    )
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"README.md"}',
+        call_id="call-read-1",
+    )
+    store.append_event(metadata.session_id, _user_message("main question"))
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child question"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="assistant_tool_call",
+            payload={
+                "content": "",
+                "tool_calls": [call.asdict()],
+            },
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            step_id="step-child-1",
+            step_index=0,
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="tool_result",
+            payload={
+                "tool_name": "read_text_file",
+                "tool_call_id": "call-read-1",
+                "tool_arguments": '{"path":"README.md"}',
+                "output": "child evidence",
+                "model_output": "child evidence",
+                "status": "completed",
+            },
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            step_id="step-child-1",
+            step_index=0,
+        ),
+    )
+
+    text = store.export_text(metadata.session_id, include_threads=True)
+
+    assert "# AceAI thread main" in text
+    assert "# AceAI thread child-thread-1" in text
+    assert "parent_tool_call_id: call-subagent-1" in text
+    assert "run_id: child-run-1" in text
+    assert "step_id: step-child-1" in text
+    assert "tool_call_id: call-read-1" in text
+    assert "child evidence" in text
 
 
 def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:

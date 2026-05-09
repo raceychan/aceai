@@ -15,6 +15,7 @@ from aceai.llm.service import LLMService
 
 from .features import build_delegate_to_subagent_tool, default_agent_tools
 from .permissions import ToolPermission
+from .provider_auth import resolve_provider_api_key
 from .provider_catalog import context_window_for_model
 
 
@@ -31,6 +32,7 @@ run the repository's tests after meaningful code changes.
 ACE_AGENT_SKILL_PATH = "auto"
 ACE_AGENT_BUILTIN_SKILL_PATHS = (Path(__file__).parent / "builtin_skills",)
 ACE_AGENT_BUILTIN_SKILL_NAMES = ("skill-creator",)
+ACE_AGENT_CODEX_INSTRUCTIONS = "You are AceAI, a concise coding agent."
 ACE_AGENT_HOSTED_TOOLS = [
     LLMHostedToolSpec(
         provider_name="openai",
@@ -59,8 +61,9 @@ def build_ace_agent(
         )
     elif provider_name == "codex":
         provider = OpenAICodex(
-            api_key=api_key,
+            api_key=resolve_provider_api_key(provider_name, api_key),
             default_meta={"model": model},
+            instructions=ACE_AGENT_CODEX_INSTRUCTIONS,
         )
     elif provider_name == "deepseek":
         provider = DeepSeek(

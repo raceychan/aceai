@@ -3,14 +3,14 @@ import json
 import pytest
 
 from aceai.agent.app import AceAgentApp
-from aceai.agent.context_checkpoint_store import (
+from aceai.agent.memory.context_checkpoint_store import (
     ContextCheckpoint,
     ContextCheckpointStore,
     context_units_payload_from_messages,
     llm_message_from_payload,
     llm_message_to_payload,
 )
-from aceai.agent.context_history import build_context_history
+from aceai.agent.memory.context_history import build_context_history
 from aceai.agent.session import EventLog, SessionEvent, SessionStore
 from aceai.core.agent import Agent
 from aceai.llm import LLMResponse
@@ -72,6 +72,41 @@ def test_context_checkpoint_store_round_trips_latest_checkpoint(tmp_path) -> Non
     assert latest.history[1].tool_calls == [call]
     assert isinstance(latest.history[2], LLMToolUseMessage)
     assert latest.history[2].call_id == "call-1"
+    assert latest.thread_id == "main"
+    assert (tmp_path / "checkpoints" / "session-1.main.checkpoints.jsonl").exists()
+
+
+def test_context_checkpoint_store_keeps_thread_histories_separate(tmp_path) -> None:
+    store = ContextCheckpointStore(tmp_path / "checkpoints")
+
+    store.record_checkpoint(
+        session_id="session-1",
+        thread_id="main",
+        run_id="run-1",
+        step_id="step-1",
+        reason="threshold",
+        compression_count=1,
+        included_event_id="event-1",
+        history=[LLMMessage.build(role="user", content="main history")],
+    )
+    store.record_checkpoint(
+        session_id="session-1",
+        thread_id="child-1",
+        run_id="run-2",
+        step_id="step-2",
+        reason="threshold",
+        compression_count=1,
+        included_event_id="event-2",
+        history=[LLMMessage.build(role="user", content="child history")],
+    )
+
+    main_checkpoint = store.latest_checkpoint("session-1", thread_id="main")
+    child_checkpoint = store.latest_checkpoint("session-1", thread_id="child-1")
+
+    assert main_checkpoint is not None
+    assert child_checkpoint is not None
+    assert main_checkpoint.history[0].content[0]["data"] == "main history"
+    assert child_checkpoint.history[0].content[0]["data"] == "child history"
 
 
 def test_llm_message_checkpoint_payload_rejects_unknown_message_type() -> None:
@@ -113,6 +148,7 @@ def test_context_history_uses_checkpoint_without_changing_transcript_replay() ->
     checkpoint = ContextCheckpoint(
         checkpoint_id="checkpoint-1",
         session_id="session-1",
+        thread_id="main",
         run_id="run-1",
         step_id="step-1",
         reason="threshold",
@@ -208,7 +244,8 @@ async def test_agent_app_persists_checkpoint_and_restores_context_history(
     session_id = app.session_id
     assert session_id is not None
     checkpoint = app.session_service.context_checkpoint_store.latest_checkpoint(
-        session_id
+        session_id,
+        thread_id="main",
     )
     assert checkpoint is not None
     assert checkpoint.reason == "threshold"

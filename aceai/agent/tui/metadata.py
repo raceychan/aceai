@@ -112,6 +112,8 @@ def _metadata_renderables(sections: list[MetadataSection]) -> list[RenderableTyp
 
 
 def _section_table(section: MetadataSection) -> Table:
+    if section.title.endswith("Tool Calls"):
+        return _tool_call_table(section)
     if section.title.startswith(("Skills", "Tools", "Hosted Tools")):
         return _list_table(section)
     return _key_value_table(section)
@@ -138,6 +140,24 @@ def _list_table(section: MetadataSection) -> Table:
     return table
 
 
+def _tool_call_table(section: MetadataSection) -> Table:
+    table = Table.grid(expand=True)
+    table.add_column(ratio=1, min_width=24, style="bold #eceff4", overflow="fold")
+    table.add_column(width=8, justify="right", style="#d8dee9")
+    table.add_column(width=8, justify="right", style="#a3be8c")
+    table.add_column(width=8, justify="right", style="#bf616a")
+    table.add_row(
+        Text("tool", style="#9aa3b2"),
+        Text("calls", style="#9aa3b2"),
+        Text("ok", style="#9aa3b2"),
+        Text("failed", style="#9aa3b2"),
+    )
+    for line in section.lines:
+        name, calls, succeeded, failed = _split_tool_call_stat(line)
+        table.add_row(name, calls, succeeded, failed)
+    return table
+
+
 def _split_key_value(line: str) -> tuple[str, str]:
     if ": " not in line:
         return "", line
@@ -155,3 +175,13 @@ def _split_list_line(line: str) -> tuple[str, str, str]:
         return detail, "", location
     name, description = detail.split(": ", 1)
     return name, description, location
+
+
+def _split_tool_call_stat(line: str) -> tuple[str, str, str, str]:
+    name, values = line.rsplit(": ", 1)
+    parts = values.split()
+    if len(parts) != 6:
+        raise ValueError("tool call stat line has unsupported format")
+    if parts[0] != "calls" or parts[2] != "ok" or parts[4] != "failed":
+        raise ValueError("tool call stat line has unsupported format")
+    return name, parts[1], parts[3], parts[5]

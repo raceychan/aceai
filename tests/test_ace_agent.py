@@ -6,9 +6,9 @@ import pytest
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
+from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.core import ToolExecutionError, Executor
 from aceai.llm.interface import UNSET, is_present
-from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
 
 
 def write_skill(root: Path, name: str, description: str) -> None:
@@ -51,6 +51,7 @@ def test_default_agent_tools_are_product_capabilities() -> None:
         "apply_patch",
         "run_shell_command",
     }
+    assert {tuple(tool.metadata.tags) for tool in tools} == {("dev",)}
     assert not {
         tool.name for tool in tools if is_present(tool.metadata.max_calls_per_run)
     }

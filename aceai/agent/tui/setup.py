@@ -23,7 +23,6 @@ from textual.widgets import (
     Checkbox,
     Input,
     Label,
-    RichLog,
     Select,
     Static,
     TabbedContent,
@@ -31,7 +30,7 @@ from textual.widgets import (
     TextArea,
 )
 
-from aceai.agent.ideas import Idea
+from aceai.agent.memory.ideas import Idea
 from aceai.agent.provider_auth import (
     api_key_placeholder,
     default_api_key_for_provider,
@@ -57,7 +56,6 @@ from aceai.llm.openai import OpenAIModel
 from aceai.agent.config import AgentAppConfig, ReasoningLevel
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
-from .metadata import MetadataSection, _metadata_renderables
 from .session_display import session_display_title
 
 PanelListItem = TypeVar("PanelListItem")
@@ -340,6 +338,20 @@ class ToolPermissionItem(Record, kw_only=True):
     permission: ToolPermission
     enabled: bool = True
     max_calls_per_run: int | None = None
+    tags: tuple[str, ...] = ()
+
+
+def _tool_tag_order(items: tuple[ToolPermissionItem, ...]) -> tuple[str, ...]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        item_tags = item.tags if item.tags else ("untagged",)
+        for tag in item_tags:
+            if tag in seen:
+                continue
+            seen.add(tag)
+            tags.append(tag)
+    return tuple(tags)
 
 
 IdeaSaveHandler = Callable[[int, str], list[Idea]]
@@ -904,15 +916,9 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #tool-permissions-scroll, #stats-scroll {
+    #config-scroll, #tool-permissions-scroll {
         width: 100%;
         height: 1fr;
-    }
-
-    #stats-body {
-        height: 1fr;
-        overflow-y: auto;
-        overflow-x: hidden;
     }
 
     #config-title {
@@ -1097,16 +1103,83 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         text-style: dim;
     }
 
-    #tool-permission-actions {
+    #tool-tag-tabs {
+        height: auto;
+    }
+
+    .tool-tag-pane {
+        height: auto;
+    }
+
+    .tool-tag-actions {
         height: auto;
         margin-bottom: 1;
         padding: 0 1;
         align: center middle;
     }
 
-    #tool-permission-help {
+    .tool-tag-enabled-toggle {
+        width: 14;
+        height: 3;
+        background: transparent;
+        border: none;
+        padding: 0 1;
+    }
+
+    .tool-tag-enabled-toggle:focus {
+        background: transparent;
+        background-tint: transparent 0%;
+        border: none;
+    }
+
+    .tool-tag-allow-toggle {
+        width: 18;
+        height: 3;
+        background: #263241;
+        color: #a3be8c;
+        border: round #6f8f70;
+        padding: 0 1;
+        text-style: bold;
+    }
+
+    .tool-tag-allow-toggle:focus {
+        background: #2f3f35;
+        background-tint: #2f3f35 0%;
+        color: #d8f0c8;
+        border: round #a3be8c;
+    }
+
+    .tool-tag-allow-toggle:hover {
+        background: #2f3f35;
+        color: #d8f0c8;
+        border: round #a3be8c;
+    }
+
+    .tool-tag-allow-toggle.-on {
+        background: #2f3f35;
+        color: #d8f0c8;
+        border: round #a3be8c;
+    }
+
+    .tool-tag-allow-toggle > .toggle--button {
+        background: #1f2b24;
+        color: #a3be8c;
+    }
+
+    .tool-tag-allow-toggle.-on > .toggle--button {
+        background: #1f2b24;
+        color: #d8f0c8;
+    }
+
+    .tool-tag-allow-toggle > .toggle--label {
+        color: #d8f0c8;
+        text-style: bold;
+    }
+
+    .tool-tag-status {
         width: 1fr;
         color: #a7b1c2;
+        content-align: left middle;
     }
 
     .skill-entry {
@@ -1166,8 +1239,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
         compress_threshold: CompressThreshold = "100%",
         reasoning_level: ReasoningLevel = "auto",
-        stats_sections: list[MetadataSection] | None = None,
-        initial_tab: str = "settings-tab",
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -1185,7 +1256,14 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         self._tool_descriptions = {
             item.name: item.description for item in tool_permission_items
         }
+        self._tool_tags = {
+            item.name: item.tags if item.tags else ("untagged",)
+            for item in tool_permission_items
+        }
+        self._tool_tag_order = _tool_tag_order(tool_permission_items)
         self._tool_enabled = {item.name: item.enabled for item in tool_permission_items}
+        self._tool_names = self._tool_order
+        self._active_tool_tag_tab = self._initial_tool_tag_tab()
         self._tool_permissions = {
             item.name: item.permission for item in tool_permission_items
         }
@@ -1196,8 +1274,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         }
         self._compress_threshold = compress_threshold
         self._reasoning_level = reasoning_level
-        self._stats_sections = list(stats_sections or [])
-        self._initial_tab = initial_tab
         self._sync_tool_order()
         self._api_keys = api_keys
         self._provider_highlight = _highlight_for_value(
@@ -1212,7 +1288,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def compose(self) -> ComposeResult:
         with Container(id="config-panel"):
             yield Label("AceAI configuration", id="config-title")
-            with TabbedContent(initial=self._initial_tab, id="config-tabs"):
+            with TabbedContent(initial="settings-tab", id="config-tabs"):
                 with TabPane("Settings", id="settings-tab"):
                     with VerticalScroll(id="config-scroll"):
                         yield Label(_field_label("provider"))
@@ -1312,16 +1388,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                         )
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
-                with TabPane("Stats", id="stats-tab"):
-                    with VerticalScroll(id="stats-scroll"):
-                        stats_body = RichLog(
-                            id="stats-body",
-                            wrap=True,
-                            auto_scroll=False,
-                        )
-                        for renderable in _metadata_renderables(self._stats_sections):
-                            stats_body.write(renderable)
-                        yield stats_body
             with Horizontal(id="config-actions"):
                 yield Button("Apply", variant="primary", id="apply")
                 yield Button("Cancel", id="cancel")
@@ -1469,15 +1535,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
-            return
-        if event.button.id == "allow-all-tools":
-            self._set_all_tool_permissions("always")
-            return
-        if event.button.id == "disable-all-tools":
-            self._set_all_tools_enabled(False)
-            return
-        if event.button.id == "enable-all-tools":
-            self._set_all_tools_enabled(True)
             return
         if event.button.id == "search-skills":
             self._search_project_skills()
@@ -1735,50 +1792,46 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id is None:
             return
+        if event.checkbox.id.startswith("tool-tag-allow-all-"):
+            self._sync_tool_settings_from_controls()
+            tag = self._tool_tag_allow_control_names[event.checkbox.id]
+            if event.value:
+                self._allow_all_tools_for_tag(tag)
+                self._refresh_tool_permission_control_values()
+            return
+        if event.checkbox.id.startswith("tool-tag-enabled-"):
+            self._sync_tool_settings_from_controls()
+            tag = self._tool_tag_control_names[event.checkbox.id]
+            for tool_name in self._tools_for_tag(tag):
+                self._tool_enabled[tool_name] = event.value
+            self._sync_tool_order()
+            self._refresh_tool_permission_control_values()
+            return
         if not event.checkbox.id.startswith("tool-enabled-"):
             return
         self._sync_tool_settings_from_controls()
         tool_name = self._tool_enabled_control_names[event.checkbox.id]
         self._tool_enabled[tool_name] = event.value
         self._sync_tool_order()
-        self.run_worker(
-            self._refresh_tool_permission_controls(),
-            group="tool-permission-refresh",
-            exclusive=True,
-        )
+        self._refresh_tool_permission_control_values()
 
     def _tool_permission_controls(self) -> ComposeResult:
-        with Horizontal(id="tool-permission-actions"):
-            yield Static(
-                "Tool access and per-run limits. Empty max calls means unlimited.",
-                id="tool-permission-help",
-            )
-            yield Button("Enable all", id="enable-all-tools")
-            yield Button("Allow all", id="allow-all-tools")
-            yield Button("Disable all", id="disable-all-tools")
-        with Container(id="tool-permission-table", classes="tool-permission-table"):
-            yield from self._tool_permission_table_widgets()
+        with Container(id="tool-tags"):
+            yield from self._tool_tag_tabs()
 
-    def _set_all_tool_permissions(self, permission: ToolPermission) -> None:
-        for index, tool_name in enumerate(self._tool_names):
-            self._tool_permissions[tool_name] = permission
-            self.query_one(f"#tool-permission-{index}", Select).value = permission
-
-    def _set_all_tools_enabled(self, enabled: bool) -> None:
-        for tool_name in self._tool_names:
-            self._tool_enabled[tool_name] = enabled
-        self._sync_tool_order()
-        self.run_worker(
-            self._refresh_tool_permission_controls(),
-            group="tool-permission-refresh",
-            exclusive=True,
-        )
+    def _allow_all_tools_for_tag(self, tag: str) -> None:
+        for tool_name in self._tools_for_tag(tag):
+            self._tool_permissions[tool_name] = "always"
+            index = self._tool_names.index(tool_name)
+            self.query_one(f"#tool-permission-{index}", Select).value = "always"
 
     def _sync_tool_settings_from_controls(self) -> None:
         for index, tool_name in enumerate(self._tool_names):
-            self._tool_enabled[tool_name] = self.query_one(
-                f"#tool-enabled-{index}", Checkbox
-            ).value
+            try:
+                enabled_control = self.query_one(f"#tool-enabled-{index}", Checkbox)
+            except NoMatches:
+                continue
+            self._tool_enabled[tool_name] = enabled_control.value
             value = self.query_one(f"#tool-permission-{index}", Select).value
             if value not in TOOL_PERMISSION_OPTIONS:
                 raise ValueError("Unsupported tool permission")
@@ -1801,12 +1854,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         return f"{self._tool_max_calls[tool_name]}"
 
     def _sync_tool_order(self) -> None:
-        self._tool_names = tuple(
-            sorted(
-                self._tool_order,
-                key=lambda tool_name: not self._tool_enabled[tool_name],
-            )
-        )
+        self._tool_names = self._tool_order
         self._tool_control_names = {
             f"tool-permission-{index}": tool_name
             for index, tool_name in enumerate(self._tool_names)
@@ -1815,13 +1863,89 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             f"tool-enabled-{index}": tool_name
             for index, tool_name in enumerate(self._tool_names)
         }
+        self._tool_tag_control_names = {
+            f"tool-tag-enabled-{index}": tag
+            for index, tag in enumerate(self._tool_tag_order)
+        }
+        self._tool_tag_allow_control_names = {
+            f"tool-tag-allow-all-{index}": tag
+            for index, tag in enumerate(self._tool_tag_order)
+        }
 
-    async def _refresh_tool_permission_controls(self) -> None:
-        table = self.query_one("#tool-permission-table", Container)
-        await table.remove_children()
-        await table.mount(*self._tool_permission_table_widgets())
+    def _refresh_tool_permission_control_values(self) -> None:
+        tabs = self.query_one("#tool-tag-tabs", TabbedContent)
+        active = tabs.active
+        if isinstance(active, str):
+            self._active_tool_tag_tab = active
+        for index, tag in enumerate(self._tool_tag_order):
+            tools = self._tools_for_tag(tag)
+            enabled_count = sum(
+                1 for tool_name in tools if self._tool_enabled[tool_name]
+            )
+            self.query_one(f"#tool-tag-enabled-{index}", Checkbox).value = (
+                enabled_count > 0
+            )
+            self.query_one(f"#tool-tag-status-{index}", Static).update(
+                f"{enabled_count}/{len(tools)} enabled"
+            )
+            self.query_one(f"#tool-tag-allow-all-{index}", Checkbox).value = (
+                self._tag_permissions_are_always(tag)
+            )
+        for index, tool_name in enumerate(self._tool_names):
+            disabled_class = "tool-disabled"
+            enabled = self._tool_enabled[tool_name]
+            self.query_one(f"#tool-enabled-{index}", Checkbox).value = enabled
+            row = self.query_one(f"#tool-row-{index}", Horizontal)
+            name = self.query_one(f"#tool-name-{index}", Static)
+            permission = self.query_one(f"#tool-permission-{index}", Select)
+            max_calls = self.query_one(f"#tool-max-calls-{index}", Input)
+            description = self.query_one(f"#tool-permission-description-{index}", Static)
+            targets = (row, name, permission, max_calls, description)
+            for target in targets:
+                if enabled:
+                    target.remove_class(disabled_class)
+                else:
+                    target.add_class(disabled_class)
 
-    def _tool_permission_table_widgets(self) -> tuple[Horizontal, ...]:
+    def _tool_tag_tabs(self) -> ComposeResult:
+        initial = self._active_tool_tag_tab
+        with TabbedContent(initial=initial, id="tool-tag-tabs"):
+            for index, tag in enumerate(self._tool_tag_order):
+                with TabPane(tag, id=f"tool-tag-tab-{index}", classes="tool-tag-pane"):
+                    yield from self._tool_tag_controls(index, tag)
+                    with Container(
+                        id=f"tool-permission-table-{index}",
+                        classes="tool-permission-table",
+                    ):
+                        yield from self._tool_permission_table_widgets(tag)
+
+    def _tool_tag_controls(self, index: int, tag: str) -> tuple[Horizontal, ...]:
+        tools = self._tools_for_tag(tag)
+        enabled_count = sum(1 for tool_name in tools if self._tool_enabled[tool_name])
+        return (
+            Horizontal(
+                Checkbox(
+                    f"{tag}",
+                    value=enabled_count > 0,
+                    id=f"tool-tag-enabled-{index}",
+                    classes="tool-tag-enabled-toggle",
+                ),
+                Static(
+                    f"{enabled_count}/{len(tools)} enabled",
+                    id=f"tool-tag-status-{index}",
+                    classes="tool-tag-status",
+                ),
+                Checkbox(
+                    "allow all",
+                    value=self._tag_permissions_are_always(tag),
+                    id=f"tool-tag-allow-all-{index}",
+                    classes="tool-tag-allow-toggle",
+                ),
+                classes="tool-tag-actions",
+            ),
+        )
+
+    def _tool_permission_table_widgets(self, tag: str) -> tuple[Horizontal, ...]:
         return (
             Horizontal(
                 Static("On", classes="tool-permission-cell tool-enabled-cell"),
@@ -1840,12 +1964,13 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 ),
                 classes="tool-permission-row tool-permission-header",
             ),
-            *self._tool_permission_rows(),
+            *self._tool_permission_rows(self._tools_for_tag(tag)),
         )
 
-    def _tool_permission_rows(self) -> tuple[Horizontal, ...]:
+    def _tool_permission_rows(self, tool_names: tuple[str, ...]) -> tuple[Horizontal, ...]:
         rows: list[Horizontal] = []
-        for index, tool_name in enumerate(self._tool_names):
+        for tool_name in tool_names:
+            index = self._tool_names.index(tool_name)
             disabled_class = "" if self._tool_enabled[tool_name] else " tool-disabled"
             rows.append(
                 Horizontal(
@@ -1861,6 +1986,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                     ),
                     Static(
                         tool_name,
+                        id=f"tool-name-{index}",
                         classes=f"tool-permission-cell tool-permission-name{disabled_class}",
                     ),
                     Select(
@@ -1897,6 +2023,30 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                 )
             )
         return tuple(rows)
+
+    def _tools_for_tag(self, tag: str) -> tuple[str, ...]:
+        return tuple(
+            tool_name
+            for tool_name in self._tool_names
+            if tag in self._tool_tags[tool_name]
+        )
+
+    def _tool_tag_enabled(self, tag: str) -> bool:
+        return any(self._tool_enabled[tool_name] for tool_name in self._tools_for_tag(tag))
+
+    def _tag_permissions_are_always(self, tag: str) -> bool:
+        return all(
+            self._tool_permissions[tool_name] == "always"
+            for tool_name in self._tools_for_tag(tag)
+        )
+
+    def _initial_tool_tag_tab(self) -> str:
+        for index, tag in enumerate(self._tool_tag_order):
+            if self._tool_tag_enabled(tag):
+                return f"tool-tag-tab-{index}"
+        if not self._tool_tag_order:
+            return ""
+        return "tool-tag-tab-0"
 
 
 def _config_selection_error(
@@ -2018,6 +2168,7 @@ class SessionSelectScreen(ModalScreen[str | None]):
             if self._current_session_id in session_ids
             else self._sessions[0].session_id
         )
+
         with Container(id="session-panel"):
             yield Label(f"Sessions  {len(self._sessions)}", id="session-title")
             with VerticalScroll(id="session-list-scroll"):

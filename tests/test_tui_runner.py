@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from io import StringIO
 from pathlib import Path
 
@@ -15,7 +16,13 @@ from aceai.agent.citations import (
 )
 from aceai.core.agent import Agent
 from aceai.core.executor import Executor
-from aceai.agent.session import SessionRecorder, SessionState, SessionStore
+from aceai.agent.session import (
+    MAIN_THREAD_ID,
+    SessionEvent,
+    SessionRecorder,
+    SessionState,
+    SessionStore,
+)
 from aceai.llm import LLMResponse
 from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry
@@ -27,10 +34,10 @@ from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import clear_config, current_config, load_config
-from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
+from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
-from aceai.agent.ideas import IdeaStore
+from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectStore
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui import runner as tui_runner_module
@@ -59,6 +66,7 @@ from aceai.agent.tui.widgets import (
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
+    SubagentStatusWidget,
     TopBarWidget,
 )
 from aceai.agent.tui.widgets.input import (
@@ -500,9 +508,8 @@ async def test_interactive_tui_enter_key_completes_then_submits_slash_command() 
         await pilot.pause()
 
         assert command_input.value == ""
-        assert app.screen.__class__.__name__ == "ConfigScreen"
-        tabs = app.screen.query_one("#config-tabs", TabbedContent)
-        assert tabs.active == "stats-tab"
+        assert app.screen.__class__.__name__ == "MetadataScreen"
+        assert app.screen.query_one("#metadata-body", RichLog) is not None
 
 
 @pytest.mark.anyio
@@ -2030,7 +2037,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
 
 
 @pytest.mark.anyio
-async def test_interactive_tui_stats_command_opens_config_stats_tab() -> None:
+async def test_interactive_tui_stats_command_opens_stats_screen() -> None:
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -2039,15 +2046,13 @@ async def test_interactive_tui_stats_command_opens_config_stats_tab() -> None:
     )
     app = AceAIInteractiveTUI(agent)
     calls: list[str] = []
-    app.open_config_screen = lambda initial_tab="settings-tab": calls.append(
-        initial_tab
-    )
+    app.open_stats_screen = lambda: calls.append("stats")
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
         app.on_input_submitted(Input.Submitted(command_input, "/stats"))
 
-    assert calls == ["stats-tab"]
+    assert calls == ["stats"]
 
 
 @pytest.mark.anyio
@@ -2113,11 +2118,29 @@ async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
         console = Console(width=80, record=True, file=StringIO())
         console.print(stream._render_empty_state())
         text = console.export_text()
-        assert "Ask AceAI Anything" in text
+        assert f"AceAI v{__version__}" in text
         assert "Project: aceai" in text
-        assert f"v{__version__}" in text
         assert "██" in text
         assert "No events yet" not in text
+
+
+def test_empty_stream_text_includes_git_branch(tmp_path) -> None:
+    subprocess.run(
+        ["git", "init", "-b", "feature/home-branch"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stream = StreamWidget(
+        project_name="project",
+        project_root_path=str(tmp_path),
+    )
+    console = Console(width=80, record=True, file=StringIO())
+
+    console.print(stream._render_empty_state())
+
+    assert "Git: feature/home-branch" in console.export_text()
 
 
 @pytest.mark.anyio
@@ -2507,7 +2530,7 @@ async def test_config_screen_is_fullscreen_without_system_prompt_tab() -> None:
         assert panel.region.height == 30
         assert tabs.active == "settings-tab"
         assert screen.query_one("#provider", Input) in settings_tab.query("*")
-        assert screen.query_one("#stats-tab") in tabs.query("*")
+        assert "stats-tab" not in screen_ids
         assert "system-prompt-tab" not in screen_ids
         assert "system-prompt" not in screen_ids
 
@@ -2520,12 +2543,14 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
             description="Run a shell command.",
             permission="ask",
             max_calls_per_run=5,
+            tags=("dev",),
         ),
         ToolPermissionItem(
             name="read_text_file",
             description="Read a file.",
             permission="always",
             enabled=False,
+            tags=("dev",),
         ),
     )
     screen = ConfigScreen(
@@ -2552,6 +2577,13 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
         max_calls_input = screen.query_one("#tool-max-calls-0", Input)
 
         assert screen.query_one("#tool-permissions-tab") in tabs.query("*")
+        assert list(screen.query("#enable-all-tools")) == []
+        assert list(screen.query("#allow-all-tools")) == []
+        assert list(screen.query("#disable-all-tools")) == []
+        tool_tag_tabs = screen.query_one("#tool-tag-tabs", TabbedContent)
+        assert tool_tag_tabs.active == "tool-tag-tab-0"
+        assert str(screen.query_one(".tool-tag-status", Static).render()) == "1/2 enabled"
+        assert not screen.query_one("#tool-tag-allow-all-0", Checkbox).value
         header_cells = list(screen.query(".tool-permission-header Static"))
         assert [str(cell.render()) for cell in header_cells] == [
             "On",
@@ -2601,6 +2633,59 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
 
 
 @pytest.mark.anyio
+async def test_config_screen_groups_tools_by_tag_tabs() -> None:
+    tool_items = (
+        ToolPermissionItem(
+            name="run_shell_command",
+            description="Run a shell command.",
+            permission="ask",
+            tags=("dev",),
+        ),
+        ToolPermissionItem(
+            name="read_text_file",
+            description="Read a file.",
+            permission="always",
+            tags=("dev",),
+        ),
+    )
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+        tool_permission_items=tool_items,
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+
+        assert screen.query_one("#tool-tag-tabs", TabbedContent).active == "tool-tag-tab-0"
+        assert screen.query_one("#tool-tag-enabled-0", Checkbox).value
+        assert screen.query_one("#tool-enabled-0", Checkbox).value
+        assert screen.query_one("#tool-enabled-1", Checkbox).value
+
+        screen.query_one("#tool-tag-enabled-0", Checkbox).value = False
+        await pilot.pause()
+
+        assert not screen.query_one("#tool-enabled-0", Checkbox).value
+        assert not screen.query_one("#tool-enabled-1", Checkbox).value
+        _press_config_apply(screen)
+
+        assert selections[-1].tool_enabled == {
+            "run_shell_command": False,
+            "read_text_file": False,
+        }
+
+
+@pytest.mark.anyio
 async def test_config_screen_rejects_invalid_tool_max_calls() -> None:
     screen = ConfigScreen(
         provider_name="openai",
@@ -2637,17 +2722,19 @@ async def test_config_screen_rejects_invalid_tool_max_calls() -> None:
 
 
 @pytest.mark.anyio
-async def test_config_screen_can_allow_or_disable_all_tools() -> None:
+async def test_config_screen_can_allow_all_tools_for_current_tag() -> None:
     tool_items = (
         ToolPermissionItem(
             name="run_shell_command",
             description="Run a shell command.",
             permission="ask",
+            tags=("dev",),
         ),
         ToolPermissionItem(
             name="read_text_file",
             description="Read a file.",
-            permission="always",
+            permission="ask",
+            tags=("dev",),
         ),
     )
     screen = ConfigScreen(
@@ -2669,23 +2756,14 @@ async def test_config_screen_can_allow_or_disable_all_tools() -> None:
 
         screen.dismiss = dismiss
 
-        class DisablePressed:
-            button = screen.query_one("#disable-all-tools", Button)
-
-        screen.on_button_pressed(DisablePressed())
+        assert not screen.query_one("#tool-tag-allow-all-0", Checkbox).value
+        screen.query_one("#tool-tag-allow-all-0", Checkbox).value = True
         await pilot.pause()
-        assert not screen.query_one("#tool-enabled-0", Checkbox).value
-        assert not screen.query_one("#tool-enabled-1", Checkbox).value
-
-        class AllowPressed:
-            button = screen.query_one("#allow-all-tools", Button)
-
-        screen.on_button_pressed(AllowPressed())
         _press_config_apply(screen)
 
         assert selections[-1].tool_enabled == {
-            "run_shell_command": False,
-            "read_text_file": False,
+            "run_shell_command": True,
+            "read_text_file": True,
         }
         assert selections[-1].tool_permissions == {
             "run_shell_command": "always",
@@ -3061,6 +3139,243 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         assert app._state.events[0].content == "second"
         assert app._selected_model == "gpt-5.5"
         assert app._llm_history[0].content[0]["data"] == "second"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_subagents_command_switches_active_thread(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect",
+        status="completed",
+        parent_thread_id=MAIN_THREAD_ID,
+        metadata={
+            "instructions": "Report evidence.",
+            "context_brief": "repo",
+            "allowed_tools": [],
+        },
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            kind="user_message",
+            payload={"content": "child question"},
+        ),
+    )
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect","instructions":"Report evidence.",'
+            '"context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-delegate-1",
+    )
+    audit_output = (
+        '{"type":"subagent_audit","thread_id":"child-thread-1",'
+        '"agent_id":"child-agent-1","run_id":"child-run-1",'
+        '"status":"completed","summary":"done","step_count":1}'
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_started",
+            payload={
+                "content": "",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_result",
+            payload={
+                "content": "completed",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_arguments": call.arguments,
+                "output": audit_output,
+                "model_output": audit_output,
+                "status": "completed",
+            },
+        ),
+    )
+    llm_service = StubLLMService([])
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        initial_events=event_log_to_tui_events(
+            store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
+        ),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        app._command_subagents("")
+        subagents = app.query_one(SubagentStatusWidget)
+        activate = subagents.query_one("#subagent-activate", Button)
+        activate.press()
+        await pilot.pause()
+
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
+        assert subagents.has_class("hidden")
+
+        app._command_subagents("")
+        assert not subagents.has_class("hidden")
+        assert "main agent" in subagents.renderable
+        assert activate.label == "activate"
+        activate.press()
+        await pilot.pause()
+
+        assert app._agent_app.active_thread_id == MAIN_THREAD_ID
+        assert app._state.events[0].tool_call_id == "call-delegate-1"
+        assert subagents.has_class("hidden")
+
+        app._command_subagents("child-thread-1")
+
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
+
+        app._command_subagents("main")
+
+        assert app._agent_app.active_thread_id == MAIN_THREAD_ID
+
+
+@pytest.mark.anyio
+async def test_configured_tui_activate_subagent_initializes_runtime_and_switches_thread(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect",
+        status="completed",
+        parent_thread_id=MAIN_THREAD_ID,
+        metadata={
+            "instructions": "Report evidence.",
+            "context_brief": "repo",
+            "allowed_tools": [],
+        },
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            kind="user_message",
+            payload={"content": "child question"},
+        ),
+    )
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect","instructions":"Report evidence.",'
+            '"context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-delegate-1",
+    )
+    audit_output = (
+        '{"type":"subagent_audit","thread_id":"child-thread-1",'
+        '"agent_id":"child-agent-1","run_id":"child-run-1",'
+        '"status":"completed","summary":"done","step_count":1}'
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_started",
+            payload={
+                "content": "",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_result",
+            payload={
+                "content": "completed",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_arguments": call.arguments,
+                "output": audit_output,
+                "model_output": audit_output,
+                "status": "completed",
+            },
+        ),
+    )
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-4o",
+            default_model="gpt-4o",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-4o",
+        initial_events=event_log_to_tui_events(
+            store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
+        ),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        assert app._agent_app is None
+
+        app._command_subagents("")
+        app.query_one("#subagent-activate", Button).press()
+        await pilot.pause()
+
+        assert app._agent_app is not None
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
+        assert "Configure AceAI before switching threads." not in [
+            event.content for event in app._state.events
+        ]
 
 
 def _press_config_apply(screen: ConfigScreen) -> None:

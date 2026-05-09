@@ -1,5 +1,32 @@
 # Changelog
 
+## AceAI v0.2.22
+
+### Features
+
+- `threads`: Add realtime app-layer child thread events so delegated subagent runs can stream and persist independently while the parent waits for a bounded handoff.
+- `tui`: Add a `/subagents` thread selector that can switch the active main stream, input, queue, and approval target between the main thread and child subagent threads.
+- `export`: Add `aceai export <session_id> --threads` to emit thread-aware transcripts with diagnostic event, thread, run, step, and tool-call identifiers.
+- `skills`: Add project skills for launching AceAI in Ghostty and capturing TUI screenshots for visual validation workflows.
+
+### Improvements
+
+- `delegation`: Track child thread runtime completion, failure, and suspension through the app layer so parent tool calls resolve cleanly instead of hanging on child failures.
+- `approvals`: Scope pending approvals and approved tool names by thread, and validate explicit thread, run, and tool-call targets before resuming a suspended run.
+- `docs`: Update the multi-agent thread plan and layer-boundary review with completed runtime, approval, selector, export, and diagnostics phases.
+- `packaging`: Clarify framework-only versus terminal-app installation paths in the README, including the `aceai[tui]` tool install flow.
+
+### Fixes
+
+- `tui`: Preserve active thread state across session switches and route stream rendering through the selected thread instead of mixing child output into the main transcript.
+- `provider-auth`: Keep OpenAI/Codex authentication and provider setup behavior aligned with the app-layer runtime flow.
+
+### Breaking Changes
+
+- `app`: `AceAgentApp.start_turn_events()` now exposes `AgentAppEvent` envelopes for thread-aware consumers, while legacy `start_turn()` intentionally yields only the selected active thread's bare `AgentEvent` stream.
+- `approvals`: `approve_tool()` and `reject_tool()` now validate concrete thread/run/tool-call targets when supplied; callers resuming non-active threads must pass matching identifiers instead of relying on global pending-approval state.
+- `export`: Default `SessionStore.export_text()` now exports the main thread transcript only; callers that need child thread logs must pass `include_threads=True`.
+
 ## AceAI v0.2.21
 
 ### Features

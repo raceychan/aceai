@@ -315,7 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="*",
-        help="Optional command: resume <session_id>, export <session_id>, or cost.",
+        help=(
+            "Optional command: resume <session_id>, export <session_id>, "
+            "or cost."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -327,6 +330,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--file",
         default=None,
         help="Write aceai export output to a new file instead of stdout.",
+    )
+    parser.add_argument(
+        "--threads",
+        action="store_true",
+        help="Include every agent thread in aceai export output.",
     )
     parser.add_argument(
         "--version",
@@ -357,7 +365,10 @@ def run_main(args: argparse.Namespace) -> None:
         if len(command_parts) != 2:
             raise ValueError("aceai export requires a session_id")
         require_tui_extra()
-        export_text = SessionStore().export_text(command_parts[1])
+        export_text = SessionStore().export_text(
+            command_parts[1],
+            include_threads=args.threads,
+        )
         if args.file is not None:
             with Path(args.file).open("x", encoding="utf-8") as stream:
                 stream.write(export_text)

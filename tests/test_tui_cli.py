@@ -3,7 +3,7 @@ import pytest
 from aceai import __version__
 from aceai.agent.config import AgentAppConfig, clear_config, save_config
 from aceai.agent.tui import cli
-from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
+from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 
 
 class StubAgent:
@@ -481,8 +481,9 @@ def test_cli_does_not_print_saved_for_empty_deleted_session(monkeypatch, capsys)
 
 def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
     class StubStore:
-        def export_text(self, session_id):
+        def export_text(self, session_id, *, include_threads=False):
             assert session_id == "session-1"
+            assert include_threads is False
             return "# AceAI session session-1\n\n## user\nhello\n"
 
     monkeypatch.setattr(cli, "SessionStore", StubStore)
@@ -493,10 +494,26 @@ def test_cli_export_prints_session_text(monkeypatch, capsys) -> None:
     assert captured.out == "# AceAI session session-1\n\n## user\nhello\n"
 
 
+def test_cli_export_threads_prints_thread_aware_session_text(monkeypatch, capsys) -> None:
+    class StubStore:
+        def export_text(self, session_id, *, include_threads=False):
+            assert session_id == "session-1"
+            assert include_threads is True
+            return "# AceAI thread main\n"
+
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+
+    cli.main(["export", "session-1", "--threads"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "# AceAI thread main\n"
+
+
 def test_cli_export_writes_session_text_to_new_file(monkeypatch, tmp_path, capsys) -> None:
     class StubStore:
-        def export_text(self, session_id):
+        def export_text(self, session_id, *, include_threads=False):
             assert session_id == "session-1"
+            assert include_threads is False
             return "# AceAI session session-1\n\n## user\nhello\n"
 
     target = tmp_path / "debug.md"
@@ -513,8 +530,9 @@ def test_cli_export_writes_session_text_to_new_file(monkeypatch, tmp_path, capsy
 
 def test_cli_export_file_fails_when_target_exists(monkeypatch, tmp_path) -> None:
     class StubStore:
-        def export_text(self, session_id):
+        def export_text(self, session_id, *, include_threads=False):
             assert session_id == "session-1"
+            assert include_threads is False
             return "# AceAI session session-1\n"
 
     target = tmp_path / "debug.md"
