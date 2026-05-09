@@ -6,12 +6,31 @@ An engineering-first agent framework: tools-first, explicit signatures, early fa
 
 ## Requirements & install
 - Python 3.12+.
-- Install: `uv add aceai`
+
+Use AceAI as a framework:
+
+```bash
+uv add aceai
+```
+
+This installs the core framework APIs without the terminal UI dependencies.
+
+Use AceAI as a ready-made terminal app:
+
+```bash
+uv tool install "aceai[tui]"
+```
+
+This installs the TUI dependencies as a uv tool and exposes the `aceai`
+command. To run it once without installing the command:
+
+```bash
+uvx --from "aceai[tui]" aceai
+```
 
 ## Terminal UI
 
-Installing AceAI exposes an `aceai` command. Set `OPENAI_API_KEY`, then launch
-the TUI directly:
+After installing the tool, set `OPENAI_API_KEY`, then launch the TUI directly:
 
 ```bash
 aceai

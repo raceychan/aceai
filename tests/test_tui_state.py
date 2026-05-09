@@ -6,7 +6,13 @@ from io import StringIO
 import pytest
 
 from aceai.agent.memory.ideas import Idea
-from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
+from aceai.agent.session import (
+    EventLog,
+    MAIN_THREAD_ID,
+    SessionEvent,
+    SessionRecorder,
+    SessionStore,
+)
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
 from aceai.agent.tui import app as tui_app_module
@@ -43,7 +49,7 @@ from aceai.llm.models import LLMResponse, LLMToolCall, LLMToolCallDelta, LLMUsag
 from rich.console import Console, Group
 from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.widgets import RichLog, Static
 
 
 async def _wait_until(pilot, predicate, timeout: float = 0.2) -> None:
@@ -117,7 +123,7 @@ def test_reduce_events_tracks_step_and_tool_state() -> None:
     assert tool_state.output == '{"matches":["spec/tui.md","docs/tui.md"]}'
 
 
-def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
+def test_reduce_events_tracks_threaded_delegate_to_subagent_status() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -130,9 +136,9 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     result = ToolExecutionResult(
         call=call,
         output=(
-            '{"agent_id":"child-1","run_id":"run-1","status":"completed",'
-            '"final_answer":"README has no version","summary":"README has no version",'
-            '"important_evidence":[],"tool_results":[],"step_count":1}'
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"summary":"README has no version","step_count":1}'
         ),
     )
 
@@ -148,6 +154,7 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     assert len(state.subagents) == 1
     subagent = state.subagents[0]
     assert subagent.call_id == "call-subagent-1"
+    assert subagent.thread_id == "child-thread-1"
     assert subagent.task == "Check whether README names the version"
     assert subagent.instructions == "report evidence"
     assert subagent.context_brief == "repo"
@@ -156,11 +163,40 @@ def test_reduce_events_tracks_delegate_to_subagent_status() -> None:
     assert subagent.agent_id == "child-1"
     assert subagent.run_id == "run-1"
     assert subagent.summary == "README has no version"
-    assert subagent.final_answer == "README has no version"
+    assert subagent.final_answer == ""
     assert subagent.important_evidence == []
     assert subagent.tool_results == []
     assert subagent.step_count == 1
     assert subagent.output == result.output
+
+
+def test_reduce_events_excludes_delegate_to_subagent_without_thread_id() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"Inspect","instructions":"","context_brief":"","allowed_tools":[]}',
+        call_id="call-subagent-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output="subagent failed",
+        error="child failed",
+    )
+
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_failed(
+                    tool_call=call,
+                    tool_result=result,
+                    error="child failed",
+                )
+            ),
+        ]
+    )
+
+    assert state.subagents == []
 
 
 def test_reduce_events_does_not_track_regular_tool_as_subagent() -> None:
@@ -809,28 +845,45 @@ async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
         ),
         call_id="call-subagent-1",
     )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"running",'
+            '"summary":"","step_count":0}'
+        ),
+    )
     app = AceAITUI(
-        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ],
     )
 
     async with app.run_test():
         subagents = app.query_one(SubagentStatusWidget)
         detail = app.query_one(DetailWidget)
 
+        app.action_show_subagents()
+
         assert not subagents.has_class("hidden")
         assert detail.has_class("collapsed")
-        assert subagents.renderable == (
-            "subagents  1 total | 1 running | 0 done | 0 failed  page 1/1\n"
-            "\n"
-            "#1 [running] Inspect version metadata\n"
-            "   tools none | steps 0\n"
-            "   brief: repo\n"
-            "   ask: report evidence"
-        )
+        assert "subagents  1 total | 0 running | 1 done | 0 failed\n" in subagents.renderable
+        assert "                 < [1] >" in subagents.renderable
+        assert "#1 [completed] Inspect version metadata" in subagents.renderable
+        assert "run" in subagents.renderable
+        assert "status: completed" in subagents.renderable
+        assert "steps: 0" in subagents.renderable
+        assert "results: 0" in subagents.renderable
+        assert "tools\n     - none" in subagents.renderable
+        assert "task / context\n     repo" in subagents.renderable
+        assert "task / ask\n     report evidence" in subagents.renderable
 
 
 @pytest.mark.anyio
-async def test_tui_hides_subagent_status_widget_after_success() -> None:
+async def test_tui_excludes_completed_delegate_without_thread_id() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -855,8 +908,6 @@ async def test_tui_hides_subagent_status_widget_after_success() -> None:
     async with app.run_test():
         subagents = app.query_one(SubagentStatusWidget)
 
-        assert not subagents.has_class("hidden")
-
         app.append_event(
             TUIEvent.from_agent_event(
                 builder.tool_completed(tool_call=call, tool_result=result)
@@ -867,12 +918,11 @@ async def test_tui_hides_subagent_status_widget_after_success() -> None:
 
         app.action_show_subagents()
 
-        assert not subagents.has_class("hidden")
-        assert "version found" in subagents.renderable
+        assert subagents.has_class("hidden")
 
 
 @pytest.mark.anyio
-async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
+async def test_tui_excludes_failed_delegate_without_thread_id() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -903,12 +953,6 @@ async def test_tui_keeps_failed_subagents_until_next_user_message() -> None:
                 )
             )
         )
-
-        assert not subagents.has_class("hidden")
-        assert "[failed]" in subagents.renderable
-        assert "child failed" in subagents.renderable
-
-        app.append_event(TUIEvent.user_message("next question"))
 
         assert subagents.has_class("hidden")
 
@@ -958,20 +1002,69 @@ def test_subagent_status_widget_paginates_full_agent_details() -> None:
         ]
     )
 
-    assert "page 1/2" in widget.renderable
+    assert "< [1] 2 >" in widget.renderable
     assert "First delegated investigation with a long title that should not be shortened" in widget.renderable
     assert first_summary in widget.renderable
+    assert "run" in widget.renderable
+    assert "steps: 2" in widget.renderable
+    assert "tools\n     - read_text_file" in widget.renderable
+    assert "results: 1" in widget.renderable
+    assert "task / context\n     first context" in widget.renderable
+    assert "task / ask\n     Use the repo evidence and report exact files." in widget.renderable
+    assert "task / summary\n     " + first_summary in widget.renderable
     assert "child-first-full-id" in widget.renderable
     assert "tool output " + ("o" * 80) in widget.renderable
     assert "Second delegated investigation" not in widget.renderable
 
     widget.next_page()
 
-    assert "page 2/2" in widget.renderable
+    assert "< 1 [2] >" in widget.renderable
     assert "Second delegated investigation" in widget.renderable
     assert second_brief in widget.renderable
     assert "openai:web_search" in widget.renderable
     assert "First delegated investigation" not in widget.renderable
+
+
+@pytest.mark.anyio
+async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    for index, status in enumerate(("running", "completed", "failed"), 1):
+        store.create_thread(
+            session_id=metadata.session_id,
+            thread_id=f"child-thread-{index}",
+            agent_id=f"child-agent-{index}",
+            role="subagent",
+            title=f"Child {index}",
+            status=status,
+            parent_thread_id=MAIN_THREAD_ID,
+            metadata={
+                "instructions": f"Ask {index}",
+                "context_brief": f"Context {index}",
+                "allowed_tools": ["read_text_file"],
+            },
+        )
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.action_show_subagents()
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert not subagents.has_class("hidden")
+        assert "subagents  3 total | 1 running | 1 done | 1 failed" in subagents.renderable
+        assert "Child 1" in subagents.renderable
+        app.action_show_subagents()
+        assert subagents.has_class("hidden")
+        app.action_show_subagents()
+        assert not subagents.has_class("hidden")
+        subagents.next_page()
+        assert "Child 2" in subagents.renderable
+        subagents.next_page()
+        assert "Child 3" in subagents.renderable
 
 
 @pytest.mark.anyio
@@ -988,14 +1081,29 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         ),
         call_id="call-subagent-1",
     )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"type":"subagent_audit","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"summary":"","step_count":1}'
+        ),
+    )
     app = AceAITUI(
-        [TUIEvent.from_agent_event(builder.tool_started(tool_call=call))],
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ],
     )
 
     async with app.run_test(size=(100, 30)) as pilot:
+        app.action_show_subagents()
         subagents = app.query_one(SubagentStatusWidget)
-        await _wait_until(pilot, lambda: subagents.max_scroll_y > 0)
-        assert subagents.scroll_y == 0
+        detail = subagents.query_one("#subagent-detail", RichLog)
+        await _wait_until(pilot, lambda: detail.max_scroll_y > 0)
+        assert detail.scroll_y == 0
 
         await subagents._dispatch_message(
             MouseScrollDown(
@@ -1012,7 +1120,7 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         )
         await pilot.pause()
 
-        assert subagents.scroll_y > 0
+        assert detail.scroll_y > 0
 
 
 @pytest.mark.anyio
@@ -2001,6 +2109,24 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
     second = store.create_session()
     _record_user_message(store, first.session_id, "first question")
     _record_user_message(store, second.session_id, "second question")
+    store.create_thread(
+        session_id=second.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+    )
+    store.append_event(
+        second.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child question"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
     app = AceAITUI(
         event_log_to_tui_events(store.load_event_log(first.session_id)),
         session_recorder=SessionRecorder(store, first.session_id),
@@ -2019,6 +2145,7 @@ async def test_tui_can_show_and_switch_sessions(tmp_path) -> None:
 
         assert app.title == f"AceAI {second.project_name} {second.session_id}"
         assert app._state.events[0].content == "second question"
+        assert [event.content for event in app._state.events] == ["second question"]
 
 
 @pytest.mark.anyio

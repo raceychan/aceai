@@ -27,7 +27,7 @@ from aceai.agent.provider_catalog import (
     supports_reasoning_effort,
 )
 from aceai.agent.provider_auth import default_api_key_for_provider
-from aceai.agent.session import SessionRecorder, SessionState
+from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import (
     AgentAppConfig,
@@ -241,6 +241,7 @@ class _RuntimeStreamMixin:
         self._session_id = self._agent_app.session_id
         self._llm_history = self._agent_app.llm_history
         self._active_run = self._agent_app.active_run
+        self._active_thread_id = self._agent_app.active_thread_id
         self._refresh_queued_turns()
         if self._session_id is not None:
             self.title = self._window_title()
@@ -387,6 +388,9 @@ class _RuntimeStreamMixin:
     @tui_command("subagents")
     def _command_subagents(self, arg: str) -> None:
         if arg != "":
+            if arg == "main":
+                self.switch_thread(MAIN_THREAD_ID)
+                return
             self.switch_thread(arg)
             return
         self.action_show_subagents()
@@ -1190,6 +1194,13 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self.load_events(event_log_to_tui_events(snapshot.event_log))
         self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
         self._restore_session_state()
+
+    def switch_thread(self, thread_id: str) -> None:
+        if self._current_config is None:
+            AceAITUI.switch_thread(self, thread_id)
+            return
+        self._ensure_agent_app()
+        _RuntimeStreamMixin.switch_thread(self, thread_id)
 
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()

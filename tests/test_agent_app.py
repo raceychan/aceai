@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -13,7 +14,10 @@ from aceai.core.events import (
     AgentEvent,
     ContextCompactionStartedEvent,
     ContextCompressedEvent,
+    RunCompletedEvent,
+    RunFailedEvent,
     ToolCompletedEvent,
+    ToolFailedEvent,
     RunSuspendedEvent,
     ToolApprovalRequestedEvent,
 )
@@ -27,6 +31,38 @@ from tests.test_agent_behavior import (
     StubLLMService,
     make_stream,
 )
+
+
+class BlockingChildLLMService:
+    def __init__(self, parent_call: LLMToolCall) -> None:
+        self._parent_call = parent_call
+        self.calls: list[dict] = []
+        self.child_started = asyncio.Event()
+        self.child_cancelled = asyncio.Event()
+
+    async def stream(self, **request):
+        self.calls.append(request)
+        if len(self.calls) == 1:
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="", tool_calls=[self._parent_call]),
+            )
+            return
+        if len(self.calls) == 2:
+            try:
+                self.child_started.set()
+                yield LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="child working",
+                )
+                await asyncio.Event().wait()
+            finally:
+                self.child_cancelled.set()
+            return
+        raise AssertionError("BlockingChildLLMService has no remaining stream fixture")
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("Agent should not call complete() in streaming mode")
 
 
 @pytest.mark.anyio
@@ -284,6 +320,11 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
         session_id,
         child_thread.thread_id,
     )
+    assert not [
+        event
+        for event in events
+        if event.run_id == child_event_log.events[0].run_id
+    ]
     assert child_event_log.events[0].kind == "user_message"
     assert child_event_log.events[0].agent_id == child_thread.agent_id
     assert child_event_log.events[-1].kind == "run_completed"
@@ -303,6 +344,7 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
     handoff = json.loads(tool_events[0].tool_result.model_output)
     assert audit["thread_id"] == child_thread.thread_id
     assert handoff["thread_id"] == child_thread.thread_id
+    assert handoff["handoff"] == "child final answer"
 
     app.switch_thread(MAIN_THREAD_ID)
     assert app.active_thread_id == MAIN_THREAD_ID
@@ -382,6 +424,399 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
             and event.payload["content"] == "restored child question"
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_app_event_stream_emits_realtime_child_thread_events(
+    tmp_path,
+) -> None:
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=json.dumps(
+            {
+                "task": "inspect child files",
+                "instructions": "Return a concise result.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-subagent",
+    )
+    llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[call]),
+                )
+            ],
+            make_stream(
+                response=LLMResponse(text="child final answer"),
+                deltas=["child final answer"],
+            ),
+            make_stream(
+                response=LLMResponse(text="parent final answer"),
+                deltas=["parent final answer"],
+            ),
+        ]
+    )
+    delegate_tool = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), [delegate_tool]),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+
+    app_events = [event async for event in app.start_turn_events("Delegate")]
+
+    session_id = app.session_id
+    assert session_id is not None
+    child_threads = [
+        thread for thread in store.list_threads(session_id) if thread.role == "subagent"
+    ]
+    assert len(child_threads) == 1
+    child_thread_id = child_threads[0].thread_id
+    child_completed_index = next(
+        index
+        for index, app_event in enumerate(app_events)
+        if (
+            app_event.thread_id == child_thread_id
+            and isinstance(app_event.event, RunCompletedEvent)
+        )
+    )
+    parent_tool_completed_index = next(
+        index
+        for index, app_event in enumerate(app_events)
+        if (
+            app_event.thread_id == MAIN_THREAD_ID
+            and isinstance(app_event.event, ToolCompletedEvent)
+        )
+    )
+    assert child_completed_index < parent_tool_completed_index
+
+
+@pytest.mark.anyio
+async def test_agent_app_child_runtime_failure_resolves_parent_tool_call(
+    tmp_path,
+) -> None:
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=json.dumps(
+            {
+                "task": "inspect child files",
+                "instructions": "Return a concise result.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-subagent",
+    )
+    llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[call]),
+                )
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(
+                        text="child failed",
+                        status="failed",
+                    ),
+                )
+            ],
+            make_stream(
+                response=LLMResponse(text="parent handled child failure"),
+                deltas=["parent handled child failure"],
+            ),
+        ]
+    )
+    delegate_tool = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), [delegate_tool]),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+
+    app_events = [event async for event in app.start_turn_events("Delegate")]
+
+    session_id = app.session_id
+    assert session_id is not None
+    child_threads = [
+        thread for thread in store.list_threads(session_id) if thread.role == "subagent"
+    ]
+    assert len(child_threads) == 1
+    child_thread = child_threads[0]
+    assert child_thread.status == "failed"
+    child_failed_index = next(
+        index
+        for index, app_event in enumerate(app_events)
+        if (
+            app_event.thread_id == child_thread.thread_id
+            and isinstance(app_event.event, RunFailedEvent)
+        )
+    )
+    parent_tool_failed_index = next(
+        index
+        for index, app_event in enumerate(app_events)
+        if (
+            app_event.thread_id == MAIN_THREAD_ID
+            and isinstance(app_event.event, ToolFailedEvent)
+        )
+    )
+    assert child_failed_index < parent_tool_failed_index
+    child_event_log = store.load_thread_event_log(
+        session_id,
+        child_thread.thread_id,
+    )
+    assert child_event_log.events[-1].kind == "error"
+    assert child_event_log.events[-1].payload["content"] == "child failed"
+    assert isinstance(app_events[-1].event, RunCompletedEvent)
+    assert app_events[-1].event.final_answer == "parent handled child failure"
+
+
+@pytest.mark.anyio
+async def test_agent_app_cancels_child_runtime_when_parent_turn_is_cancelled(
+    tmp_path,
+) -> None:
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=json.dumps(
+            {
+                "task": "inspect slowly",
+                "instructions": "Work until cancelled.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-subagent",
+    )
+    llm_service = BlockingChildLLMService(call)
+    delegate_tool = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), [delegate_tool]),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+    collected_events = []
+
+    async def collect_events() -> None:
+        async for app_event in app.start_turn_events("Delegate"):
+            collected_events.append(app_event)
+
+    task = asyncio.create_task(collect_events())
+    await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
+    session_id = app.session_id
+    assert session_id is not None
+    child_threads = [
+        thread for thread in store.list_threads(session_id) if thread.role == "subagent"
+    ]
+    assert len(child_threads) == 1
+    assert child_threads[0].status == "failed"
+    assert app._child_runtimes == {}
+    assert [
+        app_event
+        for app_event in collected_events
+        if app_event.thread_id == child_threads[0].thread_id
+    ]
+
+
+@pytest.mark.anyio
+async def test_agent_app_approves_only_target_thread_pending_tool(
+    tmp_path,
+) -> None:
+    main_call = LLMToolCall(
+        name="write_file",
+        arguments='{"path":"main"}',
+        call_id="call-main",
+    )
+    second_main_call = LLMToolCall(
+        name="write_file",
+        arguments='{"path":"main-again"}',
+        call_id="call-main-again",
+    )
+    child_call = LLMToolCall(
+        name="write_file",
+        arguments='{"path":"child"}',
+        call_id="call-child",
+    )
+    main_llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[main_call]),
+                )
+            ],
+            make_stream(
+                response=LLMResponse(text="main rejected"),
+                deltas=["main rejected"],
+            ),
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[second_main_call]),
+                )
+            ],
+            make_stream(response=LLMResponse(text="main done"), deltas=["main done"]),
+        ]
+    )
+    child_llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="", tool_calls=[child_call]),
+                )
+            ],
+            make_stream(response=LLMResponse(text="child done"), deltas=["child done"]),
+        ]
+    )
+    main_executor = StubExecutor(
+        {"write_file": '{"main":true}'},
+        approval_required={"write_file"},
+    )
+    child_executor = StubExecutor(
+        {"write_file": '{"child":true}'},
+        approval_required={"write_file"},
+    )
+    main_agent = Agent(
+        prompt="Main",
+        default_model="gpt-4o",
+        llm_service=main_llm_service,
+        executor=main_executor,
+        max_steps=2,
+    )
+    child_agent = Agent(
+        prompt="Child",
+        default_model="gpt-4o",
+        llm_service=child_llm_service,
+        executor=child_executor,
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        main_agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    main_events = [event async for event in app.start_turn("Main write")]
+    assert [event for event in main_events if isinstance(event, RunSuspendedEvent)]
+    assert app.active_run is not None
+    main_run_id = app.active_run.run_id
+    assert app.pending_approval_request().call.call_id == "call-main"
+
+    seed_run = child_agent.create_run("Seed child")
+    child_thread_id = app.start_child_thread(
+        task="child approval task",
+        instructions="Need approval",
+        context_brief="Child context",
+        allowed_tools=["write_file"],
+        child_agent=child_agent,
+        agent_id=child_agent.agent_id,
+        run_id=seed_run.run_id,
+        child_question="Seed child",
+    )
+    app.switch_thread(child_thread_id)
+    child_events = [event async for event in app.start_turn("Child write")]
+    assert [event for event in child_events if isinstance(event, RunSuspendedEvent)]
+    assert app.active_run is not None
+    child_run_id = app.active_run.run_id
+    assert app.pending_approval_request().call.call_id == "call-child"
+
+    app.switch_thread(MAIN_THREAD_ID)
+    with pytest.raises(RuntimeError, match="approval target run_id"):
+        [event async for event in app.approve_tool(
+            thread_id=child_thread_id,
+            run_id=main_run_id,
+            tool_call_id="call-child",
+        )]
+
+    child_resume_events = [
+        event
+        async for event in app.approve_tool(
+            thread_id=child_thread_id,
+            run_id=child_run_id,
+            tool_call_id="call-child",
+        )
+    ]
+
+    assert child_executor.calls == [child_call]
+    assert main_executor.calls == []
+    assert [event for event in child_resume_events if isinstance(event, RunCompletedEvent)]
+    assert app.pending_approval_request(thread_id=child_thread_id) is None
+    assert app.pending_approval_request(thread_id=MAIN_THREAD_ID).call.call_id == "call-main"
+
+    main_reject_events = [
+        event
+        async for event in app.reject_tool(
+            "not now",
+            thread_id=MAIN_THREAD_ID,
+            run_id=main_run_id,
+            tool_call_id="call-main",
+        )
+    ]
+
+    assert main_executor.calls == []
+    assert [event for event in main_reject_events if isinstance(event, RunCompletedEvent)]
+    assert app.pending_approval_request(thread_id=MAIN_THREAD_ID) is None
+
+    second_main_events = [event async for event in app.start_turn("Main write again")]
+
+    assert [event for event in second_main_events if isinstance(event, RunSuspendedEvent)]
+    assert main_executor.calls == []
+    assert app.pending_approval_request(thread_id=MAIN_THREAD_ID).call.call_id == (
+        "call-main-again"
+    )
 
 
 def main_event_run_id(events: list[AgentEvent]) -> str:

@@ -6,7 +6,13 @@ from ididi import Graph
 from msgspec import Struct
 from msgspec.json import encode as msg_encode
 
-from aceai.core import Agent, ToolExecutionError, Executor, ToolExecutionOutput
+from aceai.core import (
+    Agent,
+    AgentRunContext,
+    ToolExecutionError,
+    Executor,
+    ToolExecutionOutput,
+)
 from aceai.core.events import (
     AgentEvent,
     RunCompletedEvent,
@@ -86,7 +92,7 @@ class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
 
 
 class DelegatedChildRunRecorder(Protocol):
-    def start_child_thread(
+    async def run_child_thread(
         self,
         *,
         task: str,
@@ -94,25 +100,9 @@ class DelegatedChildRunRecorder(Protocol):
         context_brief: str,
         allowed_tools: list[str],
         child_agent: Agent,
-        agent_id: str,
-        run_id: str,
+        child_run: AgentRunContext,
         child_question: str,
-    ) -> str: ...
-
-    def record_child_event(
-        self,
-        *,
-        thread_id: str,
-        agent_id: str,
-        event: AgentEvent,
-    ) -> None: ...
-
-    def finish_child_thread(
-        self,
-        *,
-        thread_id: str,
-        status: str,
-    ) -> None: ...
+    ) -> ChildAgentResult: ...
 
 
 _CURRENT_CHILD_RUN_RECORDER: ContextVar[DelegatedChildRunRecorder | None] = (
@@ -223,69 +213,41 @@ def build_delegate_to_subagent_tool(
         )
         child_run = child_agent.create_run(child_question)
         recorder = _CURRENT_CHILD_RUN_RECORDER.get()
-        child_thread_id = ""
         if recorder is not None:
-            child_thread_id = recorder.start_child_thread(
+            result = await recorder.run_child_thread(
                 task=task,
                 instructions=instructions,
                 context_brief=context_brief,
                 allowed_tools=allowed_tools,
                 child_agent=child_agent,
-                agent_id=child_agent.agent_id,
-                run_id=child_run.run_id,
+                child_run=child_run,
                 child_question=child_question,
             )
-        events: list[AgentEvent] = []
-        final_answer = ""
-
-        async for event in child_agent.execute(child_run):
-            events.append(event)
-            if recorder is not None and child_thread_id != "":
-                recorder.record_child_event(
-                    thread_id=child_thread_id,
-                    agent_id=child_agent.agent_id,
-                    event=event,
-                )
-            if isinstance(event, RunCompletedEvent):
-                final_answer = event.final_answer
-            elif isinstance(event, RunSuspendedEvent):
-                if recorder is not None and child_thread_id != "":
-                    recorder.finish_child_thread(
-                        thread_id=child_thread_id,
-                        status="suspended",
+        else:
+            events: list[AgentEvent] = []
+            final_answer = ""
+            async for event in child_agent.execute(child_run):
+                events.append(event)
+                if isinstance(event, RunCompletedEvent):
+                    final_answer = event.final_answer
+                elif isinstance(event, RunSuspendedEvent):
+                    raise ToolExecutionError(
+                        "delegated subagent suspended for approval; "
+                        "delegate_to_subagent only supports approval-free child tools"
                     )
-                raise ToolExecutionError(
-                    "delegated subagent suspended for approval; "
-                    "delegate_to_subagent only supports approval-free child tools"
-                )
-            elif isinstance(event, RunFailedEvent):
-                if recorder is not None and child_thread_id != "":
-                    recorder.finish_child_thread(
-                        thread_id=child_thread_id,
-                        status="failed",
-                    )
-                raise ToolExecutionError(event.error)
-        if recorder is not None and child_thread_id != "":
-            recorder.finish_child_thread(
-                thread_id=child_thread_id,
-                status=child_run.status,
+                elif isinstance(event, RunFailedEvent):
+                    raise ToolExecutionError(event.error)
+            result = build_child_agent_result(
+                thread_id="",
+                child_agent=child_agent,
+                child_run=child_run,
+                events=events,
+                final_answer=final_answer,
             )
-
-        result = ChildAgentResult(
-            thread_id=child_thread_id,
-            agent_id=child_agent.agent_id,
-            run_id=child_run.run_id,
-            status=child_run.status,
-            final_answer=final_answer,
-            summary=_bounded_text(final_answer, 1200),
-            important_evidence=_collect_child_evidence(events),
-            tool_results=_collect_child_tool_results(events),
-            step_count=len(child_run.steps),
-        )
         artifact_id = uuid4().hex
         handoff = ChildAgentHandoff(
             type="subagent_handoff",
-            thread_id=child_thread_id,
+            thread_id=result.thread_id,
             agent_id=result.agent_id,
             run_id=result.run_id,
             status=result.status,
@@ -306,6 +268,27 @@ def build_delegate_to_subagent_tool(
         )
 
     return delegate_to_subagent
+
+
+def build_child_agent_result(
+    *,
+    thread_id: str,
+    child_agent: Agent,
+    child_run: AgentRunContext,
+    events: list[AgentEvent],
+    final_answer: str,
+) -> ChildAgentResult:
+    return ChildAgentResult(
+        thread_id=thread_id,
+        agent_id=child_agent.agent_id,
+        run_id=child_run.run_id,
+        status=child_run.status,
+        final_answer=final_answer,
+        summary=_bounded_text(final_answer, 1200),
+        important_evidence=_collect_child_evidence(events),
+        tool_results=_collect_child_tool_results(events),
+        step_count=len(child_run.steps),
+    )
 
 
 def build_delegated_child_agent(

@@ -66,6 +66,7 @@ from aceai.agent.tui.widgets import (
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
+    SubagentStatusWidget,
     TopBarWidget,
 )
 from aceai.agent.tui.widgets.input import (
@@ -3170,6 +3171,48 @@ async def test_interactive_tui_subagents_command_switches_active_thread(
             payload={"content": "child question"},
         ),
     )
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect","instructions":"Report evidence.",'
+            '"context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-delegate-1",
+    )
+    audit_output = (
+        '{"type":"subagent_audit","thread_id":"child-thread-1",'
+        '"agent_id":"child-agent-1","run_id":"child-run-1",'
+        '"status":"completed","summary":"done","step_count":1}'
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_started",
+            payload={
+                "content": "",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_result",
+            payload={
+                "content": "completed",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_arguments": call.arguments,
+                "output": audit_output,
+                "model_output": audit_output,
+                "status": "completed",
+            },
+        ),
+    )
     llm_service = StubLLMService([])
     agent = Agent(
         prompt="Prompt",
@@ -3187,11 +3230,152 @@ async def test_interactive_tui_subagents_command_switches_active_thread(
         session_id=metadata.session_id,
     )
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
+        app._command_subagents("")
+        subagents = app.query_one(SubagentStatusWidget)
+        activate = subagents.query_one("#subagent-activate", Button)
+        activate.press()
+        await pilot.pause()
+
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
+        assert subagents.has_class("hidden")
+
+        app._command_subagents("")
+        assert not subagents.has_class("hidden")
+        assert "main agent" in subagents.renderable
+        assert activate.label == "activate"
+        activate.press()
+        await pilot.pause()
+
+        assert app._agent_app.active_thread_id == MAIN_THREAD_ID
+        assert app._state.events[0].tool_call_id == "call-delegate-1"
+        assert subagents.has_class("hidden")
+
         app._command_subagents("child-thread-1")
 
         assert app._agent_app.active_thread_id == "child-thread-1"
         assert app._state.events[0].content == "child question"
+
+        app._command_subagents("main")
+
+        assert app._agent_app.active_thread_id == MAIN_THREAD_ID
+
+
+@pytest.mark.anyio
+async def test_configured_tui_activate_subagent_initializes_runtime_and_switches_thread(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect",
+        status="completed",
+        parent_thread_id=MAIN_THREAD_ID,
+        metadata={
+            "instructions": "Report evidence.",
+            "context_brief": "repo",
+            "allowed_tools": [],
+        },
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            kind="user_message",
+            payload={"content": "child question"},
+        ),
+    )
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=(
+            '{"task":"Inspect","instructions":"Report evidence.",'
+            '"context_brief":"repo","allowed_tools":[]}'
+        ),
+        call_id="call-delegate-1",
+    )
+    audit_output = (
+        '{"type":"subagent_audit","thread_id":"child-thread-1",'
+        '"agent_id":"child-agent-1","run_id":"child-run-1",'
+        '"status":"completed","summary":"done","step_count":1}'
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_started",
+            payload={
+                "content": "",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_call": call.asdict(),
+            },
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            run_id="parent-run-1",
+            kind="tool_result",
+            payload={
+                "content": "completed",
+                "tool_name": "delegate_to_subagent",
+                "tool_call_id": call.call_id,
+                "tool_arguments": call.arguments,
+                "output": audit_output,
+                "model_output": audit_output,
+                "status": "completed",
+            },
+        ),
+    )
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-4o",
+            default_model="gpt-4o",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-4o",
+        initial_events=event_log_to_tui_events(
+            store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
+        ),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        assert app._agent_app is None
+
+        app._command_subagents("")
+        app.query_one("#subagent-activate", Button).press()
+        await pilot.pause()
+
+        assert app._agent_app is not None
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
+        assert "Configure AceAI before switching threads." not in [
+            event.content for event in app._state.events
+        ]
 
 
 def _press_config_apply(screen: ConfigScreen) -> None:

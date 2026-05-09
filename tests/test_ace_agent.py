@@ -6,9 +6,9 @@ import pytest
 from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
+from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.core import ToolExecutionError, Executor
 from aceai.llm.interface import UNSET, is_present
-from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
 
 
 def write_skill(root: Path, name: str, description: str) -> None:

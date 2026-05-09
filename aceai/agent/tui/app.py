@@ -14,7 +14,7 @@ from aceai.core.events import AgentEvent
 
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
-from aceai.agent.session import SessionRecorder, SessionStore
+from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionStore
 
 from aceai.agent.cost import format_usd
 from aceai.agent.provider_catalog import (
@@ -29,6 +29,7 @@ from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import (
     TUISubagentState,
+    TUISubagentStatus,
     TUIRunState,
     apply_tui_event,
     initial_state,
@@ -53,6 +54,7 @@ from .widgets import (
     QueuedTurnsWidget,
     StatusBarWidget,
     StreamWidget,
+    SubagentThreadOption,
     SubagentStatusWidget,
     TopBarWidget,
 )
@@ -125,6 +127,7 @@ class AceAITUI(App[None]):
         self._pending_stream_delta_timer: Timer | None = None
         self._command_completion_selected_index = 0
         self._subagent_panel_visible = False
+        self._active_thread_id = MAIN_THREAD_ID
         self.title = self._window_title()
 
     def compose(self) -> ComposeResult:
@@ -222,10 +225,25 @@ class AceAITUI(App[None]):
             self._session_recorder.finalize()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
+        self._active_thread_id = MAIN_THREAD_ID
         self.title = self._window_title()
-        event_log = store.load_event_log(metadata.session_id)
+        event_log = store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
         self.load_events(event_log_to_tui_events(event_log))
         self.notify_session(f"Resumed session {metadata.session_id}")
+
+    def switch_thread(self, thread_id: str) -> None:
+        if self._session_id is None:
+            self.notify_session("No active session.")
+            return
+        store = self._session_store()
+        try:
+            event_log = store.load_thread_event_log(self._session_id, thread_id)
+        except KeyError:
+            self.notify_session(f"Thread not found: {thread_id}")
+            return
+        self._active_thread_id = thread_id
+        self.load_events(event_log_to_tui_events(event_log))
+        self.notify_session(f"Switched thread {thread_id}")
 
     def ensure_session(self) -> None:
         if self._session_recorder is not None:
@@ -458,10 +476,18 @@ class AceAITUI(App[None]):
         self.open_trajectory_screen()
 
     def action_show_subagents(self) -> None:
-        if not self._state.subagents:
-            self.notify_session("No subagent details in this session.")
+        if self._subagent_panel_visible:
+            self.action_hide_subagents()
             return
+        if not self._state.subagents:
+            if len(self._subagent_thread_options()) <= 1:
+                self.notify_session("No subagent details in this session.")
+                return
         self._subagent_panel_visible = True
+        self._refresh_widgets()
+
+    def action_hide_subagents(self) -> None:
+        self._subagent_panel_visible = False
         self._refresh_widgets()
 
     def open_metadata_screen(self) -> None:
@@ -570,8 +596,24 @@ class AceAITUI(App[None]):
         stream.set_project_root_path(self._project.root_path)
         stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
-        subagents = self._state.subagents if self._subagent_panel_visible else []
-        self.query_one(SubagentStatusWidget).set_subagents(subagents)
+        thread_options = (
+            self._subagent_thread_options() if self._subagent_panel_visible else []
+        )
+        subagents = (
+            _subagent_panel_states(
+                thread_options=thread_options,
+                active_thread_id=self._active_thread_id,
+            )
+            if self._subagent_panel_visible
+            else []
+        )
+        if self._subagent_panel_visible and not subagents:
+            subagents = self._state.subagents
+        self.query_one(SubagentStatusWidget).set_state(
+            subagents=subagents,
+            thread_options=thread_options,
+            active_thread_id=self._active_thread_id,
+        )
         self._sync_side_layout()
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
@@ -588,12 +630,23 @@ class AceAITUI(App[None]):
     def _sync_side_layout(self) -> None:
         stream = self.query_one(StreamWidget)
         detail = self.query_one(DetailWidget)
-        has_subagents = self._subagent_panel_visible and len(self._state.subagents) > 0
+        has_subagents = self._subagent_panel_visible and (
+            len(self._state.subagents) > 0 or len(self._subagent_thread_options()) > 1
+        )
         if has_subagents:
             if stream.debug_mode:
                 stream.set_debug_mode(False)
             detail.add_class("collapsed")
             return
+
+    def on_subagent_status_widget_thread_activated(
+        self,
+        event: SubagentStatusWidget.ThreadActivated,
+    ) -> None:
+        event.stop()
+        self.switch_thread(event.thread_id)
+        self._subagent_panel_visible = False
+        self._refresh_widgets()
 
     def _sync_subagent_panel_visibility(self, event: TUIEvent) -> None:
         if event.kind == "user_message":
@@ -617,6 +670,26 @@ class AceAITUI(App[None]):
 
     def _focus_message_panel(self) -> None:
         self.query_one(StreamWidget).focus()
+
+    def _subagent_thread_options(self) -> list[SubagentThreadOption]:
+        if self._session_id is None:
+            return []
+        store = self._session_store()
+        threads = store.list_threads(self._session_id)
+        return [
+            SubagentThreadOption(
+                thread_id=thread.thread_id,
+                label=thread.title,
+                status=thread.status,
+                role=thread.role,
+                agent_id=thread.agent_id,
+                parent_run_id=thread.parent_run_id or "",
+                instructions=_thread_metadata_str(thread.metadata, "instructions"),
+                context_brief=_thread_metadata_str(thread.metadata, "context_brief"),
+                allowed_tools=tuple(_thread_metadata_list(thread.metadata, "allowed_tools")),
+            )
+            for thread in threads
+        ]
 
     def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
         if event.kind not in ("assistant_delta", "thinking_delta"):
@@ -779,6 +852,87 @@ def _all_subagents_completed(subagents: list[TUISubagentState]) -> bool:
             return False
     return True
 
+
+def _subagent_panel_states(
+    *,
+    thread_options: list[SubagentThreadOption],
+    active_thread_id: str,
+) -> list[TUISubagentState]:
+    panel_states: list[TUISubagentState] = []
+    if active_thread_id != MAIN_THREAD_ID:
+        panel_states.append(_main_agent_panel_state(thread_options))
+    for option in thread_options:
+        if option.role != "subagent":
+            continue
+        panel_states.append(
+            TUISubagentState(
+                call_id=option.thread_id,
+                thread_id=option.thread_id,
+                task=option.label,
+                instructions=option.instructions,
+                context_brief=option.context_brief,
+                allowed_tools=list(option.allowed_tools),
+                status=_subagent_status_from_thread_status(option.status),
+                agent_id=option.agent_id,
+                run_id="",
+            )
+        )
+    return panel_states
+
+
+def _main_agent_panel_state(
+    thread_options: list[SubagentThreadOption],
+) -> TUISubagentState:
+    for option in thread_options:
+        if option.thread_id == MAIN_THREAD_ID:
+            return TUISubagentState(
+                call_id=MAIN_THREAD_ID,
+                thread_id=MAIN_THREAD_ID,
+                task="main agent",
+                instructions=option.instructions,
+                context_brief=option.context_brief,
+                allowed_tools=list(option.allowed_tools),
+                status=_subagent_status_from_thread_status(option.status),
+                agent_id=option.agent_id,
+                run_id="",
+            )
+    return TUISubagentState(
+        call_id=MAIN_THREAD_ID,
+        thread_id=MAIN_THREAD_ID,
+        task="main agent",
+        status="completed",
+    )
+
+
+def _subagent_status_from_thread_status(status: str) -> TUISubagentStatus:
+    if status == "running":
+        return "running"
+    if status == "completed":
+        return "completed"
+    if status == "failed":
+        return "failed"
+    return "pending"
+
+
+def _thread_metadata_str(metadata: dict[str, object], key: str) -> str:
+    if key not in metadata:
+        return ""
+    value = metadata[key]
+    if type(value) is not str:
+        raise TypeError(f"thread metadata {key} must be str")
+    return value
+
+
+def _thread_metadata_list(metadata: dict[str, object], key: str) -> list[str]:
+    if key not in metadata:
+        return []
+    value = metadata[key]
+    if type(value) is not list:
+        raise TypeError(f"thread metadata {key} must be list")
+    for item in value:
+        if type(item) is not str:
+            raise TypeError(f"thread metadata {key} items must be str")
+    return value
 
 def _context_window_pct(
     current_tokens: int | None,

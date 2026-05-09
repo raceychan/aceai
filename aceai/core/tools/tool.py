@@ -13,7 +13,7 @@ from aceai.llm.tool_spec import IToolSpec
 from ._tool_sig import ToolSignature
 
 
-class OpenAIToolSpec:
+class FunctionToolSpec:
     def __init__(
         self, *, signature: ToolSignature, name: str, description: str
     ) -> None:
@@ -26,7 +26,6 @@ class OpenAIToolSpec:
         properties = parameters["properties"]
         parameters["required"] = list(properties.keys())
         return {
-            "type": "function",
             "name": self.name,
             "description": self.description,
             "parameters": parameters,
@@ -77,7 +76,7 @@ class Tool[**P, R]:
         func: Callable[P, R],
         decoder: Callable[[bytes], Struct],
         metadata: ToolMeta,
-        spec_cls: type[IToolSpec] = OpenAIToolSpec,
+        spec_cls: type[IToolSpec] = FunctionToolSpec,
     ):
         self.name = name
         self.signature = signature
@@ -159,7 +158,7 @@ class Tool[**P, R]:
         cls,
         func: Callable[P, R],
         meta: Maybe[ToolMeta] = MISSING,
-        spec_cls: type[IToolSpec] = OpenAIToolSpec,
+        spec_cls: type[IToolSpec] = FunctionToolSpec,
     ) -> "Tool[P, R]":
         """Construct a Tool from a callable using its annotated signature."""
         func_sig = signature(func)
@@ -183,14 +182,14 @@ class Tool[**P, R]:
 
 @overload
 def tool[**P, R](
-    func: Callable[P, R], *, spec_cls: type[IToolSpec] = OpenAIToolSpec
+    func: Callable[P, R], *, spec_cls: type[IToolSpec] = FunctionToolSpec
 ) -> Tool[P, R]: ...
 
 
 @overload
 def tool[**P, R](
     *,
-    spec_cls: type[IToolSpec] = OpenAIToolSpec,
+    spec_cls: type[IToolSpec] = FunctionToolSpec,
     **tool_meta: Unpack[IToolMeta],
 ) -> Callable[[Callable[P, R]], Tool[P, R]]: ...
 
@@ -198,7 +197,7 @@ def tool[**P, R](
 def tool[**P, R](
     func: Maybe[Callable[P, R]] = MISSING,
     *,
-    spec_cls: type[IToolSpec] = OpenAIToolSpec,
+    spec_cls: type[IToolSpec] = FunctionToolSpec,
     **tool_meta: Unpack[IToolMeta],
 ) -> Tool[P, R] | Callable[[Callable[P, R]], Tool[P, R]]:
     if is_present(func):  # without any config

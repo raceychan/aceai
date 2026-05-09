@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import AsyncGenerator
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -10,6 +11,8 @@ from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
 from aceai.agent.features.delegation import (
+    ChildAgentResult,
+    build_child_agent_result,
     build_restored_delegated_child_agent,
     reset_delegated_child_run_recorder,
     set_delegated_child_run_recorder,
@@ -25,14 +28,22 @@ from aceai.agent.session import (
 )
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
 from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
-from aceai.core import Agent, AgentRunContext, Executor, ToolApprovalDecision
+from aceai.core import (
+    Agent,
+    AgentRunContext,
+    Executor,
+    ToolApprovalDecision,
+    ToolExecutionError,
+)
 from aceai.core.events import (
     AgentEvent,
     ContextCompactionFailedEvent,
     ContextCompactionStartedEvent,
     ContextCompressedEvent,
     LLMCompletedEvent,
+    RunFailedEvent,
     RunCompletedEvent,
+    RunSuspendedEvent,
     ToolCompletedEvent,
     ToolFailedEvent,
 )
@@ -51,6 +62,21 @@ class UpdateCheckResult(Struct, frozen=True, kw_only=True):
         return _version_parts(self.latest_version) > _version_parts(
             self.current_version
         )
+
+
+class AgentAppEvent(Struct, frozen=True, kw_only=True):
+    thread_id: str
+    agent_id: str
+    event: AgentEvent
+
+
+@dataclass
+class ChildThreadRuntime:
+    thread_id: str
+    agent_id: str
+    run: AgentRunContext
+    handoff: asyncio.Future[ChildAgentResult]
+    task: asyncio.Task[None]
 
 
 class AceAgentApp:
@@ -97,13 +123,16 @@ class AceAgentApp:
         else:
             self._llm_history = list(initial_history or [])
         self._active_run: AgentRunContext | None = None
+        self._thread_runs: dict[str, AgentRunContext] = {}
         self._last_context_event_id: str | None = None
         self._last_context_event_ids: dict[str, str] = {}
         self._active_thread_id = MAIN_THREAD_ID
         self._thread_agents: dict[str, Agent] = {MAIN_THREAD_ID: self._agent}
+        self._child_runtimes: dict[str, ChildThreadRuntime] = {}
         self._queued_questions: dict[str, list[str]] = {}
+        self._app_event_subscribers: set[asyncio.Queue[AgentAppEvent | None]] = set()
         self._idea_store = idea_store or IdeaStore()
-        self._approved_tool_names: set[str] = set()
+        self._approved_tool_names_by_thread: dict[str, set[str]] = {}
         self._child_context_event_ids: dict[str, str] = {}
         self._update_check_completed = False
         self._update_check_lock = asyncio.Lock()
@@ -111,7 +140,7 @@ class AceAgentApp:
         if session_id is not None:
             if snapshot is None:
                 snapshot = self._session_service.snapshot(session_id)
-            self._approved_tool_names.update(
+            self._approved_tool_names_by_thread[MAIN_THREAD_ID] = (
                 _approved_tool_names_from_event_log(snapshot.event_log)
             )
             self._last_context_event_id = _last_context_source_event_id(snapshot.event_log)
@@ -174,12 +203,14 @@ class AceAgentApp:
         snapshot = self._session_service.attach_session(session_id)
         self._llm_history = list(snapshot.history)
         self._active_run = None
+        self._thread_runs = {}
         self._active_thread_id = MAIN_THREAD_ID
         self._thread_agents = {MAIN_THREAD_ID: self._agent}
+        self._child_runtimes = {}
         self._queued_questions = {}
-        self._approved_tool_names = _approved_tool_names_from_event_log(
-            snapshot.event_log
-        )
+        self._approved_tool_names_by_thread = {
+            MAIN_THREAD_ID: _approved_tool_names_from_event_log(snapshot.event_log)
+        }
         self._last_context_event_id = _last_context_source_event_id(snapshot.event_log)
         self._last_context_event_ids = {}
         if self._last_context_event_id is not None:
@@ -198,7 +229,10 @@ class AceAgentApp:
         self._active_thread_id = thread_id
         if thread_id == MAIN_THREAD_ID:
             self._llm_history = list(snapshot.history)
-        self._active_run = None
+        self._approved_tool_names_by_thread[thread_id] = (
+            _approved_tool_names_from_event_log(snapshot.event_log)
+        )
+        self._active_run = self._thread_runs.get(thread_id)
         latest_context_event_id = _last_context_source_event_id(snapshot.event_log)
         if latest_context_event_id is not None:
             self._last_context_event_ids[thread_id] = latest_context_event_id
@@ -209,7 +243,9 @@ class AceAgentApp:
         if session_id is None:
             self._llm_history = []
             self._active_run = None
+            self._thread_runs = {}
             self._queued_questions = {}
+            self._approved_tool_names_by_thread = {}
             self._last_context_event_id = None
             self._last_context_event_ids = {}
             return
@@ -225,10 +261,11 @@ class AceAgentApp:
         )
         if latest_context_event_id is not None:
             self._last_context_event_ids[self._active_thread_id] = latest_context_event_id
-        self._active_run = None
+        self._active_run = self._thread_runs.get(self._active_thread_id)
 
     def cancel_active_turn(self) -> None:
         self._active_run = None
+        self._thread_runs.pop(self._active_thread_id, None)
 
     def enqueue_turn(self, question: str) -> int:
         questions = self._queued_questions_for_active_thread()
@@ -284,8 +321,12 @@ class AceAgentApp:
             current_project=self._project,
         )
 
-    def pending_approval_request(self) -> ToolApprovalRequest | None:
-        run = self._active_run
+    def pending_approval_request(
+        self,
+        *,
+        thread_id: str | None = None,
+    ) -> ToolApprovalRequest | None:
+        run = self._run_for_thread(thread_id or self._active_thread_id)
         if run is None:
             return None
         pending = run.run_state.pending_approval
@@ -309,6 +350,20 @@ class AceAgentApp:
         *,
         citations: tuple[TurnCitation, ...] = (),
     ) -> AsyncGenerator[AgentEvent, None]:
+        thread_id = self._active_thread_id
+        async for app_event in self.start_turn_events(
+            question,
+            citations=citations,
+        ):
+            if app_event.thread_id == thread_id:
+                yield app_event.event
+
+    async def start_turn_events(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> AsyncGenerator[AgentAppEvent, None]:
         self.ensure_session()
         self.persist_session_state()
         thread_id = self._active_thread_id
@@ -321,8 +376,9 @@ class AceAgentApp:
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
         )
+        self._thread_runs[thread_id] = self._active_run
         self._active_run.run_state.tools.approved_tool_names = (
-            self._approved_tool_names
+            self._approved_tool_names_for_thread(thread_id)
         )
         self._last_context_event_id = self._session_service.record_user_message(
             question,
@@ -332,7 +388,7 @@ class AceAgentApp:
             agent_id="" if thread_id == MAIN_THREAD_ID else agent.agent_id,
         )
         self._last_context_event_ids[thread_id] = self._last_context_event_id
-        async for event in self._consume_run_stream(
+        async for event in self._consume_run_stream_events(
             self._active_run,
             agent.execute(self._active_run),
             thread_id=thread_id,
@@ -340,34 +396,67 @@ class AceAgentApp:
         ):
             yield event
 
-    async def approve_tool(self) -> AsyncGenerator[AgentEvent, None]:
-        request = self.pending_approval_request()
+    async def approve_tool(
+        self,
+        *,
+        thread_id: str | None = None,
+        run_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        target_thread_id = thread_id or self._active_thread_id
+        request = self.pending_approval_request(thread_id=target_thread_id)
         if request is None:
             raise RuntimeError("No pending tool approval")
-        async for event in self._resume_approval(ToolApprovalDecision.approve(request)):
+        self._validate_approval_target(
+            thread_id=target_thread_id,
+            request=request,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        )
+        async for event in self._resume_approval(
+            ToolApprovalDecision.approve(request),
+            thread_id=target_thread_id,
+        ):
             yield event
 
-    async def reject_tool(self, reason: str) -> AsyncGenerator[AgentEvent, None]:
-        request = self.pending_approval_request()
+    async def reject_tool(
+        self,
+        reason: str,
+        *,
+        thread_id: str | None = None,
+        run_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        target_thread_id = thread_id or self._active_thread_id
+        request = self.pending_approval_request(thread_id=target_thread_id)
         if request is None:
             raise RuntimeError("No pending tool approval")
+        self._validate_approval_target(
+            thread_id=target_thread_id,
+            request=request,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        )
         if reason == "":
             reason = "rejected by caller"
         async for event in self._resume_approval(
-            ToolApprovalDecision.reject(request, reason=reason)
+            ToolApprovalDecision.reject(request, reason=reason),
+            thread_id=target_thread_id,
         ):
             yield event
 
     async def _resume_approval(
         self,
         decision: ToolApprovalDecision,
+        *,
+        thread_id: str,
     ) -> AsyncGenerator[AgentEvent, None]:
-        run = self._current_run()
+        run = self._current_run(thread_id=thread_id)
         async for event in self._consume_run_stream(
             run,
-            self._agent_for_thread(self._active_thread_id).resume_approval(run, decision),
-            thread_id=self._active_thread_id,
-            agent_id="" if self._active_thread_id == MAIN_THREAD_ID else run.agent_id,
+            self._agent_for_thread(thread_id).resume_approval(run, decision),
+            thread_id=thread_id,
+            agent_id="" if thread_id == MAIN_THREAD_ID else run.agent_id,
         ):
             yield event
 
@@ -379,46 +468,114 @@ class AceAgentApp:
         thread_id: str,
         agent_id: str,
     ) -> AsyncGenerator[AgentEvent, None]:
-        recorder_token = set_delegated_child_run_recorder(self)
-        try:
-            async for event in stream:
-                if isinstance(event, ContextCompressedEvent):
-                    self._record_context_checkpoint(event, thread_id=thread_id)
-                event = self._archive_subagent_artifact(event)
-                persisted_event_id: str | None = None
-                if not isinstance(
-                    event,
-                    ContextCompactionFailedEvent
-                    | ContextCompactionStartedEvent
-                    | ContextCompressedEvent,
-                ):
-                    persisted_event_id = self._session_service.record_agent_event(
+        async for app_event in self._consume_run_stream_events(
+            run,
+            stream,
+            thread_id=thread_id,
+            agent_id=agent_id,
+        ):
+            if app_event.thread_id == thread_id:
+                yield app_event.event
+
+    async def _consume_run_stream_events(
+        self,
+        run: AgentRunContext,
+        stream: AsyncGenerator[AgentEvent, None],
+        *,
+        thread_id: str,
+        agent_id: str,
+    ) -> AsyncGenerator[AgentAppEvent, None]:
+        queue: asyncio.Queue[AgentAppEvent | None] = asyncio.Queue()
+        self._app_event_subscribers.add(queue)
+
+        async def produce_events() -> None:
+            recorder_token = set_delegated_child_run_recorder(self)
+            try:
+                async for event in stream:
+                    if isinstance(event, ContextCompressedEvent):
+                        self._record_context_checkpoint(event, thread_id=thread_id)
+                    event = self._archive_subagent_artifact(event)
+                    persisted_event_id: str | None = None
+                    if not isinstance(
                         event,
+                        ContextCompactionFailedEvent
+                        | ContextCompactionStartedEvent
+                        | ContextCompressedEvent,
+                    ):
+                        persisted_event_id = self._session_service.record_agent_event(
+                            event,
+                            thread_id=thread_id,
+                            agent_id=agent_id,
+                        )
+                    if persisted_event_id is not None and _agent_event_updates_context(
+                        event
+                    ):
+                        self._last_context_event_ids[thread_id] = persisted_event_id
+                        if thread_id == MAIN_THREAD_ID:
+                            self._last_context_event_id = persisted_event_id
+                    if isinstance(event, RunCompletedEvent):
+                        self._finish_run_turn(
+                            run,
+                            event.final_answer,
+                            thread_id=thread_id,
+                        )
+                    self._emit_app_event(
                         thread_id=thread_id,
                         agent_id=agent_id,
+                        event=event,
                     )
-                if persisted_event_id is not None and _agent_event_updates_context(
-                    event
-                ):
-                    self._last_context_event_ids[thread_id] = persisted_event_id
-                    if thread_id == MAIN_THREAD_ID:
-                        self._last_context_event_id = persisted_event_id
-                if isinstance(event, RunCompletedEvent):
-                    self._finish_run_turn(
-                        run,
-                        event.final_answer,
-                        thread_id=thread_id,
-                    )
-                yield event
-        finally:
-            reset_delegated_child_run_recorder(recorder_token)
-            await stream.aclose()
+            finally:
+                reset_delegated_child_run_recorder(recorder_token)
+                await stream.aclose()
+                queue.put_nowait(None)
 
-    def _current_run(self) -> AgentRunContext:
-        run = self._active_run
+        producer = asyncio.create_task(produce_events())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            self._app_event_subscribers.discard(queue)
+            if not producer.done():
+                producer.cancel()
+            await producer
+
+    def _run_for_thread(self, thread_id: str) -> AgentRunContext | None:
+        return self._thread_runs.get(thread_id)
+
+    def _approved_tool_names_for_thread(self, thread_id: str) -> set[str]:
+        if thread_id not in self._approved_tool_names_by_thread:
+            session_id = self.session_id
+            if session_id is None:
+                self._approved_tool_names_by_thread[thread_id] = set()
+            else:
+                snapshot = self._session_service.snapshot_thread(session_id, thread_id)
+                self._approved_tool_names_by_thread[thread_id] = (
+                    _approved_tool_names_from_event_log(snapshot.event_log)
+                )
+        return self._approved_tool_names_by_thread[thread_id]
+
+    def _current_run(self, *, thread_id: str | None = None) -> AgentRunContext:
+        run = self._run_for_thread(thread_id or self._active_thread_id)
         if run is None:
             raise RuntimeError("AceAI run is not active")
         return run
+
+    def _validate_approval_target(
+        self,
+        *,
+        thread_id: str,
+        request: ToolApprovalRequest,
+        run_id: str | None,
+        tool_call_id: str | None,
+    ) -> None:
+        run = self._current_run(thread_id=thread_id)
+        if run_id is not None and run.run_id != run_id:
+            raise RuntimeError("approval target run_id does not match pending run")
+        if tool_call_id is not None and request.call.call_id != tool_call_id:
+            raise RuntimeError("approval target tool_call_id does not match pending tool call")
 
     def _finish_run_turn(
         self,
@@ -520,6 +677,156 @@ class AceAgentApp:
         self._last_context_event_ids[thread.thread_id] = event_id
         return thread.thread_id
 
+    async def run_child_thread(
+        self,
+        *,
+        task: str,
+        instructions: str,
+        context_brief: str,
+        allowed_tools: list[str],
+        child_agent: Agent,
+        child_run: AgentRunContext,
+        child_question: str,
+    ) -> ChildAgentResult:
+        thread_id = self.start_child_thread(
+            task=task,
+            instructions=instructions,
+            context_brief=context_brief,
+            allowed_tools=allowed_tools,
+            child_agent=child_agent,
+            agent_id=child_agent.agent_id,
+            run_id=child_run.run_id,
+            child_question=child_question,
+        )
+        loop = asyncio.get_running_loop()
+        handoff: asyncio.Future[ChildAgentResult] = loop.create_future()
+        runtime_task = asyncio.create_task(
+            self._run_child_thread_runtime(
+                thread_id=thread_id,
+                child_agent=child_agent,
+                child_run=child_run,
+                handoff=handoff,
+            )
+        )
+        self._child_runtimes[thread_id] = ChildThreadRuntime(
+            thread_id=thread_id,
+            agent_id=child_agent.agent_id,
+            run=child_run,
+            handoff=handoff,
+            task=runtime_task,
+        )
+        runtime_task.add_done_callback(
+            lambda completed_task: self._complete_child_runtime_task(
+                thread_id=thread_id,
+                task=completed_task,
+                handoff=handoff,
+            )
+        )
+        try:
+            return await handoff
+        except asyncio.CancelledError:
+            if not runtime_task.done():
+                runtime_task.cancel()
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            try:
+                await runtime_task
+            except asyncio.CancelledError:
+                pass
+            raise
+
+    async def _run_child_thread_runtime(
+        self,
+        *,
+        thread_id: str,
+        child_agent: Agent,
+        child_run: AgentRunContext,
+        handoff: asyncio.Future[ChildAgentResult],
+    ) -> None:
+        events: list[AgentEvent] = []
+        final_answer = ""
+        async for event in child_agent.execute(child_run):
+            events.append(event)
+            self.record_child_event(
+                thread_id=thread_id,
+                agent_id=child_agent.agent_id,
+                event=event,
+            )
+            if isinstance(event, RunCompletedEvent):
+                final_answer = event.final_answer
+                self.finish_child_thread(
+                    thread_id=thread_id,
+                    status=child_run.status,
+                )
+                if not handoff.done():
+                    handoff.set_result(
+                        build_child_agent_result(
+                            thread_id=thread_id,
+                            child_agent=child_agent,
+                            child_run=child_run,
+                            events=events,
+                            final_answer=final_answer,
+                        )
+                    )
+                return
+            if isinstance(event, RunSuspendedEvent):
+                self.finish_child_thread(
+                    thread_id=thread_id,
+                    status="suspended",
+                )
+                if not handoff.done():
+                    handoff.set_exception(
+                        ToolExecutionError(
+                            "delegated subagent suspended for approval; "
+                            "delegate_to_subagent only supports approval-free child tools"
+                        )
+                    )
+                return
+            if isinstance(event, RunFailedEvent):
+                self.finish_child_thread(
+                    thread_id=thread_id,
+                    status="failed",
+                )
+                if not handoff.done():
+                    handoff.set_exception(ToolExecutionError(event.error))
+                return
+        self.finish_child_thread(
+            thread_id=thread_id,
+            status=child_run.status,
+        )
+        if not handoff.done():
+            handoff.set_result(
+                build_child_agent_result(
+                    thread_id=thread_id,
+                    child_agent=child_agent,
+                    child_run=child_run,
+                    events=events,
+                    final_answer=final_answer,
+                )
+            )
+
+    def _complete_child_runtime_task(
+        self,
+        *,
+        thread_id: str,
+        task: asyncio.Task[None],
+        handoff: asyncio.Future[ChildAgentResult],
+    ) -> None:
+        self._child_runtimes.pop(thread_id, None)
+        if task.cancelled():
+            if not handoff.done():
+                handoff.cancel()
+            return
+        exception = task.exception()
+        if exception is not None and not handoff.done():
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            handoff.set_exception(exception)
+
     def record_child_event(
         self,
         *,
@@ -542,12 +849,22 @@ class AceAgentApp:
                 included_event_id=included_event_id,
                 history=event.history,
             )
+            self._emit_app_event(
+                thread_id=thread_id,
+                agent_id=agent_id,
+                event=event,
+            )
             return
         if isinstance(
             event,
             ContextCompactionFailedEvent
             | ContextCompactionStartedEvent,
         ):
+            self._emit_app_event(
+                thread_id=thread_id,
+                agent_id=agent_id,
+                event=event,
+            )
             return
         persisted_event_id = self._session_service.record_agent_event(
             event,
@@ -557,6 +874,11 @@ class AceAgentApp:
         if persisted_event_id is not None and _agent_event_updates_context(event):
             self._child_context_event_ids[thread_id] = persisted_event_id
             self._last_context_event_ids[thread_id] = persisted_event_id
+        self._emit_app_event(
+            thread_id=thread_id,
+            agent_id=agent_id,
+            event=event,
+        )
 
     def finish_child_thread(
         self,
@@ -570,6 +892,21 @@ class AceAgentApp:
             thread_id=thread_id,
             status=status,
         )
+
+    def _emit_app_event(
+        self,
+        *,
+        thread_id: str,
+        agent_id: str,
+        event: AgentEvent,
+    ) -> None:
+        app_event = AgentAppEvent(
+            thread_id=thread_id,
+            agent_id=agent_id,
+            event=event,
+        )
+        for queue in tuple(self._app_event_subscribers):
+            queue.put_nowait(app_event)
 
     def _queued_questions_for_active_thread(self) -> list[str]:
         if self._active_thread_id not in self._queued_questions:

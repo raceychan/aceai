@@ -390,10 +390,16 @@ def _apply_subagent_event(
     target = _find_subagent(subagents, event.tool_call_id)
     if target is None and event.tool_name != "delegate_to_subagent":
         return subagents
+    if target is None and not _starts_threaded_subagent(event):
+        return subagents
     if target is None:
+        result = _subagent_result(event)
+        if result is None:
+            raise ValueError("threaded subagent result is required")
         target = TUISubagentState(
             call_id=event.tool_call_id,
             task=_subagent_task(event),
+            thread_id=result.thread_id,
         )
 
     updated = _update_subagent(target, event)
@@ -496,6 +502,13 @@ def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
             step_count=payload["step_count"],
         )
     return msg_decode(event.content.encode("utf-8"), type=TUISubagentResult)
+
+
+def _starts_threaded_subagent(event: TUIEvent) -> bool:
+    result = _subagent_result(event)
+    if result is None:
+        return False
+    return result.thread_id != ""
 
 
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:

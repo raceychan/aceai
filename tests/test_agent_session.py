@@ -680,6 +680,113 @@ def test_session_store_exports_readable_text(tmp_path) -> None:
     assert "## assistant\nanswer\n" in text
 
 
+def test_session_store_export_defaults_to_main_thread(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+        parent_run_id="parent-run-1",
+        parent_tool_call_id="call-subagent-1",
+    )
+    store.append_event(metadata.session_id, _user_message("main only"))
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child secret"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
+
+    text = store.export_text(metadata.session_id)
+
+    assert "main only" in text
+    assert "child secret" not in text
+    assert "child-thread-1" not in text
+
+
+def test_session_store_exports_thread_aware_text(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect child",
+        parent_thread_id=MAIN_THREAD_ID,
+        parent_run_id="parent-run-1",
+        parent_tool_call_id="call-subagent-1",
+    )
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"README.md"}',
+        call_id="call-read-1",
+    )
+    store.append_event(metadata.session_id, _user_message("main question"))
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={"content": "child question"},
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="assistant_tool_call",
+            payload={
+                "content": "",
+                "tool_calls": [call.asdict()],
+            },
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            step_id="step-child-1",
+            step_index=0,
+        ),
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="tool_result",
+            payload={
+                "tool_name": "read_text_file",
+                "tool_call_id": "call-read-1",
+                "tool_arguments": '{"path":"README.md"}',
+                "output": "child evidence",
+                "model_output": "child evidence",
+                "status": "completed",
+            },
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            step_id="step-child-1",
+            step_index=0,
+        ),
+    )
+
+    text = store.export_text(metadata.session_id, include_threads=True)
+
+    assert "# AceAI thread main" in text
+    assert "# AceAI thread child-thread-1" in text
+    assert "parent_tool_call_id: call-subagent-1" in text
+    assert "run_id: child-run-1" in text
+    assert "step_id: step-child-1" in text
+    assert "tool_call_id: call-read-1" in text
+    assert "child evidence" in text
+
+
 def test_session_recorder_exports_tool_approval_events(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()

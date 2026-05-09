@@ -412,6 +412,44 @@ class EventLog:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
+    def replay_thread_export_text(
+        self,
+        metadata: SessionMetadata,
+        thread: AgentThreadMetadata,
+    ) -> str:
+        lines = [
+            f"# AceAI thread {thread.thread_id}",
+            f"session_id: {metadata.session_id}",
+            f"project_id: {metadata.project_id}",
+            f"project: {metadata.project_name}",
+            f"thread_id: {thread.thread_id}",
+            f"agent_id: {thread.agent_id}",
+            f"role: {thread.role}",
+            f"title: {thread.title}",
+            f"status: {thread.status}",
+        ]
+        if thread.parent_thread_id is not None:
+            lines.append(f"parent_thread_id: {thread.parent_thread_id}")
+        if thread.parent_run_id is not None:
+            lines.append(f"parent_run_id: {thread.parent_run_id}")
+        if thread.parent_tool_call_id is not None:
+            lines.append(f"parent_tool_call_id: {thread.parent_tool_call_id}")
+        lines.extend(
+            [
+                f"created_at: {thread.created_at.isoformat()}",
+                f"updated_at: {thread.updated_at.isoformat()}",
+                "",
+            ]
+        )
+        for event in self.events:
+            event_lines = _event_to_export_lines(event)
+            if not event_lines:
+                continue
+            lines.extend(_event_diagnostic_lines(event))
+            lines.extend(event_lines)
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
     def total_cost_usd(self) -> float:
         total = 0.0
         for event in self.events:
@@ -752,9 +790,22 @@ class SessionStore:
         self.get_thread(session_id, thread_id)
         return self.load_event_log(session_id).for_thread(thread_id)
 
-    def export_text(self, session_id: str) -> str:
+    def export_text(self, session_id: str, *, include_threads: bool = False) -> str:
         metadata = self.get_session(session_id)
-        return self.load_event_log(session_id).replay_export_text(metadata)
+        if not include_threads:
+            return self.load_thread_event_log(
+                session_id,
+                MAIN_THREAD_ID,
+            ).replay_export_text(metadata)
+        parts: list[str] = []
+        for thread in self.list_threads(session_id):
+            parts.append(
+                self.load_thread_event_log(
+                    session_id,
+                    thread.thread_id,
+                ).replay_thread_export_text(metadata, thread)
+            )
+        return "\n---\n\n".join(parts)
 
     def total_cost_usd(self) -> float:
         total = 0.0
@@ -1197,6 +1248,24 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
         status = event.payload["status"]
         return [f"## error ({status})", event.payload["content"]]
     return []
+
+
+def _event_diagnostic_lines(event: SessionEvent) -> list[str]:
+    lines = [
+        f"event_id: {event.event_id}",
+        f"thread_id: {event.thread_id}",
+        f"agent_id: {event.agent_id}",
+        f"run_id: {event.run_id}",
+    ]
+    if event.step_id is not None:
+        lines.append(f"step_id: {event.step_id}")
+    if event.step_index is not None:
+        lines.append(f"step_index: {event.step_index}")
+    tool_call_id = event.payload.get("tool_call_id")
+    if type(tool_call_id) is str:
+        lines.append(f"tool_call_id: {tool_call_id}")
+    lines.append("")
+    return lines
 
 
 def _usage_payload(usage: LLMUsage | None) -> dict[str, Any]:

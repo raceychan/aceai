@@ -1,0 +1,6 @@
+interface:
+  display_name: "AceAI Ghostty Launch"
+  short_description: "Open AceAI in a clean Ghostty tab"
+  default_prompt: "Use $aceai-ghostty-launch to open AceAI in Ghostty for TUI validation."
+policy:
+  allow_implicit_invocation: true

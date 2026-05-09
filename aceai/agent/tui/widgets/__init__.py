@@ -9,5 +9,6 @@ from .input import CitationPreviewWidget as CitationPreviewWidget
 from .input import QueuedTurnsWidget as QueuedTurnsWidget
 from .status import StatusBarWidget as StatusBarWidget
 from .stream import StreamWidget as StreamWidget
+from .subagents import SubagentThreadOption as SubagentThreadOption
 from .subagents import SubagentStatusWidget as SubagentStatusWidget
 from .topbar import TopBarWidget as TopBarWidget
