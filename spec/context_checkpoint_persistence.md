@@ -86,11 +86,11 @@ mutation.
 - `aceai/core/run_loop.py`
   - Detects that compression happened during an agent step.
   - Emits a structured agent event describing the compressed context snapshot.
-- `aceai/agent/context_history.py` or equivalent new app-layer boundary
+- `aceai/agent/memory/context_history.py`
   - Builds model-input history for an app run.
   - Can use session transcript, latest context checkpoint, and future context
     sources.
-- `aceai/agent/context_checkpoint_store.py` or equivalent app-layer boundary
+- `aceai/agent/memory/context_checkpoint_store.py`
   - Persists and loads context checkpoints.
   - Stores checkpoints outside the session transcript event log.
 - `aceai/agent/session_service.py`
@@ -358,7 +358,7 @@ Add focused tests:
 2. Add `AgentEventBuilder.context_compressed(...)`.
 3. In `run_loop._call_llm()`, emit the event after proactive compression and
    after reactive context-window compression.
-4. Add `aceai/agent/context_checkpoint_store.py`.
+4. Add `aceai/agent/memory/context_checkpoint_store.py`.
 5. Add LLM message serialization helpers in the context checkpoint boundary.
 6. Teach the app runtime to persist checkpoints with `included_event_id`.
 7. Add `build_context_history(...)` and switch session attach/resume to use it.

@@ -54,7 +54,7 @@ class SearchResult(Struct, frozen=True, kw_only=True):
     errors: str
 
 
-@tool(tags=["agent_app", "filesystem"])
+@tool(tags=["dev"])
 def list_directory(
     path: Annotated[str, spec(description="Directory path to list")],
 ) -> DirectoryListing:
@@ -82,7 +82,7 @@ def list_directory(
     return DirectoryListing(path=str(root), entries=entries)
 
 
-@tool(tags=["agent_app", "filesystem"])
+@tool(tags=["dev"])
 def read_text_file(
     path: Annotated[str, spec(description="UTF-8 text file path to read")],
 ) -> TextFile:
@@ -98,7 +98,7 @@ def read_text_file(
 
 
 @tool(
-    tags=["agent_app", "filesystem"],
+    tags=["dev"],
     require_approval=True,
     approval_policy="filesystem_write",
 )
@@ -117,7 +117,7 @@ def write_text_file(
 
 
 @tool(
-    tags=["agent_app", "filesystem"],
+    tags=["dev"],
     require_approval=True,
     approval_policy="filesystem_write",
 )
@@ -148,7 +148,7 @@ def replace_text_in_file(
 
 
 @tool(
-    tags=["agent_app", "shell"],
+    tags=["dev"],
     require_approval=True,
     approval_policy="shell_command",
 )
@@ -181,7 +181,7 @@ def run_shell_command(
     )
 
 
-@tool(tags=["agent_app", "search"])
+@tool(tags=["dev"])
 def search_text(
     query: Annotated[str, spec(description="ripgrep search pattern")],
     path: Annotated[str, spec(description="File or directory path to search")] = ".",

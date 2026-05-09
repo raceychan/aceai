@@ -3,11 +3,11 @@ from typing import Any
 from msgspec import Struct
 
 from aceai.agent.citations import TurnCitation, citation_payload
-from aceai.agent.context_checkpoint_store import (
+from aceai.agent.memory.context_checkpoint_store import (
     ContextCheckpoint,
     ContextCheckpointStore,
 )
-from aceai.agent.context_history import build_context_history
+from aceai.agent.memory.context_history import build_context_history
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
     EventLog,

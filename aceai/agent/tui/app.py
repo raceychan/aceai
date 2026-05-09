@@ -1,5 +1,7 @@
 """Read-only Textual application for AceAI event streams."""
 
+from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -10,7 +12,7 @@ from textual.widgets import TextArea
 from aceai import __version__
 from aceai.core.events import AgentEvent
 
-from aceai.agent.ideas import IdeaStore
+from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionStore
 
@@ -35,6 +37,12 @@ from .state import (
     select_event,
 )
 from .trajectory import TrajectoryScreen
+from .tool_stats import (
+    ToolCallStat,
+    format_tool_call_stats,
+    merge_tool_call_stats,
+    tool_call_stats,
+)
 from .widgets import (
     ApprovalWidget,
     CommandCompletionItem,
@@ -122,7 +130,11 @@ class AceAITUI(App[None]):
     def compose(self) -> ComposeResult:
         yield TopBarWidget(id="topbar")
         with Horizontal(id="main"):
-            yield StreamWidget(id="stream", project_name=self._project.name)
+            yield StreamWidget(
+                id="stream",
+                project_name=self._project.name,
+                project_root_path=self._project.root_path,
+            )
             yield SubagentStatusWidget(id="subagents", classes="hidden")
             yield DetailWidget(id="detail", classes="collapsed")
         yield ApprovalWidget(id="approval", classes="collapsed")
@@ -455,6 +467,9 @@ class AceAITUI(App[None]):
     def open_metadata_screen(self) -> None:
         self.push_screen(MetadataScreen(self._metadata_sections()))
 
+    def open_stats_screen(self) -> None:
+        self.push_screen(MetadataScreen(self._metadata_sections()))
+
     def open_trajectory_screen(self) -> None:
         self.push_screen(TrajectoryScreen(self._state.events))
 
@@ -487,10 +502,49 @@ class AceAITUI(App[None]):
             f"output: {_format_tokens(usage.session_output_tokens)}",
             f"session cost: {format_usd(usage.session_cost_usd)}",
         ]
-        return [
+        session_tool_stat_lines = format_tool_call_stats(
+            tool_call_stats(
+                self._state.events,
+                artifact_root=self._tool_stat_artifact_root(),
+            )
+        )
+        global_tool_stat_lines = format_tool_call_stats(self._global_tool_call_stats())
+        sections = [
             MetadataSection(title="Runtime", lines=lines),
             MetadataSection(title="Usage", lines=cost_lines),
         ]
+        if session_tool_stat_lines:
+            sections.append(
+                MetadataSection(
+                    title="Session Tool Calls",
+                    lines=session_tool_stat_lines,
+                )
+            )
+        if global_tool_stat_lines:
+            sections.append(
+                MetadataSection(
+                    title="Global Tool Calls",
+                    lines=global_tool_stat_lines,
+                )
+            )
+        return sections
+
+    def _tool_stat_artifact_root(self) -> Path | None:
+        if self._session_recorder is None:
+            return None
+        return self._session_recorder.store.root
+
+    def _global_tool_call_stats(self) -> list[ToolCallStat]:
+        store = self._session_store()
+        return merge_tool_call_stats(
+            [
+                tool_call_stats(
+                    event_log_to_tui_events(store.load_event_log(session.session_id)),
+                    artifact_root=store.root,
+                )
+                for session in store.list_sessions()
+            ]
+        )
 
     def on_stream_widget_event_selected(
         self,
@@ -513,6 +567,7 @@ class AceAITUI(App[None]):
         self.query_one(TopBarWidget).set_title(self.title)
         stream = self.query_one(StreamWidget)
         stream.set_project_name(self._project.name)
+        stream.set_project_root_path(self._project.root_path)
         stream.set_state(self._state)
         self.query_one(DetailWidget).set_state(self._state)
         subagents = self._state.subagents if self._subagent_panel_visible else []

@@ -1,4 +1,4 @@
-from aceai.agent.context_checkpoint_store import ContextCheckpoint
+from aceai.agent.memory.context_checkpoint_store import ContextCheckpoint
 from aceai.agent.session import EventLog, SessionEvent
 from aceai.llm.models import LLMMessage
 

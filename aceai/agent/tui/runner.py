@@ -17,7 +17,7 @@ from aceai.agent.citations import (
     IdeaCitationOrigin,
     TurnCitation,
 )
-from aceai.agent.ideas import Idea, IdeaStore
+from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
 from aceai.agent.provider_catalog import (
@@ -76,7 +76,7 @@ COMMAND_DESCRIPTIONS: dict[str, str] = {
     "idea": "Show ideas, save an idea, or delete one",
     "quit": "Exit AceAI",
     "sessions": "Open the session picker",
-    "stats": "Open runtime and usage details in config",
+    "stats": "Open runtime and usage stats",
     "steer": "Interrupt or redirect the current run",
     "subagents": "Show delegated subagent details",
     "trajectory": "Open the event trajectory view",
@@ -374,7 +374,7 @@ class _RuntimeStreamMixin:
 
     @tui_command("stats")
     def _command_stats(self, arg: str) -> None:
-        self.open_config_screen(initial_tab="stats-tab")
+        self.open_stats_screen()
 
     @tui_command("config")
     def _command_config(self, arg: str) -> None:
@@ -883,7 +883,7 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
+    def open_config_screen(self) -> None:
         self.push_screen(
             ConfigScreen(
                 provider_name=self._provider_name,
@@ -895,8 +895,6 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
                 skill_selection_mode="all",
                 enabled_skills=(),
                 api_keys={},
-                stats_sections=self._metadata_sections(),
-                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1231,7 +1229,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
     def action_config(self) -> None:
         self.open_config_screen()
 
-    def open_config_screen(self, initial_tab: str = "settings-tab") -> None:
+    def open_config_screen(self) -> None:
         api_keys: dict[str, str] = {}
         if self._current_config is not None:
             api_keys.update(self._current_config.api_keys)
@@ -1259,8 +1257,6 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 if self._current_config is not None
                 else "100%",
                 reasoning_level=self._reasoning_level,
-                stats_sections=self._metadata_sections(),
-                initial_tab=initial_tab,
             ),
             self._handle_config_selection,
         )
@@ -1452,6 +1448,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                     permission=permission,
                     enabled=configured_enabled.get(configured_tool.name, True),
                     max_calls_per_run=configured_max_calls.get(configured_tool.name),
+                    tags=tuple(configured_tool.metadata.tags),
                 )
             )
         return tuple(items)

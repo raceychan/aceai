@@ -1,10 +1,11 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from io import StringIO
 
 import pytest
 
-from aceai.agent.ideas import Idea
+from aceai.agent.memory.ideas import Idea
 from aceai.agent.session import EventLog, SessionEvent, SessionRecorder, SessionStore
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
@@ -14,6 +15,7 @@ from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
 from aceai.agent.tui.app import STREAM_DELTA_REFRESH_SECONDS
 from aceai.agent.tui.demo import static_demo_events
 from aceai.agent.tui.events import TUIEvent
+from aceai.agent.tui.metadata import MetadataSection, _metadata_renderables
 from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.setup import (
@@ -29,6 +31,7 @@ from aceai.agent.tui.state import (
     reset_cache_rate,
     select_event,
 )
+from aceai.agent.tui.tool_stats import format_tool_call_stats, tool_call_stats
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
     CommandInput,
@@ -328,6 +331,319 @@ def test_reduce_events_tracks_usage_totals() -> None:
     assert state.usage.session_cached_input_tokens == 40
     assert state.usage.session_output_tokens == 50
     assert state.usage.session_total_tokens == 300
+
+
+def test_tool_call_stats_include_parent_and_child_tool_results(tmp_path) -> None:
+    parent_call = LLMToolCall(
+        name="run_shell_command",
+        arguments='{"command":"ls"}',
+        call_id="call-parent",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_started",
+            step_index=0,
+            step_id="step-parent",
+            title="tool run_shell_command",
+            tool_name="run_shell_command",
+            tool_call_id=parent_call.call_id,
+            tool_call=parent_call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_failed",
+            step_index=0,
+            step_id="step-parent",
+            title="tool run_shell_command failed",
+            content="exit 1",
+            tool_name="run_shell_command",
+            tool_call_id=parent_call.call_id,
+            tool_call=parent_call,
+            tool_result=ToolExecutionResult(
+                call=parent_call,
+                output="exit 1",
+                error="exit 1",
+            ),
+            error="exit 1",
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=1,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "final_answer": "done",
+                    "summary": "done",
+                    "important_evidence": [],
+                    "tool_results": [
+                        {
+                            "tool_name": "read_text_file",
+                            "call_id": "call-child-ok",
+                            "arguments": '{"path":"README.md"}',
+                            "output": "readme",
+                            "error": None,
+                        },
+                        {
+                            "tool_name": "search_text",
+                            "call_id": "call-child-failed",
+                            "arguments": '{"query":"missing"}',
+                            "output": "failed",
+                            "error": "failed",
+                        },
+                    ],
+                    "step_count": 2,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=2,
+            step_id="step-delegate-2",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "agent_id": "child-2",
+                    "run_id": "child-run-2",
+                    "status": "completed",
+                    "final_answer": "done",
+                    "summary": "done",
+                    "important_evidence": [],
+                    "tool_results": [
+                        {
+                            "tool_name": "read_text_file",
+                            "call_id": "call-child-ok",
+                            "arguments": '{"path":"CHANGELOG.md"}',
+                            "output": "changelog",
+                            "error": None,
+                        }
+                    ],
+                    "step_count": 2,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id="call-delegate-2",
+            tool_call=LLMToolCall(
+                name="delegate_to_subagent",
+                arguments='{"task":"inspect again"}',
+                call_id="call-delegate-2",
+            ),
+            raw_event=None,
+        ),
+    ]
+
+    lines = format_tool_call_stats(tool_call_stats(events, artifact_root=tmp_path))
+
+    assert "delegate_to_subagent: calls 2  ok 2  failed 0" in lines
+    assert "run_shell_command: calls 1  ok 0  failed 1" in lines
+    assert "read_text_file: calls 2  ok 2  failed 0" in lines
+    assert "search_text: calls 1  ok 0  failed 1" in lines
+
+
+def test_tool_call_stats_read_archived_subagent_manifest(tmp_path) -> None:
+    manifest_path = "session-1/artifacts/parent-run-1/child-1/manifest.json"
+    manifest_file = tmp_path / manifest_path
+    manifest_file.parent.mkdir(parents=True)
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "type": "subagent_artifact_manifest",
+                "tool_results": [
+                    {
+                        "tool_name": "read_text_file",
+                        "tool_call_id": "call-child-ok",
+                        "has_error": False,
+                    },
+                    {
+                        "tool_name": "read_text_file",
+                        "tool_call_id": "call-child-failed",
+                        "has_error": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "type": "subagent_audit",
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "manifest_path": manifest_path,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        )
+    ]
+
+    lines = format_tool_call_stats(tool_call_stats(events, artifact_root=tmp_path))
+
+    assert "delegate_to_subagent: calls 1  ok 1  failed 0" in lines
+    assert "read_text_file: calls 2  ok 1  failed 1" in lines
+
+
+def test_metadata_sections_include_tool_call_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: SessionStore(tmp_path, project=project),
+    )
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"README.md"}',
+        call_id="call-read",
+    )
+    event = TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id="step-read",
+        title="tool read_text_file completed",
+        content="README",
+        tool_name="read_text_file",
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="README"),
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+    app._state = reduce_events([event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Session Tool Calls"]
+    )
+    assert "Global Tool Calls" not in section_lines
+
+
+def test_metadata_sections_omit_empty_tool_call_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: SessionStore(tmp_path, project=project),
+    )
+    app = AceAITUI([])
+
+    sections = app._metadata_sections()
+
+    titles = [section.title for section in sections]
+    assert "Session Tool Calls" not in titles
+    assert "Global Tool Calls" not in titles
+
+
+def test_metadata_sections_include_global_tool_stats_without_active_session(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session = store.create_session()
+    event = _tool_completed_event("read_text_file", "call-global")
+    SessionRecorder(store, session.session_id).record(tui_event_to_session_event(event))
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: store,
+    )
+    app = AceAITUI([])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert "Session Tool Calls" not in section_lines
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Global Tool Calls"]
+    )
+
+
+def test_metadata_sections_include_global_tool_call_stats(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    current = store.create_session()
+    other = store.create_session()
+    current_event = _tool_completed_event("read_text_file", "call-current")
+    other_event = _tool_failed_event("run_shell_command", "call-other")
+    SessionRecorder(store, current.session_id).record(
+        tui_event_to_session_event(current_event)
+    )
+    SessionRecorder(store, other.session_id).record(tui_event_to_session_event(other_event))
+    app = AceAITUI(
+        [current_event],
+        session_recorder=SessionRecorder(store, current.session_id),
+        session_id=current.session_id,
+    )
+    app._state = reduce_events([current_event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Session Tool Calls"]
+    )
+    assert (
+        "read_text_file: calls 1  ok 1  failed 0"
+        in section_lines["Global Tool Calls"]
+    )
+    assert (
+        "run_shell_command: calls 1  ok 0  failed 1"
+        in section_lines["Global Tool Calls"]
+    )
+    assert "run_shell_command" not in section_lines["Session Tool Calls"]
+
+
+def test_tool_call_metadata_renders_as_stats_table() -> None:
+    rendered = _render_to_text(
+        Group(
+            *_metadata_renderables(
+                [
+                    MetadataSection(
+                        title="Global Tool Calls",
+                        lines=[
+                            "delegate_to_subagent: calls 16  ok 8  failed 8",
+                            "read_text_file: calls 5  ok 5  failed 0",
+                        ],
+                    )
+                ]
+            )
+        )
+    )
+
+    assert "tool" in rendered
+    assert "calls" in rendered
+    assert "ok" in rendered
+    assert "failed" in rendered
+    assert "delegate_to_subagent" in rendered
+    assert "read_text_file" in rendered
 
 
 def test_reset_cache_rate_clears_current_cache_only() -> None:
@@ -1961,4 +2277,45 @@ def _render_to_text(renderable) -> str:
 def _record_user_message(store: SessionStore, session_id: str, content: str) -> None:
     SessionRecorder(store, session_id).record(
         tui_event_to_session_event(TUIEvent.user_message(content))
+    )
+
+
+def _tool_completed_event(tool_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name=tool_name,
+        arguments='{"path":"README.md"}',
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title=f"tool {tool_name} completed",
+        content="ok",
+        tool_name=tool_name,
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="ok"),
+        raw_event=None,
+    )
+
+
+def _tool_failed_event(tool_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name=tool_name,
+        arguments='{"command":"bad"}',
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_failed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title=f"tool {tool_name} failed",
+        content="failed",
+        tool_name=tool_name,
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="failed", error="failed"),
+        error="failed",
+        raw_event=None,
     )

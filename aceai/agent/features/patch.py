@@ -67,7 +67,7 @@ class _Simulation(Struct, frozen=True, kw_only=True):
         return "".join(change.diff for change in self.changes)
 
 
-@tool(tags=["agent_app", "filesystem", "patch"])
+@tool(tags=["dev"])
 def preview_patch(
     patch: Annotated[str, spec(description="Complete Codex-style patch text")],
     cwd: Annotated[str, spec(description="Workspace directory for relative patch paths")] = ".",
@@ -83,7 +83,7 @@ def preview_patch(
 
 
 @tool(
-    tags=["agent_app", "filesystem", "patch"],
+    tags=["dev"],
     require_approval=True,
     approval_policy="filesystem_patch",
 )

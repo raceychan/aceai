@@ -24,7 +24,7 @@ Implementation status as of 2026-05-09:
   lifecycle events. The TUI now shows compaction in progress, successful
   summary output, and compaction failure reasons.
 - Implemented checkpoint schema version `2` in
-  `aceai/agent/context_checkpoint_store.py`, storing structured `units` rather
+  `aceai/agent/memory/context_checkpoint_store.py`, storing structured `units` rather
   than a flat `history` payload. Old flat v1 checkpoints are ignored.
 - Implemented model-facing `model_output` usage for tool results, including the
   subagent artifact handoff path, so full audit output does not have to enter

@@ -9,12 +9,12 @@ from msgspec import Struct
 from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
-from aceai.agent.ideas import Idea, IdeaStore
+from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import SessionRecorder, SessionState, SessionStore
 from aceai.agent.session import EventLog
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
-from aceai.agent.subagent_artifacts import SubagentArtifactStore
+from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
 from aceai.core import Agent, AgentRunContext, ToolApprovalDecision
 from aceai.core.events import (
     AgentEvent,

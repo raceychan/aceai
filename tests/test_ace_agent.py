@@ -51,6 +51,7 @@ def test_default_agent_tools_are_product_capabilities() -> None:
         "apply_patch",
         "run_shell_command",
     }
+    assert {tuple(tool.metadata.tags) for tool in tools} == {("dev",)}
     assert not {
         tool.name for tool in tools if is_present(tool.metadata.max_calls_per_run)
     }

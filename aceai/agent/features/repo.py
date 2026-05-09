@@ -20,7 +20,7 @@ class GitDiff(Struct, frozen=True, kw_only=True):
     diff: str
 
 
-@tool(tags=["agent_app", "repo"])
+@tool(tags=["dev"])
 def git_status(
     cwd: Annotated[str, spec(description="Git workspace directory")] = ".",
 ) -> GitStatus:
@@ -30,7 +30,7 @@ def git_status(
     return GitStatus(cwd=str(root), status=completed.stdout)
 
 
-@tool(tags=["agent_app", "repo"])
+@tool(tags=["dev"])
 def git_diff(
     cwd: Annotated[str, spec(description="Git workspace directory")] = ".",
     paths: Annotated[list[str], spec(description="Optional relative paths to diff")] = [],
