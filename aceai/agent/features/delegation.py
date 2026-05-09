@@ -1,4 +1,5 @@
-from typing import Any
+from contextvars import ContextVar, Token
+from typing import Any, Protocol
 from uuid import uuid4
 
 from ididi import Graph
@@ -58,6 +59,7 @@ class ChildToolResult(Struct, frozen=True, kw_only=True):
 
 
 class ChildAgentResult(Struct, frozen=True, kw_only=True):
+    thread_id: str
     agent_id: str
     run_id: str
     status: str
@@ -70,6 +72,7 @@ class ChildAgentResult(Struct, frozen=True, kw_only=True):
 
 class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
     type: str
+    thread_id: str
     agent_id: str
     run_id: str
     status: str
@@ -80,6 +83,53 @@ class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
     step_count: int
     tool_result_count: int
     tool_names: list[str]
+
+
+class DelegatedChildRunRecorder(Protocol):
+    def start_child_thread(
+        self,
+        *,
+        task: str,
+        instructions: str,
+        context_brief: str,
+        allowed_tools: list[str],
+        child_agent: Agent,
+        agent_id: str,
+        run_id: str,
+        child_question: str,
+    ) -> str: ...
+
+    def record_child_event(
+        self,
+        *,
+        thread_id: str,
+        agent_id: str,
+        event: AgentEvent,
+    ) -> None: ...
+
+    def finish_child_thread(
+        self,
+        *,
+        thread_id: str,
+        status: str,
+    ) -> None: ...
+
+
+_CURRENT_CHILD_RUN_RECORDER: ContextVar[DelegatedChildRunRecorder | None] = (
+    ContextVar("aceai_delegated_child_run_recorder", default=None)
+)
+
+
+def set_delegated_child_run_recorder(
+    recorder: DelegatedChildRunRecorder,
+) -> Token[DelegatedChildRunRecorder | None]:
+    return _CURRENT_CHILD_RUN_RECORDER.set(recorder)
+
+
+def reset_delegated_child_run_recorder(
+    token: Token[DelegatedChildRunRecorder | None],
+) -> None:
+    _CURRENT_CHILD_RUN_RECORDER.reset(token)
 
 
 def build_delegate_to_subagent_tool(
@@ -157,12 +207,12 @@ def build_delegate_to_subagent_tool(
             hosted_tool_map,
             allowed_tools,
         )
-        child_agent = _build_child_agent(
+        child_agent = build_delegated_child_agent(
             llm_service=llm_service,
             default_model=default_model,
             instructions=instructions,
-            tools=selected_tools,
-            hosted_tools=selected_hosted_tools,
+            selected_tools=selected_tools,
+            selected_hosted_tools=selected_hosted_tools,
             child_max_steps=child_max_steps,
             compress_threshold=compress_threshold,
             context_window_tokens=context_window_tokens,
@@ -172,22 +222,57 @@ def build_delegate_to_subagent_tool(
             context_brief=context_brief,
         )
         child_run = child_agent.create_run(child_question)
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        child_thread_id = ""
+        if recorder is not None:
+            child_thread_id = recorder.start_child_thread(
+                task=task,
+                instructions=instructions,
+                context_brief=context_brief,
+                allowed_tools=allowed_tools,
+                child_agent=child_agent,
+                agent_id=child_agent.agent_id,
+                run_id=child_run.run_id,
+                child_question=child_question,
+            )
         events: list[AgentEvent] = []
         final_answer = ""
 
         async for event in child_agent.execute(child_run):
             events.append(event)
+            if recorder is not None and child_thread_id != "":
+                recorder.record_child_event(
+                    thread_id=child_thread_id,
+                    agent_id=child_agent.agent_id,
+                    event=event,
+                )
             if isinstance(event, RunCompletedEvent):
                 final_answer = event.final_answer
             elif isinstance(event, RunSuspendedEvent):
+                if recorder is not None and child_thread_id != "":
+                    recorder.finish_child_thread(
+                        thread_id=child_thread_id,
+                        status="suspended",
+                    )
                 raise ToolExecutionError(
                     "delegated subagent suspended for approval; "
                     "delegate_to_subagent only supports approval-free child tools"
                 )
             elif isinstance(event, RunFailedEvent):
+                if recorder is not None and child_thread_id != "":
+                    recorder.finish_child_thread(
+                        thread_id=child_thread_id,
+                        status="failed",
+                    )
                 raise ToolExecutionError(event.error)
+        if recorder is not None and child_thread_id != "":
+            recorder.finish_child_thread(
+                thread_id=child_thread_id,
+                status=child_run.status,
+            )
 
         result = ChildAgentResult(
+            thread_id=child_thread_id,
             agent_id=child_agent.agent_id,
             run_id=child_run.run_id,
             status=child_run.status,
@@ -200,6 +285,7 @@ def build_delegate_to_subagent_tool(
         artifact_id = uuid4().hex
         handoff = ChildAgentHandoff(
             type="subagent_handoff",
+            thread_id=child_thread_id,
             agent_id=result.agent_id,
             run_id=result.run_id,
             status=result.status,
@@ -220,6 +306,69 @@ def build_delegate_to_subagent_tool(
         )
 
     return delegate_to_subagent
+
+
+def build_delegated_child_agent(
+    *,
+    llm_service: ILLMService,
+    default_model: str,
+    instructions: str,
+    selected_tools: list[Tool[Any, Any]],
+    selected_hosted_tools: list[LLMHostedToolSpec],
+    child_max_steps: Unset[int] = UNSET,
+    compress_threshold: CompressThreshold = "100%",
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
+    agent_id: str | None = None,
+) -> Agent:
+    return _build_child_agent(
+        llm_service=llm_service,
+        default_model=default_model,
+        instructions=instructions,
+        tools=selected_tools,
+        hosted_tools=selected_hosted_tools,
+        child_max_steps=child_max_steps,
+        compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
+        agent_id=agent_id,
+    )
+
+
+def build_restored_delegated_child_agent(
+    *,
+    llm_service: ILLMService,
+    default_model: str,
+    instructions: str,
+    allowed_tools: list[str],
+    available_tools: list[Tool[Any, Any]],
+    available_hosted_tools: list[LLMHostedToolSpec],
+    child_max_steps: Unset[int] = UNSET,
+    compress_threshold: CompressThreshold = "100%",
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
+    agent_id: str | None = None,
+) -> Agent:
+    tool_map = {available_tool.name: available_tool for available_tool in available_tools}
+    hosted_tool_map = {
+        _hosted_tool_key(hosted_tool): hosted_tool
+        for hosted_tool in available_hosted_tools
+    }
+    return build_delegated_child_agent(
+        llm_service=llm_service,
+        default_model=default_model,
+        instructions=instructions,
+        selected_tools=_select_child_tools(
+            tool_map,
+            hosted_tool_map,
+            allowed_tools,
+        ),
+        selected_hosted_tools=_select_child_hosted_tools(
+            hosted_tool_map,
+            allowed_tools,
+        ),
+        child_max_steps=child_max_steps,
+        compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
+        agent_id=agent_id,
+    )
 
 
 def _select_child_tools(
@@ -293,7 +442,10 @@ def _build_child_agent(
     child_max_steps: Unset[int],
     compress_threshold: CompressThreshold,
     context_window_tokens: int,
+    agent_id: str | None = None,
 ) -> Agent:
+    if agent_id is None:
+        agent_id = f"child-{uuid4()}"
     return Agent(
         prompt=_format_child_prompt(instructions),
         default_model=default_model,
@@ -302,7 +454,7 @@ def _build_child_agent(
         max_steps=child_max_steps,
         compress_threshold=compress_threshold,
         context_window_tokens=context_window_tokens,
-        agent_id=f"child-{uuid4()}",
+        agent_id=agent_id,
     )
 
 

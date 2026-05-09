@@ -10,7 +10,10 @@ from aceai.agent.memory.context_checkpoint_store import (
 from aceai.agent.memory.context_history import build_context_history
 from aceai.agent.cost import estimate_usage_cost
 from aceai.agent.session import (
+    AgentThreadMetadata,
+    AgentThreadStatus,
     EventLog,
+    MAIN_THREAD_ID,
     SessionEvent,
     SessionMetadata,
     SessionRecorder,
@@ -98,6 +101,11 @@ class SessionService:
 
     def ensure_session(self) -> str:
         if self._recorder is not None and self._session_id is not None:
+            self._store.ensure_main_thread(self._session_id)
+            return self._session_id
+        if self._session_id is not None:
+            self._store.ensure_main_thread(self._session_id)
+            self._recorder = SessionRecorder(self._store, self._session_id)
             return self._session_id
         metadata = self._store.create_session()
         self._recorder = SessionRecorder(self._store, metadata.session_id)
@@ -106,6 +114,7 @@ class SessionService:
 
     def attach_session(self, session_id: str) -> AgentSessionSnapshot:
         metadata = self._store.get_session(session_id)
+        self._store.ensure_main_thread(metadata.session_id)
         if self._recorder is not None:
             self._recorder.finalize()
         self._recorder = SessionRecorder(self._store, metadata.session_id)
@@ -113,9 +122,23 @@ class SessionService:
         return self.snapshot(metadata.session_id)
 
     def snapshot(self, session_id: str) -> AgentSessionSnapshot:
+        return self.snapshot_thread(session_id, MAIN_THREAD_ID)
+
+    def snapshot_thread(
+        self,
+        session_id: str,
+        thread_id: str,
+    ) -> AgentSessionSnapshot:
         metadata = self._store.get_session(session_id)
-        event_log = self._store.load_event_log(session_id)
-        checkpoint = self._context_checkpoint_store.latest_checkpoint(session_id)
+        self._store.ensure_main_thread(metadata.session_id)
+        event_log = self._store.load_thread_event_log(
+            session_id,
+            thread_id,
+        )
+        checkpoint = self._context_checkpoint_store.latest_checkpoint(
+            session_id,
+            thread_id=thread_id,
+        )
         return AgentSessionSnapshot(
             metadata=metadata,
             event_log=event_log,
@@ -138,11 +161,57 @@ class SessionService:
     def update_state(self, session_id: str, state: SessionState) -> None:
         self._store.update_session_state(session_id, state)
 
+    def create_subagent_thread(
+        self,
+        *,
+        task: str,
+        agent_id: str,
+        parent_run_id: str,
+        instructions: str,
+        context_brief: str,
+        allowed_tools: list[str],
+    ) -> AgentThreadMetadata:
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
+        return self._store.create_thread(
+            session_id=session_id,
+            thread_id=uuid_str(),
+            agent_id=agent_id,
+            role="subagent",
+            title=task,
+            status="running",
+            parent_thread_id=MAIN_THREAD_ID,
+            parent_run_id=parent_run_id,
+            metadata={
+                "instructions": instructions,
+                "context_brief": context_brief,
+                "allowed_tools": allowed_tools,
+            },
+        )
+
+    def update_thread_status(
+        self,
+        *,
+        thread_id: str,
+        status: AgentThreadStatus,
+    ) -> None:
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
+        self._store.update_thread_status(
+            session_id=session_id,
+            thread_id=thread_id,
+            status=status,
+        )
+
     def record_user_message(
         self,
         content: str,
         *,
         run_id: str,
+        thread_id: str = MAIN_THREAD_ID,
+        agent_id: str = "",
         citations: tuple[TurnCitation, ...] = (),
     ) -> str:
         payload: dict[str, Any] = {"content": content}
@@ -151,6 +220,8 @@ class SessionService:
         event_id = self.record_session_event(
             SessionEvent(
                 event_id=uuid_str(),
+                thread_id=thread_id,
+                agent_id=agent_id,
                 run_id=run_id,
                 step_id=None,
                 step_index=None,
@@ -162,8 +233,20 @@ class SessionService:
             raise RuntimeError("user_message did not persist a session event")
         return event_id
 
-    def record_agent_event(self, event: AgentEvent) -> str | None:
-        return self.record_session_event(agent_event_to_session_event(event))
+    def record_agent_event(
+        self,
+        event: AgentEvent,
+        *,
+        thread_id: str = MAIN_THREAD_ID,
+        agent_id: str = "",
+    ) -> str | None:
+        return self.record_session_event(
+            agent_event_to_session_event(
+                event,
+                thread_id=thread_id,
+                agent_id=agent_id,
+            )
+        )
 
     def record_context_checkpoint(
         self,
@@ -176,6 +259,7 @@ class SessionService:
             raise RuntimeError("AceAI session is not active")
         return self._context_checkpoint_store.record_checkpoint(
             session_id=session_id,
+            thread_id=MAIN_THREAD_ID,
             run_id=event.run_id,
             step_id=event.step_id,
             reason=event.reason,
@@ -195,9 +279,16 @@ class SessionService:
         return self._recorder.finalize()
 
 
-def agent_event_to_session_event(event: AgentEvent) -> SessionEvent:
+def agent_event_to_session_event(
+    event: AgentEvent,
+    *,
+    thread_id: str = MAIN_THREAD_ID,
+    agent_id: str = "",
+) -> SessionEvent:
     return SessionEvent(
         event_id=uuid_str(),
+        thread_id=thread_id,
+        agent_id=agent_id,
         run_id=event.run_id,
         step_id=event.step_id,
         step_index=event.step_index,

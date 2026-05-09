@@ -67,6 +67,7 @@ class SubagentArtifactStore:
         manifest = {
             "type": "subagent_artifact_manifest",
             "artifact_id": artifact_id,
+            "thread_id": payload["thread_id"],
             "agent_id": agent_id,
             "run_id": payload["run_id"],
             "parent_run_id": parent_run_id,
@@ -83,6 +84,7 @@ class SubagentArtifactStore:
         relative_dir = Path(session_id) / "artifacts" / parent_run_id / agent_id
         audit = {
             "type": "subagent_audit",
+            "thread_id": payload["thread_id"],
             "agent_id": agent_id,
             "run_id": payload["run_id"],
             "status": payload["status"],

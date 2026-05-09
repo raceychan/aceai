@@ -386,6 +386,9 @@ class _RuntimeStreamMixin:
 
     @tui_command("subagents")
     def _command_subagents(self, arg: str) -> None:
+        if arg != "":
+            self.switch_thread(arg)
+            return
         self.action_show_subagents()
 
     @tui_command("trajectory")
@@ -490,6 +493,22 @@ class _RuntimeStreamMixin:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
         self._start_run_now(question)
+
+    def switch_thread(self, thread_id: str) -> None:
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before switching threads.")
+            )
+            return
+        try:
+            snapshot = agent_app.switch_thread(thread_id)
+        except (KeyError, RuntimeError) as exc:
+            self.append_event(TUIEvent.session_notice(str(exc)))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.notify_session(f"Switched thread {thread_id}")
 
     def _start_run_now(
         self,

@@ -232,6 +232,8 @@ def _subagent_meta(subagent: TUISubagentState) -> str:
         parts.append(f"tool results {len(subagent.tool_results)}")
     if subagent.run_id != "":
         parts.append(f"agent {subagent.agent_id}")
+        if subagent.thread_id != "":
+            parts.append(f"thread {subagent.thread_id}")
         parts.append(f"run {subagent.run_id}")
     return " | ".join(parts)
 

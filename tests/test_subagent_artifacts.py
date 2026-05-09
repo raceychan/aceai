@@ -12,6 +12,7 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
         call_id="call-1",
     )
     output = {
+        "thread_id": "thread-child-1",
         "agent_id": "child-1",
         "run_id": "child-run-1",
         "status": "completed",
@@ -31,6 +32,7 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
     }
     model_output = {
         "type": "subagent_handoff",
+        "thread_id": "thread-child-1",
         "agent_id": "child-1",
         "run_id": "child-run-1",
         "status": "completed",
@@ -64,8 +66,10 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
     audit = json.loads(archived.output)
     handoff = json.loads(archived.model_output)
     assert audit["type"] == "subagent_audit"
+    assert audit["thread_id"] == "thread-child-1"
     assert audit["manifest_path"] == (
         "session-1/artifacts/parent-run-1/child-1/manifest.json"
     )
     assert handoff["type"] == "subagent_handoff"
+    assert handoff["thread_id"] == "thread-child-1"
     assert handoff["artifact_id"] == audit["artifact_id"]

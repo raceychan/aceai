@@ -1,4 +1,6 @@
 from .delegation import ChildAgentResult as ChildAgentResult
 from .delegation import ChildToolResult as ChildToolResult
+from .delegation import build_delegated_child_agent as build_delegated_child_agent
 from .delegation import build_delegate_to_subagent_tool as build_delegate_to_subagent_tool
+from .delegation import build_restored_delegated_child_agent as build_restored_delegated_child_agent
 from .tools import default_agent_tools as default_agent_tools

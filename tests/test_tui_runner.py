@@ -16,7 +16,13 @@ from aceai.agent.citations import (
 )
 from aceai.core.agent import Agent
 from aceai.core.executor import Executor
-from aceai.agent.session import SessionRecorder, SessionState, SessionStore
+from aceai.agent.session import (
+    MAIN_THREAD_ID,
+    SessionEvent,
+    SessionRecorder,
+    SessionState,
+    SessionStore,
+)
 from aceai.llm import LLMResponse
 from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry
@@ -28,7 +34,7 @@ from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import clear_config, current_config, load_config
-from aceai.llm.openai_codex import CODEX_CLI_AUTH_SENTINEL
+from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.agent import app as agent_app_module
 from aceai.agent.app import UpdateCheckResult
 from aceai.agent.memory.ideas import IdeaStore
@@ -3132,6 +3138,60 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         assert app._state.events[0].content == "second"
         assert app._selected_model == "gpt-5.5"
         assert app._llm_history[0].content[0]["data"] == "second"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_subagents_command_switches_active_thread(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Inspect",
+        status="completed",
+        parent_thread_id=MAIN_THREAD_ID,
+        metadata={
+            "instructions": "Report evidence.",
+            "context_brief": "repo",
+            "allowed_tools": [],
+        },
+    )
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            thread_id="child-thread-1",
+            agent_id="child-agent-1",
+            run_id="child-run-1",
+            kind="user_message",
+            payload={"content": "child question"},
+        ),
+    )
+    llm_service = StubLLMService([])
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = AceAIInteractiveTUI(
+        agent,
+        initial_events=event_log_to_tui_events(
+            store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
+        ),
+        initial_history=[],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app._command_subagents("child-thread-1")
+
+        assert app._agent_app.active_thread_id == "child-thread-1"
+        assert app._state.events[0].content == "child question"
 
 
 def _press_config_apply(screen: ConfigScreen) -> None:

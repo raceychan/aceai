@@ -40,6 +40,7 @@ class TUISubagentResult(Record, kw_only=True):
     important_evidence: list[str]
     tool_results: list[TUISubagentToolResult]
     step_count: int
+    thread_id: str = ""
 
 
 class TUIToolState(Record, kw_only=True):
@@ -54,6 +55,7 @@ class TUIToolState(Record, kw_only=True):
 
 class TUISubagentState(Record, kw_only=True):
     call_id: str
+    thread_id: str = ""
     task: str = ""
     instructions: str = ""
     context_brief: str = ""
@@ -426,6 +428,7 @@ def _update_subagent(
     result = _subagent_result(event)
     return TUISubagentState(
         call_id=subagent.call_id,
+        thread_id=subagent.thread_id if result is None else result.thread_id,
         task=arguments.task,
         instructions=arguments.instructions,
         context_brief=arguments.context_brief,
@@ -482,6 +485,7 @@ def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
     payload = json.loads(event.content)
     if payload.get("type") == "subagent_audit":
         return TUISubagentResult(
+            thread_id=payload["thread_id"],
             agent_id=payload["agent_id"],
             run_id=payload["run_id"],
             status=payload["status"],
