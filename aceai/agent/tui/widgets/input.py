@@ -264,13 +264,13 @@ def _queued_turns_renderable(
     renderable = Text("queued messages")
     for index, question in enumerate(questions):
         body, spacing = _queued_row_body(index, question, width=width)
-        lines.append(f"{body}{spacing}> x")
+        lines.append(f"{body}{spacing}[ > ] [ x ]")
         renderable.append("\n")
         renderable.append(body)
         renderable.append(spacing)
-        renderable.append(">", style=_queued_action_style(index, "steer"))
+        renderable.append("[ > ]", style=_queued_action_style(index, "steer"))
         renderable.append(" ")
-        renderable.append("x", style=_queued_action_style(index, "cancel"))
+        renderable.append("[ x ]", style=_queued_action_style(index, "cancel"))
     return lines, renderable
 
 
@@ -278,7 +278,7 @@ def _queued_row_body(index: int, question: str, *, width: int) -> tuple[str, str
     first_line = question.splitlines()[0] if question.splitlines() else ""
     turn_number = index + 1
     body = f"{turn_number}. {first_line}"
-    action_width = 3
+    action_width = 11
     max_body_width = max(width - action_width - 2, 16)
     if cell_len(body) > max_body_width:
         body = set_cell_size(body, max_body_width - 3) + "..."
@@ -287,10 +287,13 @@ def _queued_row_body(index: int, question: str, *, width: int) -> tuple[str, str
 
 
 def _queued_content_width(widget: Static) -> int:
-    width = widget.content_size.width
-    if width > 0:
-        return width
-    return 96
+    content_width = widget.content_size.width
+    if content_width > 0:
+        return content_width
+    widget_width = widget.size.width
+    if widget_width > 4:
+        return widget_width - 4
+    return 0
 
 
 def _queued_action_style(index: int, action: str) -> Style:

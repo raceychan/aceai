@@ -67,7 +67,10 @@ def test_reduce_events_tracks_run_completion() -> None:
     state = reduce_events(events)
 
     assert state.status == "completed"
-    assert state.final_answer == "Static TUI prototype is ready to inspect."
+    assert state.final_answer == (
+        "Multi-agent review complete: core behavior, docs, and provider "
+        "integration are ready."
+    )
     assert state.error is None
     assert state.selected_event_id == events[-1].event_id
 
@@ -112,15 +115,25 @@ def test_reduce_events_tracks_context_compaction_events() -> None:
 def test_reduce_events_tracks_step_and_tool_state() -> None:
     state = reduce_events(static_demo_events())
 
-    assert len(state.steps) == 1
-    step = state.steps[0]
-    assert step.status == "completed"
-    assert len(step.tools) == 1
-    tool_state = step.tools[0]
-    assert tool_state.name == "search_docs"
-    assert tool_state.status == "completed"
-    assert tool_state.arguments == '{"query":"aceai tui"}'
-    assert tool_state.output == '{"matches":["spec/tui.md","docs/tui.md"]}'
+    assert len(state.steps) == 2
+    assert [step.status for step in state.steps] == [
+        "completed",
+        "completed",
+    ]
+    assert [tool.name for step in state.steps for tool in step.tools] == [
+        "delegate_to_subagent",
+        "delegate_to_subagent",
+        "delegate_to_subagent",
+        "run_shell_command",
+    ]
+    assert [subagent.status for subagent in state.subagents] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+    provider_subagent = state.subagents[2]
+    assert provider_subagent.task == "Provider integration smoke check"
+    assert provider_subagent.error is None
 
 
 def test_reduce_events_tracks_threaded_delegate_to_subagent_status() -> None:
@@ -830,8 +843,29 @@ async def test_static_tui_loads_fixture_events() -> None:
         assert stream.can_focus
         assert detail.can_focus
         assert subagents.has_class("hidden")
+        app.action_show_subagents()
+        assert not subagents.has_class("hidden")
+        assert "subagents  3 total | 0 running | 3 done | 0 failed" in subagents.renderable
         assert not stream.debug_mode
         assert detail.has_class("collapsed")
+
+
+@pytest.mark.anyio
+async def test_static_tui_demo_can_start_with_subagent_panel_visible() -> None:
+    from aceai.agent.tui.demo import static_demo_events
+
+    class StaticDemoTUI(AceAITUI):
+        def on_mount(self) -> None:
+            super().on_mount()
+            self.call_after_refresh(self.action_show_subagents)
+
+    app = StaticDemoTUI(static_demo_events())
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        subagents = app.query_one(SubagentStatusWidget)
+        assert not subagents.has_class("hidden")
+        assert "subagents  3 total | 0 running | 3 done | 0 failed" in subagents.renderable
 
 
 @pytest.mark.anyio
@@ -1113,7 +1147,9 @@ async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
+async def test_subagent_status_widget_scrolls_with_mouse_wheel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
         name="delegate_to_subagent",
@@ -1147,8 +1183,25 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         app.action_show_subagents()
         subagents = app.query_one(SubagentStatusWidget)
         detail = subagents.query_one("#subagent-detail", RichLog)
-        await _wait_until(pilot, lambda: detail.max_scroll_y > 0)
-        assert detail.scroll_y == 0
+        scroll_calls: list[dict[str, object]] = []
+
+        def record_scroll_relative(
+            *,
+            y: int,
+            animate: bool,
+            force: bool,
+            immediate: bool,
+        ) -> None:
+            scroll_calls.append(
+                {
+                    "y": y,
+                    "animate": animate,
+                    "force": force,
+                    "immediate": immediate,
+                }
+            )
+
+        monkeypatch.setattr(detail, "scroll_relative", record_scroll_relative)
 
         await subagents._dispatch_message(
             MouseScrollDown(
@@ -1165,7 +1218,14 @@ async def test_subagent_status_widget_scrolls_with_mouse_wheel() -> None:
         )
         await pilot.pause()
 
-        assert detail.scroll_y > 0
+        assert scroll_calls == [
+            {
+                "y": 3,
+                "animate": False,
+                "force": True,
+                "immediate": True,
+            }
+        ]
 
 
 @pytest.mark.anyio
@@ -1215,6 +1275,7 @@ async def test_debug_mode_stream_selection_opens_tool_result_detail() -> None:
 
     async with app.run_test() as pilot:
         stream = app.query_one(StreamWidget)
+        app.action_hide_subagents()
         stream.post_message(StreamWidget.EventSelected(tool_event.event_id))
         await pilot.pause()
 
@@ -1232,6 +1293,7 @@ async def test_debug_mode_reuses_message_panel_and_opens_selected_detail() -> No
         stream = app.query_one(StreamWidget)
         detail = app.query_one(DetailWidget)
 
+        app.action_hide_subagents()
         await pilot.press("d")
 
         assert stream.debug_mode
@@ -1338,6 +1400,7 @@ async def test_debug_mode_can_move_selection_inside_message_panel() -> None:
     async with app.run_test() as pilot:
         stream = app.query_one(StreamWidget)
 
+        app.action_hide_subagents()
         await pilot.press("d")
         first_selected = app._state.selected_event_id
         await pilot.press("down")
@@ -1353,6 +1416,7 @@ async def test_debug_mode_click_selects_message_in_main_stream() -> None:
     async with app.run_test() as pilot:
         stream = app.query_one(StreamWidget)
 
+        app.action_hide_subagents()
         await pilot.press("d")
         assert len(stream._debug_line_spans) >= 2
         target = stream._debug_line_spans[1]

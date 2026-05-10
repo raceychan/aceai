@@ -30,6 +30,8 @@ uvx --from "aceai[tui]" aceai
 
 ## Terminal UI
 
+![AceAI terminal UI home screen](docs/homescreen_capture.png)
+
 After installing the tool, set `OPENAI_API_KEY`, then launch the TUI directly:
 
 ```bash
@@ -40,9 +42,34 @@ Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
 If no API key is available, the TUI asks for provider settings and lets you
 choose whether to persist them to `.aceai/config.yml`. On startup AceAI reads
 project config first, then falls back to `~/.aceai/config.yaml`.
-The config screen also includes per-tool permissions: `always` runs without
-approval, `ask` uses the approval flow, and `never` hides the tool from the
-model.
+The TUI surfaces streaming work history, skill loading, tool calls, approval
+gates, subagent progress, cited context, queued follow-up turns, token/cost
+status, and per-tool permissions: `always` runs without approval, `ask` uses
+the approval flow, and `never` hides the tool from the model.
+
+### Skills and tool permissions
+
+![AceAI configuration tools view](docs/config_capture.png)
+
+The configuration screen keeps agent skills and local tools visible in one
+place. Skills show their source, description, and filesystem path, while tool
+groups can be enabled, capped, or switched to approval-free execution.
+
+### Multi-agent work
+
+![AceAI multi-agent coordination view](docs/multiagent_capture.png)
+
+AceAI can delegate independent checks to child agents, track their status, keep
+their evidence separate, and merge the completed handoffs back into the main
+conversation.
+
+### Trajectory view
+
+![AceAI trajectory event view](docs/trajectory_capture.png)
+
+The trajectory view is a chronological audit trail of the run: turns, steps,
+LLM deltas, tool calls, tool results, approvals, failures, and final answers.
+It is useful when you need to debug exactly how a response was produced.
 
 ## Architecture layers
 

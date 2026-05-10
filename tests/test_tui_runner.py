@@ -630,7 +630,7 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         queued_turns = app.query_one(QueuedTurnsWidget)
         assert not queued_turns.has_class("hidden")
         assert queued_turns.renderable.startswith("queued messages\n1. Second?")
-        assert queued_turns.renderable.endswith("> x")
+        assert queued_turns.renderable.endswith("[ > ] [ x ]")
 
         gate.set()
         await _wait_until(pilot, lambda: app._state.final_answer == "second")
@@ -2230,6 +2230,13 @@ async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
         text = console.export_text()
         assert f"AceAI v{__version__}" in text
         assert "Project: aceai" in text
+        assert "shortcuts" in text
+        assert "enter" in text
+        assert "ask" in text
+        assert "config" in text
+        assert "sessions" in text
+        assert "debug" in text
+        assert "cancel" in text
         assert "██" in text
         assert "No events yet" not in text
 
@@ -2392,6 +2399,9 @@ async def test_config_screen_uses_model_as_default_model_and_places_skills_on_to
         _press_config_apply(screen)
 
         assert "default-model" not in screen_ids
+        assert str(screen.query_one("#tool-permissions-tab Label").render()) == (
+            "skills for current agent *"
+        )
         assert screen.query_one("#config-skills-list") in screen.query_one(
             "#tool-permissions-tab"
         ).query("*")
@@ -2522,8 +2532,10 @@ async def test_config_screen_searches_project_skills_and_loads_new_skill_links(
         await pilot.pause()
         assert (project / ".agents" / "skills" / "review").resolve() == review_dir
         assert str(screen.query_one("#skill-1", Checkbox).label) == "review"
-        assert str(screen.query_one("#skill-candidates-empty", Static).render()) == (
-            "No new skills found"
+        assert str(
+            screen.query_one("#skill-candidates-empty .skill-empty-title", Static).render()
+        ) == (
+            "No new skills"
         )
 
         _press_config_apply(screen)
@@ -2693,7 +2705,9 @@ async def test_config_screen_has_tool_permissions_tab_and_selects_policy() -> No
         tool_tag_tabs = screen.query_one("#tool-tag-tabs", TabbedContent)
         assert tool_tag_tabs.active == "tool-tag-tab-0"
         assert str(screen.query_one(".tool-tag-status", Static).render()) == "1/2 enabled"
-        assert not screen.query_one("#tool-tag-allow-all-0", Checkbox).value
+        assert str(screen.query_one("#tool-tag-allow-all-0", Button).label) == (
+            "Allow all"
+        )
         header_cells = list(screen.query(".tool-permission-header Static"))
         assert [str(cell.render()) for cell in header_cells] == [
             "On",
@@ -2866,9 +2880,13 @@ async def test_config_screen_can_allow_all_tools_for_current_tag() -> None:
 
         screen.dismiss = dismiss
 
-        assert not screen.query_one("#tool-tag-allow-all-0", Checkbox).value
-        screen.query_one("#tool-tag-allow-all-0", Checkbox).value = True
+        allow_all = screen.query_one("#tool-tag-allow-all-0", Button)
+        assert str(allow_all.label) == "Allow all"
+        allow_all.press()
         await pilot.pause()
+        assert str(screen.query_one("#tool-tag-allow-all-0", Button).label) == (
+            "All allowed"
+        )
         _press_config_apply(screen)
 
         assert selections[-1].tool_enabled == {

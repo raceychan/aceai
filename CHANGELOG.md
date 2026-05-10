@@ -1,5 +1,25 @@
 # Changelog
 
+## AceAI v0.2.24
+
+### Features
+
+- `tui`: Add static screenshot demos for the multi-agent and trajectory views so release docs can show real terminal states without calling a live model.
+- `docs`: Add README screenshots for the home screen, configuration tools, multi-agent coordination, and trajectory audit trail.
+
+### Improvements
+
+- `tui`: Add startup shortcut help and improve the Tools configuration UI with clearer agent-skill labeling, card-style skill entries, richer empty states, and a button-based `Allow all` action.
+- `tui`: Polish queued-input and stream rendering details so interactive controls read more cleanly in the terminal.
+
+### Fixes
+
+- `demo`: Keep static demo tool-call payloads aligned with the current trajectory renderer so the screenshot demos open without runtime errors.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.23
 
 ### Improvements

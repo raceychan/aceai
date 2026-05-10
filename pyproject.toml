@@ -28,6 +28,8 @@ tui = [
 
 [project.scripts]
 aceai = "aceai.agent.tui.cli:main"
+"aceai.agent.tui.demo" = "aceai.agent.tui.demo:main"
+"aceai.agent.tui.trajectory_demo" = "aceai.agent.tui.demo:trajectory_main"
 
 [build-system]
 requires = ["hatchling"]
