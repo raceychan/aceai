@@ -18,6 +18,8 @@ from aceai.agent.app import (
     effective_reasoning_level,
     is_model_supported,
     model_options_text_for,
+    normalize_user_config,
+    resolve_provider_api_key,
 )
 from aceai.agent.citations import (
     IdeaCitationOrigin,
@@ -26,16 +28,9 @@ from aceai.agent.citations import (
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
-from aceai.agent.provider_catalog import api_key_env
-from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import (
-    AgentAppConfig,
-    ReasoningLevel,
-    replace_config,
-    save_config,
-)
+from aceai.agent.config import AgentAppConfig, ReasoningLevel
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
@@ -1034,7 +1029,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         self.apply_config(config)
 
     def apply_config(self, config: AgentAppConfig) -> None:
-        next_config = replace_config(config)
+        next_config = normalize_user_config(config)
         model_changed = next_config.model != self._selected_model
         self._provider_name = next_config.provider
         self._current_config = next_config
@@ -1223,47 +1218,11 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         if type(selection) is str:
             self.switch_model(selection)
             return
-        if selection.provider == self._provider_name:
-            if selection.api_key != "" or self._current_config is not None:
-                api_keys = {}
-                if self._current_config is not None:
-                    api_keys.update(self._current_config.api_keys)
-                api_key = (
-                    selection.api_key
-                    if selection.api_key != ""
-                    else self._current_config.api_key
-                )
-                api_keys[selection.provider] = api_key
-                self.apply_user_config(
-                    AgentAppConfig(
-                        provider=selection.provider,
-                        api_key=api_key,
-                        model=selection.model,
-                        default_model=selection.default_model,
-                        skills=selection.skills,
-                        skill_selection_mode=selection.skill_selection_mode,
-                        enabled_skills=list(selection.enabled_skills),
-                        api_keys=api_keys,
-                        tool_permissions=selection.tool_permissions,
-                        tool_enabled=selection.tool_enabled,
-                        tool_max_calls=selection.tool_max_calls,
-                        compress_threshold=selection.compress_threshold,
-                        reasoning_level=selection.reasoning_level,
-                    )
-                )
-                self.notify_session(
-                    f"Updated provider credentials and switched model to {selection.model}"
-                )
-                return
+        same_provider = selection.provider == self._provider_name
+        if same_provider and selection.api_key == "" and self._current_config is None:
             self.switch_model(selection.model)
             return
-        api_key = selection.api_key
-        if api_key == "":
-            env_name = api_key_env(selection.provider)
-            if env_name in os.environ:
-                api_key = os.environ[env_name]
-        if api_key == "":
-            api_key = default_api_key_for_provider(selection.provider)
+        api_key = self._resolve_selection_api_key(selection, same_provider=same_provider)
         if api_key == "":
             self.append_event(
                 TUIEvent.session_notice(
@@ -1271,9 +1230,11 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 )
             )
             return
-        api_keys = {}
-        if self._current_config is not None:
-            api_keys.update(self._current_config.api_keys)
+        api_keys = (
+            dict(self._current_config.api_keys)
+            if self._current_config is not None
+            else {}
+        )
         api_keys[selection.provider] = api_key
         self.apply_user_config(
             AgentAppConfig(
@@ -1292,13 +1253,30 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 reasoning_level=selection.reasoning_level,
             )
         )
-        self.notify_session(
-            f"Switched provider to {selection.provider} and model to {selection.model}"
-        )
+        if same_provider:
+            self.notify_session(
+                f"Updated provider credentials and switched model to {selection.model}"
+            )
+        else:
+            self.notify_session(
+                f"Switched provider to {selection.provider} and model to {selection.model}"
+            )
+
+    def _resolve_selection_api_key(
+        self,
+        selection: ConfigSelection,
+        *,
+        same_provider: bool,
+    ) -> str:
+        if selection.api_key != "":
+            return selection.api_key
+        if same_provider and self._current_config is not None:
+            return self._current_config.api_key
+        return resolve_provider_api_key(selection.provider)
 
     def apply_user_config(self, config: AgentAppConfig) -> None:
-        self.apply_config(config)
-        save_config(config)
+        normalized = normalize_user_config(config, persist=True)
+        self.apply_config(normalized)
 
     def switch_model(self, model: str) -> None:
         if self._active_worker is not None and self._active_worker.is_running:
@@ -1338,8 +1316,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
                 compress_threshold=self._current_config.compress_threshold,
                 reasoning_level=next_level,
             )
-            save_config(next_config)
-            self._current_config = next_config
+            self._current_config = normalize_user_config(next_config, persist=True)
         self._selected_model = cast(OpenAIModel, model)
         self._reasoning_level = next_level
         if self._agent_app is not None:

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from typing import AsyncGenerator
 from urllib.error import URLError
@@ -10,7 +11,12 @@ from msgspec import Struct
 from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
-from aceai.agent.config import ReasoningLevel
+from aceai.agent.config import (
+    AgentAppConfig,
+    ReasoningLevel,
+    replace_config,
+    save_config,
+)
 from aceai.agent.features.delegation import (
     ChildAgentResult,
     build_child_agent_result,
@@ -20,7 +26,9 @@ from aceai.agent.features.delegation import (
 )
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
+from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.provider_catalog import (
+    api_key_env,
     context_window_for_model_any_provider,
     model_options,
     supported_models,
@@ -1080,6 +1088,32 @@ def model_options_text_for(provider_name: str) -> str:
 
 def is_model_supported(provider_name: str, model: str) -> bool:
     return model in supported_models(provider_name)
+
+
+def resolve_provider_api_key(provider_name: str) -> str:
+    """Resolve an API key for the provider from env var, then default auth file.
+
+    Returns "" if neither source has a key.
+    """
+
+    env_name = api_key_env(provider_name)
+    api_key = os.environ.get(env_name, "")
+    if api_key != "":
+        return api_key
+    return default_api_key_for_provider(provider_name)
+
+
+def normalize_user_config(
+    config: AgentAppConfig,
+    *,
+    persist: bool = False,
+) -> AgentAppConfig:
+    """Validate the config and optionally persist it to the project file."""
+
+    next_config = replace_config(config)
+    if persist:
+        save_config(next_config)
+    return next_config
 
 
 def context_window_for_model(model: str | None) -> int | None:
