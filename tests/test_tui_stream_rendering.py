@@ -175,13 +175,13 @@ def test_main_stream_renders_question_before_answer() -> None:
     assert isinstance(question, Table)
     assert question.expand
     assert isinstance(answer, Text)
-    question_renderable = question.columns[0]._cells[0]
+    question_renderable = question.columns[0]._cells[1]
     assert isinstance(question_renderable, Text)
     assert question_renderable.plain == "▌ How do I search?"
     assert answer.plain == "  Use rg."
 
 
-def test_user_messages_render_right_aligned() -> None:
+def test_user_messages_render_as_taller_prompt_bar() -> None:
     renderables = _render_events([TUIEvent.user_message("Where am I?")])
 
     message = renderables[0]
@@ -190,9 +190,11 @@ def test_user_messages_render_right_aligned() -> None:
     assert len(message.columns) == 1
     assert message.columns[0].ratio == 1
     assert message.columns[0].style == "bold #eceff4 on #3b4252"
-    text = message.columns[0]._cells[0]
+    assert message.columns[0]._cells[0].plain == "▌  "
+    text = message.columns[0]._cells[1]
     assert isinstance(text, Text)
     assert text.plain == "▌ Where am I?"
+    assert message.columns[0]._cells[2].plain == "▌  "
 
 
 def test_user_message_citations_render_as_separate_source_block() -> None:
@@ -225,7 +227,7 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
     assert "conversation:assistant" in source.renderable.renderables[0].plain
     assert source.renderable.renderables[1].plain == "The job is pending."
     assert isinstance(question, Table)
-    question_text = question.columns[0]._cells[0]
+    question_text = question.columns[0]._cells[1]
     assert isinstance(question_text, Text)
     assert question_text.plain == "▌ Explain it"
 
@@ -245,7 +247,7 @@ def test_user_messages_after_answers_get_turn_spacing() -> None:
     assert spacer.plain == ""
     question = renderables[2]
     assert isinstance(question, Table)
-    question_text = question.columns[0]._cells[0]
+    question_text = question.columns[0]._cells[1]
     assert isinstance(question_text, Text)
     assert question_text.plain == "▌ next question"
 
@@ -635,15 +637,17 @@ def test_completed_working_history_renders_between_question_and_answer() -> None
 
     renderables = _render_events(events, collapse_tool_activity=True)
 
-    assert len(renderables) == 3
+    assert len(renderables) == 4
     assert isinstance(renderables[0], Table)
-    question = renderables[0].columns[0]._cells[0]
+    question = renderables[0].columns[0]._cells[1]
     assert isinstance(question, Text)
     assert question.plain == "▌ what changed?"
     assert isinstance(renderables[1], Text)
-    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
-    assert renderables[2].plain == "  answer"
+    assert renderables[2].plain == "  ─ [+] work history · 1 tool call"
+    assert isinstance(renderables[3], Text)
+    assert renderables[3].plain == "  answer"
 
 
 def test_completed_working_history_stays_before_answer_when_tool_replays_late() -> None:
@@ -673,12 +677,14 @@ def test_completed_working_history_stays_before_answer_when_tool_replays_late() 
 
     renderables = _render_events(events, collapse_tool_activity=True)
 
-    assert len(renderables) == 3
+    assert len(renderables) == 4
     assert isinstance(renderables[0], Table)
     assert isinstance(renderables[1], Text)
-    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
-    assert renderables[2].plain == "  answer"
+    assert renderables[2].plain == "  ─ [+] work history · 1 tool call"
+    assert isinstance(renderables[3], Text)
+    assert renderables[3].plain == "  answer"
 
 
 def test_completed_working_history_stays_before_answer_when_next_question_flushes() -> None:
@@ -709,15 +715,17 @@ def test_completed_working_history_stays_before_answer_when_next_question_flushe
 
     renderables = _render_events(events, collapse_tool_activity=True)
 
-    assert len(renderables) == 5
+    assert len(renderables) == 6
     assert isinstance(renderables[0], Table)
     assert isinstance(renderables[1], Text)
-    assert renderables[1].plain == "  ─ [+] work history · 1 tool call"
+    assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
-    assert renderables[2].plain == "  answer"
+    assert renderables[2].plain == "  ─ [+] work history · 1 tool call"
     assert isinstance(renderables[3], Text)
-    assert renderables[3].plain == ""
-    assert isinstance(renderables[4], Table)
+    assert renderables[3].plain == "  answer"
+    assert isinstance(renderables[4], Text)
+    assert renderables[4].plain == ""
+    assert isinstance(renderables[5], Table)
 
 
 def test_completed_retry_does_not_split_or_render_working_history() -> None:
@@ -798,6 +806,7 @@ def test_completed_retry_does_not_split_or_render_working_history() -> None:
     texts = [renderable.plain for renderable in renderables if isinstance(renderable, Text)]
 
     assert texts == [
+        "",
         "  ─ [+] work history · 2 tool calls",
         "  answer",
     ]

@@ -3,6 +3,7 @@
 import argparse
 import importlib
 import os
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, Sequence
@@ -24,7 +25,6 @@ from aceai.llm.openai import OpenAIModel
 
 from aceai.agent.config import (
     AgentAppConfig,
-    default_config_path,
     load_config,
     replace_config,
 )
@@ -32,7 +32,6 @@ from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
 TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
-PLACEHOLDER_API_KEYS = frozenset(("test-key",))
 TUI_EXTRA_INSTALL_HINT = (
     "AceAI TUI dependencies are not installed.\n"
     "Install them with one of:\n"
@@ -120,7 +119,6 @@ def resolve_initial_config(
 ) -> AgentAppConfig | None:
     stored = load_config()
     if stored is not None:
-        stored = _replace_placeholder_api_key(stored)
         if model_from_env:
             selected_model = resolve_model(stored.provider, model)
             return replace_config(
@@ -137,6 +135,8 @@ def resolve_initial_config(
                     tool_enabled=stored.tool_enabled,
                     tool_max_calls=stored.tool_max_calls,
                     compress_threshold=stored.compress_threshold,
+                    reasoning_level=stored.reasoning_level,
+                    disabled_providers=stored.disabled_providers,
                 )
             )
         return stored
@@ -159,6 +159,7 @@ def resolve_initial_config(
                 tool_enabled={},
                 tool_max_calls={},
                 compress_threshold="100%",
+                disabled_providers=[],
             )
         )
     default_api_key = default_api_key_for_provider(provider)
@@ -180,52 +181,10 @@ def resolve_initial_config(
                 tool_enabled={},
                 tool_max_calls={},
                 compress_threshold="100%",
+                disabled_providers=[],
             )
         )
     return None
-
-
-def _replace_placeholder_api_key(config: AgentAppConfig) -> AgentAppConfig:
-    if config.api_key not in PLACEHOLDER_API_KEYS:
-        return config
-    replacement = _api_key_replacement_for_provider(config.provider)
-    if replacement == "":
-        return config
-    api_keys = dict(config.api_keys)
-    api_keys[config.provider] = replacement
-    return replace_config(
-        AgentAppConfig(
-            provider=config.provider,
-            api_key=replacement,
-            model=config.model,
-            default_model=config.default_model,
-            skills=config.skills,
-            skill_selection_mode=config.skill_selection_mode,
-            enabled_skills=config.enabled_skills,
-            api_keys=api_keys,
-            tool_permissions=config.tool_permissions,
-            tool_enabled=config.tool_enabled,
-            tool_max_calls=config.tool_max_calls,
-            compress_threshold=config.compress_threshold,
-            reasoning_level=config.reasoning_level,
-        )
-    )
-
-
-def _api_key_replacement_for_provider(provider: str) -> str:
-    env_name = api_key_env(provider)
-    if env_name in os.environ:
-        return os.environ[env_name]
-    global_config_path = default_config_path()
-    if not global_config_path.exists():
-        return ""
-    global_config = load_config(global_config_path)
-    if global_config is None:
-        return ""
-    candidate = global_config.api_keys.get(provider, "")
-    if candidate in PLACEHOLDER_API_KEYS:
-        return ""
-    return candidate
 
 
 def apply_session_state_to_initial_config(
@@ -239,6 +198,8 @@ def apply_session_state_to_initial_config(
         if config is None:
             return config
         provider = config.provider
+    if config is not None and provider in config.disabled_providers:
+        return config
     model = resolve_model(provider, state.selected_model)
     if config is not None and config.provider == provider:
         return replace_config(
@@ -255,6 +216,8 @@ def apply_session_state_to_initial_config(
                 tool_enabled=config.tool_enabled,
                 tool_max_calls=config.tool_max_calls,
                 compress_threshold=config.compress_threshold,
+                reasoning_level=config.reasoning_level,
+                disabled_providers=config.disabled_providers,
             )
         )
     if config is not None and provider in config.api_keys:
@@ -272,6 +235,8 @@ def apply_session_state_to_initial_config(
                 tool_enabled=config.tool_enabled,
                 tool_max_calls=config.tool_max_calls,
                 compress_threshold=config.compress_threshold,
+                reasoning_level=config.reasoning_level,
+                disabled_providers=config.disabled_providers,
             )
         )
     env_name = api_key_env(provider)
@@ -298,6 +263,8 @@ def apply_session_state_to_initial_config(
                 compress_threshold=config.compress_threshold
                 if config is not None
                 else "100%",
+                reasoning_level=config.reasoning_level if config is not None else "auto",
+                disabled_providers=config.disabled_providers if config is not None else [],
             )
         )
     default_api_key = default_api_key_for_provider(provider)
@@ -324,6 +291,8 @@ def apply_session_state_to_initial_config(
                 compress_threshold=config.compress_threshold
                 if config is not None
                 else "100%",
+                reasoning_level=config.reasoning_level if config is not None else "auto",
+                disabled_providers=config.disabled_providers if config is not None else [],
             )
         )
     return config
@@ -383,6 +352,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include every agent thread in aceai export output.",
     )
     parser.add_argument(
+        "--inline",
+        action="store_true",
+        help="Run the Textual app inline instead of switching to fullscreen.",
+    )
+    parser.add_argument(
+        "--inline-height",
+        type=int,
+        default=0,
+        help="Inline TUI viewport height. Defaults to terminal height.",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -404,6 +384,23 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     run_with_tui_extra(lambda: run_main(args))
 
+
+
+
+def _inline_viewport_height(inline: bool, inline_height: int) -> int | None:
+    if not inline:
+        return None
+    if inline_height > 0:
+        return inline_height
+    return shutil.get_terminal_size(fallback=(80, 25)).lines
+
+def _inline_size(inline: bool, inline_height: int) -> tuple[int, int] | None:
+    if not inline:
+        return None
+    terminal = shutil.get_terminal_size(fallback=(80, 25))
+    width = max(20, terminal.columns)
+    height = inline_height if inline_height > 0 else terminal.lines
+    return (width, max(12, height))
 
 def run_main(args: argparse.Namespace) -> None:
     command_parts = list(args.command)
@@ -474,6 +471,11 @@ def run_main(args: argparse.Namespace) -> None:
         initial_history=initial_history,
         session_recorder=recorder,
         session_id=session_id,
-    ).run()
+        inline_viewport_height=_inline_viewport_height(args.inline, args.inline_height),
+    ).run(
+        inline=args.inline,
+        inline_no_clear=args.inline,
+        size=_inline_size(args.inline, args.inline_height),
+    )
     if recorder is not None and recorder.saved:
         print(f"Session saved: {session_id}")

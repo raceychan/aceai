@@ -1,6 +1,7 @@
 """Provider setup screen for the AceAI TUI."""
 
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 from typing import Callable, Generic, TypeVar, cast
@@ -15,8 +16,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Key
+from textual.events import Click, Key
 from textual.geometry import Region
+from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
@@ -53,7 +55,7 @@ from aceai.core.skills import Skill, SkillLoader, SkillLoadingError, SkillRegist
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
 
-from aceai.agent.config import AgentAppConfig, ReasoningLevel
+from aceai.agent.config import AgentAppConfig, ConfigAuditEntry, ReasoningLevel
 from aceai.agent.config import save_config
 from aceai.agent.cost import format_usd
 from .session_display import session_display_title
@@ -315,6 +317,7 @@ class ConfigSelection(Record, kw_only=True):
     skills: str
     skill_selection_mode: str = "all"
     enabled_skills: tuple[str, ...] = ()
+    disabled_providers: tuple[str, ...] = ()
     tool_permissions: dict[str, ToolPermission] = field(
         default_factory=dict[str, ToolPermission]
     )
@@ -339,6 +342,91 @@ class ToolPermissionItem(Record, kw_only=True):
     enabled: bool = True
     max_calls_per_run: int | None = None
     tags: tuple[str, ...] = ()
+
+
+def _config_audit_controls(
+    entries: tuple[ConfigAuditEntry, ...],
+) -> tuple[Container | Static, ...]:
+    if not entries:
+        return (
+            Static(
+                "No config changes recorded",
+                id="config-audit-empty",
+                classes="config-audit-empty",
+            ),
+        )
+    return tuple(
+        _config_audit_entry_control(
+            entry,
+            index,
+        )
+        for index, entry in enumerate(entries)
+    )
+
+
+def _config_audit_entry_control(entry: ConfigAuditEntry, index: int) -> Container:
+    actor = entry.actor if entry.actor != "" else "unknown"
+    caller = entry.caller[0] if entry.caller else "unknown"
+    fields = ", ".join(entry.changed_fields) if entry.changed_fields else "-"
+    return Container(
+        Horizontal(
+            Static(entry.timestamp, classes="config-audit-time"),
+            Static(actor, classes="config-audit-actor"),
+            Static(f"pid {entry.pid}", classes="config-audit-pid"),
+            classes="config-audit-header",
+        ),
+        Static(f"target  {entry.target}", classes="config-audit-meta"),
+        Static(f"cwd     {entry.cwd}", classes="config-audit-meta"),
+        Static(f"caller  {caller}", classes="config-audit-meta"),
+        Static(f"changed {fields}", classes="config-audit-fields"),
+        Container(
+            *_config_audit_change_controls(entry, index),
+            classes="config-audit-changes",
+        ),
+        id=f"config-audit-entry-{index}",
+        classes="config-audit-entry",
+    )
+
+
+def _config_audit_change_controls(
+    entry: ConfigAuditEntry,
+    entry_index: int,
+) -> tuple[Horizontal, ...]:
+    return tuple(
+        Horizontal(
+            Static(changed_field, classes="config-audit-change-field"),
+            Static(
+                _config_audit_before_value(entry, changed_field),
+                classes="config-audit-change-before",
+            ),
+            Static("->", classes="config-audit-change-arrow"),
+            Static(
+                _audit_value(entry.after[changed_field]),
+                classes="config-audit-change-after",
+            ),
+            id=f"config-audit-change-{entry_index}-{field_index}",
+            classes="config-audit-change-row",
+        )
+        for field_index, changed_field in enumerate(entry.changed_fields)
+    )
+
+
+def _config_audit_before_value(entry: ConfigAuditEntry, changed_field: str) -> str:
+    if entry.before is None:
+        return "<created>"
+    return _audit_value(entry.before[changed_field])
+
+
+def _audit_value(value: object) -> str:
+    if type(value) is str:
+        text = value
+    elif type(value) is list or type(value) is dict:
+        text = json.dumps(value, sort_keys=True)
+    else:
+        text = repr(value)
+    if len(text) > 120:
+        return f"{text[:117]}..."
+    return text
 
 
 def _tool_tag_order(items: tuple[ToolPermissionItem, ...]) -> tuple[str, ...]:
@@ -370,12 +458,26 @@ def _candidate_text(candidates: tuple[str, ...], highlighted: int) -> Text:
     return text
 
 
-def _matching_candidates(candidates: tuple[str, ...], value: str) -> tuple[str, ...]:
+def _matching_candidates(
+    candidates: tuple[str, ...],
+    value: str,
+    *,
+    show_when_empty: bool = False,
+) -> tuple[str, ...]:
     if value == "":
+        if show_when_empty:
+            return candidates
         return ()
     if value in candidates:
         return ()
     return tuple(candidate for candidate in candidates if candidate.startswith(value))
+
+
+def _provider_candidates_for(
+    candidates: tuple[str, ...],
+    value: str,
+) -> tuple[str, ...]:
+    return _matching_candidates(candidates, value, show_when_empty=True)
 
 
 def _highlight_for_value(candidates: tuple[str, ...], value: str) -> int:
@@ -727,7 +829,7 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
             )
             yield Static(
                 _candidate_text(
-                    _matching_candidates(supported_provider_names(), "openai"),
+                    _provider_candidates_for(supported_provider_names(), "openai"),
                     self._provider_highlight,
                 ),
                 id="provider-options",
@@ -803,7 +905,7 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
             self._refresh_provider_candidates()
             if (
                 event.value in supported_provider_names()
-                and event.value != self._provider_name
+                and event.value != self._provider
             ):
                 self._select_provider(event.value)
             return
@@ -897,6 +999,7 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
         return _matching_candidates(
             supported_provider_names(),
             self.query_one("#provider", Input).value,
+            show_when_empty=True,
         )
 
     def _model_candidates(self) -> tuple[str, ...]:
@@ -940,6 +1043,11 @@ class ProviderSetupScreen(ModalScreen[AgentAppConfig]):
 class ConfigScreen(Screen[ConfigSelection | None]):
     """Collect runtime app configuration changes for future TUI runs."""
 
+    class PersistRequested(Message):
+        def __init__(self, selection: ConfigSelection) -> None:
+            super().__init__()
+            self.selection = selection
+
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", priority=True),
     ]
@@ -963,7 +1071,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         height: 1fr;
     }
 
-    #config-scroll, #tool-permissions-scroll {
+    #config-scroll, #tool-permissions-scroll, #config-audit-scroll {
         width: 100%;
         height: 1fr;
     }
@@ -982,6 +1090,92 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     }
 
     #api-key-row.hidden {
+        display: none;
+    }
+
+    #provider-options {
+        height: auto;
+        margin-bottom: 1;
+        padding: 0 0;
+        background: #303746;
+        border: round #5e6b80;
+    }
+
+    #provider-options.hidden {
+        display: none;
+    }
+
+    .provider-candidate-row {
+        height: 2;
+        min-height: 2;
+        margin-bottom: 0;
+        padding: 0 1;
+        background: transparent;
+        border: none;
+        align: center middle;
+    }
+
+    .provider-candidate-row.hidden {
+        display: none;
+    }
+
+    .provider-candidate-row.highlighted {
+        background: #343d4c;
+        color: #eceff4;
+    }
+
+    .provider-candidate-name {
+        width: 1fr;
+        content-align: left middle;
+        color: #e5e9f0;
+        text-style: bold;
+    }
+
+    .provider-remove {
+        width: 3;
+        height: 1;
+        min-width: 3;
+        content-align: center middle;
+        background: transparent;
+        color: #d08770;
+        text-style: bold;
+    }
+
+    .provider-remove:focus {
+        background: transparent;
+    }
+
+    #provider-disabled-list {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #provider-disabled-list.hidden {
+        display: none;
+    }
+
+    .provider-disabled-chip {
+        width: 20;
+        height: 3;
+        margin-bottom: 1;
+        padding: 0 1;
+        background: #2f3542;
+        border: round #5e6b80;
+        content-align: left middle;
+        color: #a7b1c2;
+    }
+
+    .provider-disabled-chip.hidden {
+        display: none;
+    }
+
+    #provider-disabled-empty {
+        height: 1;
+        color: #8f98a8;
+        text-style: dim;
+    }
+
+    #provider-disabled-empty.hidden {
         display: none;
     }
 
@@ -1055,6 +1249,101 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     #tool-permissions-list {
         height: auto;
+    }
+
+    #config-audit-list {
+        height: auto;
+    }
+
+    .config-audit-entry {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+        padding: 1 1;
+        background: #303746;
+        border: round #5e6b80;
+    }
+
+    .config-audit-header {
+        width: 100%;
+        height: 1;
+        margin-bottom: 1;
+        align: center middle;
+    }
+
+    .config-audit-time {
+        width: 1fr;
+        color: #eceff4;
+        text-style: bold;
+    }
+
+    .config-audit-actor {
+        width: 18;
+        color: #88c0d0;
+        content-align: right middle;
+    }
+
+    .config-audit-pid {
+        width: 10;
+        color: #a7b1c2;
+        content-align: right middle;
+    }
+
+    .config-audit-meta {
+        height: auto;
+        color: #a7b1c2;
+        margin-bottom: 0;
+    }
+
+    .config-audit-fields {
+        height: auto;
+        margin-top: 1;
+        margin-bottom: 1;
+        color: #ebcb8b;
+        text-style: bold;
+    }
+
+    .config-audit-changes {
+        height: auto;
+        background: #2f3542;
+        border: round #4c566a;
+    }
+
+    .config-audit-change-row {
+        width: 100%;
+        height: auto;
+        min-height: 2;
+        padding: 0 1;
+        align: center middle;
+    }
+
+    .config-audit-change-field {
+        width: 24;
+        color: #eceff4;
+        text-style: bold;
+    }
+
+    .config-audit-change-before {
+        width: 1fr;
+        color: #d08770;
+    }
+
+    .config-audit-change-arrow {
+        width: 4;
+        color: #8f98a8;
+        content-align: center middle;
+    }
+
+    .config-audit-change-after {
+        width: 1fr;
+        color: #a3be8c;
+    }
+
+    .config-audit-empty {
+        height: 3;
+        color: #8f98a8;
+        text-style: dim;
+        content-align: left middle;
     }
 
     .tool-permission-table {
@@ -1291,7 +1580,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         color: #a7b1c2;
     }
 
-    #config-actions {
+    .config-actions {
         height: auto;
         margin-top: 1;
     }
@@ -1309,8 +1598,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         skill_selection_mode: str = "all",
         enabled_skills: tuple[str, ...] = (),
         tool_permission_items: tuple[ToolPermissionItem, ...] = (),
+        audit_entries: tuple[ConfigAuditEntry, ...] = (),
         compress_threshold: CompressThreshold = "100%",
         reasoning_level: ReasoningLevel = "auto",
+        disabled_providers: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self._provider_name = provider_name
@@ -1344,12 +1635,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             for item in tool_permission_items
             if item.max_calls_per_run is not None
         }
+        self._audit_entries = audit_entries
         self._compress_threshold = compress_threshold
         self._reasoning_level = reasoning_level
+        self._disabled_providers = disabled_providers
+        self._provider_enabled = {
+            provider: provider not in disabled_providers
+            for provider in supported_provider_names()
+        }
         self._sync_tool_order()
         self._api_keys = api_keys
         self._provider_highlight = _highlight_for_value(
-            supported_provider_names(),
+            self._selectable_provider_names(),
             self._provider_name,
         )
         self._model_highlight = _highlight_for_value(
@@ -1369,15 +1666,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             placeholder="Provider",
                             id="provider",
                         )
-                        yield Static(
-                            _candidate_text(
-                                _matching_candidates(
-                                    supported_provider_names(), self._provider_name
-                                ),
-                                self._provider_highlight,
-                            ),
+                        with Container(
                             id="provider-options",
-                        )
+                            classes=self._provider_options_classes(
+                                self._provider_name
+                            ),
+                        ):
+                            yield from self._provider_candidate_controls()
+                        with Container(
+                            id="provider-disabled-list",
+                            classes=self._provider_disabled_list_classes(),
+                        ):
+                            yield from self._provider_disabled_controls()
                         yield Label(_field_label("model"))
                         yield Input(
                             value=self._current_model,
@@ -1420,11 +1720,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                                 placeholder=api_key_placeholder(self._provider_name),
                                 id="api-key",
                             )
-                        yield Static(
-                            "",
-                            classes="config-divider",
-                            id="config-compression-divider",
-                        )
+                        yield Static("", classes="config-divider")
                         yield Label(_field_label("compress_threshold"))
                         yield Input(
                             value=_compress_threshold_input_value(
@@ -1434,6 +1730,9 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                             id="compress-threshold",
                         )
                         yield Static("", id="config-error")
+                        with Horizontal(classes="config-actions", id="config-actions"):
+                            yield Button("Apply", variant="primary", id="apply")
+                            yield Button("Cancel", id="cancel")
                 with TabPane("Tools", id="tool-permissions-tab"):
                     with VerticalScroll(id="tool-permissions-scroll"):
                         yield Label(_skills_field_label())
@@ -1460,9 +1759,16 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                         )
                         with Container(id="tool-permissions-list"):
                             yield from self._tool_permission_controls()
-            with Horizontal(id="config-actions"):
-                yield Button("Apply", variant="primary", id="apply")
-                yield Button("Cancel", id="cancel")
+                        with Horizontal(
+                            classes="config-actions",
+                            id="tool-config-actions",
+                        ):
+                            yield Button("Apply", variant="primary", id="apply-tools")
+                            yield Button("Cancel", id="cancel-tools")
+                with TabPane("Audit", id="config-audit-tab"):
+                    with VerticalScroll(id="config-audit-scroll"):
+                        with Container(id="config-audit-list"):
+                            yield from _config_audit_controls(self._audit_entries)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1472,7 +1778,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self._provider_highlight = 0
             self._refresh_provider_candidates()
             if (
-                event.value in supported_provider_names()
+                event.value in self._selectable_provider_names()
                 and event.value != self._provider_name
             ):
                 self._select_provider(event.value)
@@ -1569,8 +1875,132 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     def _provider_candidates(self) -> tuple[str, ...]:
         return _matching_candidates(
-            supported_provider_names(),
+            self._selectable_provider_names(),
             self.query_one("#provider", Input).value,
+            show_when_empty=True,
+        )
+
+    def _selectable_provider_names(self) -> tuple[str, ...]:
+        return tuple(
+            provider
+            for provider in supported_provider_names()
+            if provider not in self._disabled_providers
+        )
+
+    def _provider_candidate_controls(self) -> tuple[Horizontal, ...]:
+        self._provider_disable_names = {
+            f"provider-disable-{index}": provider
+            for index, provider in enumerate(supported_provider_names())
+        }
+        return tuple(
+            Horizontal(
+                Static(
+                    provider,
+                    id=f"provider-candidate-name-{index}",
+                    classes="provider-candidate-name",
+                ),
+                Static(
+                    "x",
+                    id=f"provider-disable-{index}",
+                    classes="provider-remove",
+                ),
+                classes=self._provider_candidate_row_classes(
+                    provider,
+                    input_value=self._provider_name,
+                ),
+                id=f"provider-candidate-row-{index}",
+            )
+            for index, provider in enumerate(supported_provider_names())
+        )
+
+    def _provider_disabled_controls(self) -> tuple[Static, ...]:
+        self._provider_enable_names = {
+            f"provider-disabled-chip-{index}": provider
+            for index, provider in enumerate(supported_provider_names())
+        }
+        controls: list[Static] = [
+            Static(
+                "",
+                id="provider-disabled-empty",
+                classes=self._provider_disabled_empty_classes(),
+            )
+        ]
+        controls.extend(
+            Static(
+                f"{provider}  +",
+                classes=self._provider_disabled_chip_classes(provider),
+                id=f"provider-disabled-chip-{index}",
+            )
+            for index, provider in enumerate(supported_provider_names())
+        )
+        return tuple(controls)
+
+    def _sync_provider_settings_from_controls(self) -> None:
+        self._disabled_providers = tuple(
+            provider
+            for provider in supported_provider_names()
+            if not self._provider_enabled[provider]
+        )
+
+    def _provider_candidate_row_classes(
+        self,
+        provider: str,
+        *,
+        input_value: str | None = None,
+    ) -> str:
+        if input_value is None:
+            input_value = self.query_one("#provider", Input).value
+        candidates = _matching_candidates(
+            self._selectable_provider_names(),
+            input_value,
+            show_when_empty=True,
+        )
+        if provider not in candidates:
+            return "provider-candidate-row hidden"
+        if candidates.index(provider) == self._provider_highlight:
+            return "provider-candidate-row highlighted"
+        return "provider-candidate-row"
+
+    def _provider_disabled_chip_classes(self, provider: str) -> str:
+        if self._provider_enabled[provider]:
+            return "provider-disabled-chip hidden"
+        return "provider-disabled-chip"
+
+    def _provider_disabled_empty_classes(self) -> str:
+        if self._disabled_providers:
+            return "hidden"
+        return ""
+
+    def _provider_options_classes(self, input_value: str) -> str:
+        if _matching_candidates(
+            self._selectable_provider_names(),
+            input_value,
+            show_when_empty=True,
+        ):
+            return ""
+        return "hidden"
+
+    def _provider_disabled_list_classes(self) -> str:
+        if self._disabled_providers:
+            return ""
+        return "hidden"
+
+    def _refresh_provider_controls(self) -> None:
+        provider_options = self.query_one("#provider-options")
+        provider_options.set_classes(
+            self._provider_options_classes(self.query_one("#provider", Input).value)
+        )
+        disabled_list = self.query_one("#provider-disabled-list")
+        disabled_list.set_classes(self._provider_disabled_list_classes())
+        for index, provider in enumerate(supported_provider_names()):
+            candidate_row = self.query_one(f"#provider-candidate-row-{index}")
+            candidate_row.set_classes(
+                self._provider_candidate_row_classes(provider)
+            )
+            disabled_chip = self.query_one(f"#provider-disabled-chip-{index}")
+            disabled_chip.set_classes(self._provider_disabled_chip_classes(provider))
+        self.query_one("#provider-disabled-empty").set_classes(
+            self._provider_disabled_empty_classes()
         )
 
     def _model_candidates(self) -> tuple[str, ...]:
@@ -1580,9 +2010,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         )
 
     def _refresh_provider_candidates(self) -> None:
-        self.query_one("#provider-options", Static).update(
-            _candidate_text(self._provider_candidates(), self._provider_highlight)
-        )
+        self._refresh_provider_controls()
 
     def _refresh_model_candidates(self) -> None:
         self.query_one("#model-options", Static).update(
@@ -1604,8 +2032,61 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             return os.environ[env_name]
         return default_api_key_for_provider(provider)
 
+    def _disable_provider(self, provider: str) -> None:
+        self._provider_enabled[provider] = False
+        self._sync_provider_settings_from_controls()
+        if self._provider_name == provider:
+            self._provider_name = ""
+            replacement = self._first_selectable_provider_with_credentials()
+            if replacement is not None:
+                self.query_one("#provider", Input).value = replacement
+                self._select_provider(replacement)
+            else:
+                self.query_one("#provider", Input).value = ""
+        elif self.query_one("#provider", Input).value == provider:
+            self.query_one("#provider", Input).value = ""
+        self._provider_highlight = 0
+        self._refresh_provider_controls()
+
+    def _first_selectable_provider_with_credentials(self) -> str | None:
+        selectable = self._selectable_provider_names()
+        for provider in selectable:
+            if self._api_key_for_provider(provider) != "":
+                return provider
+        if selectable:
+            return selectable[0]
+        return None
+
+    def _enable_provider(self, provider: str) -> None:
+        self._provider_enabled[provider] = True
+        self._sync_provider_settings_from_controls()
+        self._provider_highlight = 0
+        self._refresh_provider_controls()
+
+    def on_click(self, event: Click) -> None:
+        control = event.control
+        if control is None or control.id is None:
+            return
+        if control.id.startswith("provider-disable-"):
+            event.stop()
+            self._disable_provider(self._provider_disable_names[control.id])
+            self._request_persist_current_selection()
+            return
+        if control.id.startswith("provider-candidate-row-"):
+            index = int(control.id.removeprefix("provider-candidate-row-"))
+            provider = supported_provider_names()[index]
+            if event.x >= control.size.width - 8:
+                event.stop()
+                self._disable_provider(provider)
+                self._request_persist_current_selection()
+            return
+        if control.id.startswith("provider-disabled-chip-"):
+            event.stop()
+            self._enable_provider(self._provider_enable_names[control.id])
+            return
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
+        if event.button.id in ("cancel", "cancel-tools"):
             self.dismiss(None)
             return
         if event.button.id == "search-skills":
@@ -1624,16 +2105,29 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             index = int(event.button.id.removeprefix("load-skill-"))
             self._load_candidate_skill(index)
             return
-        if event.button.id != "apply":
+        if event.button.id not in ("apply", "apply-tools"):
             return
+        selection = self._selection_from_controls()
+        if selection is None:
+            return
+        self.dismiss(selection)
+
+    def _request_persist_current_selection(self) -> None:
+        selection = self._selection_from_controls()
+        if selection is None:
+            return
+        self.post_message(self.PersistRequested(selection))
+
+    def _selection_from_controls(self) -> ConfigSelection | None:
         provider = self.query_one("#provider", Input).value
         model = self.query_one("#model", Input).value
         reasoning_level = self._selected_reasoning_level(provider, model)
+        self._sync_provider_settings_from_controls()
         self._skills = ACE_AGENT_SKILL_PATH
         enabled_skills = self._selected_skill_names()
         stored_api_key = (
             self._api_key_for_provider(provider)
-            if provider in supported_provider_names()
+            if provider in self._selectable_provider_names()
             else ""
         )
         api_key = _api_key_value_from_input(
@@ -1648,10 +2142,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             api_key,
             self._skills,
             reasoning_level,
+            self._disabled_providers,
         )
         if error is not None:
             self.query_one("#config-error", Static).update(error)
-            return
+            return None
         try:
             self._sync_tool_settings_from_controls()
             compress_threshold = _compress_threshold_from_input(
@@ -1659,22 +2154,21 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             )
         except ValueError as exc:
             self.query_one("#config-error", Static).update(str(exc))
-            return
-        self.dismiss(
-            ConfigSelection(
-                provider=provider,
-                model=cast(OpenAIModel, model),
-                default_model=cast(OpenAIModel, model),
-                api_key=api_key,
-                skills=self._skills,
-                skill_selection_mode="selected",
-                enabled_skills=enabled_skills,
-                tool_permissions=dict(self._tool_permissions),
-                tool_enabled=dict(self._tool_enabled),
-                tool_max_calls=dict(self._tool_max_calls),
-                compress_threshold=compress_threshold,
-                reasoning_level=reasoning_level,
-            )
+            return None
+        return ConfigSelection(
+            provider=provider,
+            model=cast(OpenAIModel, model),
+            default_model=cast(OpenAIModel, model),
+            api_key=api_key,
+            skills=self._skills,
+            skill_selection_mode="selected",
+            enabled_skills=enabled_skills,
+            disabled_providers=self._disabled_providers,
+            tool_permissions=dict(self._tool_permissions),
+            tool_enabled=dict(self._tool_enabled),
+            tool_max_calls=dict(self._tool_max_calls),
+            compress_threshold=compress_threshold,
+            reasoning_level=reasoning_level,
         )
 
     def _selected_reasoning_level(
@@ -2143,6 +2637,7 @@ def _config_selection_error(
     api_key: str,
     skills: str,
     reasoning_level: ReasoningLevel,
+    disabled_providers: tuple[str, ...] = (),
 ) -> str | None:
     if provider == "":
         return "Provider is required"
@@ -2154,6 +2649,8 @@ def _config_selection_error(
         return "Skills is required"
     if provider not in supported_provider_names():
         return "Unsupported provider"
+    if provider in disabled_providers:
+        return "Provider is disabled"
     if model not in supported_models(provider):
         return "Unsupported model"
     if reasoning_level != "auto" and reasoning_level not in reasoning_effort_options(
@@ -2202,6 +2699,7 @@ class SessionSelectScreen(ModalScreen[str | None]):
         Binding("down", "cursor_down", "Down", priority=True),
         Binding("j", "cursor_down", "Down"),
         Binding("enter", "resume_session", "Resume"),
+        Binding("a", "create_session", "New"),
         Binding("d", "confirm_delete_session", "Delete", priority=True),
     ]
 
@@ -2267,7 +2765,7 @@ class SessionSelectScreen(ModalScreen[str | None]):
                     id="session-list",
                 )
             yield Static(
-                f"Enter resumes the highlighted session. Press d to delete. "
+                f"Enter resumes the highlighted session. Press a to create, d to delete. "
                 f"Total cost: {format_usd(self._store.total_cost_usd())}.",
                 id="session-status",
             )
@@ -2290,6 +2788,10 @@ class SessionSelectScreen(ModalScreen[str | None]):
             self.query_one("#session-status", Static).update("Select a session row.")
             return
         self.dismiss(session_id)
+
+    def action_create_session(self) -> None:
+        metadata = self._store.create_session()
+        self.dismiss(metadata.session_id)
 
     def action_confirm_delete_session(self) -> None:
         session_id = self._selected_session_id()

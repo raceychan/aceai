@@ -18,10 +18,18 @@ from aceai.agent.provider_catalog import (
 def test_provider_catalog_loads_supported_providers_and_models() -> None:
     catalog = load_provider_catalog()
 
-    assert supported_provider_names() == ("openai", "deepseek", "codex")
+    assert supported_provider_names() == (
+        "openai",
+        "deepseek",
+        "anthropic",
+        "anthropic-oauth",
+        "codex",
+    )
     assert provider_options() == (
         ("OpenAI", "openai"),
         ("DeepSeek", "deepseek"),
+        ("Anthropic", "anthropic"),
+        ("Anthropic (OAuth)", "anthropic-oauth"),
         ("Codex (subscription)", "codex"),
     )
     assert catalog.pricing_source == "provider-api-pricing-2026-05-04"
@@ -54,6 +62,21 @@ def test_provider_catalog_loads_deepseek_models_and_pricing() -> None:
     assert price.output_usd_per_million == 0.87
 
 
+def test_provider_catalog_loads_anthropic_models_and_pricing() -> None:
+    price = price_for_model("anthropic", "claude-sonnet-4-20250514")
+
+    assert default_model("anthropic") == "claude-sonnet-4-20250514"
+    assert default_model("anthropic-oauth") == "claude-sonnet-4-20250514"
+    assert model_options("anthropic")[0] == (
+        "Claude Opus 4.1",
+        "claude-opus-4-1-20250805",
+    )
+    assert price is not None
+    assert price.input_usd_per_million == 3.0
+    assert price.cached_input_usd_per_million == 0.3
+    assert price.output_usd_per_million == 15.0
+
+
 def test_provider_catalog_matches_versioned_model_suffixes() -> None:
     price = price_for_model("openai", "gpt-5.5-2026-05-04")
 
@@ -71,6 +94,11 @@ def test_context_window_exact_match() -> None:
     assert context_window_for_model("deepseek", "deepseek-v4-pro") == 1000000
     assert context_window_for_model("deepseek", "deepseek-v4-flash") == 1000000
     assert context_window_for_model("deepseek", "deepseek-chat") == 1000000
+    assert context_window_for_model("anthropic", "claude-sonnet-4-20250514") == 200000
+    assert (
+        context_window_for_model("anthropic-oauth", "claude-sonnet-4-20250514")
+        == 200000
+    )
 
 
 def test_context_window_versioned_model_suffix() -> None:

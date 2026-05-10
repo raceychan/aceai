@@ -110,7 +110,8 @@ class StreamWidget(RichLog):
         super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
         self._project_name = project_name
-        self._project_root_path = project_root_path
+        self._project_root_path = ""
+        self._git_branch_name: str | None = None
         self._debug_mode = False
         self._selected_debug_index = 0
         self._empty_state_frame_index = 0
@@ -118,6 +119,7 @@ class StreamWidget(RichLog):
         self._debug_line_spans: list[_DebugLineSpan] = []
         self._expanded_tool_activity_ids: set[str] = set()
         self._tool_activity_line_spans: list[_ToolActivityLineSpan] = []
+        self.set_project_root_path(project_root_path)
 
     @property
     def debug_mode(self) -> bool:
@@ -127,7 +129,10 @@ class StreamWidget(RichLog):
         self._project_name = project_name
 
     def set_project_root_path(self, project_root_path: str) -> None:
+        if project_root_path == self._project_root_path:
+            return
         self._project_root_path = project_root_path
+        self._git_branch_name = _git_branch_name(project_root_path)
 
     def set_debug_mode(self, enabled: bool) -> str | None:
         self._debug_mode = enabled
@@ -321,7 +326,7 @@ class StreamWidget(RichLog):
             style="bold #d8dee9",
             width=width,
         )
-        branch_name = _git_branch_name(self._project_root_path)
+        branch_name = self._git_branch_name
         branch = (
             _center_empty_state_text(
                 f"Git: {branch_name}",
@@ -882,6 +887,8 @@ def _flush_tool_activity(
         pending_tool_activity is not None
         and _working_history_tool_blocks(pending_tool_activity)
     ):
+        if _last_renderable_is_prompt_bar(renderables):
+            renderables.append(_StreamRenderable(renderable=Text("")))
         renderables.extend(
             _render_tool_activity_entries(
                 pending_tool_activity,
@@ -889,6 +896,18 @@ def _flush_tool_activity(
             )
         )
     return None
+
+
+def _last_renderable_is_prompt_bar(renderables: list[_StreamRenderable]) -> bool:
+    if not renderables:
+        return False
+    renderable = renderables[-1].renderable
+    if not isinstance(renderable, Table):
+        return False
+    return (
+        len(renderable.columns) == 1
+        and renderable.columns[0].style == PROMPT_BAR_STYLE
+    )
 
 
 def _tool_block_belongs_to_activity(tool_block: _ToolBlockState) -> bool:
@@ -1353,15 +1372,26 @@ def _render_user_message(
     event_kind: TUIEventKind,
     citations: tuple[TurnCitation, ...],
 ) -> RenderableType:
+    del label
+    del event_kind
     row = Table.grid(expand=True)
     row.add_column(ratio=1, style=PROMPT_BAR_STYLE)
+    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
     text = Text()
     text.append("▌ ", style=PROMPT_MARK_STYLE)
     text.append(content, style=PROMPT_BAR_STYLE)
     row.add_row(text, style=PROMPT_BAR_STYLE)
+    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
     if not citations:
         return row
     return Group(_render_cited_sources(citations), row)
+
+
+def _render_prompt_padding_line() -> Text:
+    text = Text()
+    text.append("▌ ", style=PROMPT_MARK_STYLE)
+    text.append(" ", style=PROMPT_BAR_STYLE)
+    return text
 
 
 def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:

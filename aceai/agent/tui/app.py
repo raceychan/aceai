@@ -4,7 +4,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Container, Horizontal
 from textual.events import Key
 from textual.timer import Timer
 from textual.widgets import TextArea
@@ -49,6 +49,7 @@ from .widgets import (
     CitationPreviewWidget,
     DetailWidget,
     QueuedTurnsWidget,
+    ReferenceCompletionWidget,
     StatusBarWidget,
     StreamWidget,
     SubagentThreadOption,
@@ -70,8 +71,17 @@ class AceAITUI(App[None]):
         color: #e5e9f0;
     }
 
+    #inline-root {
+        height: auto;
+    }
+
+    #inline-root.inline {
+        height: 40;
+    }
+
     #main {
         height: 1fr;
+        min-height: 10;
     }
 
     #stream {
@@ -104,6 +114,7 @@ class AceAITUI(App[None]):
         idea_store: IdeaStore | None = None,
         project: ProjectMetadata | None = None,
         record_events: bool = True,
+        inline_viewport_height: int | None = None,
     ) -> None:
         super().__init__()
         self._events = list(events or [])
@@ -119,34 +130,51 @@ class AceAITUI(App[None]):
         )
         self._idea_store = idea_store or IdeaStore()
         self._record_events = record_events
+        self._inline_viewport_height = inline_viewport_height
         self._pending_stream_delta_chars = 0
         self._pending_stream_delta: TUIEvent | None = None
         self._pending_stream_delta_timer: Timer | None = None
         self._command_completion_selected_index = 0
         self._subagent_panel_visible = False
+        self._subagent_thread_options_cache_session_id: str | None = None
+        self._subagent_thread_options_cache: list[SubagentThreadOption] = []
+        self._subagent_thread_options_dirty = True
         self._active_thread_id = MAIN_THREAD_ID
         self.title = self._window_title()
 
     def compose(self) -> ComposeResult:
-        yield TopBarWidget(id="topbar")
-        with Horizontal(id="main"):
-            yield StreamWidget(
-                id="stream",
-                project_name=self._project.name,
-                project_root_path=self._project.root_path,
-            )
-            yield SubagentStatusWidget(id="subagents", classes="hidden")
-            yield DetailWidget(id="detail", classes="collapsed")
-        yield ApprovalWidget(id="approval", classes="collapsed")
-        yield StatusBarWidget(id="status")
-        yield CommandCompletionWidget(id="command-completions", classes="hidden")
-        yield QueuedTurnsWidget(id="queued-turns", classes="hidden")
-        yield CitationPreviewWidget(id="citation-preview", classes="hidden")
-        yield CommandInput(id="input")
+        with Container(
+            id="inline-root",
+            classes="inline" if self._inline_viewport_height is not None else "",
+        ):
+            yield TopBarWidget(id="topbar")
+            with Horizontal(id="main"):
+                yield StreamWidget(
+                    id="stream",
+                    project_name=self._project.name,
+                    project_root_path=self._project.root_path,
+                )
+                yield SubagentStatusWidget(id="subagents", classes="hidden")
+                yield DetailWidget(id="detail", classes="collapsed")
+            yield ApprovalWidget(id="approval", classes="collapsed")
+            yield StatusBarWidget(id="status")
+            yield CommandCompletionWidget(id="command-completions", classes="hidden")
+            yield ReferenceCompletionWidget(id="reference-completions", classes="hidden")
+            yield QueuedTurnsWidget(id="queued-turns", classes="hidden")
+            yield CitationPreviewWidget(id="citation-preview", classes="hidden")
+            yield CommandInput(id="input")
 
     def on_mount(self) -> None:
+        self._apply_inline_viewport_height()
         self.load_events(self._events)
         self.query_one(StreamWidget).focus()
+
+    def _apply_inline_viewport_height(self) -> None:
+        if self._inline_viewport_height is None:
+            return
+        height = max(18, self._inline_viewport_height)
+        self.query_one("#inline-root").styles.height = height
+        self.query_one("#main").styles.height = max(10, height - 7)
 
     def on_key(self, event: Key) -> None:
         if event.key == "escape" and self.cancel_active_run():
@@ -168,6 +196,7 @@ class AceAITUI(App[None]):
         self._subagent_panel_visible = _initial_subagent_panel_visible(
             self._state.subagents
         )
+        self._invalidate_subagent_thread_options()
         self._refresh_widgets()
 
     def show_sessions(self) -> None:
@@ -249,6 +278,7 @@ class AceAITUI(App[None]):
         metadata = store.create_session()
         self._session_recorder = SessionRecorder(store, metadata.session_id)
         self._session_id = metadata.session_id
+        self._invalidate_subagent_thread_options()
         self.title = self._window_title()
         if self.is_mounted:
             self.query_one(TopBarWidget).set_title(self.title)
@@ -267,6 +297,8 @@ class AceAITUI(App[None]):
 
     def _append_event_to_state(self, event: TUIEvent) -> None:
         self._state = apply_tui_event(self._state, event)
+        if _event_can_change_subagent_thread_options(event):
+            self._invalidate_subagent_thread_options()
         self._sync_subagent_panel_visibility(event)
         if self._record_events and self._session_recorder is not None:
             self._session_recorder.record(tui_event_to_session_event(event))
@@ -482,7 +514,7 @@ class AceAITUI(App[None]):
             self.action_hide_subagents()
             return
         if not self._state.subagents:
-            if len(self._subagent_thread_options()) <= 1:
+            if len(self._subagent_thread_options(refresh=True)) <= 1:
                 self.notify_session("No subagent details in this session.")
                 return
         self._subagent_panel_visible = True
@@ -610,7 +642,7 @@ class AceAITUI(App[None]):
             thread_options=thread_options,
             active_thread_id=self._active_thread_id,
         )
-        self._sync_side_layout()
+        self._sync_side_layout(thread_options)
         self.query_one(StatusBarWidget).set_status(
             model=self._status_model,
             reasoning_level=self._status_reasoning_level,
@@ -623,11 +655,11 @@ class AceAITUI(App[None]):
         else:
             command_input.placeholder = "Ask AceAI or type /quit"
 
-    def _sync_side_layout(self) -> None:
+    def _sync_side_layout(self, thread_options: list[SubagentThreadOption]) -> None:
         stream = self.query_one(StreamWidget)
         detail = self.query_one(DetailWidget)
         has_subagents = self._subagent_panel_visible and (
-            len(self._state.subagents) > 0 or len(self._subagent_thread_options()) > 1
+            len(self._state.subagents) > 0 or len(thread_options) > 1
         )
         if has_subagents:
             if stream.debug_mode:
@@ -667,12 +699,25 @@ class AceAITUI(App[None]):
     def _focus_message_panel(self) -> None:
         self.query_one(StreamWidget).focus()
 
-    def _subagent_thread_options(self) -> list[SubagentThreadOption]:
+    def _invalidate_subagent_thread_options(self) -> None:
+        self._subagent_thread_options_dirty = True
+
+    def _subagent_thread_options(
+        self,
+        *,
+        refresh: bool = False,
+    ) -> list[SubagentThreadOption]:
         if self._session_id is None:
             return []
+        if (
+            not refresh
+            and not self._subagent_thread_options_dirty
+            and self._subagent_thread_options_cache_session_id == self._session_id
+        ):
+            return list(self._subagent_thread_options_cache)
         store = self._session_store()
         threads = store.list_threads(self._session_id)
-        return [
+        options = [
             SubagentThreadOption(
                 thread_id=thread.thread_id,
                 label=thread.title,
@@ -686,6 +731,10 @@ class AceAITUI(App[None]):
             )
             for thread in threads
         ]
+        self._subagent_thread_options_cache_session_id = self._session_id
+        self._subagent_thread_options_cache = options
+        self._subagent_thread_options_dirty = False
+        return list(options)
 
     def _should_buffer_stream_delta(self, event: TUIEvent) -> bool:
         if event.kind not in ("assistant_delta", "thinking_delta"):
@@ -847,6 +896,19 @@ def _all_subagents_completed(subagents: list[TUISubagentState]) -> bool:
         if subagent.status != "completed":
             return False
     return True
+
+
+def _event_can_change_subagent_thread_options(event: TUIEvent) -> bool:
+    if event.kind in (
+        "run_completed",
+        "run_failed",
+        "run_suspended",
+        "tool_completed",
+        "tool_failed",
+        "tool_approval_requested",
+    ):
+        return True
+    return False
 
 
 def _subagent_panel_states(

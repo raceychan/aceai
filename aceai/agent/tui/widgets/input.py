@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from rich.cells import cell_len, set_cell_size
+from rich.console import Group, RenderableType
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 from textual.events import Click, Key
 from textual.message import Message
@@ -19,6 +21,12 @@ CITATION_PREVIEW_WIDTH = 88
 @dataclass(frozen=True)
 class CommandCompletionItem:
     command: str
+    description: str
+
+
+@dataclass(frozen=True)
+class ReferenceCompletionItem:
+    value: str
     description: str
 
 
@@ -37,6 +45,16 @@ class CommandInput(TextArea):
             super().__init__()
 
     class CompletionNavigationRequested(Message):
+        def __init__(self, *, direction: int) -> None:
+            self.direction = direction
+            super().__init__()
+
+    class ReferenceCompletionRequested(Message):
+        def __init__(self, input: "CommandInput") -> None:
+            self.input = input
+            super().__init__()
+
+    class ReferenceCompletionNavigationRequested(Message):
         def __init__(self, *, direction: int) -> None:
             self.direction = direction
             super().__init__()
@@ -97,12 +115,22 @@ class CommandInput(TextArea):
             event.stop()
             event.prevent_default()
             return
-        if _is_slash_command_selection(self.text) and event.key in ("up", "down"):
+        if event.key in ("up", "down"):
             direction = -1 if event.key == "up" else 1
-            self.post_message(self.CompletionNavigationRequested(direction=direction))
-            event.stop()
-            event.prevent_default()
-            return
+            if _is_slash_command_selection(self.text):
+                self.post_message(
+                    self.CompletionNavigationRequested(direction=direction)
+                )
+                event.stop()
+                event.prevent_default()
+                return
+            if _active_reference_prefix(self.text) is not None:
+                self.post_message(
+                    self.ReferenceCompletionNavigationRequested(direction=direction)
+                )
+                event.stop()
+                event.prevent_default()
+                return
         await super()._on_key(event)
 
     def on_key(self, event: Key) -> None:
@@ -122,6 +150,10 @@ class CommandInput(TextArea):
     def _submit_or_complete(self) -> None:
         if _is_slash_command_selection(self.text):
             self.post_message(self.CompletionRequested(self))
+            return
+        prefix = _active_reference_prefix(self.text)
+        if prefix not in (None, ""):
+            self.post_message(self.ReferenceCompletionRequested(self))
             return
         self.post_message(self.Submitted(self, self.text))
 
@@ -183,6 +215,59 @@ class CommandCompletionWidget(Static):
         return self.display_text
 
 
+class ReferenceCompletionWidget(Static):
+    """Inline @ reference completion hints."""
+
+    DEFAULT_CSS = """
+    ReferenceCompletionWidget {
+        height: auto;
+        max-height: 16;
+        padding: 0 1;
+        background: #2e3440;
+        color: #d8dee9;
+        border: round #5e81ac;
+    }
+
+    ReferenceCompletionWidget.hidden {
+        display: none;
+    }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.display_text = ""
+        self.selected_index = 0
+
+    def show_references(
+        self,
+        items: list[ReferenceCompletionItem],
+        *,
+        selected_index: int = 0,
+    ) -> None:
+        if not items:
+            self.hide()
+            return
+        self.remove_class("hidden")
+        self.selected_index = max(0, min(selected_index, len(items) - 1))
+        value_width = max(len(item.value) for item in items)
+        lines: list[str] = []
+        for index, item in enumerate(items):
+            marker = ">" if index == self.selected_index else " "
+            lines.append(f"{marker} {item.value.ljust(value_width)}  {item.description}")
+        self.display_text = "\n".join(lines)
+        self.update(self.display_text)
+
+    def hide(self) -> None:
+        self.add_class("hidden")
+        self.display_text = ""
+        self.selected_index = 0
+        self.update("")
+
+    @property
+    def renderable(self) -> str:
+        return self.display_text
+
+
 class QueuedTurnsWidget(Static):
     """Clickable queued messages shown above the input bar."""
 
@@ -230,7 +315,6 @@ class QueuedTurnsWidget(Static):
         self.remove_class("hidden")
         plain_lines, renderable = _queued_turns_renderable(
             questions,
-            width=_queued_content_width(self),
         )
         self.display_text = "\n".join(plain_lines)
         if self.is_mounted:
@@ -257,43 +341,31 @@ class QueuedTurnsWidget(Static):
 
 def _queued_turns_renderable(
     questions: tuple[str, ...],
-    *,
-    width: int,
-) -> tuple[list[str], Text]:
+) -> tuple[list[str], RenderableType]:
     lines = ["queued messages"]
-    renderable = Text("queued messages")
+    rows = Table.grid(expand=True)
+    rows.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+    rows.add_column(justify="right", no_wrap=True)
+    rows.add_column(justify="right", no_wrap=True)
     for index, question in enumerate(questions):
-        body, spacing = _queued_row_body(index, question, width=width)
-        lines.append(f"{body}{spacing}[ > ] [ x ]")
-        renderable.append("\n")
-        renderable.append(body)
-        renderable.append(spacing)
-        renderable.append("[ > ]", style=_queued_action_style(index, "steer"))
-        renderable.append(" ")
-        renderable.append("[ x ]", style=_queued_action_style(index, "cancel"))
-    return lines, renderable
+        body = _queued_row_body(index, question)
+        lines.append(f"{body} [ > ] [ x ]")
+        rows.add_row(
+            Text(body),
+            _queued_action_text(index, "steer", "[ > ]"),
+            _queued_action_text(index, "cancel", " [ x ]"),
+        )
+    return lines, Group(Text("queued messages"), rows)
 
 
-def _queued_row_body(index: int, question: str, *, width: int) -> tuple[str, str]:
+def _queued_row_body(index: int, question: str) -> str:
     first_line = question.splitlines()[0] if question.splitlines() else ""
     turn_number = index + 1
-    body = f"{turn_number}. {first_line}"
-    action_width = 11
-    max_body_width = max(width - action_width - 2, 16)
-    if cell_len(body) > max_body_width:
-        body = set_cell_size(body, max_body_width - 3) + "..."
-    spacing = " " * max(width - cell_len(body) - action_width, 2)
-    return body, spacing
+    return f"{turn_number}. {first_line}"
 
 
-def _queued_content_width(widget: Static) -> int:
-    content_width = widget.content_size.width
-    if content_width > 0:
-        return content_width
-    widget_width = widget.size.width
-    if widget_width > 4:
-        return widget_width - 4
-    return 0
+def _queued_action_text(index: int, action: str, label: str) -> Text:
+    return Text(label, style=_queued_action_style(index, action))
 
 
 def _queued_action_style(index: int, action: str) -> Style:
@@ -421,3 +493,10 @@ def _is_slash_command_selection(value: str) -> bool:
         return False
     body = value.removeprefix("/")
     return " " not in body and "\n" not in body
+
+
+def _active_reference_prefix(value: str) -> str | None:
+    tail = value.rsplit(maxsplit=1)[-1] if value.split() else value
+    if tail.startswith("@"):
+        return tail[1:]
+    return None

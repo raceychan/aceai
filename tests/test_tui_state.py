@@ -1147,6 +1147,70 @@ async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_subagent_thread_options_are_cached_during_stream_refresh(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Child 1",
+        status="running",
+        parent_thread_id=MAIN_THREAD_ID,
+    )
+    calls = 0
+    original_list_threads = store.list_threads
+
+    def list_threads(session_id: str):
+        nonlocal calls
+        calls += 1
+        return original_list_threads(session_id)
+
+    monkeypatch.setattr(store, "list_threads", list_threads)
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="read_text_file",
+        arguments='{"path":"a.py"}',
+        call_id="call-1",
+    )
+
+    async with app.run_test():
+        app.action_show_subagents()
+
+        assert calls == 1
+
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta="Hello"))
+        )
+        app.append_event(
+            TUIEvent.from_agent_event(builder.llm_text_delta(text_delta=" world"))
+        )
+
+        assert calls == 1
+
+        app.append_event(TUIEvent.from_agent_event(builder.tool_started(tool_call=call)))
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=call,
+                    tool_result=ToolExecutionResult(call=call, output="done"),
+                )
+            )
+        )
+
+        assert calls == 2
+
+
+@pytest.mark.anyio
 async def test_subagent_status_widget_scrolls_with_mouse_wheel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2372,7 +2436,35 @@ async def test_session_selector_uses_panel_list(tmp_path) -> None:
         assert "created" in rendered
         assert first.session_id in rendered
         status = app.screen.query_one("#session-status", Static)
+        assert "Press a to create" in str(status.render())
         assert "Total cost: $0.000000" in str(status.render())
+
+
+@pytest.mark.anyio
+async def test_session_selector_creates_and_switches_to_new_session(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    first = store.create_session()
+    _record_user_message(store, first.session_id, "first question")
+    app = AceAITUI(
+        event_log_to_tui_events(store.load_event_log(first.session_id)),
+        session_recorder=SessionRecorder(store, first.session_id),
+        session_id=first.session_id,
+    )
+
+    async with app.run_test() as pilot:
+        app.open_session_selector()
+        await pilot.pause()
+
+        await pilot.press("a")
+        await _wait_until(pilot, lambda: app._session_id != first.session_id)
+
+        assert app._session_id is not None
+        assert app._state.events == []
+        assert store.get_session(app._session_id).title == "New session"
+        assert [session.session_id for session in store.list_sessions()] == [
+            app._session_id,
+            first.session_id,
+        ]
 
 
 @pytest.mark.anyio

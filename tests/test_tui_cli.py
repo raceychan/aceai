@@ -51,7 +51,7 @@ def isolated_cli_config(tmp_path, monkeypatch):
     clear_config()
 
 
-def install_tui_extra_stub(monkeypatch, *, on_launch=None) -> None:
+def install_tui_extra_stub(monkeypatch, *, on_launch=None, on_run=None) -> None:
     class StubConfiguredTUI:
         def __init__(
             self,
@@ -82,8 +82,9 @@ def install_tui_extra_stub(monkeypatch, *, on_launch=None) -> None:
                     session_id=session_id,
                 )
 
-        def run(self) -> None:
-            pass
+        def run(self, **kwargs) -> None:
+            if on_run is not None:
+                on_run(**kwargs)
 
     monkeypatch.setattr(cli, "require_tui_extra", lambda: None)
     monkeypatch.setattr(cli, "AceAIConfiguredTUI", StubConfiguredTUI)
@@ -264,7 +265,7 @@ def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> 
     assert calls[0] == ("build", ("openai", "project-key", "gpt-4o-mini"))
 
 
-def test_cli_replaces_project_test_key_with_global_key(tmp_path, monkeypatch) -> None:
+def test_cli_uses_project_key_without_merging_global_key(tmp_path, monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
     agent = StubAgent()
 
@@ -300,7 +301,7 @@ def test_cli_replaces_project_test_key_with_global_key(tmp_path, monkeypatch) ->
 
     cli.main([])
 
-    assert calls[0] == ("build", ("openai", "real-global-key", "gpt-5.5"))
+    assert calls[0] == ("build", ("openai", "test-key", "gpt-5.5"))
 
 
 def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
@@ -336,6 +337,23 @@ def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:
     cli.main(["resume", "session-1"])
 
     assert calls[0] == ("build", ("deepseek", "key", "deepseek-v4-flash"))
+
+
+def test_session_state_cannot_switch_to_disabled_provider() -> None:
+    config = AgentAppConfig(
+        provider="openai",
+        api_key="openai-key",
+        model="gpt-5.5",
+        api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
+        disabled_providers=["deepseek"],
+    )
+
+    resolved = cli.apply_session_state_to_initial_config(
+        config,
+        StubDeepSeekSessionState(),
+    )
+
+    assert resolved == config
 
 
 def test_load_session_context_uses_main_thread_history(monkeypatch) -> None:
@@ -664,3 +682,37 @@ def test_cli_cost_prints_total_session_cost(monkeypatch, capsys) -> None:
 
     captured = capsys.readouterr()
     assert captured.out == "$0.0123\n"
+
+
+def test_cli_inline_runs_textual_app_inline(monkeypatch) -> None:
+    run_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    install_tui_extra_stub(monkeypatch, on_run=lambda **kwargs: run_calls.append(kwargs))
+
+    cli.main(["--inline"])
+
+    assert run_calls == [{"inline": True, "inline_no_clear": True, "size": (80, 25)}]
+
+
+def test_cli_default_runs_textual_app_fullscreen(monkeypatch) -> None:
+    run_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    install_tui_extra_stub(monkeypatch, on_run=lambda **kwargs: run_calls.append(kwargs))
+
+    cli.main([])
+
+    assert run_calls == [{"inline": False, "inline_no_clear": False, "size": None}]
+
+def test_cli_inline_height_overrides_terminal_height(monkeypatch) -> None:
+    run_calls: list[dict[str, object]] = []
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    install_tui_extra_stub(monkeypatch, on_run=lambda **kwargs: run_calls.append(kwargs))
+
+    cli.main(["--inline", "--inline-height", "40"])
+
+    assert run_calls == [
+        {"inline": True, "inline_no_clear": True, "size": (80, 40)}
+    ]

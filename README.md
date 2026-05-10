@@ -45,7 +45,10 @@ project config first, then falls back to `~/.aceai/config.yaml`.
 The TUI surfaces streaming work history, skill loading, tool calls, approval
 gates, subagent progress, cited context, queued follow-up turns, token/cost
 status, and per-tool permissions: `always` runs without approval, `ask` uses
-the approval flow, and `never` hides the tool from the model.
+the approval flow, and `never` hides the tool from the model. User turns render
+as a full-width prompt bar with breathing room around the message, and queued
+turn controls stay aligned at the right edge so steering and cancel actions are
+easy to scan even when messages contain wide characters.
 
 ### Skills and tool permissions
 
