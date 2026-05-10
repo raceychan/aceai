@@ -63,8 +63,9 @@ from aceai.core.events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
+from aceai.core.models import AgentStep
 from aceai.core.models import ToolApprovalRequest
-from aceai.llm.models import LLMMessage, LLMRequestMeta
+from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMResponse
 
 PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/aceai/json"
 
@@ -265,6 +266,10 @@ class AceAgentApp:
         return tuple(self._queued_questions_for_active_thread())
 
     @property
+    def active_thread_accepts_user_turn(self) -> bool:
+        return self._active_thread_id not in self._child_runtimes
+
+    @property
     def is_running_suspended(self) -> bool:
         run = self._active_run
         return run is not None and run.status == "suspended"
@@ -341,6 +346,11 @@ class AceAgentApp:
         self._thread_runs.pop(self._active_thread_id, None)
 
     def enqueue_turn(self, question: str) -> int:
+        if not self.active_thread_accepts_user_turn:
+            raise RuntimeError(
+                "Delegated subagent thread is still running; switch to main or wait "
+                "for delegate_to_subagent to finish before sending a new message."
+            )
         questions = self._queued_questions_for_active_thread()
         questions.append(question)
         return len(questions)
@@ -467,6 +477,11 @@ class AceAgentApp:
         self.ensure_session()
         self.persist_session_state()
         thread_id = self._active_thread_id
+        if thread_id in self._child_runtimes:
+            raise RuntimeError(
+                "Delegated subagent thread is still running; switch to main or wait "
+                "for delegate_to_subagent to finish before sending a new message."
+            )
         agent = self._agent_for_thread(thread_id)
         history = self._history_for_thread(thread_id)
         llm_question = message_with_citations(question, citations)
@@ -845,51 +860,94 @@ class AceAgentApp:
     ) -> None:
         events: list[AgentEvent] = []
         final_answer = ""
-        async for event in child_agent.execute(child_run):
+        try:
+            async for event in child_agent.execute(child_run):
+                events.append(event)
+                self.record_child_event(
+                    thread_id=thread_id,
+                    agent_id=child_agent.agent_id,
+                    event=event,
+                )
+                if isinstance(event, RunCompletedEvent):
+                    final_answer = event.final_answer
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status=child_run.status,
+                    )
+                    if not handoff.done():
+                        handoff.set_result(
+                            build_child_agent_result(
+                                thread_id=thread_id,
+                                child_agent=child_agent,
+                                child_run=child_run,
+                                events=events,
+                                final_answer=final_answer,
+                            )
+                        )
+                    return
+                if isinstance(event, RunSuspendedEvent):
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status="suspended",
+                    )
+                    if not handoff.done():
+                        handoff.set_exception(
+                            ToolExecutionError(
+                                "delegated subagent suspended for approval; "
+                                "delegate_to_subagent only supports approval-free child tools"
+                            )
+                        )
+                    return
+                if isinstance(event, RunFailedEvent):
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status="failed",
+                    )
+                    if not handoff.done():
+                        handoff.set_exception(ToolExecutionError(event.error))
+                    return
+        except asyncio.CancelledError:
+            error = "delegated subagent run was cancelled before a terminal event"
+            child_run.run_state.status = "failed"
+            event = _cancelled_child_run_failed_event(
+                child_run=child_run,
+                events=events,
+                error=error,
+            )
             events.append(event)
             self.record_child_event(
                 thread_id=thread_id,
                 agent_id=child_agent.agent_id,
                 event=event,
             )
-            if isinstance(event, RunCompletedEvent):
-                final_answer = event.final_answer
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status=child_run.status,
-                )
-                if not handoff.done():
-                    handoff.set_result(
-                        build_child_agent_result(
-                            thread_id=thread_id,
-                            child_agent=child_agent,
-                            child_run=child_run,
-                            events=events,
-                            final_answer=final_answer,
-                        )
-                    )
-                return
-            if isinstance(event, RunSuspendedEvent):
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status="suspended",
-                )
-                if not handoff.done():
-                    handoff.set_exception(
-                        ToolExecutionError(
-                            "delegated subagent suspended for approval; "
-                            "delegate_to_subagent only supports approval-free child tools"
-                        )
-                    )
-                return
-            if isinstance(event, RunFailedEvent):
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status="failed",
-                )
-                if not handoff.done():
-                    handoff.set_exception(ToolExecutionError(event.error))
-                return
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            if not handoff.done():
+                handoff.set_exception(ToolExecutionError(error))
+            raise
+        if child_run.status == "running":
+            error = "delegated subagent run was cancelled before a terminal event"
+            child_run.run_state.status = "failed"
+            event = _cancelled_child_run_failed_event(
+                child_run=child_run,
+                events=events,
+                error=error,
+            )
+            events.append(event)
+            self.record_child_event(
+                thread_id=thread_id,
+                agent_id=child_agent.agent_id,
+                event=event,
+            )
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            if not handoff.done():
+                handoff.set_exception(ToolExecutionError(error))
+            return
         self.finish_child_thread(
             thread_id=thread_id,
             status=child_run.status,
@@ -1130,6 +1188,41 @@ def supports_reasoning_for_model(model: str | None) -> bool:
 
 def _agent_event_updates_context(event: AgentEvent) -> bool:
     return isinstance(event, LLMCompletedEvent | ToolCompletedEvent | ToolFailedEvent)
+
+
+def _cancelled_child_run_failed_event(
+    *,
+    child_run: AgentRunContext,
+    events: list[AgentEvent],
+    error: str,
+) -> RunFailedEvent:
+    if events:
+        step_index = events[-1].step_index
+        step_id = events[-1].step_id
+        failed_step = AgentStep(
+            step_id=step_id,
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+    elif child_run.steps:
+        step_index = len(child_run.steps)
+        step_id = child_run.steps[-1].step_id
+        failed_step = AgentStep(
+            step_id=step_id,
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+    else:
+        step_index = len(child_run.steps)
+        failed_step = AgentStep(
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+        step_id = failed_step.step_id
+    return RunFailedEvent(
+        run_id=child_run.run_id,
+        step_index=step_index,
+        step_id=failed_step.step_id,
+        step=failed_step,
+        error=error,
+    )
 
 
 def _last_context_source_event_id(event_log: EventLog) -> str | None:

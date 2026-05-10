@@ -649,18 +649,37 @@ async def test_agent_app_cancels_child_runtime_when_parent_turn_is_cancelled(
     task = asyncio.create_task(collect_events())
     await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
     session_id = app.session_id
     assert session_id is not None
     child_threads = [
         thread for thread in store.list_threads(session_id) if thread.role == "subagent"
     ]
     assert len(child_threads) == 1
-    assert child_threads[0].status == "failed"
+    app.switch_thread(child_threads[0].thread_id)
+    assert not app.active_thread_accepts_user_turn
+    with pytest.raises(RuntimeError, match="Delegated subagent thread is still running"):
+        app.enqueue_turn("do not mix into child history")
+    with pytest.raises(RuntimeError, match="Delegated subagent thread is still running"):
+        [event async for event in app.start_turn("do not start child follow-up")]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
+    child_thread = store.get_thread(session_id, child_threads[0].thread_id)
+    assert child_thread.status == "failed"
+    child_event_log = store.load_thread_event_log(
+        session_id,
+        child_threads[0].thread_id,
+    )
+    assert any(
+        event.kind == "error"
+        and event.payload["content"]
+        == "delegated subagent run was cancelled before a terminal event"
+        and event.step_index == 0
+        for event in child_event_log.events
+    )
     assert app._child_runtimes == {}
     assert [
         app_event

@@ -123,17 +123,65 @@ def _parse_command(text: str) -> tuple[str, str] | None:
     return name, arg
 
 
-class _RuntimeStreamMixin:
-    _agent_app: AceAgentApp | None
-    _active_worker: Worker[None] | None
-    _idea_store: IdeaStore
-    _pending_turn_citations: list[TurnCitation]
-    _cancel_armed: bool
-    _cancel_arm_timer: Timer | None
+class AceAIConfiguredTUI(AceAITUI):
+    """TUI that asks for provider settings before creating the agent."""
 
-    def on_mount(self) -> None:
-        super().on_mount()
-        self._start_update_check()
+    def __init__(
+        self,
+        agent_factory: AgentFactory,
+        *,
+        initial_config: AgentAppConfig | None,
+        initial_question: str,
+        default_model: OpenAIModel,
+        initial_events: list[TUIEvent] | None = None,
+        initial_history: list[LLMMessage] | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
+        project: ProjectMetadata | None = None,
+        idea_store: IdeaStore | None = None,
+        trace_ctx: Context | None = None,
+        reasoning_level: ReasoningLevel = "auto",
+    ) -> None:
+        self._provider_name = (
+            initial_config.provider if initial_config is not None else "openai"
+        )
+        self._current_config = initial_config
+        initial_model = (
+            initial_config.model if initial_config is not None else default_model
+        )
+        requested_level: ReasoningLevel = (
+            initial_config.reasoning_level
+            if initial_config is not None
+            else reasoning_level
+        )
+        self._reasoning_level: ReasoningLevel = effective_reasoning_level(
+            self._provider_name,
+            initial_model,
+            requested_level,
+        )
+        super().__init__(
+            events=initial_events or [],
+            model=initial_model,
+            reasoning_level=self._reasoning_level,
+            session_recorder=session_recorder,
+            session_id=session_id,
+            project=project,
+            idea_store=idea_store,
+            record_events=False,
+        )
+        self._agent_factory = agent_factory
+        self._initial_config = initial_config
+        self._initial_question = initial_question
+        self._default_model: OpenAIModel = default_model
+        self._trace_ctx = trace_ctx
+        self._selected_model: OpenAIModel = initial_model
+        self._llm_history = list(initial_history or [])
+        self._agent: Agent | None = None
+        self._agent_app: AceAgentApp | None = None
+        self._active_worker: Worker[None] | None = None
+        self._active_run = None
+        self._cancel_armed = False
+        self._cancel_arm_timer: Timer | None = None
 
     def _start_update_check(self) -> None:
         if self._agent_app is None:
@@ -207,6 +255,8 @@ class _RuntimeStreamMixin:
         agent_app = self._agent_app
         if agent_app is not None:
             agent_app.session_service.finalize()
+        elif self._session_recorder is not None:
+            self._session_recorder.finalize()
         super().on_unmount()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -401,6 +451,14 @@ class _RuntimeStreamMixin:
                 TUIEvent.session_notice("Configure AceAI before enqueueing a run.")
             )
             return
+        if not agent_app.active_thread_accepts_user_turn:
+            self.append_event(
+                TUIEvent.session_notice(
+                    "This subagent is still running under delegate_to_subagent. "
+                    "Switch to main or wait before sending a new message."
+                )
+            )
+            return
         if (
             self._active_worker is None or not self._active_worker.is_running
         ) and not agent_app.is_running_suspended:
@@ -415,6 +473,14 @@ class _RuntimeStreamMixin:
         if agent_app is None:
             self.append_event(
                 TUIEvent.session_notice("Configure AceAI before steering a run.")
+            )
+            return
+        if not agent_app.active_thread_accepts_user_turn:
+            self.append_event(
+                TUIEvent.session_notice(
+                    "This subagent is still running under delegate_to_subagent. "
+                    "Switch to main or wait before steering."
+                )
             )
             return
         if agent_app.is_running_suspended:
@@ -452,22 +518,6 @@ class _RuntimeStreamMixin:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
         self._start_run_now(question)
-
-    def switch_thread(self, thread_id: str) -> None:
-        agent_app = self._agent_app
-        if agent_app is None:
-            self.append_event(
-                TUIEvent.session_notice("Configure AceAI before switching threads.")
-            )
-            return
-        try:
-            snapshot = agent_app.switch_thread(thread_id)
-        except (KeyError, RuntimeError) as exc:
-            self.append_event(TUIEvent.session_notice(str(exc)))
-            return
-        self._sync_app_state()
-        self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.notify_session(f"Switched thread {thread_id}")
 
     def _start_run_now(
         self,
@@ -639,382 +689,9 @@ class _RuntimeStreamMixin:
         restart_current_process()
 
 
-def _update_available_notice(result: UpdateCheckResult) -> str:
-    return (
-        f"AceAI {result.latest_version} is available "
-        f"(current {result.current_version}).\n"
-        f"{UPDATE_INSTRUCTIONS}"
-    )
-
-
-def _idea_items(ideas: list[Idea]) -> list[TUIIdeaItem]:
-    return [_idea_item(index, idea) for index, idea in enumerate(ideas, start=1)]
-
-
-def _idea_item(index: int, idea: Idea) -> TUIIdeaItem:
-    lines = idea.content.splitlines()
-    title = ""
-    body_lines: list[str] = []
-    for line in lines:
-        if title == "" and line != "":
-            title = line
-            continue
-        if title != "":
-            body_lines.append(line)
-    return TUIIdeaItem(
-        index=index,
-        project_name=idea.project_name,
-        created_at=idea.created_at.strftime("%Y-%m-%d %H:%M"),
-        title=title,
-        body="\n".join(body_lines),
-    )
-
-
-def _idea_delete_index(arg: str) -> int | None:
-    prefix = "delete "
-    if not arg.startswith(prefix):
-        return None
-    return int(arg.removeprefix(prefix))
-
-
-class UpdateCommandResult(Struct, frozen=True, kw_only=True):
-    return_code: int
-    output: str
-
-
-async def run_update_command() -> UpdateCommandResult:
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *UPDATE_COMMAND,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    except OSError as err:
-        return UpdateCommandResult(return_code=127, output=str(err))
-    output, _ = await process.communicate()
-    if process.returncode is None:
-        raise RuntimeError("uv update process did not report an exit code")
-    return UpdateCommandResult(
-        return_code=process.returncode,
-        output=output.decode(errors="replace"),
-    )
-
-
-def restart_current_process() -> None:
-    if not sys.argv:
-        os.execv(sys.executable, [sys.executable])
-    executable = sys.argv[0]
-    if executable == "":
-        os.execv(sys.executable, [sys.executable])
-    os.execvp(executable, sys.argv)
-
-
-class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
-    """Textual app that runs an Agent from submitted questions."""
-
-    def __init__(
-        self,
-        agent: Agent,
-        *,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        idea_store: IdeaStore | None = None,
-        trace_ctx: Context | None = None,
-        reasoning_level: ReasoningLevel = "auto",
-    ) -> None:
-        self._provider_name = "openai"
-        self._selected_model: OpenAIModel = cast(OpenAIModel, agent.default_model)
-        super().__init__(
-            events=initial_events or [],
-            model=self._selected_model,
-            reasoning_level=reasoning_level,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            idea_store=idea_store,
-            record_events=False,
-        )
-        self._agent = agent
-        self._trace_ctx = trace_ctx
-        self._agent_app = AceAgentApp(
-            agent,
-            provider_name=self._provider_name,
-            selected_model=self._selected_model,
-            reasoning_level=reasoning_level,
-            initial_history=initial_history,
-            session_store=self._session_store(),
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=self._project,
-            idea_store=self._idea_store,
-            trace_ctx=trace_ctx,
-        )
-        self._reasoning_level: ReasoningLevel = self._agent_app.reasoning_level
-        if self._reasoning_level != reasoning_level:
-            self.set_status_model(
-                self._selected_model,
-                reasoning_level=self._reasoning_level,
-            )
-        self._persist_session_state()
-        self._llm_history = self._agent_app.llm_history
-        self._active_worker: Worker[None] | None = None
-        self._active_run = self._agent_app.active_run
-        self._cancel_armed = False
-        self._cancel_arm_timer: Timer | None = None
-
-    def start_run(
-        self,
-        question: str,
-        *,
-        citations: tuple[TurnCitation, ...] = (),
-    ) -> None:
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.enqueue_run(question)
-            return
-        if self._agent_app.is_running_suspended:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Choose Approve or Reject before starting another run."
-                )
-            )
-            return
-        self._start_run_now(question, citations=citations)
-
-    def approve_pending_tool(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=True),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool approval",
-            exit_on_error=True,
-        )
-
-    def show_pending_approval(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.show_approval_request(request)
-
-    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
-        event.stop()
-        if event.approved:
-            self.approve_pending_tool()
-            return
-        self.reject_pending_tool("rejected by caller")
-
-    def reject_pending_tool(self, reason: str) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        if reason == "":
-            reason = "rejected by caller"
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=False, reason=reason),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool rejection",
-            exit_on_error=True,
-        )
-
-    def _pending_approval_request(self):
-        return self._agent_app.pending_approval_request()
-
-    def switch_session(self, session_id: str) -> None:
-        if session_id == self._session_id:
-            return
-        try:
-            snapshot = self._agent_app.switch_session(session_id)
-        except KeyError:
-            self.notify_session(f"Session not found: {session_id}")
-            return
-        self._sync_app_state()
-        self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
-        self._restore_session_state()
-
-    def show_model(self) -> None:
-        self.append_event(
-            TUIEvent.session_notice(
-                f"Current model: {self._selected_model}\n{self._agent_app.model_options_text}"
-            )
-        )
-
-    def action_config(self) -> None:
-        self.open_config_screen()
-
-    def open_config_screen(self) -> None:
-        self.push_screen(
-            ConfigScreen(
-                provider_name=self._provider_name,
-                current_model=self._selected_model,
-                default_model=cast(OpenAIModel, self._agent.default_model),
-                reasoning_level=self._reasoning_level,
-                skills="auto",
-                skill_items=_skill_config_items(self._agent.skill_registry),
-                skill_selection_mode="all",
-                enabled_skills=(),
-                api_keys={},
-            ),
-            self._handle_config_selection,
-        )
-
-    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
-        if selection is None:
-            return
-        if type(selection) is str:
-            self.switch_model(selection)
-            return
-        if selection.provider != self._provider_name:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Provider changes are only available in the configured AceAI app."
-                )
-            )
-            return
-        self.switch_model(selection.model)
-
-    def switch_model(self, model: str) -> None:
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Model changes apply after the current run finishes."
-                )
-            )
-            return
-        if not self._agent_app.is_model_supported(model):
-            self.append_event(
-                TUIEvent.session_notice(self._agent_app.model_options_text)
-            )
-            return
-        model_changed = model != self._selected_model
-        self._agent_app.switch_model(model, reasoning_level=self._reasoning_level)
-        self._selected_model = cast(OpenAIModel, self._agent_app.selected_model)
-        self._reasoning_level = self._agent_app.reasoning_level
-        self._sync_app_state()
-        if model_changed:
-            self.reset_status_cache_rate()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-        self.notify_session(f"Switched model to {self._selected_model}")
-
-    def _reload_llm_history(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            self._llm_history = []
-            return
-        self._agent_app.restore_history_from_active_session()
-        self._sync_app_state()
-
-    def _persist_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        self._agent_app.persist_session_state()
-
-    def _restore_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        state = self._session_recorder.store.get_session_state(self._session_id)
-        if state.selected_model == "":
-            return
-        if (
-            state.selected_provider != ""
-            and state.selected_provider != self._provider_name
-        ):
-            return
-        if not self._agent_app.is_model_supported(state.selected_model):
-            return
-        self._agent_app.switch_model(
-            state.selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-        self._selected_model = cast(OpenAIModel, self._agent_app.selected_model)
-        self._reasoning_level = self._agent_app.reasoning_level
-        self._sync_app_state()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-
-    def _metadata_sections(self) -> list[MetadataSection]:
-        assert self._agent_app is not None
-        return [
-            *super()._metadata_sections(),
-            *_agent_metadata_sections(self._agent_app),
-        ]
-
-
-class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
-    """TUI that asks for provider settings before creating the agent."""
-
-    def __init__(
-        self,
-        agent_factory: AgentFactory,
-        *,
-        initial_config: AgentAppConfig | None,
-        initial_question: str,
-        default_model: OpenAIModel,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        idea_store: IdeaStore | None = None,
-        trace_ctx: Context | None = None,
-        reasoning_level: ReasoningLevel = "auto",
-    ) -> None:
-        self._provider_name = (
-            initial_config.provider if initial_config is not None else "openai"
-        )
-        self._current_config = initial_config
-        initial_model = (
-            initial_config.model if initial_config is not None else default_model
-        )
-        requested_level: ReasoningLevel = (
-            initial_config.reasoning_level
-            if initial_config is not None
-            else reasoning_level
-        )
-        self._reasoning_level: ReasoningLevel = effective_reasoning_level(
-            self._provider_name,
-            initial_model,
-            requested_level,
-        )
-        super().__init__(
-            events=initial_events or [],
-            model=initial_model,
-            reasoning_level=self._reasoning_level,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            idea_store=idea_store,
-            record_events=False,
-        )
-        self._agent_factory = agent_factory
-        self._initial_config = initial_config
-        self._initial_question = initial_question
-        self._default_model: OpenAIModel = default_model
-        self._trace_ctx = trace_ctx
-        self._selected_model: OpenAIModel = initial_model
-        self._llm_history = list(initial_history or [])
-        self._agent: Agent | None = None
-        self._agent_app: AceAgentApp | None = None
-        self._active_worker: Worker[None] | None = None
-        self._active_run = None
-        self._cancel_armed = False
-        self._cancel_arm_timer: Timer | None = None
-
     def on_mount(self) -> None:
         super().on_mount()
+        self._start_update_check()
         if self._initial_config is not None:
             self.apply_config(self._initial_config)
             return
@@ -1121,7 +798,20 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             AceAITUI.switch_thread(self, thread_id)
             return
         self._ensure_agent_app()
-        _RuntimeStreamMixin.switch_thread(self, thread_id)
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before switching threads.")
+            )
+            return
+        try:
+            snapshot = agent_app.switch_thread(thread_id)
+        except (KeyError, RuntimeError) as exc:
+            self.append_event(TUIEvent.session_notice(str(exc)))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.notify_session(f"Switched thread {thread_id}")
 
     def approve_pending_tool(self) -> None:
         request = self._pending_approval_request()
@@ -1390,7 +1080,10 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             self._llm_history = []
             return
         if self._agent_app is None:
-            event_log = self._session_recorder.store.load_event_log(self._session_id)
+            event_log = self._session_recorder.store.load_thread_event_log(
+                self._session_id,
+                self._active_thread_id,
+            )
             self._llm_history = event_log.replay_llm_history()
             self._active_run = None
             return
@@ -1440,114 +1133,74 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
         ]
 
 
-class AceAILiveTUI(AceAIInteractiveTUI):
-    """Textual app that starts a single run on mount."""
+def _update_available_notice(result: UpdateCheckResult) -> str:
+    return (
+        f"AceAI {result.latest_version} is available "
+        f"(current {result.current_version}).\n"
+        f"{UPDATE_INSTRUCTIONS}"
+    )
 
-    def __init__(
-        self,
-        agent: Agent,
-        question: str,
-        *,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        trace_ctx: Context | None = None,
-        reasoning_level: ReasoningLevel = "auto",
-    ) -> None:
-        super().__init__(
-            agent,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            trace_ctx=trace_ctx,
-            reasoning_level=reasoning_level,
+
+def _idea_items(ideas: list[Idea]) -> list[TUIIdeaItem]:
+    return [_idea_item(index, idea) for index, idea in enumerate(ideas, start=1)]
+
+
+def _idea_item(index: int, idea: Idea) -> TUIIdeaItem:
+    lines = idea.content.splitlines()
+    title = ""
+    body_lines: list[str] = []
+    for line in lines:
+        if title == "" and line != "":
+            title = line
+            continue
+        if title != "":
+            body_lines.append(line)
+    return TUIIdeaItem(
+        index=index,
+        project_name=idea.project_name,
+        created_at=idea.created_at.strftime("%Y-%m-%d %H:%M"),
+        title=title,
+        body="\n".join(body_lines),
+    )
+
+
+def _idea_delete_index(arg: str) -> int | None:
+    prefix = "delete "
+    if not arg.startswith(prefix):
+        return None
+    return int(arg.removeprefix(prefix))
+
+
+class UpdateCommandResult(Struct, frozen=True, kw_only=True):
+    return_code: int
+    output: str
+
+
+async def run_update_command() -> UpdateCommandResult:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *UPDATE_COMMAND,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        self._initial_question = question
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        self.start_run(self._initial_question)
-
-
-def run_interactive_tui(
-    agent: Agent,
-    *,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    reasoning_level: ReasoningLevel = "auto",
-) -> None:
-    AceAIInteractiveTUI(
-        agent,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        reasoning_level=reasoning_level,
-    ).run()
+    except OSError as err:
+        return UpdateCommandResult(return_code=127, output=str(err))
+    output, _ = await process.communicate()
+    if process.returncode is None:
+        raise RuntimeError("uv update process did not report an exit code")
+    return UpdateCommandResult(
+        return_code=process.returncode,
+        output=output.decode(errors="replace"),
+    )
 
 
-def run_configured_tui(
-    agent_factory: AgentFactory,
-    *,
-    initial_config: AgentAppConfig | None,
-    initial_question: str,
-    default_model: OpenAIModel,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    reasoning_level: ReasoningLevel = "auto",
-) -> None:
-    AceAIConfiguredTUI(
-        agent_factory,
-        initial_config=initial_config,
-        initial_question=initial_question,
-        default_model=default_model,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        reasoning_level=reasoning_level,
-    ).run()
-
-
-def run_agent_tui(
-    agent: Agent,
-    question: str,
-    *,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    reasoning_level: ReasoningLevel = "auto",
-) -> None:
-    AceAILiveTUI(
-        agent,
-        question,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        reasoning_level=reasoning_level,
-    ).run()
+def restart_current_process() -> None:
+    if not sys.argv:
+        os.execv(sys.executable, [sys.executable])
+    executable = sys.argv[0]
+    if executable == "":
+        os.execv(sys.executable, [sys.executable])
+    os.execvp(executable, sys.argv)
 
 
 def _agent_metadata_sections(agent_app: AceAgentApp) -> list[MetadataSection]:

@@ -41,8 +41,8 @@ TUI_EXTRA_INSTALL_HINT = (
 SessionStore = None
 SessionRecorder = None
 event_log_to_tui_events = None
-run_configured_tui = None
-run_interactive_tui = None
+AceAIConfiguredTUI = None
+MAIN_THREAD_ID = "main"
 
 
 class SessionMetadataLike(Protocol):
@@ -57,8 +57,8 @@ def require_tui_extra() -> None:
     global SessionStore
     global SessionRecorder
     global event_log_to_tui_events
-    global run_configured_tui
-    global run_interactive_tui
+    global AceAIConfiguredTUI
+    global MAIN_THREAD_ID
     if SessionStore is not None:
         return
     try:
@@ -71,9 +71,9 @@ def require_tui_extra() -> None:
         raise
     SessionStore = session_module.SessionStore
     SessionRecorder = session_module.SessionRecorder
+    MAIN_THREAD_ID = session_module.MAIN_THREAD_ID
     event_log_to_tui_events = replay_module.event_log_to_tui_events
-    run_configured_tui = runner_module.run_configured_tui
-    run_interactive_tui = runner_module.run_interactive_tui
+    AceAIConfiguredTUI = runner_module.AceAIConfiguredTUI
 
 
 def build_agent(config: AgentAppConfig) -> Agent:
@@ -290,7 +290,7 @@ def load_session_context(
     require_tui_extra()
     store = SessionStore()
     metadata = store.get_session(session_id)
-    event_log = store.load_event_log(session_id)
+    event_log = store.load_thread_event_log(session_id, MAIN_THREAD_ID)
     return (
         store,
         metadata,
@@ -419,21 +419,7 @@ def run_main(args: argparse.Namespace) -> None:
         config = apply_session_state_to_initial_config(config, session_state)
         recorder = SessionRecorder(store, metadata.session_id)
         session_id = metadata.session_id
-    if config is None:
-        run_configured_tui(
-            build_agent,
-            initial_config=None,
-            initial_question="",
-            default_model=selected_model,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=recorder,
-            session_id=session_id,
-        )
-        if recorder is not None and recorder.saved:
-            print(f"Session saved: {session_id}")
-        return
-    run_configured_tui(
+    AceAIConfiguredTUI(
         build_agent,
         initial_config=config,
         initial_question="",
@@ -442,6 +428,6 @@ def run_main(args: argparse.Namespace) -> None:
         initial_history=initial_history,
         session_recorder=recorder,
         session_id=session_id,
-    )
+    ).run()
     if recorder is not None and recorder.saved:
         print(f"Session saved: {session_id}")

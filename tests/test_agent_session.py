@@ -420,13 +420,14 @@ def test_session_recorder_merges_streaming_assistant_deltas(tmp_path) -> None:
     assert events[1].payload["content"] == "hello"
 
 
-def test_session_recorder_persists_reasoning_events(tmp_path) -> None:
+def test_session_recorder_merges_streaming_reasoning_deltas(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
 
     recorder.record(_user_message("hello"))
-    recorder.record(_thinking_delta("checking code"))
+    recorder.record(_thinking_delta("checking "))
+    recorder.record(_thinking_delta("code"))
     recorder.record(_reasoning_summary("Found the session replay path."))
     recorder.record(_llm_completed("answer"))
 
@@ -434,7 +435,7 @@ def test_session_recorder_persists_reasoning_events(tmp_path) -> None:
 
     assert [event.kind for event in events] == [
         "user_message",
-        "thinking_delta",
+        "reasoning_summary",
         "reasoning_summary",
         "assistant_message",
     ]
