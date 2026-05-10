@@ -28,6 +28,13 @@ command. To run it once without installing the command:
 uvx --from "aceai[tui]" aceai
 ```
 
+If an older tool install starts with a missing dependency error after a source
+checkout or upgrade, refresh the tool environment:
+
+```bash
+uv tool install --force --refresh-package aceai "aceai[tui]"
+```
+
 ## Terminal UI
 
 ![AceAI terminal UI home screen](docs/homescreen_capture.png)

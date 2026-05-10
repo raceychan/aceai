@@ -43,7 +43,7 @@ jobs:
             echo "aceai unexpectedly launched without the tui extra"
             exit 1
           fi
-          grep -F "pip install 'aceai[tui]'" smoke.err
+          grep -F "pip install --upgrade 'aceai[tui]'" smoke.err
           uv venv --python ${{ env.PYTHON_VERSION }} .wheel-smoke-tui
           uv pip install --python .wheel-smoke-tui/bin/python "aceai[tui] @ file://$PWD/$wheel"
           .wheel-smoke-tui/bin/aceai --help
