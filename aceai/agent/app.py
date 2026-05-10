@@ -21,9 +21,11 @@ from aceai.agent.features.delegation import (
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.provider_catalog import (
+    context_window_for_model_any_provider,
     model_options,
     supported_models,
     supports_reasoning_effort,
+    supports_reasoning_effort_any_provider,
 )
 from aceai.agent.session import (
     EventLog,
@@ -74,6 +76,16 @@ class AgentAppEvent(Struct, frozen=True, kw_only=True):
     thread_id: str
     agent_id: str
     event: AgentEvent
+
+
+class AppRuntimeInfo(Struct, frozen=True, kw_only=True):
+    provider_name: str
+    selected_model: str
+    default_model: str
+    reasoning_level: ReasoningLevel
+    supports_reasoning: bool
+    context_window: int | None
+    max_steps: str
 
 
 @dataclass
@@ -176,6 +188,41 @@ class AceAgentApp:
 
     def is_model_supported(self, model: str) -> bool:
         return model in supported_models(self._provider_name)
+
+    def runtime_info(self) -> AppRuntimeInfo:
+        agent = self._agent
+        return AppRuntimeInfo(
+            provider_name=self._provider_name,
+            selected_model=self._selected_model,
+            default_model=str(agent.default_model),
+            reasoning_level=self._reasoning_level,
+            supports_reasoning=supports_reasoning_for_model(self._selected_model),
+            context_window=context_window_for_model(self._selected_model),
+            max_steps=f"{agent.max_steps}",
+        )
+
+    def skill_summary_lines(self) -> list[str]:
+        return [
+            f"{skill.name}: {skill.description} ({skill.skill_file})"
+            for skill in self._agent.skill_registry.get_skills()
+        ]
+
+    def tool_summary_lines(self) -> list[str]:
+        executor = self._agent.executor
+        if not isinstance(executor, Executor):
+            return []
+        lines: list[str] = []
+        for tool in executor.tools.values():
+            tags = ", ".join(tool.metadata.tags)
+            tag_text = f" [{tags}]" if tags else ""
+            lines.append(f"{tool.name}{tag_text}: {tool.description}")
+        return lines
+
+    def hosted_tool_summary_lines(self) -> list[str]:
+        return [
+            f"{tool.provider_name}:{tool.native_name}"
+            for tool in self._agent.hosted_tools
+        ]
 
     @property
     def session_service(self) -> SessionService:
@@ -1033,6 +1080,18 @@ def model_options_text_for(provider_name: str) -> str:
 
 def is_model_supported(provider_name: str, model: str) -> bool:
     return model in supported_models(provider_name)
+
+
+def context_window_for_model(model: str | None) -> int | None:
+    if model is None or model == "":
+        return None
+    return context_window_for_model_any_provider(model)
+
+
+def supports_reasoning_for_model(model: str | None) -> bool:
+    if model is None or model == "":
+        return False
+    return supports_reasoning_effort_any_provider(model)
 
 
 def _agent_event_updates_context(event: AgentEvent) -> bool:

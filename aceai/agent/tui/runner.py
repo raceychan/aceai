@@ -38,7 +38,6 @@ from aceai.agent.config import (
 )
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
-from aceai.core.executor import Executor
 from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
@@ -949,13 +948,10 @@ class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
         )
 
     def _metadata_sections(self) -> list[MetadataSection]:
+        assert self._agent_app is not None
         return [
             *super()._metadata_sections(),
-            *_agent_metadata_sections(
-                self._agent,
-                provider_name=self._provider_name,
-                selected_model=self._selected_model,
-            ),
+            *_agent_metadata_sections(self._agent_app),
         ]
 
 
@@ -1446,7 +1442,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
 
     def _metadata_sections(self) -> list[MetadataSection]:
         sections = super()._metadata_sections()
-        if self._agent is None:
+        if self._agent_app is None:
             return [
                 *sections,
                 MetadataSection(
@@ -1460,11 +1456,7 @@ class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
             ]
         return [
             *sections,
-            *_agent_metadata_sections(
-                self._agent,
-                provider_name=self._provider_name,
-                selected_model=self._selected_model,
-            ),
+            *_agent_metadata_sections(self._agent_app),
         ]
 
 
@@ -1578,34 +1570,19 @@ def run_agent_tui(
     ).run()
 
 
-def _agent_metadata_sections(
-    agent: Agent,
-    *,
-    provider_name: str,
-    selected_model: str,
-) -> list[MetadataSection]:
-    skills = agent.skill_registry.get_skills()
-    skill_lines = [
-        f"{skill.name}: {skill.description} ({skill.skill_file})" for skill in skills
-    ]
-    executor = agent.executor
-    tool_lines: list[str] = []
-    if isinstance(executor, Executor):
-        for tool in executor.tools.values():
-            tags = ", ".join(tool.metadata.tags)
-            tag_text = f" [{tags}]" if tags else ""
-            tool_lines.append(f"{tool.name}{tag_text}: {tool.description}")
-    hosted_lines = [
-        f"{tool.provider_name}:{tool.native_name}" for tool in agent.hosted_tools
-    ]
+def _agent_metadata_sections(agent_app: AceAgentApp) -> list[MetadataSection]:
+    info = agent_app.runtime_info()
+    skill_lines = agent_app.skill_summary_lines()
+    tool_lines = agent_app.tool_summary_lines()
+    hosted_lines = agent_app.hosted_tool_summary_lines()
     return [
         MetadataSection(
             title="Agent",
             lines=[
-                f"provider: {provider_name}",
-                f"selected model: {selected_model}",
-                f"default model: {agent.default_model}",
-                f"max steps: {agent.max_steps}",
+                f"provider: {info.provider_name}",
+                f"selected model: {info.selected_model}",
+                f"default model: {info.default_model}",
+                f"max steps: {info.max_steps}",
             ],
         ),
         MetadataSection(title=f"Skills ({len(skill_lines)})", lines=skill_lines),
