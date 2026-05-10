@@ -10,6 +10,7 @@ from msgspec import Struct
 from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
+from aceai.agent.config import ReasoningLevel
 from aceai.agent.features.delegation import (
     ChildAgentResult,
     build_child_agent_result,
@@ -19,6 +20,11 @@ from aceai.agent.features.delegation import (
 )
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
+from aceai.agent.provider_catalog import (
+    model_options,
+    supported_models,
+    supports_reasoning_effort,
+)
 from aceai.agent.session import (
     EventLog,
     MAIN_THREAD_ID,
@@ -88,6 +94,7 @@ class AceAgentApp:
         *,
         provider_name: str,
         selected_model: str,
+        reasoning_level: ReasoningLevel = "auto",
         initial_history: list[LLMMessage] | None = None,
         session_service: SessionService | None = None,
         session_store: SessionStore | None = None,
@@ -96,7 +103,6 @@ class AceAgentApp:
         idea_store: IdeaStore | None = None,
         project: ProjectMetadata | None = None,
         trace_ctx: Context | None = None,
-        request_meta: LLMRequestMeta | None = None,
     ) -> None:
         self._agent = agent
         self._provider_name = provider_name
@@ -106,8 +112,9 @@ class AceAgentApp:
             if session_store is not None
             else default_project()
         )
-        self._request_meta = _copy_request_meta(request_meta)
-        self._request_meta["model"] = selected_model
+        self._reasoning_level: ReasoningLevel = "auto"
+        self._request_meta: LLMRequestMeta = {"model": selected_model}
+        self._set_reasoning_level_internal(reasoning_level)
         self._session_service = session_service or SessionService(
             store=session_store,
             recorder=session_recorder,
@@ -158,6 +165,17 @@ class AceAgentApp:
     @property
     def selected_model(self) -> str:
         return self._selected_model
+
+    @property
+    def reasoning_level(self) -> ReasoningLevel:
+        return self._reasoning_level
+
+    @property
+    def model_options_text(self) -> str:
+        return model_options_text_for(self._provider_name)
+
+    def is_model_supported(self, model: str) -> bool:
+        return model in supported_models(self._provider_name)
 
     @property
     def session_service(self) -> SessionService:
@@ -281,10 +299,37 @@ class AceAgentApp:
     def take_queued_turn(self, index: int) -> str:
         return self._queued_questions_for_active_thread().pop(index)
 
-    def switch_model(self, model: str) -> None:
+    def switch_model(
+        self,
+        model: str,
+        *,
+        reasoning_level: ReasoningLevel | None = None,
+    ) -> None:
+        if not self.is_model_supported(model):
+            raise ValueError(f"Unsupported model: {model}")
         self._selected_model = model
         self._request_meta["model"] = model
+        next_level = (
+            reasoning_level if reasoning_level is not None else self._reasoning_level
+        )
+        self._set_reasoning_level_internal(next_level)
         self.persist_session_state()
+
+    def set_reasoning_level(self, level: ReasoningLevel) -> None:
+        self._set_reasoning_level_internal(level)
+        self.persist_session_state()
+
+    def _set_reasoning_level_internal(self, level: ReasoningLevel) -> None:
+        if level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            self._selected_model,
+        ):
+            level = "auto"
+        self._reasoning_level = level
+        if level == "auto":
+            self._request_meta.pop("reasoning", None)
+        else:
+            self._request_meta["reasoning"] = {"effort": level, "summary": "auto"}
 
     def persist_session_state(self) -> None:
         session_id = self.session_id
@@ -641,9 +686,7 @@ class AceAgentApp:
         )
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
-        request_meta = _copy_request_meta(self._request_meta)
-        request_meta["model"] = self._selected_model
-        return request_meta
+        return {**self._request_meta, "model": self._selected_model}
 
     def start_child_thread(
         self,
@@ -971,12 +1014,25 @@ class AceAgentApp:
         return snapshot.history
 
 
-def _copy_request_meta(request_meta: LLMRequestMeta | None) -> LLMRequestMeta:
-    if request_meta is None:
-        return {}
-    return {
-        **request_meta,
-    }
+def effective_reasoning_level(
+    provider_name: str,
+    model: str,
+    level: ReasoningLevel,
+) -> ReasoningLevel:
+    if level == "auto":
+        return "auto"
+    if not supports_reasoning_effort(provider_name, model):
+        return "auto"
+    return level
+
+
+def model_options_text_for(provider_name: str) -> str:
+    names = ", ".join(option[1] for option in model_options(provider_name))
+    return f"Available models: {names}"
+
+
+def is_model_supported(provider_name: str, model: str) -> bool:
+    return model in supported_models(provider_name)
 
 
 def _agent_event_updates_context(event: AgentEvent) -> bool:
