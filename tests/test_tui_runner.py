@@ -77,6 +77,7 @@ from aceai.agent.tui.widgets import (
 from aceai.agent.tui.widgets.input import (
     _citation_preview_renderable,
     _citation_preview_text,
+    _queued_turns_renderable,
 )
 from textual.events import Click, Key
 from textual.containers import VerticalScroll
@@ -687,6 +688,19 @@ def test_queued_turns_widget_clicks_ascii_actions(monkeypatch) -> None:
     assert messages[0].index == 0
     assert isinstance(messages[1], QueuedTurnsWidget.Cancelled)
     assert messages[1].index == 0
+
+
+def test_queued_turns_actions_render_at_right_edge() -> None:
+    _, renderable = _queued_turns_renderable(("阿斯顿发送 ...",))
+    output = StringIO()
+    console = Console(file=output, width=80, force_terminal=False, color_system=None)
+
+    console.print(renderable)
+
+    lines = output.getvalue().splitlines()
+    assert lines[1].startswith("1. 阿斯顿发送 ...")
+    assert lines[1].endswith("[ > ] [ x ]")
+    assert lines[1].index("[ > ]") > 60
 
 
 @pytest.mark.anyio

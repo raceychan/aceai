@@ -887,6 +887,8 @@ def _flush_tool_activity(
         pending_tool_activity is not None
         and _working_history_tool_blocks(pending_tool_activity)
     ):
+        if _last_renderable_is_prompt_bar(renderables):
+            renderables.append(_StreamRenderable(renderable=Text("")))
         renderables.extend(
             _render_tool_activity_entries(
                 pending_tool_activity,
@@ -894,6 +896,18 @@ def _flush_tool_activity(
             )
         )
     return None
+
+
+def _last_renderable_is_prompt_bar(renderables: list[_StreamRenderable]) -> bool:
+    if not renderables:
+        return False
+    renderable = renderables[-1].renderable
+    if not isinstance(renderable, Table):
+        return False
+    return (
+        len(renderable.columns) == 1
+        and renderable.columns[0].style == PROMPT_BAR_STYLE
+    )
 
 
 def _tool_block_belongs_to_activity(tool_block: _ToolBlockState) -> bool:
@@ -1358,15 +1372,26 @@ def _render_user_message(
     event_kind: TUIEventKind,
     citations: tuple[TurnCitation, ...],
 ) -> RenderableType:
+    del label
+    del event_kind
     row = Table.grid(expand=True)
     row.add_column(ratio=1, style=PROMPT_BAR_STYLE)
+    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
     text = Text()
     text.append("▌ ", style=PROMPT_MARK_STYLE)
     text.append(content, style=PROMPT_BAR_STYLE)
     row.add_row(text, style=PROMPT_BAR_STYLE)
+    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
     if not citations:
         return row
     return Group(_render_cited_sources(citations), row)
+
+
+def _render_prompt_padding_line() -> Text:
+    text = Text()
+    text.append("▌ ", style=PROMPT_MARK_STYLE)
+    text.append(" ", style=PROMPT_BAR_STYLE)
+    return text
 
 
 def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:

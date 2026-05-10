@@ -1,5 +1,17 @@
 # Changelog
 
+## AceAI v0.2.25
+
+### Improvements
+
+- `tui`: Render user turns as taller full-width prompt bars and separate collapsed work history from the prompt area so the main transcript is easier to scan.
+- `tui`: Keep queued-turn steer and cancel controls aligned to the right edge, including messages with wide characters.
+- `docs`: Update the README terminal UI description to cover the refined prompt and queued-turn presentation.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.24
 
 ### Features

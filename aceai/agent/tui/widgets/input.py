@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from rich.cells import cell_len, set_cell_size
+from rich.console import Group, RenderableType
 from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 from textual.events import Click, Key
 from textual.message import Message
@@ -313,7 +315,6 @@ class QueuedTurnsWidget(Static):
         self.remove_class("hidden")
         plain_lines, renderable = _queued_turns_renderable(
             questions,
-            width=_queued_content_width(self),
         )
         self.display_text = "\n".join(plain_lines)
         if self.is_mounted:
@@ -340,43 +341,31 @@ class QueuedTurnsWidget(Static):
 
 def _queued_turns_renderable(
     questions: tuple[str, ...],
-    *,
-    width: int,
-) -> tuple[list[str], Text]:
+) -> tuple[list[str], RenderableType]:
     lines = ["queued messages"]
-    renderable = Text("queued messages")
+    rows = Table.grid(expand=True)
+    rows.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+    rows.add_column(justify="right", no_wrap=True)
+    rows.add_column(justify="right", no_wrap=True)
     for index, question in enumerate(questions):
-        body, spacing = _queued_row_body(index, question, width=width)
-        lines.append(f"{body}{spacing}[ > ] [ x ]")
-        renderable.append("\n")
-        renderable.append(body)
-        renderable.append(spacing)
-        renderable.append("[ > ]", style=_queued_action_style(index, "steer"))
-        renderable.append(" ")
-        renderable.append("[ x ]", style=_queued_action_style(index, "cancel"))
-    return lines, renderable
+        body = _queued_row_body(index, question)
+        lines.append(f"{body} [ > ] [ x ]")
+        rows.add_row(
+            Text(body),
+            _queued_action_text(index, "steer", "[ > ]"),
+            _queued_action_text(index, "cancel", " [ x ]"),
+        )
+    return lines, Group(Text("queued messages"), rows)
 
 
-def _queued_row_body(index: int, question: str, *, width: int) -> tuple[str, str]:
+def _queued_row_body(index: int, question: str) -> str:
     first_line = question.splitlines()[0] if question.splitlines() else ""
     turn_number = index + 1
-    body = f"{turn_number}. {first_line}"
-    action_width = 11
-    max_body_width = max(width - action_width - 2, 16)
-    if cell_len(body) > max_body_width:
-        body = set_cell_size(body, max_body_width - 3) + "..."
-    spacing = " " * max(width - cell_len(body) - action_width, 2)
-    return body, spacing
+    return f"{turn_number}. {first_line}"
 
 
-def _queued_content_width(widget: Static) -> int:
-    content_width = widget.content_size.width
-    if content_width > 0:
-        return content_width
-    widget_width = widget.size.width
-    if widget_width > 4:
-        return widget_width - 4
-    return 0
+def _queued_action_text(index: int, action: str, label: str) -> Text:
+    return Text(label, style=_queued_action_style(index, action))
 
 
 def _queued_action_style(index: int, action: str) -> Style:
