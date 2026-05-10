@@ -12,7 +12,15 @@ from textual.timer import Timer
 from textual.widgets import Input
 from textual.worker import Worker
 
-from aceai.agent.app import AceAgentApp, UpdateCheckResult
+from aceai.agent.app import (
+    AceAgentApp,
+    UpdateCheckResult,
+    effective_reasoning_level,
+    is_model_supported,
+    model_options_text_for,
+    normalize_user_config,
+    resolve_provider_api_key,
+)
 from aceai.agent.citations import (
     IdeaCitationOrigin,
     TurnCitation,
@@ -20,28 +28,14 @@ from aceai.agent.citations import (
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
-from aceai.agent.provider_catalog import (
-    api_key_env,
-    model_options,
-    supported_models,
-    supports_reasoning_effort,
-)
-from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import (
-    AgentAppConfig,
-    ReasoningLevel,
-    replace_config,
-    save_config,
-)
+from aceai.agent.config import AgentAppConfig, ReasoningLevel
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
-from aceai.core.executor import Executor
 from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
 from aceai.llm.models import LLMMessage
 from aceai.llm.openai import OpenAIModel
-from aceai.llm.models import LLMRequestMeta
 
 from .app import AceAITUI
 from .events import TUIEvent, TUIIdeaItem
@@ -100,48 +94,6 @@ def tui_command(*names: str):
     return decorate
 
 
-def _as_model(provider_name: str, model: str) -> OpenAIModel:
-    if model not in supported_models(provider_name):
-        raise ValueError("Unsupported model")
-    return cast(OpenAIModel, model)
-
-
-def _model_options_text(provider_name: str) -> str:
-    model_names = ", ".join(option[1] for option in model_options(provider_name))
-    return f"Available models: {model_names}"
-
-
-def _model_from_request_meta(
-    request_meta: LLMRequestMeta,
-    default_model: str,
-    provider_name: str,
-) -> OpenAIModel:
-    if "model" in request_meta:
-        return _as_model(provider_name, request_meta["model"])
-    return _as_model(provider_name, default_model)
-
-
-def _request_meta_with_reasoning_level(
-    request_meta: LLMRequestMeta,
-    reasoning_level: ReasoningLevel,
-) -> LLMRequestMeta:
-    next_meta = dict(request_meta)
-    if reasoning_level == "auto":
-        next_meta.pop("reasoning", None)
-        return next_meta
-    next_meta["reasoning"] = {"effort": reasoning_level, "summary": "auto"}
-    return next_meta
-
-
-def _reasoning_level_from_request_meta(request_meta: LLMRequestMeta) -> ReasoningLevel:
-    if "reasoning" not in request_meta:
-        return "auto"
-    effort = request_meta["reasoning"].get("effort")
-    if effort not in ("low", "medium", "high", "max"):
-        return "auto"
-    return effort
-
-
 def _skill_config_items(registry: SkillRegistry) -> tuple[SkillConfigItem, ...]:
     return tuple(
         SkillConfigItem(
@@ -171,17 +123,65 @@ def _parse_command(text: str) -> tuple[str, str] | None:
     return name, arg
 
 
-class _RuntimeStreamMixin:
-    _agent_app: AceAgentApp | None
-    _active_worker: Worker[None] | None
-    _idea_store: IdeaStore
-    _pending_turn_citations: list[TurnCitation]
-    _cancel_armed: bool
-    _cancel_arm_timer: Timer | None
+class AceAIConfiguredTUI(AceAITUI):
+    """TUI that asks for provider settings before creating the agent."""
 
-    def on_mount(self) -> None:
-        super().on_mount()
-        self._start_update_check()
+    def __init__(
+        self,
+        agent_factory: AgentFactory,
+        *,
+        initial_config: AgentAppConfig | None,
+        initial_question: str,
+        default_model: OpenAIModel,
+        initial_events: list[TUIEvent] | None = None,
+        initial_history: list[LLMMessage] | None = None,
+        session_recorder: SessionRecorder | None = None,
+        session_id: str | None = None,
+        project: ProjectMetadata | None = None,
+        idea_store: IdeaStore | None = None,
+        trace_ctx: Context | None = None,
+        reasoning_level: ReasoningLevel = "auto",
+    ) -> None:
+        self._provider_name = (
+            initial_config.provider if initial_config is not None else "openai"
+        )
+        self._current_config = initial_config
+        initial_model = (
+            initial_config.model if initial_config is not None else default_model
+        )
+        requested_level: ReasoningLevel = (
+            initial_config.reasoning_level
+            if initial_config is not None
+            else reasoning_level
+        )
+        self._reasoning_level: ReasoningLevel = effective_reasoning_level(
+            self._provider_name,
+            initial_model,
+            requested_level,
+        )
+        super().__init__(
+            events=initial_events or [],
+            model=initial_model,
+            reasoning_level=self._reasoning_level,
+            session_recorder=session_recorder,
+            session_id=session_id,
+            project=project,
+            idea_store=idea_store,
+            record_events=False,
+        )
+        self._agent_factory = agent_factory
+        self._initial_config = initial_config
+        self._initial_question = initial_question
+        self._default_model: OpenAIModel = default_model
+        self._trace_ctx = trace_ctx
+        self._selected_model: OpenAIModel = initial_model
+        self._llm_history = list(initial_history or [])
+        self._agent: Agent | None = None
+        self._agent_app: AceAgentApp | None = None
+        self._active_worker: Worker[None] | None = None
+        self._active_run = None
+        self._cancel_armed = False
+        self._cancel_arm_timer: Timer | None = None
 
     def _start_update_check(self) -> None:
         if self._agent_app is None:
@@ -225,9 +225,12 @@ class _RuntimeStreamMixin:
         self,
         stream: AsyncGenerator[AgentEvent, None],
     ) -> None:
+        provider_name = (
+            self._agent_app.provider_name if self._agent_app is not None else None
+        )
         try:
             async for event in stream:
-                self.append_agent_event(event)
+                self.append_agent_event(event, provider_name=provider_name)
                 if isinstance(event, RunSuspendedEvent):
                     self.show_pending_approval()
         finally:
@@ -252,6 +255,8 @@ class _RuntimeStreamMixin:
         agent_app = self._agent_app
         if agent_app is not None:
             agent_app.session_service.finalize()
+        elif self._session_recorder is not None:
+            self._session_recorder.finalize()
         super().on_unmount()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -446,6 +451,11 @@ class _RuntimeStreamMixin:
                 TUIEvent.session_notice("Configure AceAI before enqueueing a run.")
             )
             return
+        if not agent_app.active_thread_accepts_user_turn:
+            if agent_app.steer_active_child_thread(question):
+                self.append_event(TUIEvent.user_message(question))
+                self.append_event(TUIEvent.session_notice("Steered running subagent."))
+            return
         if (
             self._active_worker is None or not self._active_worker.is_running
         ) and not agent_app.is_running_suspended:
@@ -461,6 +471,11 @@ class _RuntimeStreamMixin:
             self.append_event(
                 TUIEvent.session_notice("Configure AceAI before steering a run.")
             )
+            return
+        if not agent_app.active_thread_accepts_user_turn:
+            if agent_app.steer_active_child_thread(question):
+                self.append_event(TUIEvent.user_message(question))
+                self.append_event(TUIEvent.session_notice("Steered running subagent."))
             return
         if agent_app.is_running_suspended:
             self.append_event(
@@ -497,22 +512,6 @@ class _RuntimeStreamMixin:
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
         self._start_run_now(question)
-
-    def switch_thread(self, thread_id: str) -> None:
-        agent_app = self._agent_app
-        if agent_app is None:
-            self.append_event(
-                TUIEvent.session_notice("Configure AceAI before switching threads.")
-            )
-            return
-        try:
-            snapshot = agent_app.switch_thread(thread_id)
-        except (KeyError, RuntimeError) as exc:
-            self.append_event(TUIEvent.session_notice(str(exc)))
-            return
-        self._sync_app_state()
-        self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.notify_session(f"Switched thread {thread_id}")
 
     def _start_run_now(
         self,
@@ -565,6 +564,33 @@ class _RuntimeStreamMixin:
     ) -> None:
         event.stop()
         self.steer_queued_run(event.index)
+
+    def on_queued_turns_widget_cancelled(
+        self,
+        event: QueuedTurnsWidget.Cancelled,
+    ) -> None:
+        event.stop()
+        self.cancel_queued_run(event.index)
+
+    def cancel_queued_run(self, index: int) -> None:
+        self._clear_cancel_arm()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before cancelling a queued run.")
+            )
+            return
+        try:
+            question = agent_app.cancel_queued_turn(index)
+        except IndexError:
+            self._refresh_queued_turns()
+            return
+        self._refresh_queued_turns()
+        self.append_event(
+            TUIEvent.session_notice(
+                f"Cancelled queued message {index + 1}: {question}"
+            )
+        )
 
     def _capture_idea(self, content: str) -> Idea:
         agent_app = self._agent_app
@@ -684,6 +710,450 @@ class _RuntimeStreamMixin:
         restart_current_process()
 
 
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._start_update_check()
+        if self._initial_config is not None:
+            self.apply_config(self._initial_config)
+            return
+        self.push_screen(
+            ProviderSetupScreen(default_model=self._default_model),
+            self._handle_setup_config,
+        )
+
+    def _handle_setup_config(self, config: AgentAppConfig | None) -> None:
+        if config is None:
+            return
+        self.apply_config(config)
+
+    def apply_config(self, config: AgentAppConfig) -> None:
+        next_config = normalize_user_config(config)
+        model_changed = next_config.model != self._selected_model
+        self._provider_name = next_config.provider
+        self._current_config = next_config
+        self._selected_model = next_config.model
+        self._reasoning_level = next_config.reasoning_level
+        self._agent = None
+        self._agent_app = None
+        self._active_run = None
+        self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
+        if self._initial_question != "":
+            self.start_run(self._initial_question)
+
+    def start_run(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
+        if self._current_config is None:
+            self.query_one(CommandInput).value = question
+            return
+        if self._active_worker is not None and self._active_worker.is_running:
+            self.enqueue_run(question)
+            return
+        self._ensure_agent_app()
+        if self._agent_app.is_running_suspended:
+            self.append_event(
+                TUIEvent.session_notice(
+                    "Choose Approve or Reject before starting another run."
+                )
+            )
+            return
+        self._start_run_now(question, citations=citations)
+
+    def _ensure_agent_app(self) -> None:
+        if self._agent_app is not None:
+            return
+        if self._current_config is None:
+            raise RuntimeError("AceAI app is not configured")
+        self._agent = self._agent_factory(self._current_config)
+        self._agent_app = AceAgentApp(
+            self._agent,
+            provider_name=self._provider_name,
+            selected_model=self._selected_model,
+            reasoning_level=self._reasoning_level,
+            initial_history=self._llm_history,
+            session_store=self._session_store(),
+            session_recorder=self._session_recorder,
+            session_id=self._session_id,
+            project=self._project,
+            idea_store=self._idea_store,
+            trace_ctx=self._trace_ctx,
+        )
+        new_level = self._agent_app.reasoning_level
+        if new_level != self._reasoning_level:
+            self._reasoning_level = new_level
+            self.set_status_model(
+                self._selected_model,
+                reasoning_level=self._reasoning_level,
+            )
+        self._sync_app_state()
+        self._start_update_check()
+
+    def switch_session(self, session_id: str) -> None:
+        if self._agent_app is None:
+            super().switch_session(session_id)
+            self._reload_llm_history()
+            return
+        if session_id == self._session_id:
+            return
+        try:
+            snapshot = self._agent_app.switch_session(session_id)
+        except KeyError:
+            self.notify_session(f"Session not found: {session_id}")
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
+        self._restore_session_state()
+
+    def switch_thread(self, thread_id: str) -> None:
+        if self._current_config is None:
+            AceAITUI.switch_thread(self, thread_id)
+            return
+        self._ensure_agent_app()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before switching threads.")
+            )
+            return
+        try:
+            snapshot = agent_app.switch_thread(thread_id)
+        except (KeyError, RuntimeError) as exc:
+            self.append_event(TUIEvent.session_notice(str(exc)))
+            return
+        self._sync_app_state()
+        self.load_events(event_log_to_tui_events(snapshot.event_log))
+        self.notify_session(f"Switched thread {thread_id}")
+
+    def approve_pending_tool(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(approved=True),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool approval",
+            exit_on_error=True,
+        )
+
+    def show_pending_approval(self) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        self.show_approval_request(request)
+
+    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
+        event.stop()
+        if event.approved:
+            self.approve_pending_tool()
+            return
+        self.reject_pending_tool("rejected by caller")
+
+    def reject_pending_tool(self, reason: str) -> None:
+        request = self._pending_approval_request()
+        if request is None:
+            self.append_event(TUIEvent.session_notice("No pending tool approval."))
+            return
+        if reason == "":
+            reason = "rejected by caller"
+        self.clear_approval_request()
+        self._active_worker = self.run_worker(
+            self._stream_approval_decision(approved=False, reason=reason),
+            name="aceai-approval",
+            description="Resume AceAI agent after tool rejection",
+            exit_on_error=True,
+        )
+
+    def _pending_approval_request(self):
+        if self._agent_app is None:
+            return None
+        return self._agent_app.pending_approval_request()
+
+    def show_model(self) -> None:
+        self.append_event(
+            TUIEvent.session_notice(
+                f"Current model: {self._selected_model}\n{model_options_text_for(self._provider_name)}"
+            )
+        )
+
+    def action_config(self) -> None:
+        self.open_config_screen()
+
+    def open_config_screen(self) -> None:
+        api_keys: dict[str, str] = {}
+        if self._current_config is not None:
+            api_keys.update(self._current_config.api_keys)
+            api_keys[self._current_config.provider] = self._current_config.api_key
+        self.push_screen(
+            ConfigScreen(
+                provider_name=self._provider_name,
+                current_model=self._selected_model,
+                default_model=self._current_config.default_model
+                if self._current_config is not None
+                else self._selected_model,
+                skills=self._current_config.skills
+                if self._current_config is not None
+                else "",
+                skill_items=self._available_skill_items(),
+                skill_selection_mode=self._current_config.skill_selection_mode
+                if self._current_config is not None
+                else "all",
+                enabled_skills=tuple(self._current_config.enabled_skills)
+                if self._current_config is not None
+                else (),
+                tool_permission_items=self._available_tool_permission_items(),
+                api_keys=api_keys,
+                compress_threshold=self._current_config.compress_threshold
+                if self._current_config is not None
+                else "100%",
+                reasoning_level=self._reasoning_level,
+            ),
+            self._handle_config_selection,
+        )
+
+    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
+        if selection is None:
+            return
+        if type(selection) is str:
+            self.switch_model(selection)
+            return
+        same_provider = selection.provider == self._provider_name
+        if same_provider and selection.api_key == "" and self._current_config is None:
+            self.switch_model(selection.model)
+            return
+        api_key = self._resolve_selection_api_key(selection, same_provider=same_provider)
+        if api_key == "":
+            self.append_event(
+                TUIEvent.session_notice(
+                    f"API key required for provider {selection.provider}."
+                )
+            )
+            return
+        api_keys = (
+            dict(self._current_config.api_keys)
+            if self._current_config is not None
+            else {}
+        )
+        api_keys[selection.provider] = api_key
+        self.apply_user_config(
+            AgentAppConfig(
+                provider=selection.provider,
+                api_key=api_key,
+                model=selection.model,
+                default_model=selection.default_model,
+                skills=selection.skills,
+                skill_selection_mode=selection.skill_selection_mode,
+                enabled_skills=list(selection.enabled_skills),
+                api_keys=api_keys,
+                tool_permissions=selection.tool_permissions,
+                tool_enabled=selection.tool_enabled,
+                tool_max_calls=selection.tool_max_calls,
+                compress_threshold=selection.compress_threshold,
+                reasoning_level=selection.reasoning_level,
+            )
+        )
+        if same_provider:
+            self.notify_session(
+                f"Updated provider credentials and switched model to {selection.model}"
+            )
+        else:
+            self.notify_session(
+                f"Switched provider to {selection.provider} and model to {selection.model}"
+            )
+
+    def _resolve_selection_api_key(
+        self,
+        selection: ConfigSelection,
+        *,
+        same_provider: bool,
+    ) -> str:
+        if selection.api_key != "":
+            return selection.api_key
+        if same_provider and self._current_config is not None:
+            return self._current_config.api_key
+        return resolve_provider_api_key(selection.provider)
+
+    def apply_user_config(self, config: AgentAppConfig) -> None:
+        normalized = normalize_user_config(config, persist=True)
+        self.apply_config(normalized)
+
+    def switch_model(self, model: str) -> None:
+        if self._active_worker is not None and self._active_worker.is_running:
+            self.append_event(
+                TUIEvent.session_notice(
+                    "Model changes apply after the current run finishes."
+                )
+            )
+            return
+        if not is_model_supported(self._provider_name, model):
+            self.append_event(
+                TUIEvent.session_notice(model_options_text_for(self._provider_name))
+            )
+            return
+        model_changed = model != self._selected_model
+        requested_level = self._reasoning_level
+        if self._current_config is not None:
+            requested_level = self._current_config.reasoning_level
+        next_level = effective_reasoning_level(
+            self._provider_name,
+            model,
+            requested_level,
+        )
+        if self._current_config is not None:
+            next_config = AgentAppConfig(
+                provider=self._current_config.provider,
+                api_key=self._current_config.api_key,
+                model=cast(OpenAIModel, model),
+                default_model=cast(OpenAIModel, model),
+                skills=self._current_config.skills,
+                skill_selection_mode=self._current_config.skill_selection_mode,
+                enabled_skills=self._current_config.enabled_skills,
+                api_keys=self._current_config.api_keys,
+                tool_permissions=self._current_config.tool_permissions,
+                tool_enabled=self._current_config.tool_enabled,
+                tool_max_calls=self._current_config.tool_max_calls,
+                compress_threshold=self._current_config.compress_threshold,
+                reasoning_level=next_level,
+            )
+            self._current_config = normalize_user_config(next_config, persist=True)
+        self._selected_model = cast(OpenAIModel, model)
+        self._reasoning_level = next_level
+        if self._agent_app is not None:
+            self._agent_app.switch_model(
+                self._selected_model,
+                reasoning_level=self._reasoning_level,
+            )
+            self._reasoning_level = self._agent_app.reasoning_level
+            self._sync_app_state()
+        self._persist_session_state()
+        if model_changed:
+            self.reset_status_cache_rate()
+        self.set_status_model(
+            self._selected_model,
+            reasoning_level=self._reasoning_level,
+        )
+        self.notify_session(f"Switched model to {self._selected_model}")
+
+    def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
+        if self._current_config is None:
+            if self._agent is None:
+                return ()
+            return _skill_config_items(self._agent.skill_registry)
+        try:
+            registry = SkillLoader.load_registry(
+                self._current_config.skills,
+                extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+            )
+        except (SkillLoadingError, OSError) as exc:
+            self.notify_session(f"Skill search failed: {exc}")
+            return ()
+        return _skill_config_items(registry)
+
+    def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:
+        configured_permissions = (
+            self._current_config.tool_permissions
+            if self._current_config is not None
+            else {}
+        )
+        configured_enabled = (
+            self._current_config.tool_enabled
+            if self._current_config is not None
+            else {}
+        )
+        configured_max_calls = (
+            self._current_config.tool_max_calls
+            if self._current_config is not None
+            else {}
+        )
+        items: list[ToolPermissionItem] = []
+        for configured_tool in default_agent_tools():
+            permission = configured_permissions.get(configured_tool.name)
+            if permission is None:
+                permission = (
+                    "ask" if configured_tool.metadata.require_approval else "always"
+                )
+            items.append(
+                ToolPermissionItem(
+                    name=configured_tool.name,
+                    description=configured_tool.description,
+                    permission=permission,
+                    enabled=configured_enabled.get(configured_tool.name, True),
+                    max_calls_per_run=configured_max_calls.get(configured_tool.name),
+                    tags=tuple(configured_tool.metadata.tags),
+                )
+            )
+        return tuple(items)
+
+    def _reload_llm_history(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            self._llm_history = []
+            return
+        if self._agent_app is None:
+            event_log = self._session_recorder.store.load_thread_event_log(
+                self._session_id,
+                self._active_thread_id,
+            )
+            self._llm_history = event_log.replay_llm_history()
+            self._active_run = None
+            return
+        self._agent_app.restore_history_from_active_session()
+        self._sync_app_state()
+
+    def _persist_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        if self._agent_app is None:
+            self._session_recorder.store.update_session_state(
+                self._session_id,
+                SessionState(
+                    selected_provider=self._provider_name,
+                    selected_model=self._selected_model,
+                ),
+            )
+            return
+        self._agent_app.persist_session_state()
+
+    def _restore_session_state(self) -> None:
+        if self._session_recorder is None or self._session_id is None:
+            return
+        state = self._session_recorder.store.get_session_state(self._session_id)
+        if state.selected_model == "":
+            return
+        if state.selected_provider == self._provider_name:
+            self.switch_model(state.selected_model)
+
+    def _metadata_sections(self) -> list[MetadataSection]:
+        sections = super()._metadata_sections()
+        if self._agent_app is None:
+            return [
+                *sections,
+                MetadataSection(
+                    title="Agent",
+                    lines=[
+                        f"provider: {self._provider_name}",
+                        f"model: {self._selected_model}",
+                        "configured: no",
+                    ],
+                ),
+            ]
+        return [
+            *sections,
+            *_agent_metadata_sections(self._agent_app),
+        ]
+
+
 def _update_available_notice(result: UpdateCheckResult) -> str:
     return (
         f"AceAI {result.latest_version} is available "
@@ -754,937 +1224,19 @@ def restart_current_process() -> None:
     os.execvp(executable, sys.argv)
 
 
-class AceAIInteractiveTUI(_RuntimeStreamMixin, AceAITUI):
-    """Textual app that runs an Agent from submitted questions."""
-
-    def __init__(
-        self,
-        agent: Agent,
-        *,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        idea_store: IdeaStore | None = None,
-        trace_ctx: Context | None = None,
-        request_meta: LLMRequestMeta | None = None,
-    ) -> None:
-        self._request_meta: LLMRequestMeta = dict(request_meta or {})
-        self._provider_name = "openai"
-        self._reasoning_level = _reasoning_level_from_request_meta(self._request_meta)
-        self._selected_model = _model_from_request_meta(
-            self._request_meta,
-            agent.default_model,
-            self._provider_name,
-        )
-        if self._reasoning_level != "auto" and not supports_reasoning_effort(
-            self._provider_name,
-            self._selected_model,
-        ):
-            self._reasoning_level = "auto"
-        self._request_meta = _request_meta_with_reasoning_level(
-            self._request_meta,
-            self._reasoning_level,
-        )
-        self._request_meta["model"] = self._selected_model
-        super().__init__(
-            events=initial_events or [],
-            model=self._selected_model,
-            reasoning_level=self._reasoning_level,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            idea_store=idea_store,
-            record_events=False,
-        )
-        self._agent = agent
-        self._trace_ctx = trace_ctx
-        self._agent_app = AceAgentApp(
-            agent,
-            provider_name=self._provider_name,
-            selected_model=self._selected_model,
-            initial_history=initial_history,
-            session_store=self._session_store(),
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=self._project,
-            idea_store=self._idea_store,
-            trace_ctx=trace_ctx,
-            request_meta=self._request_meta,
-        )
-        self._persist_session_state()
-        self._llm_history = self._agent_app.llm_history
-        self._active_worker: Worker[None] | None = None
-        self._active_run = self._agent_app.active_run
-        self._cancel_armed = False
-        self._cancel_arm_timer: Timer | None = None
-
-    def start_run(
-        self,
-        question: str,
-        *,
-        citations: tuple[TurnCitation, ...] = (),
-    ) -> None:
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.enqueue_run(question)
-            return
-        if self._agent_app.is_running_suspended:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Choose Approve or Reject before starting another run."
-                )
-            )
-            return
-        self._start_run_now(question, citations=citations)
-
-    def approve_pending_tool(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=True),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool approval",
-            exit_on_error=True,
-        )
-
-    def show_pending_approval(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.show_approval_request(request)
-
-    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
-        event.stop()
-        if event.approved:
-            self.approve_pending_tool()
-            return
-        self.reject_pending_tool("rejected by caller")
-
-    def reject_pending_tool(self, reason: str) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        if reason == "":
-            reason = "rejected by caller"
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=False, reason=reason),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool rejection",
-            exit_on_error=True,
-        )
-
-    def _pending_approval_request(self):
-        return self._agent_app.pending_approval_request()
-
-    def switch_session(self, session_id: str) -> None:
-        if session_id == self._session_id:
-            return
-        try:
-            snapshot = self._agent_app.switch_session(session_id)
-        except KeyError:
-            self.notify_session(f"Session not found: {session_id}")
-            return
-        self._sync_app_state()
-        self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
-        self._restore_session_state()
-
-    def show_model(self) -> None:
-        self.append_event(
-            TUIEvent.session_notice(
-                f"Current model: {self._selected_model}\n{_model_options_text(self._provider_name)}"
-            )
-        )
-
-    def action_config(self) -> None:
-        self.open_config_screen()
-
-    def open_config_screen(self) -> None:
-        self.push_screen(
-            ConfigScreen(
-                provider_name=self._provider_name,
-                current_model=self._selected_model,
-                default_model=cast(OpenAIModel, self._agent.default_model),
-                reasoning_level=self._reasoning_level,
-                skills="auto",
-                skill_items=_skill_config_items(self._agent.skill_registry),
-                skill_selection_mode="all",
-                enabled_skills=(),
-                api_keys={},
-            ),
-            self._handle_config_selection,
-        )
-
-    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
-        if selection is None:
-            return
-        if type(selection) is str:
-            self.switch_model(selection)
-            return
-        if selection.provider != self._provider_name:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Provider changes are only available in the configured AceAI app."
-                )
-            )
-            return
-        self.switch_model(selection.model)
-
-    def switch_model(self, model: str) -> None:
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Model changes apply after the current run finishes."
-                )
-            )
-            return
-        if model not in supported_models(self._provider_name):
-            self.append_event(
-                TUIEvent.session_notice(_model_options_text(self._provider_name))
-            )
-            return
-        model_changed = model != self._selected_model
-        if self._reasoning_level != "auto" and not supports_reasoning_effort(
-            self._provider_name,
-            model,
-        ):
-            self._reasoning_level = "auto"
-        self._selected_model = cast(OpenAIModel, model)
-        self._request_meta = _request_meta_with_reasoning_level(
-            self._request_meta,
-            self._reasoning_level,
-        )
-        self._request_meta["model"] = self._selected_model
-        self._agent_app.switch_model(self._selected_model)
-        self._sync_app_state()
-        if model_changed:
-            self.reset_status_cache_rate()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-        self.notify_session(f"Switched model to {self._selected_model}")
-
-    def _request_meta_for_run(self) -> LLMRequestMeta:
-        request_meta: LLMRequestMeta = dict(self._request_meta)
-        request_meta["model"] = self._selected_model
-        return request_meta
-
-    def _reload_llm_history(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            self._llm_history = []
-            return
-        self._agent_app.restore_history_from_active_session()
-        self._sync_app_state()
-
-    def _persist_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        self._agent_app.persist_session_state()
-
-    def _restore_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        state = self._session_recorder.store.get_session_state(self._session_id)
-        if state.selected_model == "":
-            return
-        if (
-            state.selected_provider != ""
-            and state.selected_provider != self._provider_name
-        ):
-            return
-        if state.selected_model not in supported_models(self._provider_name):
-            return
-        self._selected_model = cast(OpenAIModel, state.selected_model)
-        self._request_meta["model"] = self._selected_model
-        self._agent_app.switch_model(self._selected_model)
-        self._sync_app_state()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-
-    def _metadata_sections(self) -> list[MetadataSection]:
-        return [
-            *super()._metadata_sections(),
-            *_agent_metadata_sections(
-                self._agent,
-                provider_name=self._provider_name,
-                selected_model=self._selected_model,
-            ),
-        ]
-
-
-class AceAIConfiguredTUI(_RuntimeStreamMixin, AceAITUI):
-    """TUI that asks for provider settings before creating the agent."""
-
-    def __init__(
-        self,
-        agent_factory: AgentFactory,
-        *,
-        initial_config: AgentAppConfig | None,
-        initial_question: str,
-        default_model: OpenAIModel,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        idea_store: IdeaStore | None = None,
-        trace_ctx: Context | None = None,
-        request_meta: LLMRequestMeta | None = None,
-    ) -> None:
-        self._request_meta: LLMRequestMeta = dict(request_meta or {})
-        self._provider_name = (
-            initial_config.provider if initial_config is not None else "openai"
-        )
-        self._current_config = initial_config
-        initial_model = (
-            initial_config.model
-            if initial_config is not None
-            else _model_from_request_meta(
-                self._request_meta,
-                default_model,
-                self._provider_name,
-            )
-        )
-        self._reasoning_level = (
-            initial_config.reasoning_level
-            if initial_config is not None
-            else _reasoning_level_from_request_meta(self._request_meta)
-        )
-        if self._reasoning_level != "auto" and not supports_reasoning_effort(
-            self._provider_name,
-            initial_model,
-        ):
-            self._reasoning_level = "auto"
-        self._request_meta = _request_meta_with_reasoning_level(
-            self._request_meta,
-            self._reasoning_level,
-        )
-        self._request_meta["model"] = initial_model
-        super().__init__(
-            events=initial_events or [],
-            model=initial_model,
-            reasoning_level=self._reasoning_level,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            idea_store=idea_store,
-            record_events=False,
-        )
-        self._agent_factory = agent_factory
-        self._initial_config = initial_config
-        self._initial_question = initial_question
-        self._default_model: OpenAIModel = default_model
-        self._trace_ctx = trace_ctx
-        self._selected_model: OpenAIModel = initial_model
-        self._llm_history = list(initial_history or [])
-        self._agent: Agent | None = None
-        self._agent_app: AceAgentApp | None = None
-        self._active_worker: Worker[None] | None = None
-        self._active_run = None
-        self._cancel_armed = False
-        self._cancel_arm_timer: Timer | None = None
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        if self._initial_config is not None:
-            self.apply_config(self._initial_config)
-            return
-        self.push_screen(
-            ProviderSetupScreen(default_model=self._default_model),
-            self._handle_setup_config,
-        )
-
-    def _handle_setup_config(self, config: AgentAppConfig | None) -> None:
-        if config is None:
-            return
-        self.apply_config(config)
-
-    def apply_config(self, config: AgentAppConfig) -> None:
-        next_config = replace_config(config)
-        model_changed = next_config.model != self._selected_model
-        self._provider_name = next_config.provider
-        self._current_config = next_config
-        self._selected_model = next_config.model
-        self._reasoning_level = next_config.reasoning_level
-        self._request_meta = _request_meta_with_reasoning_level(
-            self._request_meta,
-            self._reasoning_level,
-        )
-        self._request_meta["model"] = self._selected_model
-        self._agent = None
-        self._agent_app = None
-        self._active_run = None
-        self._persist_session_state()
-        if model_changed:
-            self.reset_status_cache_rate()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-        if self._initial_question != "":
-            self.start_run(self._initial_question)
-
-    def start_run(
-        self,
-        question: str,
-        *,
-        citations: tuple[TurnCitation, ...] = (),
-    ) -> None:
-        if self._current_config is None:
-            self.query_one(CommandInput).value = question
-            return
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.enqueue_run(question)
-            return
-        self._ensure_agent_app()
-        if self._agent_app.is_running_suspended:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Choose Approve or Reject before starting another run."
-                )
-            )
-            return
-        self._start_run_now(question, citations=citations)
-
-    def _ensure_agent_app(self) -> None:
-        if self._agent_app is not None:
-            return
-        if self._current_config is None:
-            raise RuntimeError("AceAI app is not configured")
-        self._agent = self._agent_factory(self._current_config)
-        self._agent_app = AceAgentApp(
-            self._agent,
-            provider_name=self._provider_name,
-            selected_model=self._selected_model,
-            initial_history=self._llm_history,
-            session_store=self._session_store(),
-            session_recorder=self._session_recorder,
-            session_id=self._session_id,
-            project=self._project,
-            idea_store=self._idea_store,
-            trace_ctx=self._trace_ctx,
-            request_meta=self._request_meta,
-        )
-        self._sync_app_state()
-        self._start_update_check()
-
-    def switch_session(self, session_id: str) -> None:
-        if self._agent_app is None:
-            super().switch_session(session_id)
-            self._reload_llm_history()
-            return
-        if session_id == self._session_id:
-            return
-        try:
-            snapshot = self._agent_app.switch_session(session_id)
-        except KeyError:
-            self.notify_session(f"Session not found: {session_id}")
-            return
-        self._sync_app_state()
-        self.load_events(event_log_to_tui_events(snapshot.event_log))
-        self.notify_session(f"Resumed session {snapshot.metadata.session_id}")
-        self._restore_session_state()
-
-    def switch_thread(self, thread_id: str) -> None:
-        if self._current_config is None:
-            AceAITUI.switch_thread(self, thread_id)
-            return
-        self._ensure_agent_app()
-        _RuntimeStreamMixin.switch_thread(self, thread_id)
-
-    def approve_pending_tool(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=True),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool approval",
-            exit_on_error=True,
-        )
-
-    def show_pending_approval(self) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        self.show_approval_request(request)
-
-    def on_approval_widget_selected(self, event: ApprovalWidget.Selected) -> None:
-        event.stop()
-        if event.approved:
-            self.approve_pending_tool()
-            return
-        self.reject_pending_tool("rejected by caller")
-
-    def reject_pending_tool(self, reason: str) -> None:
-        request = self._pending_approval_request()
-        if request is None:
-            self.append_event(TUIEvent.session_notice("No pending tool approval."))
-            return
-        if reason == "":
-            reason = "rejected by caller"
-        self.clear_approval_request()
-        self._active_worker = self.run_worker(
-            self._stream_approval_decision(approved=False, reason=reason),
-            name="aceai-approval",
-            description="Resume AceAI agent after tool rejection",
-            exit_on_error=True,
-        )
-
-    def _pending_approval_request(self):
-        if self._agent_app is None:
-            return None
-        return self._agent_app.pending_approval_request()
-
-    def show_model(self) -> None:
-        self.append_event(
-            TUIEvent.session_notice(
-                f"Current model: {self._selected_model}\n{_model_options_text(self._provider_name)}"
-            )
-        )
-
-    def action_config(self) -> None:
-        self.open_config_screen()
-
-    def open_config_screen(self) -> None:
-        api_keys: dict[str, str] = {}
-        if self._current_config is not None:
-            api_keys.update(self._current_config.api_keys)
-            api_keys[self._current_config.provider] = self._current_config.api_key
-        self.push_screen(
-            ConfigScreen(
-                provider_name=self._provider_name,
-                current_model=self._selected_model,
-                default_model=self._current_config.default_model
-                if self._current_config is not None
-                else self._selected_model,
-                skills=self._current_config.skills
-                if self._current_config is not None
-                else "",
-                skill_items=self._available_skill_items(),
-                skill_selection_mode=self._current_config.skill_selection_mode
-                if self._current_config is not None
-                else "all",
-                enabled_skills=tuple(self._current_config.enabled_skills)
-                if self._current_config is not None
-                else (),
-                tool_permission_items=self._available_tool_permission_items(),
-                api_keys=api_keys,
-                compress_threshold=self._current_config.compress_threshold
-                if self._current_config is not None
-                else "100%",
-                reasoning_level=self._reasoning_level,
-            ),
-            self._handle_config_selection,
-        )
-
-    def _handle_config_selection(self, selection: ConfigSelection | None) -> None:
-        if selection is None:
-            return
-        if type(selection) is str:
-            self.switch_model(selection)
-            return
-        if selection.provider == self._provider_name:
-            if selection.api_key != "" or self._current_config is not None:
-                api_keys = {}
-                if self._current_config is not None:
-                    api_keys.update(self._current_config.api_keys)
-                api_key = (
-                    selection.api_key
-                    if selection.api_key != ""
-                    else self._current_config.api_key
-                )
-                api_keys[selection.provider] = api_key
-                self.apply_user_config(
-                    AgentAppConfig(
-                        provider=selection.provider,
-                        api_key=api_key,
-                        model=selection.model,
-                        default_model=selection.default_model,
-                        skills=selection.skills,
-                        skill_selection_mode=selection.skill_selection_mode,
-                        enabled_skills=list(selection.enabled_skills),
-                        api_keys=api_keys,
-                        tool_permissions=selection.tool_permissions,
-                        tool_enabled=selection.tool_enabled,
-                        tool_max_calls=selection.tool_max_calls,
-                        compress_threshold=selection.compress_threshold,
-                        reasoning_level=selection.reasoning_level,
-                    )
-                )
-                self.notify_session(
-                    f"Updated provider credentials and switched model to {selection.model}"
-                )
-                return
-            self.switch_model(selection.model)
-            return
-        api_key = selection.api_key
-        if api_key == "":
-            env_name = api_key_env(selection.provider)
-            if env_name in os.environ:
-                api_key = os.environ[env_name]
-        if api_key == "":
-            api_key = default_api_key_for_provider(selection.provider)
-        if api_key == "":
-            self.append_event(
-                TUIEvent.session_notice(
-                    f"API key required for provider {selection.provider}."
-                )
-            )
-            return
-        api_keys = {}
-        if self._current_config is not None:
-            api_keys.update(self._current_config.api_keys)
-        api_keys[selection.provider] = api_key
-        self.apply_user_config(
-            AgentAppConfig(
-                provider=selection.provider,
-                api_key=api_key,
-                model=selection.model,
-                default_model=selection.default_model,
-                skills=selection.skills,
-                skill_selection_mode=selection.skill_selection_mode,
-                enabled_skills=list(selection.enabled_skills),
-                api_keys=api_keys,
-                tool_permissions=selection.tool_permissions,
-                tool_enabled=selection.tool_enabled,
-                tool_max_calls=selection.tool_max_calls,
-                compress_threshold=selection.compress_threshold,
-                reasoning_level=selection.reasoning_level,
-            )
-        )
-        self.notify_session(
-            f"Switched provider to {selection.provider} and model to {selection.model}"
-        )
-
-    def apply_user_config(self, config: AgentAppConfig) -> None:
-        self.apply_config(config)
-        save_config(config)
-
-    def switch_model(self, model: str) -> None:
-        if self._active_worker is not None and self._active_worker.is_running:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "Model changes apply after the current run finishes."
-                )
-            )
-            return
-        if model not in supported_models(self._provider_name):
-            self.append_event(
-                TUIEvent.session_notice(_model_options_text(self._provider_name))
-            )
-            return
-        model_changed = model != self._selected_model
-        reasoning_level = self._reasoning_level
-        if self._current_config is not None:
-            reasoning_level = self._current_config.reasoning_level
-        if reasoning_level != "auto" and not supports_reasoning_effort(
-            self._provider_name,
-            model,
-        ):
-            reasoning_level = "auto"
-        if self._current_config is not None:
-            next_config = AgentAppConfig(
-                provider=self._current_config.provider,
-                api_key=self._current_config.api_key,
-                model=cast(OpenAIModel, model),
-                default_model=cast(OpenAIModel, model),
-                skills=self._current_config.skills,
-                skill_selection_mode=self._current_config.skill_selection_mode,
-                enabled_skills=self._current_config.enabled_skills,
-                api_keys=self._current_config.api_keys,
-                tool_permissions=self._current_config.tool_permissions,
-                tool_enabled=self._current_config.tool_enabled,
-                tool_max_calls=self._current_config.tool_max_calls,
-                compress_threshold=self._current_config.compress_threshold,
-                reasoning_level=reasoning_level,
-            )
-            save_config(next_config)
-            self._current_config = next_config
-        self._selected_model = cast(OpenAIModel, model)
-        self._reasoning_level = reasoning_level
-        self._request_meta = _request_meta_with_reasoning_level(
-            self._request_meta,
-            self._reasoning_level,
-        )
-        self._request_meta["model"] = self._selected_model
-        if self._agent_app is not None:
-            self._agent_app.switch_model(self._selected_model)
-            self._sync_app_state()
-        self._persist_session_state()
-        if model_changed:
-            self.reset_status_cache_rate()
-        self.set_status_model(
-            self._selected_model,
-            reasoning_level=self._reasoning_level,
-        )
-        self.notify_session(f"Switched model to {self._selected_model}")
-
-    def _available_skill_items(self) -> tuple[SkillConfigItem, ...]:
-        if self._current_config is None:
-            if self._agent is None:
-                return ()
-            return _skill_config_items(self._agent.skill_registry)
-        try:
-            registry = SkillLoader.load_registry(
-                self._current_config.skills,
-                extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
-            )
-        except (SkillLoadingError, OSError) as exc:
-            self.notify_session(f"Skill search failed: {exc}")
-            return ()
-        return _skill_config_items(registry)
-
-    def _available_tool_permission_items(self) -> tuple[ToolPermissionItem, ...]:
-        configured_permissions = (
-            self._current_config.tool_permissions
-            if self._current_config is not None
-            else {}
-        )
-        configured_enabled = (
-            self._current_config.tool_enabled
-            if self._current_config is not None
-            else {}
-        )
-        configured_max_calls = (
-            self._current_config.tool_max_calls
-            if self._current_config is not None
-            else {}
-        )
-        items: list[ToolPermissionItem] = []
-        for configured_tool in default_agent_tools():
-            permission = configured_permissions.get(configured_tool.name)
-            if permission is None:
-                permission = (
-                    "ask" if configured_tool.metadata.require_approval else "always"
-                )
-            items.append(
-                ToolPermissionItem(
-                    name=configured_tool.name,
-                    description=configured_tool.description,
-                    permission=permission,
-                    enabled=configured_enabled.get(configured_tool.name, True),
-                    max_calls_per_run=configured_max_calls.get(configured_tool.name),
-                    tags=tuple(configured_tool.metadata.tags),
-                )
-            )
-        return tuple(items)
-
-    def _request_meta_for_run(self) -> LLMRequestMeta:
-        request_meta: LLMRequestMeta = dict(self._request_meta)
-        request_meta["model"] = self._selected_model
-        return request_meta
-
-    def _reload_llm_history(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            self._llm_history = []
-            return
-        if self._agent_app is None:
-            event_log = self._session_recorder.store.load_event_log(self._session_id)
-            self._llm_history = event_log.replay_llm_history()
-            self._active_run = None
-            return
-        self._agent_app.restore_history_from_active_session()
-        self._sync_app_state()
-
-    def _persist_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        if self._agent_app is None:
-            self._session_recorder.store.update_session_state(
-                self._session_id,
-                SessionState(
-                    selected_provider=self._provider_name,
-                    selected_model=self._selected_model,
-                ),
-            )
-            return
-        self._agent_app.persist_session_state()
-
-    def _restore_session_state(self) -> None:
-        if self._session_recorder is None or self._session_id is None:
-            return
-        state = self._session_recorder.store.get_session_state(self._session_id)
-        if state.selected_model == "":
-            return
-        if state.selected_provider == self._provider_name:
-            self.switch_model(state.selected_model)
-
-    def _metadata_sections(self) -> list[MetadataSection]:
-        sections = super()._metadata_sections()
-        if self._agent is None:
-            return [
-                *sections,
-                MetadataSection(
-                    title="Agent",
-                    lines=[
-                        f"provider: {self._provider_name}",
-                        f"model: {self._selected_model}",
-                        "configured: no",
-                    ],
-                ),
-            ]
-        return [
-            *sections,
-            *_agent_metadata_sections(
-                self._agent,
-                provider_name=self._provider_name,
-                selected_model=self._selected_model,
-            ),
-        ]
-
-
-class AceAILiveTUI(AceAIInteractiveTUI):
-    """Textual app that starts a single run on mount."""
-
-    def __init__(
-        self,
-        agent: Agent,
-        question: str,
-        *,
-        initial_events: list[TUIEvent] | None = None,
-        initial_history: list[LLMMessage] | None = None,
-        session_recorder: SessionRecorder | None = None,
-        session_id: str | None = None,
-        project: ProjectMetadata | None = None,
-        trace_ctx: Context | None = None,
-        request_meta: LLMRequestMeta | None = None,
-    ) -> None:
-        super().__init__(
-            agent,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=session_recorder,
-            session_id=session_id,
-            project=project,
-            trace_ctx=trace_ctx,
-            request_meta=request_meta,
-        )
-        self._initial_question = question
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        self.start_run(self._initial_question)
-
-
-def run_interactive_tui(
-    agent: Agent,
-    *,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    request_meta: LLMRequestMeta | None = None,
-) -> None:
-    AceAIInteractiveTUI(
-        agent,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        request_meta=request_meta,
-    ).run()
-
-
-def run_configured_tui(
-    agent_factory: AgentFactory,
-    *,
-    initial_config: AgentAppConfig | None,
-    initial_question: str,
-    default_model: OpenAIModel,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    request_meta: LLMRequestMeta | None = None,
-) -> None:
-    AceAIConfiguredTUI(
-        agent_factory,
-        initial_config=initial_config,
-        initial_question=initial_question,
-        default_model=default_model,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        request_meta=request_meta,
-    ).run()
-
-
-def run_agent_tui(
-    agent: Agent,
-    question: str,
-    *,
-    initial_events: list[TUIEvent] | None = None,
-    initial_history: list[LLMMessage] | None = None,
-    session_recorder: SessionRecorder | None = None,
-    session_id: str | None = None,
-    project: ProjectMetadata | None = None,
-    trace_ctx: Context | None = None,
-    request_meta: LLMRequestMeta | None = None,
-) -> None:
-    AceAILiveTUI(
-        agent,
-        question,
-        initial_events=initial_events,
-        initial_history=initial_history,
-        session_recorder=session_recorder,
-        session_id=session_id,
-        project=project,
-        trace_ctx=trace_ctx,
-        request_meta=request_meta,
-    ).run()
-
-
-def _agent_metadata_sections(
-    agent: Agent,
-    *,
-    provider_name: str,
-    selected_model: str,
-) -> list[MetadataSection]:
-    skills = agent.skill_registry.get_skills()
-    skill_lines = [
-        f"{skill.name}: {skill.description} ({skill.skill_file})" for skill in skills
-    ]
-    executor = agent.executor
-    tool_lines: list[str] = []
-    if isinstance(executor, Executor):
-        for tool in executor.tools.values():
-            tags = ", ".join(tool.metadata.tags)
-            tag_text = f" [{tags}]" if tags else ""
-            tool_lines.append(f"{tool.name}{tag_text}: {tool.description}")
-    hosted_lines = [
-        f"{tool.provider_name}:{tool.native_name}" for tool in agent.hosted_tools
-    ]
+def _agent_metadata_sections(agent_app: AceAgentApp) -> list[MetadataSection]:
+    info = agent_app.runtime_info()
+    skill_lines = agent_app.skill_summary_lines()
+    tool_lines = agent_app.tool_summary_lines()
+    hosted_lines = agent_app.hosted_tool_summary_lines()
     return [
         MetadataSection(
             title="Agent",
             lines=[
-                f"provider: {provider_name}",
-                f"selected model: {selected_model}",
-                f"default model: {agent.default_model}",
-                f"max steps: {agent.max_steps}",
+                f"provider: {info.provider_name}",
+                f"selected model: {info.selected_model}",
+                f"default model: {info.default_model}",
+                f"max steps: {info.max_steps}",
             ],
         ),
         MetadataSection(title=f"Skills ({len(skill_lines)})", lines=skill_lines),

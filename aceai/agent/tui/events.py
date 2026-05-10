@@ -30,7 +30,7 @@ from aceai.core.events import (
     ToolStartedEvent,
 )
 from aceai.core.helpers.string import uuid_str
-from aceai.llm.interface import Record, is_set
+from aceai.llm.interface import Record
 from aceai.llm.models import (
     LLMReasoningSegmentMeta,
     LLMUsage,
@@ -40,8 +40,13 @@ from aceai.llm.models import (
 )
 from aceai.core.models import ToolExecutionResult
 from aceai.agent.citations import TurnCitation, citations_from_payload
-from aceai.agent.cost import CostEstimate, estimate_usage_cost
+from aceai.agent.cost import CostEstimate
 from aceai.agent.session import EventLog, SessionEvent
+from aceai.agent.tui_adapter import (
+    context_summary_text,
+    cost_for_llm_completed,
+    usage_for_llm_completed,
+)
 
 TUIEventKind = Literal[
     "user_message",
@@ -165,12 +170,17 @@ class TUIEvent(Record, kw_only=True):
         )
 
     @classmethod
-    def from_agent_event(cls, event: AgentEvent) -> "TUIEvent":
-        return _agent_event_to_tui_event(event)
+    def from_agent_event(
+        cls,
+        event: AgentEvent,
+        *,
+        provider_name: str | None = None,
+    ) -> "TUIEvent":
+        return _agent_event_to_tui_event(event, provider_name=provider_name)
 
     @classmethod
     def from_session_event(cls, event: SessionEvent) -> "TUIEvent | None":
-        if event.kind == "user_message":
+        if event.kind in ("user_message", "user_steer"):
             citations: tuple[TurnCitation, ...] = ()
             if "citations" in event.payload:
                 citations = citations_from_payload(event.payload["citations"])
@@ -355,7 +365,11 @@ class TUIEvent(Record, kw_only=True):
         )
 
 
-def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
+def _agent_event_to_tui_event(
+    event: AgentEvent,
+    *,
+    provider_name: str | None = None,
+) -> TUIEvent:
     """Convert an agent event into the stable TUI event shape."""
 
     if isinstance(event, LLMStartedEvent):
@@ -432,13 +446,8 @@ def _agent_event_to_tui_event(event: AgentEvent) -> TUIEvent:
         )
     if isinstance(event, LLMCompletedEvent):
         response = event.step.llm_response
-        usage: LLMUsage | None = None
-        if is_set(response.usage):
-            usage = response.usage
-        provider_name = None
-        if response.provider_meta:
-            provider_name = response.provider_meta[0].provider_name
-        cost = estimate_usage_cost(response.model, usage, provider_name=provider_name)
+        usage = usage_for_llm_completed(event)
+        cost = cost_for_llm_completed(event, provider_name=provider_name)
         return TUIEvent(
             kind="llm_completed",
             step_index=event.step_index,
@@ -645,33 +654,10 @@ def _context_compaction_started_content(event: ContextCompactionStartedEvent) ->
 
 
 def _context_compressed_content(event: ContextCompressedEvent) -> str:
-    summary_text = _latest_context_summary_text(event)
+    summary_text = context_summary_text(event)
     if summary_text == "":
         return f"Context compacted. Compression #{event.compression_count}."
     return f"Context compacted. Compression #{event.compression_count}.\n\n{summary_text}"
-
-
-def _latest_context_summary_text(event: ContextCompressedEvent) -> str:
-    for message in event.history:
-        if message.role != "system":
-            continue
-        if len(message.content) != 1:
-            continue
-        part = message.content[0]
-        if part["type"] != "text" or "data" not in part:
-            continue
-        text = part["data"]
-        if text.startswith("<aceai_context_summary"):
-            return _strip_context_summary_tags(text)
-    return ""
-
-
-def _strip_context_summary_tags(text: str) -> str:
-    start = text.find(">")
-    end = text.rfind("</aceai_context_summary>")
-    if start == -1 or end == -1:
-        return text
-    return text[start + 1 : end]
 
 
 def _session_cost(event: SessionEvent) -> CostEstimate | None:

@@ -16,11 +16,8 @@ from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
 from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionStore
 
+from aceai.agent.app import context_window_for_model, supports_reasoning_for_model
 from aceai.agent.cost import format_usd
-from aceai.agent.provider_catalog import (
-    context_window_for_model_any_provider,
-    supports_reasoning_effort_any_provider,
-)
 from .events import TUIEvent
 from .metadata import MetadataScreen, MetadataSection
 from .session_adapter import tui_event_to_session_event
@@ -274,8 +271,13 @@ class AceAITUI(App[None]):
         if self._record_events and self._session_recorder is not None:
             self._session_recorder.record(tui_event_to_session_event(event))
 
-    def append_agent_event(self, event: AgentEvent) -> None:
-        tui_event = TUIEvent.from_agent_event(event)
+    def append_agent_event(
+        self,
+        event: AgentEvent,
+        *,
+        provider_name: str | None = None,
+    ) -> None:
+        tui_event = TUIEvent.from_agent_event(event, provider_name=provider_name)
         if tui_event.kind == "llm_retrying":
             self.notify(
                 tui_event.content,
@@ -501,11 +503,7 @@ class AceAITUI(App[None]):
 
     def _metadata_sections(self) -> list[MetadataSection]:
         usage = self._state.usage
-        max_ctx = (
-            context_window_for_model_any_provider(self._status_model)
-            if self._status_model
-            else None
-        )
+        max_ctx = context_window_for_model(self._status_model)
         ctx_pct = _context_window_pct(usage.current_context_tokens, max_ctx)
         lines = [
             f"session: {self._session_id or '-'}",
@@ -516,9 +514,7 @@ class AceAITUI(App[None]):
             f"status: {self._state.status}",
             f"events: {len(self._state.events)}",
         ]
-        if self._status_model is not None and supports_reasoning_effort_any_provider(
-            self._status_model
-        ):
+        if supports_reasoning_for_model(self._status_model):
             lines.insert(5, f"reasoning: {self._status_reasoning_level}")
         cost_lines = [
             f"context: {_format_tokens(usage.current_context_tokens)}{ctx_pct}",
@@ -863,6 +859,8 @@ def _subagent_panel_states(
         panel_states.append(_main_agent_panel_state(thread_options))
     for option in thread_options:
         if option.role != "subagent":
+            continue
+        if option.thread_id == active_thread_id:
             continue
         panel_states.append(
             TUISubagentState(

@@ -24,6 +24,7 @@ from aceai.llm.openai import OpenAIModel
 
 from aceai.agent.config import (
     AgentAppConfig,
+    default_config_path,
     load_config,
     replace_config,
 )
@@ -31,6 +32,7 @@ from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
 TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
+PLACEHOLDER_API_KEYS = frozenset(("test-key",))
 TUI_EXTRA_INSTALL_HINT = (
     "AceAI TUI dependencies are not installed.\n"
     "Install them with one of:\n"
@@ -41,8 +43,8 @@ TUI_EXTRA_INSTALL_HINT = (
 SessionStore = None
 SessionRecorder = None
 event_log_to_tui_events = None
-run_configured_tui = None
-run_interactive_tui = None
+AceAIConfiguredTUI = None
+MAIN_THREAD_ID = "main"
 
 
 class SessionMetadataLike(Protocol):
@@ -57,8 +59,8 @@ def require_tui_extra() -> None:
     global SessionStore
     global SessionRecorder
     global event_log_to_tui_events
-    global run_configured_tui
-    global run_interactive_tui
+    global AceAIConfiguredTUI
+    global MAIN_THREAD_ID
     if SessionStore is not None:
         return
     try:
@@ -71,9 +73,9 @@ def require_tui_extra() -> None:
         raise
     SessionStore = session_module.SessionStore
     SessionRecorder = session_module.SessionRecorder
+    MAIN_THREAD_ID = session_module.MAIN_THREAD_ID
     event_log_to_tui_events = replay_module.event_log_to_tui_events
-    run_configured_tui = runner_module.run_configured_tui
-    run_interactive_tui = runner_module.run_interactive_tui
+    AceAIConfiguredTUI = runner_module.AceAIConfiguredTUI
 
 
 def build_agent(config: AgentAppConfig) -> Agent:
@@ -118,6 +120,7 @@ def resolve_initial_config(
 ) -> AgentAppConfig | None:
     stored = load_config()
     if stored is not None:
+        stored = _replace_placeholder_api_key(stored)
         if model_from_env:
             selected_model = resolve_model(stored.provider, model)
             return replace_config(
@@ -180,6 +183,49 @@ def resolve_initial_config(
             )
         )
     return None
+
+
+def _replace_placeholder_api_key(config: AgentAppConfig) -> AgentAppConfig:
+    if config.api_key not in PLACEHOLDER_API_KEYS:
+        return config
+    replacement = _api_key_replacement_for_provider(config.provider)
+    if replacement == "":
+        return config
+    api_keys = dict(config.api_keys)
+    api_keys[config.provider] = replacement
+    return replace_config(
+        AgentAppConfig(
+            provider=config.provider,
+            api_key=replacement,
+            model=config.model,
+            default_model=config.default_model,
+            skills=config.skills,
+            skill_selection_mode=config.skill_selection_mode,
+            enabled_skills=config.enabled_skills,
+            api_keys=api_keys,
+            tool_permissions=config.tool_permissions,
+            tool_enabled=config.tool_enabled,
+            tool_max_calls=config.tool_max_calls,
+            compress_threshold=config.compress_threshold,
+            reasoning_level=config.reasoning_level,
+        )
+    )
+
+
+def _api_key_replacement_for_provider(provider: str) -> str:
+    env_name = api_key_env(provider)
+    if env_name in os.environ:
+        return os.environ[env_name]
+    global_config_path = default_config_path()
+    if not global_config_path.exists():
+        return ""
+    global_config = load_config(global_config_path)
+    if global_config is None:
+        return ""
+    candidate = global_config.api_keys.get(provider, "")
+    if candidate in PLACEHOLDER_API_KEYS:
+        return ""
+    return candidate
 
 
 def apply_session_state_to_initial_config(
@@ -290,7 +336,7 @@ def load_session_context(
     require_tui_extra()
     store = SessionStore()
     metadata = store.get_session(session_id)
-    event_log = store.load_event_log(session_id)
+    event_log = store.load_thread_event_log(session_id, MAIN_THREAD_ID)
     return (
         store,
         metadata,
@@ -419,21 +465,7 @@ def run_main(args: argparse.Namespace) -> None:
         config = apply_session_state_to_initial_config(config, session_state)
         recorder = SessionRecorder(store, metadata.session_id)
         session_id = metadata.session_id
-    if config is None:
-        run_configured_tui(
-            build_agent,
-            initial_config=None,
-            initial_question="",
-            default_model=selected_model,
-            initial_events=initial_events,
-            initial_history=initial_history,
-            session_recorder=recorder,
-            session_id=session_id,
-        )
-        if recorder is not None and recorder.saved:
-            print(f"Session saved: {session_id}")
-        return
-    run_configured_tui(
+    AceAIConfiguredTUI(
         build_agent,
         initial_config=config,
         initial_question="",
@@ -442,6 +474,6 @@ def run_main(args: argparse.Namespace) -> None:
         initial_history=initial_history,
         session_recorder=recorder,
         session_id=session_id,
-    )
+    ).run()
     if recorder is not None and recorder.saved:
         print(f"Session saved: {session_id}")

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from typing import AsyncGenerator
 from urllib.error import URLError
@@ -10,6 +11,12 @@ from msgspec import Struct
 from opentelemetry.context import Context
 
 from aceai.agent.citations import TurnCitation, message_with_citations
+from aceai.agent.config import (
+    AgentAppConfig,
+    ReasoningLevel,
+    replace_config,
+    save_config,
+)
 from aceai.agent.features.delegation import (
     ChildAgentResult,
     build_child_agent_result,
@@ -19,15 +26,26 @@ from aceai.agent.features.delegation import (
 )
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
+from aceai.agent.provider_auth import default_api_key_for_provider
+from aceai.agent.provider_catalog import (
+    api_key_env,
+    context_window_for_model_any_provider,
+    model_options,
+    supported_models,
+    supports_reasoning_effort,
+    supports_reasoning_effort_any_provider,
+)
 from aceai.agent.session import (
     EventLog,
     MAIN_THREAD_ID,
+    SessionEvent,
     SessionRecorder,
     SessionState,
     SessionStore,
 )
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
 from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
+from aceai.core.helpers.string import uuid_str
 from aceai.core import (
     Agent,
     AgentRunContext,
@@ -47,8 +65,9 @@ from aceai.core.events import (
     ToolCompletedEvent,
     ToolFailedEvent,
 )
+from aceai.core.models import AgentStep
 from aceai.core.models import ToolApprovalRequest
-from aceai.llm.models import LLMMessage, LLMRequestMeta
+from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMResponse
 
 PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/aceai/json"
 
@@ -70,6 +89,16 @@ class AgentAppEvent(Struct, frozen=True, kw_only=True):
     event: AgentEvent
 
 
+class AppRuntimeInfo(Struct, frozen=True, kw_only=True):
+    provider_name: str
+    selected_model: str
+    default_model: str
+    reasoning_level: ReasoningLevel
+    supports_reasoning: bool
+    context_window: int | None
+    max_steps: str
+
+
 @dataclass
 class ChildThreadRuntime:
     thread_id: str
@@ -77,6 +106,7 @@ class ChildThreadRuntime:
     run: AgentRunContext
     handoff: asyncio.Future[ChildAgentResult]
     task: asyncio.Task[None]
+    intervention_count: int = 0
 
 
 class AceAgentApp:
@@ -88,6 +118,7 @@ class AceAgentApp:
         *,
         provider_name: str,
         selected_model: str,
+        reasoning_level: ReasoningLevel = "auto",
         initial_history: list[LLMMessage] | None = None,
         session_service: SessionService | None = None,
         session_store: SessionStore | None = None,
@@ -96,7 +127,6 @@ class AceAgentApp:
         idea_store: IdeaStore | None = None,
         project: ProjectMetadata | None = None,
         trace_ctx: Context | None = None,
-        request_meta: LLMRequestMeta | None = None,
     ) -> None:
         self._agent = agent
         self._provider_name = provider_name
@@ -106,8 +136,9 @@ class AceAgentApp:
             if session_store is not None
             else default_project()
         )
-        self._request_meta = _copy_request_meta(request_meta)
-        self._request_meta["model"] = selected_model
+        self._reasoning_level: ReasoningLevel = "auto"
+        self._request_meta: LLMRequestMeta = {"model": selected_model}
+        self._set_reasoning_level_internal(reasoning_level)
         self._session_service = session_service or SessionService(
             store=session_store,
             recorder=session_recorder,
@@ -129,6 +160,8 @@ class AceAgentApp:
         self._active_thread_id = MAIN_THREAD_ID
         self._thread_agents: dict[str, Agent] = {MAIN_THREAD_ID: self._agent}
         self._child_runtimes: dict[str, ChildThreadRuntime] = {}
+        self._steered_child_run_ids: set[str] = set()
+        self._stale_child_runtime_tasks: set[asyncio.Task[None]] = set()
         self._queued_questions: dict[str, list[str]] = {}
         self._app_event_subscribers: set[asyncio.Queue[AgentAppEvent | None]] = set()
         self._idea_store = idea_store or IdeaStore()
@@ -158,6 +191,52 @@ class AceAgentApp:
     @property
     def selected_model(self) -> str:
         return self._selected_model
+
+    @property
+    def reasoning_level(self) -> ReasoningLevel:
+        return self._reasoning_level
+
+    @property
+    def model_options_text(self) -> str:
+        return model_options_text_for(self._provider_name)
+
+    def is_model_supported(self, model: str) -> bool:
+        return model in supported_models(self._provider_name)
+
+    def runtime_info(self) -> AppRuntimeInfo:
+        agent = self._agent
+        return AppRuntimeInfo(
+            provider_name=self._provider_name,
+            selected_model=self._selected_model,
+            default_model=str(agent.default_model),
+            reasoning_level=self._reasoning_level,
+            supports_reasoning=supports_reasoning_for_model(self._selected_model),
+            context_window=context_window_for_model(self._selected_model),
+            max_steps=f"{agent.max_steps}",
+        )
+
+    def skill_summary_lines(self) -> list[str]:
+        return [
+            f"{skill.name}: {skill.description} ({skill.skill_file})"
+            for skill in self._agent.skill_registry.get_skills()
+        ]
+
+    def tool_summary_lines(self) -> list[str]:
+        executor = self._agent.executor
+        if not isinstance(executor, Executor):
+            return []
+        lines: list[str] = []
+        for tool in executor.tools.values():
+            tags = ", ".join(tool.metadata.tags)
+            tag_text = f" [{tags}]" if tags else ""
+            lines.append(f"{tool.name}{tag_text}: {tool.description}")
+        return lines
+
+    def hosted_tool_summary_lines(self) -> list[str]:
+        return [
+            f"{tool.provider_name}:{tool.native_name}"
+            for tool in self._agent.hosted_tools
+        ]
 
     @property
     def session_service(self) -> SessionService:
@@ -190,6 +269,10 @@ class AceAgentApp:
     @property
     def queued_questions(self) -> tuple[str, ...]:
         return tuple(self._queued_questions_for_active_thread())
+
+    @property
+    def active_thread_accepts_user_turn(self) -> bool:
+        return self._active_thread_id not in self._child_runtimes
 
     @property
     def is_running_suspended(self) -> bool:
@@ -268,9 +351,74 @@ class AceAgentApp:
         self._thread_runs.pop(self._active_thread_id, None)
 
     def enqueue_turn(self, question: str) -> int:
+        if not self.active_thread_accepts_user_turn:
+            raise RuntimeError(
+                "Delegated subagent thread is still running; switch to main or wait "
+                "for delegate_to_subagent to finish before sending a new message."
+            )
         questions = self._queued_questions_for_active_thread()
         questions.append(question)
         return len(questions)
+
+    def steer_active_child_thread(self, question: str) -> bool:
+        thread_id = self._active_thread_id
+        runtime = self._child_runtimes.get(thread_id)
+        if runtime is None:
+            return False
+        if question == "":
+            raise ValueError("child steer question cannot be empty")
+        if runtime.task.done():
+            self._child_runtimes.pop(thread_id, None)
+            return False
+        child_agent = self._agent_for_thread(thread_id)
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
+        event_log = self._session_service.store.load_thread_event_log(
+            session_id,
+            thread_id,
+        )
+        child_run = child_agent.create_resume_run(
+            question,
+            event_log.replay_llm_history(),
+            trace_ctx=self._trace_ctx,
+            **self._request_meta_for_run(),
+        )
+        child_run.run_state.tools.approved_tool_names = (
+            self._approved_tool_names_for_thread(thread_id)
+        )
+        runtime.intervention_count += 1
+        self._steered_child_run_ids.add(runtime.run.run_id)
+        runtime.run = child_run
+        self._thread_runs[thread_id] = child_run
+        self._active_run = child_run
+        event_id = self._record_child_steer_event(
+            thread_id=thread_id,
+            agent_id=runtime.agent_id,
+            run_id=child_run.run_id,
+            question=question,
+        )
+        self._child_context_event_ids[thread_id] = event_id
+        self._last_context_event_ids[thread_id] = event_id
+        old_task = runtime.task
+        self._stale_child_runtime_tasks.add(old_task)
+        old_task.cancel()
+        runtime.task = asyncio.create_task(
+            self._run_child_thread_runtime(
+                thread_id=thread_id,
+                child_agent=child_agent,
+                child_run=child_run,
+                handoff=runtime.handoff,
+            )
+        )
+        runtime.task.add_done_callback(
+            lambda completed_task: self._complete_child_runtime_task(
+                thread_id=thread_id,
+                task=completed_task,
+                handoff=runtime.handoff,
+            )
+        )
+        return True
 
     def pop_queued_turn(self) -> str | None:
         questions = self._queued_questions_for_active_thread()
@@ -281,10 +429,40 @@ class AceAgentApp:
     def take_queued_turn(self, index: int) -> str:
         return self._queued_questions_for_active_thread().pop(index)
 
-    def switch_model(self, model: str) -> None:
+    def cancel_queued_turn(self, index: int) -> str:
+        return self._queued_questions_for_active_thread().pop(index)
+
+    def switch_model(
+        self,
+        model: str,
+        *,
+        reasoning_level: ReasoningLevel | None = None,
+    ) -> None:
+        if not self.is_model_supported(model):
+            raise ValueError(f"Unsupported model: {model}")
         self._selected_model = model
         self._request_meta["model"] = model
+        next_level = (
+            reasoning_level if reasoning_level is not None else self._reasoning_level
+        )
+        self._set_reasoning_level_internal(next_level)
         self.persist_session_state()
+
+    def set_reasoning_level(self, level: ReasoningLevel) -> None:
+        self._set_reasoning_level_internal(level)
+        self.persist_session_state()
+
+    def _set_reasoning_level_internal(self, level: ReasoningLevel) -> None:
+        if level != "auto" and not supports_reasoning_effort(
+            self._provider_name,
+            self._selected_model,
+        ):
+            level = "auto"
+        self._reasoning_level = level
+        if level == "auto":
+            self._request_meta.pop("reasoning", None)
+        else:
+            self._request_meta["reasoning"] = {"effort": level, "summary": "auto"}
 
     def persist_session_state(self) -> None:
         session_id = self.session_id
@@ -367,6 +545,9 @@ class AceAgentApp:
         self.ensure_session()
         self.persist_session_state()
         thread_id = self._active_thread_id
+        if thread_id in self._child_runtimes:
+            self.steer_active_child_thread(question)
+            return
         agent = self._agent_for_thread(thread_id)
         history = self._history_for_thread(thread_id)
         llm_question = message_with_citations(question, citations)
@@ -641,9 +822,7 @@ class AceAgentApp:
         )
 
     def _request_meta_for_run(self) -> LLMRequestMeta:
-        request_meta = _copy_request_meta(self._request_meta)
-        request_meta["model"] = self._selected_model
-        return request_meta
+        return {**self._request_meta, "model": self._selected_model}
 
     def start_child_thread(
         self,
@@ -725,14 +904,16 @@ class AceAgentApp:
         try:
             return await handoff
         except asyncio.CancelledError:
-            if not runtime_task.done():
-                runtime_task.cancel()
+            runtime = self._child_runtimes.get(thread_id)
+            task_to_cancel = runtime.task if runtime is not None else runtime_task
+            if not task_to_cancel.done():
+                task_to_cancel.cancel()
             self.finish_child_thread(
                 thread_id=thread_id,
                 status="failed",
             )
             try:
-                await runtime_task
+                await task_to_cancel
             except asyncio.CancelledError:
                 pass
             raise
@@ -747,51 +928,100 @@ class AceAgentApp:
     ) -> None:
         events: list[AgentEvent] = []
         final_answer = ""
-        async for event in child_agent.execute(child_run):
+        try:
+            async for event in child_agent.execute(child_run):
+                events.append(event)
+                self.record_child_event(
+                    thread_id=thread_id,
+                    agent_id=child_agent.agent_id,
+                    event=event,
+                )
+                if isinstance(event, RunCompletedEvent):
+                    final_answer = event.final_answer
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status=child_run.status,
+                    )
+                    if not handoff.done():
+                        handoff.set_result(
+                            build_child_agent_result(
+                                thread_id=thread_id,
+                                child_agent=child_agent,
+                                child_run=child_run,
+                                events=events,
+                                final_answer=final_answer,
+                            )
+                        )
+                    return
+                if isinstance(event, RunSuspendedEvent):
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status="suspended",
+                    )
+                    if not handoff.done():
+                        handoff.set_exception(
+                            ToolExecutionError(
+                                "delegated subagent suspended for approval; "
+                                "delegate_to_subagent only supports approval-free child tools"
+                            )
+                        )
+                    return
+                if isinstance(event, RunFailedEvent):
+                    self.finish_child_thread(
+                        thread_id=thread_id,
+                        status="failed",
+                    )
+                    if not handoff.done():
+                        handoff.set_exception(ToolExecutionError(event.error))
+                    return
+        except asyncio.CancelledError:
+            if child_run.run_id in self._steered_child_run_ids:
+                self._steered_child_run_ids.remove(child_run.run_id)
+                raise
+            error = "delegated subagent run was cancelled before a terminal event"
+            child_run.run_state.status = "failed"
+            event = _cancelled_child_run_failed_event(
+                child_run=child_run,
+                events=events,
+                error=error,
+            )
             events.append(event)
             self.record_child_event(
                 thread_id=thread_id,
                 agent_id=child_agent.agent_id,
                 event=event,
             )
-            if isinstance(event, RunCompletedEvent):
-                final_answer = event.final_answer
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status=child_run.status,
-                )
-                if not handoff.done():
-                    handoff.set_result(
-                        build_child_agent_result(
-                            thread_id=thread_id,
-                            child_agent=child_agent,
-                            child_run=child_run,
-                            events=events,
-                            final_answer=final_answer,
-                        )
-                    )
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            if not handoff.done():
+                handoff.set_exception(ToolExecutionError(error))
+            raise
+        if child_run.status == "running":
+            if child_run.run_id in self._steered_child_run_ids:
+                self._steered_child_run_ids.remove(child_run.run_id)
                 return
-            if isinstance(event, RunSuspendedEvent):
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status="suspended",
-                )
-                if not handoff.done():
-                    handoff.set_exception(
-                        ToolExecutionError(
-                            "delegated subagent suspended for approval; "
-                            "delegate_to_subagent only supports approval-free child tools"
-                        )
-                    )
-                return
-            if isinstance(event, RunFailedEvent):
-                self.finish_child_thread(
-                    thread_id=thread_id,
-                    status="failed",
-                )
-                if not handoff.done():
-                    handoff.set_exception(ToolExecutionError(event.error))
-                return
+            error = "delegated subagent run was cancelled before a terminal event"
+            child_run.run_state.status = "failed"
+            event = _cancelled_child_run_failed_event(
+                child_run=child_run,
+                events=events,
+                error=error,
+            )
+            events.append(event)
+            self.record_child_event(
+                thread_id=thread_id,
+                agent_id=child_agent.agent_id,
+                event=event,
+            )
+            self.finish_child_thread(
+                thread_id=thread_id,
+                status="failed",
+            )
+            if not handoff.done():
+                handoff.set_exception(ToolExecutionError(error))
+            return
         self.finish_child_thread(
             thread_id=thread_id,
             status=child_run.status,
@@ -814,6 +1044,12 @@ class AceAgentApp:
         task: asyncio.Task[None],
         handoff: asyncio.Future[ChildAgentResult],
     ) -> None:
+        if task in self._stale_child_runtime_tasks:
+            self._stale_child_runtime_tasks.remove(task)
+            return
+        runtime = self._child_runtimes.get(thread_id)
+        if runtime is not None and runtime.task is not task:
+            return
         self._child_runtimes.pop(thread_id, None)
         if task.cancelled():
             if not handoff.done():
@@ -826,6 +1062,30 @@ class AceAgentApp:
                 status="failed",
             )
             handoff.set_exception(exception)
+
+    def _record_child_steer_event(
+        self,
+        *,
+        thread_id: str,
+        agent_id: str,
+        run_id: str,
+        question: str,
+    ) -> str:
+        event_id = self._session_service.record_session_event(
+            SessionEvent(
+                event_id=uuid_str(),
+                thread_id=thread_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                step_id=None,
+                step_index=None,
+                kind="user_steer",
+                payload={"content": question},
+            )
+        )
+        if event_id is None:
+            raise RuntimeError("user_steer did not persist a session event")
+        return event_id
 
     def record_child_event(
         self,
@@ -971,16 +1231,102 @@ class AceAgentApp:
         return snapshot.history
 
 
-def _copy_request_meta(request_meta: LLMRequestMeta | None) -> LLMRequestMeta:
-    if request_meta is None:
-        return {}
-    return {
-        **request_meta,
-    }
+def effective_reasoning_level(
+    provider_name: str,
+    model: str,
+    level: ReasoningLevel,
+) -> ReasoningLevel:
+    if level == "auto":
+        return "auto"
+    if not supports_reasoning_effort(provider_name, model):
+        return "auto"
+    return level
+
+
+def model_options_text_for(provider_name: str) -> str:
+    names = ", ".join(option[1] for option in model_options(provider_name))
+    return f"Available models: {names}"
+
+
+def is_model_supported(provider_name: str, model: str) -> bool:
+    return model in supported_models(provider_name)
+
+
+def resolve_provider_api_key(provider_name: str) -> str:
+    """Resolve an API key for the provider from env var, then default auth file.
+
+    Returns "" if neither source has a key.
+    """
+
+    env_name = api_key_env(provider_name)
+    api_key = os.environ.get(env_name, "")
+    if api_key != "":
+        return api_key
+    return default_api_key_for_provider(provider_name)
+
+
+def normalize_user_config(
+    config: AgentAppConfig,
+    *,
+    persist: bool = False,
+) -> AgentAppConfig:
+    """Validate the config and optionally persist it to the project file."""
+
+    next_config = replace_config(config)
+    if persist:
+        save_config(next_config)
+    return next_config
+
+
+def context_window_for_model(model: str | None) -> int | None:
+    if model is None or model == "":
+        return None
+    return context_window_for_model_any_provider(model)
+
+
+def supports_reasoning_for_model(model: str | None) -> bool:
+    if model is None or model == "":
+        return False
+    return supports_reasoning_effort_any_provider(model)
 
 
 def _agent_event_updates_context(event: AgentEvent) -> bool:
     return isinstance(event, LLMCompletedEvent | ToolCompletedEvent | ToolFailedEvent)
+
+
+def _cancelled_child_run_failed_event(
+    *,
+    child_run: AgentRunContext,
+    events: list[AgentEvent],
+    error: str,
+) -> RunFailedEvent:
+    if events:
+        step_index = events[-1].step_index
+        step_id = events[-1].step_id
+        failed_step = AgentStep(
+            step_id=step_id,
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+    elif child_run.steps:
+        step_index = len(child_run.steps)
+        step_id = child_run.steps[-1].step_id
+        failed_step = AgentStep(
+            step_id=step_id,
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+    else:
+        step_index = len(child_run.steps)
+        failed_step = AgentStep(
+            llm_response=LLMResponse(text="", status="failed"),
+        )
+        step_id = failed_step.step_id
+    return RunFailedEvent(
+        run_id=child_run.run_id,
+        step_index=step_index,
+        step_id=failed_step.step_id,
+        step=failed_step,
+        error=error,
+    )
 
 
 def _last_context_source_event_id(event_log: EventLog) -> str | None:

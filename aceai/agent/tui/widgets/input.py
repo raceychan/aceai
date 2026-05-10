@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from rich.cells import cell_len, set_cell_size
+from rich.style import Style
 from rich.text import Text
 from textual.events import Click, Key
 from textual.message import Message
@@ -190,6 +191,11 @@ class QueuedTurnsWidget(Static):
             super().__init__()
             self.index = index
 
+    class Cancelled(Message):
+        def __init__(self, *, index: int) -> None:
+            super().__init__()
+            self.index = index
+
     DEFAULT_CSS = """
     QueuedTurnsWidget {
         height: auto;
@@ -217,38 +223,85 @@ class QueuedTurnsWidget(Static):
             self.display = False
             self.add_class("hidden")
             self.display_text = ""
-            self.update("")
+            if self.is_mounted:
+                self.update("")
             return
         self.display = True
         self.remove_class("hidden")
-        self.display_text = "\n".join(
-            ["queued - click a line to steer"]
-            + [
-                _queued_button_label(index, question)
-                for index, question in enumerate(questions)
-            ]
+        plain_lines, renderable = _queued_turns_renderable(
+            questions,
+            width=_queued_content_width(self),
         )
-        self.update(self.display_text)
+        self.display_text = "\n".join(plain_lines)
+        if self.is_mounted:
+            self.update(renderable)
 
     @property
     def renderable(self) -> str:
         return self.display_text
 
     def on_click(self, event: Click) -> None:
-        index = event.y - 1
-        if index < 0:
+        if event.style is None:
             return
-        if index >= len(self._questions):
+        action = event.style.meta.get("queued_action")
+        index = event.style.meta.get("queued_index")
+        if type(index) is not int:
             return
         event.stop()
-        self.post_message(self.Selected(index=index))
+        if action == "cancel":
+            self.post_message(self.Cancelled(index=index))
+            return
+        if action == "steer":
+            self.post_message(self.Selected(index=index))
 
 
-def _queued_button_label(index: int, question: str) -> str:
+def _queued_turns_renderable(
+    questions: tuple[str, ...],
+    *,
+    width: int,
+) -> tuple[list[str], Text]:
+    lines = ["queued messages"]
+    renderable = Text("queued messages")
+    for index, question in enumerate(questions):
+        body, spacing = _queued_row_body(index, question, width=width)
+        lines.append(f"{body}{spacing}> x")
+        renderable.append("\n")
+        renderable.append(body)
+        renderable.append(spacing)
+        renderable.append(">", style=_queued_action_style(index, "steer"))
+        renderable.append(" ")
+        renderable.append("x", style=_queued_action_style(index, "cancel"))
+    return lines, renderable
+
+
+def _queued_row_body(index: int, question: str, *, width: int) -> tuple[str, str]:
     first_line = question.splitlines()[0] if question.splitlines() else ""
-    if len(first_line) > 96:
-        first_line = f"{first_line[:93]}..."
-    return f"{index + 1}. {first_line}"
+    turn_number = index + 1
+    body = f"{turn_number}. {first_line}"
+    action_width = 3
+    max_body_width = max(width - action_width - 2, 16)
+    if cell_len(body) > max_body_width:
+        body = set_cell_size(body, max_body_width - 3) + "..."
+    spacing = " " * max(width - cell_len(body) - action_width, 2)
+    return body, spacing
+
+
+def _queued_content_width(widget: Static) -> int:
+    width = widget.content_size.width
+    if width > 0:
+        return width
+    return 96
+
+
+def _queued_action_style(index: int, action: str) -> Style:
+    return Style(
+        bold=True,
+        color="#eceff4",
+        meta={
+            "queued_action": action,
+            "queued_index": index,
+        },
+    )
 
 
 class CitationPreviewWidget(Static):

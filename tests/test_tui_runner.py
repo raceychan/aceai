@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from ididi import Graph
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 
 from aceai import __version__
@@ -36,6 +37,7 @@ from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import clear_config, current_config, load_config
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.agent import app as agent_app_module
+from aceai.agent import session_service as session_service_module
 from aceai.agent.app import UpdateCheckResult
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectStore
@@ -45,8 +47,6 @@ from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import (
     UPDATE_INSTRUCTIONS,
     AceAIConfiguredTUI,
-    AceAIInteractiveTUI,
-    AceAILiveTUI,
     UpdateCommandResult,
 )
 from aceai.agent.tui.setup import (
@@ -73,7 +73,7 @@ from aceai.agent.tui.widgets.input import (
     _citation_preview_renderable,
     _citation_preview_text,
 )
-from textual.events import Key
+from textual.events import Click, Key
 from textual.containers import VerticalScroll
 from textual.widgets import (
     Button,
@@ -120,10 +120,34 @@ def write_skill(root: Path, name: str, description: str, body: str) -> Path:
     return skill_dir
 
 
+def _make_interactive_tui_from_agent(agent: Agent, **kwargs):
+    config = AgentAppConfig(
+        provider="openai",
+        api_key="test-key",
+        model=agent.default_model,
+        default_model=agent.default_model,
+        api_keys={"openai": "test-key"},
+    )
+    def agent_factory(cfg):
+        return agent
+    return AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=config,
+        initial_question="",
+        default_model=agent.default_model,
+        **kwargs,
+    )
+
+
 @pytest.fixture(autouse=True)
 def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
     store = SessionStore(tmp_path / "sessions")
     monkeypatch.setattr(tui_app_module, "SessionStore", lambda **kwargs: store)
+    monkeypatch.setattr(
+        session_service_module,
+        "SessionStore",
+        lambda **kwargs: store,
+    )
 
     async def no_update() -> None:
         return None
@@ -268,35 +292,6 @@ class GatedMultiRunLLMService:
 
 
 @pytest.mark.anyio
-async def test_live_tui_streams_agent_events_into_state() -> None:
-    llm_service = StubLLMService(
-        [
-            LLMStreamEvent(
-                event_type="response.output_text.delta",
-                text_delta="hello",
-            ),
-            LLMStreamEvent(
-                event_type="response.completed",
-                response=LLMResponse(text="hello"),
-            ),
-        ]
-    )
-    agent = Agent(
-        prompt="Prompt",
-        default_model="gpt-4o",
-        llm_service=llm_service,  # type: ignore[arg-type]
-        executor=StubExecutor(),  # type: ignore[arg-type]
-    )
-    app = AceAILiveTUI(agent, "Question?")
-
-    async with app.run_test() as pilot:
-        await _wait_until(pilot, lambda: app._state.status == "completed")
-        assert app._state.status == "completed"
-        assert app._state.final_answer == "hello"
-        assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "Question?"
-
-
-@pytest.mark.anyio
 async def test_interactive_tui_submits_question_from_input(
     tui_session_store: SessionStore,
 ) -> None:
@@ -318,7 +313,7 @@ async def test_interactive_tui_submits_question_from_input(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
     assert app._session_recorder is None
     assert app._session_id is None
 
@@ -363,7 +358,7 @@ async def test_interactive_tui_start_run_displays_citations_separately(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         app.start_run(
@@ -472,7 +467,7 @@ async def test_interactive_tui_enter_key_submits_question() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -493,7 +488,7 @@ async def test_interactive_tui_enter_key_completes_then_submits_slash_command() 
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -521,7 +516,7 @@ async def test_interactive_tui_clear_command_resets_state() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test():
         app.load_events([])
@@ -570,7 +565,7 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -617,7 +612,7 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -634,7 +629,8 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         assert app._agent_app.queued_questions == ("Second?",)
         queued_turns = app.query_one(QueuedTurnsWidget)
         assert not queued_turns.has_class("hidden")
-        assert queued_turns.renderable == ("queued - click a line to steer\n1. Second?")
+        assert queued_turns.renderable.startswith("queued messages\n1. Second?")
+        assert queued_turns.renderable.endswith("> x")
 
         gate.set()
         await _wait_until(pilot, lambda: app._state.final_answer == "second")
@@ -644,6 +640,47 @@ async def test_interactive_tui_enqueues_question_while_run_is_active() -> None:
         assert queued_turns.has_class("hidden")
         assert app._state.final_answer == "second"
         assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second?"
+
+
+def test_queued_turns_widget_clicks_ascii_actions(monkeypatch) -> None:
+    widget = QueuedTurnsWidget()
+    messages: list[object] = []
+    monkeypatch.setattr(widget, "post_message", messages.append)
+
+    widget.on_click(
+        Click(
+            widget,
+            x=90,
+            y=1,
+            delta_x=90,
+            delta_y=1,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            style=Style(meta={"queued_action": "steer", "queued_index": 0}),
+        )
+    )
+    widget.on_click(
+        Click(
+            widget,
+            x=92,
+            y=1,
+            delta_x=92,
+            delta_y=1,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            style=Style(meta={"queued_action": "cancel", "queued_index": 0}),
+        )
+    )
+
+    assert len(messages) == 2
+    assert isinstance(messages[0], QueuedTurnsWidget.Selected)
+    assert messages[0].index == 0
+    assert isinstance(messages[1], QueuedTurnsWidget.Cancelled)
+    assert messages[1].index == 0
 
 
 @pytest.mark.anyio
@@ -664,13 +701,13 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
             [
                 LLMStreamEvent(
                     event_type="response.completed",
-                    response=LLMResponse(text="second"),
+                    response=LLMResponse(text="first"),
                 ),
             ],
             [
                 LLMStreamEvent(
                     event_type="response.completed",
-                    response=LLMResponse(text="first"),
+                    response=LLMResponse(text="second"),
                 ),
             ],
         ],
@@ -682,7 +719,7 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -703,16 +740,84 @@ async def test_interactive_tui_clicking_queued_question_steers_it() -> None:
 
         queued_turns = app.query_one(QueuedTurnsWidget)
         assert app._agent_app.queued_questions == ("First queued", "Second queued")
-        queued_turns.post_message(QueuedTurnsWidget.Selected(index=1))
+        queued_turns.post_message(QueuedTurnsWidget.Selected(index=0))
         await _wait_until(pilot, lambda: len(llm_service.calls) == 3)
 
         assert len(llm_service.calls) == 3
         assert app._agent_app.queued_questions == ()
-        assert app._state.final_answer == "first"
+        assert app._state.final_answer == "second"
         assert (
-            llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second queued"
+            llm_service.calls[1]["messages"][-1].content[0]["data"] == "First queued"
         )
-        assert llm_service.calls[2]["messages"][-1].content[0]["data"] == "First queued"
+        assert llm_service.calls[2]["messages"][-1].content[0]["data"] == "Second queued"
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_clicking_queued_cancel_removes_question() -> None:
+    gate = asyncio.Event()
+    llm_service = GatedMultiRunLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="active",
+                ),
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="active"),
+                ),
+            ],
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="second"),
+                ),
+            ],
+        ],
+        gate=gate,
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "Active"))
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
+        app.on_input_submitted(Input.Submitted(command_input, "First queued"))
+        app.on_input_submitted(Input.Submitted(command_input, "Second queued"))
+        await _wait_until(
+            pilot,
+            lambda: (
+                app._agent_app.queued_questions
+                == (
+                    "First queued",
+                    "Second queued",
+                )
+            ),
+        )
+
+        queued_turns = app.query_one(QueuedTurnsWidget)
+        queued_turns.post_message(QueuedTurnsWidget.Cancelled(index=0))
+        await _wait_until(
+            pilot,
+            lambda: app._agent_app.queued_questions == ("Second queued",),
+        )
+
+        assert any(
+            event.kind == "session_notice"
+            and event.content == "Cancelled queued message 1: First queued"
+            for event in app._state.events
+        )
+        gate.set()
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 2)
+
+        assert app._agent_app.queued_questions == ()
+        assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second queued"
 
 
 @pytest.mark.anyio
@@ -751,7 +856,7 @@ async def test_interactive_tui_steer_cancels_active_run_and_keeps_queue() -> Non
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -797,7 +902,7 @@ async def test_interactive_tui_escape_cancels_active_run_and_keeps_queue() -> No
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -866,7 +971,7 @@ async def test_interactive_tui_approves_suspended_tool_and_continues() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -932,7 +1037,7 @@ async def test_interactive_tui_accepts_typed_approval_shortcut() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -985,7 +1090,7 @@ async def test_interactive_tui_shows_next_approval_after_resume_suspends_again()
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1029,7 +1134,7 @@ async def test_interactive_tui_persists_selected_model_in_session_state(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(
+    app = _make_interactive_tui_from_agent(
         agent,
         session_recorder=SessionRecorder(store, metadata.session_id),
         session_id=metadata.session_id,
@@ -1055,7 +1160,7 @@ async def test_interactive_tui_model_only_session_finalizes_as_empty(tmp_path) -
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(
+    app = _make_interactive_tui_from_agent(
         agent,
         session_recorder=SessionRecorder(store, metadata.session_id),
         session_id=metadata.session_id,
@@ -1079,7 +1184,7 @@ async def test_interactive_tui_status_bar_shows_selected_model() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         status = app.query_one(StatusBarWidget)
@@ -1139,7 +1244,7 @@ async def test_interactive_tui_status_bar_shows_usage() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1183,7 +1288,7 @@ async def test_interactive_tui_switch_model_resets_cache_rate() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1307,9 +1412,10 @@ async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=Executor(Graph(), [], skill_path=tmp_path / "skills"),
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test():
+        app._ensure_agent_app()
         sections = app._metadata_sections()
 
     section_lines = {section.title: "\n".join(section.lines) for section in sections}
@@ -1344,9 +1450,10 @@ async def test_metadata_screen_scrolls_and_keeps_close_button(tmp_path) -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=Executor(Graph(), [], skill_path=skill_root),
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test(size=(100, 24)) as pilot:
+        app._ensure_agent_app()
         app.open_metadata_screen()
         await pilot.pause()
         await _wait_until(
@@ -1380,7 +1487,7 @@ async def test_interactive_tui_model_selection_callback_updates_model() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1400,7 +1507,7 @@ async def test_interactive_tui_shortcuts_and_commands_route_to_actions() -> None
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
     calls: list[str] = []
     app.open_config_screen = lambda: calls.append("config")
     app._show_ideas = lambda: calls.append("ideas")
@@ -1484,7 +1591,7 @@ async def test_interactive_tui_shows_slash_command_completions() -> None:
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -1520,7 +1627,7 @@ async def test_interactive_tui_filters_and_tabs_slash_command_completion() -> No
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -1549,7 +1656,7 @@ async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() ->
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1581,7 +1688,7 @@ async def test_interactive_tui_idea_command_saves_structured_idea(tmp_path) -> N
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -1607,7 +1714,7 @@ async def test_interactive_tui_idea_command_saves_multiline_idea(tmp_path) -> No
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
 
     async with app.run_test():
         command_input = app.query_one(CommandInput)
@@ -1629,7 +1736,7 @@ async def test_interactive_tui_idea_command_opens_fifo_picker(tmp_path) -> None:
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
     idea_store.capture("first idea", project=app._project)
     idea_store.capture("second idea", project=app._project)
 
@@ -1671,7 +1778,7 @@ async def test_interactive_tui_idea_picker_scrolls_highlighted_row_into_view(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
     for index in range(18):
         idea_store.capture(f"idea {index}", project=app._project)
 
@@ -1711,7 +1818,7 @@ async def test_interactive_tui_idea_picker_shows_other_project_when_current_empt
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(
+    app = _make_interactive_tui_from_agent(
         agent,
         idea_store=idea_store,
         project=current_project,
@@ -1756,7 +1863,7 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
     idea_store.capture(long_content, project=app._project)
 
     async with app.run_test() as pilot:
@@ -1796,7 +1903,7 @@ async def test_interactive_tui_idea_picker_adds_idea(tmp_path) -> None:
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
     idea_store.capture("first idea", project=app._project)
 
     async with app.run_test() as pilot:
@@ -1852,7 +1959,7 @@ async def test_interactive_tui_idea_delete_command_removes_recent_idea(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent, idea_store=idea_store)
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
     idea_store.capture("first idea", project=app._project)
     idea_store.capture("second idea", project=app._project)
 
@@ -1887,7 +1994,7 @@ async def test_interactive_tui_update_command_runs_upgrade_and_restarts(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1921,7 +2028,7 @@ async def test_interactive_tui_update_command_reports_upgrade_failure(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -1958,9 +2065,10 @@ async def test_interactive_tui_automatically_reports_available_update(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
+        app._ensure_agent_app()
         await _wait_until(
             pilot,
             lambda: (
@@ -1989,9 +2097,10 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
+        app._ensure_agent_app()
         app._start_update_check()
         await _wait_until(
             pilot,
@@ -2027,10 +2136,11 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         app.on_mount()
+        app._ensure_agent_app()
         await _wait_until(pilot, lambda: calls == 1)
 
     assert calls == 1
@@ -2044,7 +2154,7 @@ async def test_interactive_tui_stats_command_opens_stats_screen() -> None:
         llm_service=StubLLMService([]),  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
     calls: list[str] = []
     app.open_stats_screen = lambda: calls.append("stats")
 
@@ -2071,7 +2181,7 @@ async def test_interactive_tui_unknown_slash_input_runs_as_question() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -2097,7 +2207,7 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(agent)
+    app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
         command_input = app.query_one(CommandInput)
@@ -3123,7 +3233,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(
+    app = _make_interactive_tui_from_agent(
         agent,
         initial_events=event_log_to_tui_events(store.load_event_log(first.session_id)),
         initial_history=[],
@@ -3132,6 +3242,7 @@ async def test_interactive_tui_session_selection_callback_switches_session(
     )
 
     async with app.run_test():
+        app._ensure_agent_app()
         app._handle_session_selection(second.session_id)
 
         assert app._session_id == second.session_id
@@ -3220,7 +3331,7 @@ async def test_interactive_tui_subagents_command_switches_active_thread(
         llm_service=llm_service,  # type: ignore[arg-type]
         executor=StubExecutor(),  # type: ignore[arg-type]
     )
-    app = AceAIInteractiveTUI(
+    app = _make_interactive_tui_from_agent(
         agent,
         initial_events=event_log_to_tui_events(
             store.load_thread_event_log(metadata.session_id, MAIN_THREAD_ID)
@@ -3244,6 +3355,10 @@ async def test_interactive_tui_subagents_command_switches_active_thread(
         app._command_subagents("")
         assert not subagents.has_class("hidden")
         assert "main agent" in subagents.renderable
+        assert "parent conversation" in subagents.renderable
+        assert "activate returns to main" in subagents.renderable
+        assert "Inspect" not in subagents.renderable
+        assert "< [1] >" in subagents.renderable
         assert activate.label == "activate"
         activate.press()
         await pilot.pause()

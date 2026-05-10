@@ -1,5 +1,23 @@
 # Changelog
 
+## AceAI v0.2.23
+
+### Improvements
+
+- `agent-app`: Move model metadata, reasoning effort, config persistence, tool summaries, and request metadata ownership into `AceAgentApp` so the TUI consumes app-layer state instead of rebuilding provider details itself.
+- `tui`: Simplify the interactive runner around app-layer events, add cancellable queued messages, and make the subagent selector clearer about main-thread versus child-thread activation.
+- `docs`: Stop tracking obsolete design specs now that the app-layer/TUI boundary and multi-agent thread phases have been implemented.
+
+### Fixes
+
+- `subagents`: Allow steering an active delegated child thread by recording a child steer event, canceling stale child runtime tasks, and keeping the delegated handoff attached to the current child run.
+- `sessions`: Preserve active thread state and subagent session replay behavior when switching sessions or replaying thread-aware histories.
+
+### Breaking Changes
+
+- `tui`: `AceAIInteractiveTUI` now constructs and reads runtime/provider state through `AceAgentApp`; callers that reached into runner-owned provider metadata or request-meta internals must use the app-layer accessors instead.
+- `delegation`: Sending normal input while a delegated child thread is active is treated as child-thread steering; callers that want a new parent turn must switch back to the main thread before submitting input.
+
 ## AceAI v0.2.22
 
 ### Features

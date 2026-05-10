@@ -13,6 +13,7 @@ from textual.events import Key, MouseScrollDown, MouseScrollUp, Resize
 from textual.message import Message
 from textual.widgets import Button, RichLog
 
+from aceai.agent.session import MAIN_THREAD_ID
 from aceai.agent.tui.state import TUISubagentState, TUISubagentToolResult
 
 
@@ -292,6 +293,16 @@ def _subagent_status_renderable(
     active_thread_id: str,
 ) -> RenderableType:
     subagent = subagents[page_index]
+    if _is_main_agent_panel(subagent):
+        return Group(
+            _subagent_overview(subagents),
+            Text(""),
+            _page_carousel_renderable(len(subagents), page_index, 42),
+            Text(""),
+            _main_agent_title(index=page_index),
+            Text(""),
+            _main_agent_panel(subagent),
+        )
     return Group(
         _subagent_overview(subagents),
         Text(""),
@@ -324,6 +335,8 @@ def _empty_subagent_status_renderable(
 
 
 def _subagent_text_lines(index: int, subagent: TUISubagentState) -> list[str]:
+    if _is_main_agent_panel(subagent):
+        return _main_agent_text_lines(index, subagent)
     lines = [
         "",
         f"#{index + 1} [{subagent.status}] {_subagent_label(subagent)}",
@@ -418,11 +431,12 @@ def _page_arrow_style(enabled: bool) -> str:
 
 
 def _subagent_counts(subagents: list[TUISubagentState]) -> str:
-    running = _subagent_count(subagents, "running")
-    completed = _subagent_count(subagents, "completed")
-    failed = _subagent_count(subagents, "failed")
+    child_subagents = _child_subagent_panels(subagents)
+    running = _subagent_count(child_subagents, "running")
+    completed = _subagent_count(child_subagents, "completed")
+    failed = _subagent_count(child_subagents, "failed")
     return (
-        f"{len(subagents)} total | {running} running | "
+        f"{len(child_subagents)} total | {running} running | "
         f"{completed} done | {failed} failed"
     )
 
@@ -433,6 +447,27 @@ def _subagent_count(subagents: list[TUISubagentState], status: str) -> int:
         if subagent.status == status:
             count += 1
     return count
+
+
+def _is_main_agent_panel(subagent: TUISubagentState) -> bool:
+    return subagent.thread_id == MAIN_THREAD_ID
+
+
+def _has_main_agent_panel(subagents: list[TUISubagentState]) -> bool:
+    for subagent in subagents:
+        if _is_main_agent_panel(subagent):
+            return True
+    return False
+
+
+def _child_subagent_panels(
+    subagents: list[TUISubagentState],
+) -> list[TUISubagentState]:
+    return [
+        subagent
+        for subagent in subagents
+        if not _is_main_agent_panel(subagent)
+    ]
 
 
 def _append_subagent_card(text: Text, index: int, subagent: TUISubagentState) -> None:
@@ -455,8 +490,13 @@ def _subagent_overview(subagents: list[TUISubagentState]) -> RenderableType:
     overview = Table.grid(expand=True)
     overview.add_column()
     title = Text("subagents", style="bold #8fbcbb")
+    child_subagents = _child_subagent_panels(subagents)
+    if _has_main_agent_panel(subagents):
+        title.append("  main", style="bold #ebcb8b")
+        if child_subagents:
+            title.append(" +", style="#4c566a")
     title.append("  ")
-    for subagent in subagents:
+    for subagent in child_subagents:
         title.append(_subagent_status_mark(subagent.status), style=_subagent_dot_style(subagent.status))
         title.append(" ")
     overview.add_row(title)
@@ -464,12 +504,49 @@ def _subagent_overview(subagents: list[TUISubagentState]) -> RenderableType:
 
 
 def _subagent_title(index: int, subagent: TUISubagentState) -> Text:
+    if _is_main_agent_panel(subagent):
+        return _main_agent_title(index=index)
     title = Text()
     title.append(f"#{index + 1} ", style="#81a1c1")
     title.append(_subagent_status_badge(subagent.status), style=_subagent_status_style(subagent.status))
     title.append(" ")
     title.append(_subagent_label(subagent), style="bold #eceff4")
     return title
+
+
+def _main_agent_title(index: int) -> Text:
+    title = Text()
+    title.append(f"#{index + 1} ", style="#81a1c1")
+    title.append("< ", style="bold #ebcb8b")
+    title.append("main agent", style="bold #ebcb8b")
+    title.append("  parent thread", style="#9aa3b2")
+    return title
+
+
+def _main_agent_panel(subagent: TUISubagentState) -> RenderableType:
+    rows: list[RenderableType] = [
+        _field_block("role", "parent conversation", value_style="#ebcb8b"),
+        _field_block("action", "activate returns to main", value_style="#d8dee9"),
+    ]
+    if subagent.thread_id != "":
+        rows.append(_id_row("thread", subagent.thread_id))
+    if subagent.agent_id != "":
+        rows.append(_id_row("agent", subagent.agent_id))
+    return _section_panel("main", Group(*rows), border_style="#ebcb8b")
+
+
+def _main_agent_text_lines(index: int, subagent: TUISubagentState) -> list[str]:
+    lines = [
+        "",
+        f"#{index + 1} < main agent",
+        "   role: parent conversation",
+        "   action: activate returns to main",
+    ]
+    if subagent.thread_id != "":
+        lines.append(f"   thread {subagent.thread_id}")
+    if subagent.agent_id != "":
+        lines.append(f"   agent {subagent.agent_id}")
+    return lines
 
 
 def _subagent_status_panel(subagent: TUISubagentState) -> RenderableType:

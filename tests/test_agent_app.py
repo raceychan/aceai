@@ -48,7 +48,7 @@ class BlockingChildLLMService:
                 response=LLMResponse(text="", tool_calls=[self._parent_call]),
             )
             return
-        if len(self.calls) == 2:
+        if len(self.calls) >= 2:
             try:
                 self.child_started.set()
                 yield LLMStreamEvent(
@@ -59,7 +59,53 @@ class BlockingChildLLMService:
             finally:
                 self.child_cancelled.set()
             return
-        raise AssertionError("BlockingChildLLMService has no remaining stream fixture")
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("Agent should not call complete() in streaming mode")
+
+
+class SteerableChildLLMService:
+    def __init__(self, parent_call: LLMToolCall) -> None:
+        self._parent_call = parent_call
+        self.calls: list[dict] = []
+        self.child_started = asyncio.Event()
+        self.original_child_cancelled = asyncio.Event()
+
+    async def stream(self, **request):
+        self.calls.append(request)
+        if len(self.calls) == 1:
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="", tool_calls=[self._parent_call]),
+            )
+            return
+        if len(self.calls) == 2:
+            try:
+                self.child_started.set()
+                yield LLMStreamEvent(
+                    event_type="response.output_text.delta",
+                    text_delta="wrong path",
+                )
+                await asyncio.Event().wait()
+            finally:
+                self.original_child_cancelled.set()
+            return
+        if len(self.calls) == 3:
+            messages = request["messages"]
+            assert messages[-1].content == [
+                {"type": "text", "data": "follow the user correction"}
+            ]
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="corrected child result"),
+            )
+            return
+        if len(self.calls) == 4:
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="parent used corrected child result"),
+            )
+            return
+        raise AssertionError("SteerableChildLLMService has no remaining stream fixture")
 
     async def complete(self, **request) -> LLMResponse:
         raise AssertionError("Agent should not call complete() in streaming mode")
@@ -649,24 +695,123 @@ async def test_agent_app_cancels_child_runtime_when_parent_turn_is_cancelled(
     task = asyncio.create_task(collect_events())
     await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
     session_id = app.session_id
     assert session_id is not None
     child_threads = [
         thread for thread in store.list_threads(session_id) if thread.role == "subagent"
     ]
     assert len(child_threads) == 1
-    assert child_threads[0].status == "failed"
+    app.switch_thread(child_threads[0].thread_id)
+    assert not app.active_thread_accepts_user_turn
+    with pytest.raises(RuntimeError, match="Delegated subagent thread is still running"):
+        app.enqueue_turn("do not mix into child history")
+    assert app.steer_active_child_thread("redirect child work")
+    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    child_thread = store.get_thread(session_id, child_threads[0].thread_id)
+    assert child_thread.status == "failed"
+    child_event_log = store.load_thread_event_log(
+        session_id,
+        child_threads[0].thread_id,
+    )
+    assert any(
+        event.kind == "user_steer"
+        and event.payload["content"] == "redirect child work"
+        for event in child_event_log.events
+    )
+    assert any(
+        event.kind == "error"
+        and event.payload["content"]
+        == "delegated subagent run was cancelled before a terminal event"
+        and event.step_index == 0
+        for event in child_event_log.events
+    )
     assert app._child_runtimes == {}
     assert [
         app_event
         for app_event in collected_events
         if app_event.thread_id == child_threads[0].thread_id
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_app_steers_running_child_thread_without_failing_parent(
+    tmp_path,
+) -> None:
+    call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments=json.dumps(
+            {
+                "task": "inspect slowly",
+                "instructions": "Work until corrected.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-subagent",
+    )
+    llm_service = SteerableChildLLMService(call)
+    delegate_tool = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), [delegate_tool]),
+        max_steps=3,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+    collected_events = []
+
+    async def collect_events() -> None:
+        async for app_event in app.start_turn_events("Delegate"):
+            collected_events.append(app_event)
+
+    task = asyncio.create_task(collect_events())
+    await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
+
+    session_id = app.session_id
+    assert session_id is not None
+    child_thread = next(
+        thread for thread in store.list_threads(session_id) if thread.role == "subagent"
+    )
+    app.switch_thread(child_thread.thread_id)
+
+    assert app.steer_active_child_thread("follow the user correction")
+    await asyncio.wait_for(llm_service.original_child_cancelled.wait(), timeout=1)
+    await asyncio.wait_for(task, timeout=1)
+
+    child_event_log = store.load_thread_event_log(session_id, child_thread.thread_id)
+    child_kinds = [event.kind for event in child_event_log.events]
+    assert "user_steer" in child_kinds
+    assert not any(
+        event.kind == "error"
+        and event.payload["content"]
+        == "delegated subagent run was cancelled before a terminal event"
+        for event in child_event_log.events
+    )
+    assert child_event_log.events[-1].kind == "run_completed"
+    assert child_event_log.events[-1].payload["content"] == "corrected child result"
+    assert any(
+        isinstance(app_event.event, RunCompletedEvent)
+        and app_event.thread_id == MAIN_THREAD_ID
+        and app_event.event.final_answer == "parent used corrected child result"
+        for app_event in collected_events
+    )
+    assert app._stale_child_runtime_tasks == set()
 
 
 @pytest.mark.anyio

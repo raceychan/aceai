@@ -1025,6 +1025,51 @@ def test_subagent_status_widget_paginates_full_agent_details() -> None:
     assert "First delegated investigation" not in widget.renderable
 
 
+def test_subagent_panel_states_exclude_active_child_and_style_main_entry() -> None:
+    states = tui_app_module._subagent_panel_states(
+        thread_options=[
+            tui_app_module.SubagentThreadOption(
+                thread_id=MAIN_THREAD_ID,
+                label="Main",
+                status="completed",
+                role="main",
+            ),
+            tui_app_module.SubagentThreadOption(
+                thread_id="child-thread-1",
+                label="Child 1",
+                status="running",
+                role="subagent",
+            ),
+            tui_app_module.SubagentThreadOption(
+                thread_id="child-thread-2",
+                label="Child 2",
+                status="completed",
+                role="subagent",
+            ),
+        ],
+        active_thread_id="child-thread-1",
+    )
+
+    assert [state.thread_id for state in states] == [
+        MAIN_THREAD_ID,
+        "child-thread-2",
+    ]
+
+    widget = SubagentStatusWidget()
+    widget.set_state(
+        subagents=states,
+        thread_options=[],
+        active_thread_id="child-thread-1",
+    )
+
+    assert "< [1] 2 >" in widget.renderable
+    assert "#1 < main agent" in widget.renderable
+    assert "role: parent conversation" in widget.renderable
+    assert "action: activate returns to main" in widget.renderable
+    assert "Child 1" not in widget.renderable
+    assert "1 total | 0 running | 1 done | 0 failed" in widget.renderable
+
+
 @pytest.mark.anyio
 async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
     store = SessionStore(tmp_path)

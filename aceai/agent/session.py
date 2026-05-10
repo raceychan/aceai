@@ -60,6 +60,7 @@ SessionEventKind = Literal[
     "tool_output",
     "tool_result",
     "tool_started",
+    "user_steer",
     "user_message",
 ]
 
@@ -203,6 +204,7 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "tool_output",
             "tool_result",
             "tool_started",
+            "user_steer",
             "user_message",
         ):
             raise ValueError("Unsupported session event kind")
@@ -266,6 +268,11 @@ class _ToolBuffer(Struct, kw_only=True):
     call: LLMToolCall | None = None
 
 
+class _ReasoningBuffer(Struct, kw_only=True):
+    content: str = ""
+    source_event: SessionEvent
+
+
 AgentRunStatus = Literal["running", "suspended", "completed", "failed"]
 
 
@@ -303,6 +310,7 @@ class EventLog:
                 "assistant_tool_call",
                 "error",
                 "tool_result",
+                "user_steer",
                 "user_message",
             ):
                 return True
@@ -345,7 +353,7 @@ class EventLog:
         pending_tool_call_ids: set[str] = set()
         pending_tool_call_recorded = False
         for event in self.events:
-            if event.kind == "user_message":
+            if event.kind in ("user_message", "user_steer"):
                 pending_tool_call = None
                 pending_tool_call_ids = set()
                 pending_tool_call_recorded = False
@@ -866,6 +874,7 @@ class SessionRecorder:
         self.store = store
         self.session_id = session_id
         self._assistant_buffers: dict[str, str] = {}
+        self._reasoning_buffers: dict[tuple[str, str], _ReasoningBuffer] = {}
         self._tools: dict[tuple[str, str], _ToolBuffer] = {}
         self._finalized = False
         self._saved = True
@@ -898,12 +907,17 @@ class SessionRecorder:
         if event.kind == "tool_approval_requested":
             return self._record_tool_approval_requested(event)
         if event.kind == "llm_completed":
+            self.flush_reasoning(event.thread_id)
             return self._record_llm_completed(event)
+        if event.kind == "thinking_delta":
+            self._reasoning_for(event).content += event.payload["content"]
+            return None
 
         self.flush_assistant(event.thread_id)
-        if event.kind == "user_message":
+        self.flush_reasoning(event.thread_id)
+        if event.kind in ("user_message", "user_steer"):
             return self._append_event(
-                "user_message",
+                event.kind,
                 _user_message_payload_for_record(event.payload),
                 event,
             )
@@ -926,7 +940,6 @@ class SessionRecorder:
             "llm_retrying",
             "media",
             "reasoning_summary",
-            "thinking_delta",
         ):
             return self._append_event(event.kind, dict(event.payload), event)
         return None
@@ -962,6 +975,8 @@ class SessionRecorder:
             return self._saved
         for thread_id in list(self._assistant_buffers):
             self.flush_assistant(thread_id)
+        for thread_id, _step_id in list(self._reasoning_buffers):
+            self.flush_reasoning(thread_id)
         if not self.store.load_event_log(self.session_id).has_transcript():
             self.store.delete_session(self.session_id)
             self._saved = False
@@ -1099,6 +1114,31 @@ class SessionRecorder:
             self._tools[key] = tool_buffer
         return tool_buffer
 
+    def flush_reasoning(self, thread_id: str = MAIN_THREAD_ID) -> str | None:
+        event_id: str | None = None
+        for key, reasoning_buffer in list(self._reasoning_buffers.items()):
+            if key[0] != thread_id:
+                continue
+            if reasoning_buffer.content == "":
+                self._reasoning_buffers.pop(key)
+                continue
+            event_id = self._append_event(
+                "reasoning_summary",
+                {"content": reasoning_buffer.content},
+                reasoning_buffer.source_event,
+            )
+            self._reasoning_buffers.pop(key)
+        return event_id
+
+    def _reasoning_for(self, event: SessionEvent) -> _ReasoningBuffer:
+        step_id = "" if event.step_id is None else event.step_id
+        key = (event.thread_id, step_id)
+        reasoning_buffer = self._reasoning_buffers.get(key)
+        if reasoning_buffer is None:
+            reasoning_buffer = _ReasoningBuffer(source_event=event)
+            self._reasoning_buffers[key] = reasoning_buffer
+        return reasoning_buffer
+
     def _assistant_buffer(self, thread_id: str) -> str:
         if thread_id not in self._assistant_buffers:
             self._assistant_buffers[thread_id] = ""
@@ -1150,7 +1190,7 @@ def _run_log_from_events(run_id: str, events: list[SessionEvent]) -> AgentRunLog
 
 def _run_question(events: list[SessionEvent]) -> str:
     for event in events:
-        if event.kind == "user_message":
+        if event.kind in ("user_message", "user_steer"):
             return event.payload["content"]
     return ""
 
