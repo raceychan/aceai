@@ -7,6 +7,11 @@ from openai import AsyncOpenAI
 from aceai.core import Agent, Executor
 from aceai.core.context_manager import DEFAULT_CONTEXT_WINDOW_TOKENS, CompressThreshold
 from aceai.llm.interface import UNSET, Unset, is_set
+from aceai.llm.anthropic import (
+    ANTHROPIC_OAUTH_PROVIDER_NAME,
+    ANTHROPIC_PROVIDER_NAME,
+    Anthropic,
+)
 from aceai.llm.deepseek import DeepSeek
 from aceai.llm.models import LLMHostedToolSpec
 from aceai.llm.openai import OpenAI, OpenAIModel
@@ -69,6 +74,18 @@ def build_ace_agent(
         provider = DeepSeek(
             api_key=api_key,
             default_meta={"model": model},
+        )
+    elif provider_name == ANTHROPIC_PROVIDER_NAME:
+        provider = Anthropic(
+            api_key=api_key,
+            default_meta={"model": model},
+        )
+    elif provider_name == ANTHROPIC_OAUTH_PROVIDER_NAME:
+        provider = Anthropic(
+            api_key=resolve_provider_api_key(provider_name, api_key),
+            default_meta={"model": model},
+            provider_name=ANTHROPIC_OAUTH_PROVIDER_NAME,
+            auth_mode="oauth",
         )
     else:
         raise ValueError("Unsupported provider")

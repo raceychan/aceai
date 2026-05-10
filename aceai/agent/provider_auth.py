@@ -6,6 +6,7 @@ from pathlib import Path
 
 from aceai.agent.provider_catalog import api_key_env, auth_mode
 from aceai.llm.errors import AceAIConfigurationError
+from aceai.llm.anthropic import ANTHROPIC_OAUTH_PROVIDER_NAME
 from aceai.llm.openai_codex import OPENAI_CODEX_PROVIDER_NAME
 
 CODEX_CLI_AUTH_SENTINEL = "codex-cli"
@@ -14,12 +15,18 @@ CODEX_CLI_AUTH_SENTINEL = "codex-cli"
 def default_api_key_for_provider(provider: str) -> str:
     if provider == OPENAI_CODEX_PROVIDER_NAME:
         return CODEX_CLI_AUTH_SENTINEL
+    if provider == ANTHROPIC_OAUTH_PROVIDER_NAME:
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if auth_token is not None:
+            return auth_token
     return ""
 
 
 def api_key_placeholder(provider: str) -> str:
     if provider == OPENAI_CODEX_PROVIDER_NAME:
         return CODEX_CLI_AUTH_SENTINEL
+    if provider == ANTHROPIC_OAUTH_PROVIDER_NAME:
+        return "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN"
     return api_key_env(provider)
 
 
@@ -34,9 +41,20 @@ def provider_uses_subscription(provider: str) -> bool:
 def resolve_provider_api_key(provider: str, api_key: str) -> str:
     if provider == OPENAI_CODEX_PROVIDER_NAME:
         return resolve_codex_access_token(api_key)
+    if provider == ANTHROPIC_OAUTH_PROVIDER_NAME:
+        return resolve_anthropic_oauth_token(api_key)
     if api_key == "":
         raise AceAIConfigurationError(f"{provider} API key is required")
     return api_key
+
+
+def resolve_anthropic_oauth_token(api_key: str) -> str:
+    if api_key != "":
+        return api_key
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if auth_token is not None and auth_token != "":
+        return auth_token
+    raise AceAIConfigurationError("Anthropic OAuth bearer token is required")
 
 
 def resolve_codex_access_token(api_key: str) -> str:

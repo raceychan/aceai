@@ -189,6 +189,38 @@ def test_build_ace_agent_supports_deepseek_without_openai_hosted_tools(
     assert agent._executor.hosted_tools == []
 
 
+def test_build_ace_agent_supports_anthropic_without_openai_hosted_tools(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    agent = build_ace_agent(
+        provider_name="anthropic",
+        api_key="test-key",
+        model="claude-sonnet-4-20250514",
+    )
+
+    assert agent.default_model == "claude-sonnet-4-20250514"
+    assert agent._compression_policy.context_window_tokens == 200000
+    assert agent._executor.hosted_tools == []
+
+
+def test_build_ace_agent_supports_anthropic_oauth_without_openai_hosted_tools(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    agent = build_ace_agent(
+        provider_name="anthropic-oauth",
+        api_key="oauth-token",
+        model="claude-sonnet-4-20250514",
+    )
+
+    assert agent.default_model == "claude-sonnet-4-20250514"
+    assert agent._compression_policy.context_window_tokens == 200000
+    assert agent._executor.hosted_tools == []
+
+
 def test_build_ace_agent_supports_openai_codex_with_hosted_tools(
     tmp_path, monkeypatch
 ) -> None:

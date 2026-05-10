@@ -120,6 +120,70 @@ providers:
           input_usd_per_million: 0.14
           cached_input_usd_per_million: 0.0028
           output_usd_per_million: 0.28
+  - name: anthropic
+    label: Anthropic
+    auth_mode: api_key
+    api_key_env: ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-20250514
+    stale_default_models: []
+    models:
+      - id: claude-opus-4-1-20250805
+        label: Claude Opus 4.1
+        max_context_window: 200000
+        pricing:
+          input_usd_per_million: 15.0
+          cached_input_usd_per_million: 1.5
+          output_usd_per_million: 75.0
+      - id: claude-opus-4-20250514
+        label: Claude Opus 4
+        max_context_window: 200000
+        pricing:
+          input_usd_per_million: 15.0
+          cached_input_usd_per_million: 1.5
+          output_usd_per_million: 75.0
+      - id: claude-sonnet-4-20250514
+        label: Claude Sonnet 4
+        max_context_window: 200000
+        pricing:
+          input_usd_per_million: 3.0
+          cached_input_usd_per_million: 0.3
+          output_usd_per_million: 15.0
+      - id: claude-3-7-sonnet-20250219
+        label: Claude Sonnet 3.7
+        max_context_window: 200000
+        pricing:
+          input_usd_per_million: 3.0
+          cached_input_usd_per_million: 0.3
+          output_usd_per_million: 15.0
+      - id: claude-3-5-haiku-20241022
+        label: Claude Haiku 3.5
+        max_context_window: 200000
+        pricing:
+          input_usd_per_million: 0.8
+          cached_input_usd_per_million: 0.08
+          output_usd_per_million: 4.0
+  - name: anthropic-oauth
+    label: Anthropic (OAuth)
+    auth_mode: subscription
+    api_key_env: CLAUDE_CODE_OAUTH_TOKEN
+    default_model: claude-sonnet-4-20250514
+    stale_default_models: []
+    models:
+      - id: claude-opus-4-1-20250805
+        label: Claude Opus 4.1
+        max_context_window: 200000
+      - id: claude-opus-4-20250514
+        label: Claude Opus 4
+        max_context_window: 200000
+      - id: claude-sonnet-4-20250514
+        label: Claude Sonnet 4
+        max_context_window: 200000
+      - id: claude-3-7-sonnet-20250219
+        label: Claude Sonnet 3.7
+        max_context_window: 200000
+      - id: claude-3-5-haiku-20241022
+        label: Claude Haiku 3.5
+        max_context_window: 200000
   - name: codex
     label: Codex (subscription)
     auth_mode: subscription
