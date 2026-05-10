@@ -13,6 +13,8 @@ from aceai import __version__
 from aceai.agent.citations import (
     AdHocCitationOrigin,
     ConversationCitationOrigin,
+    FileCitationOrigin,
+    IdeaCitationOrigin,
     TurnCitation,
 )
 from aceai.core.agent import Agent
@@ -34,7 +36,7 @@ from aceai.agent.tui.session_adapter import tui_event_to_session_event
 from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import clear_config, current_config, load_config
+from aceai.agent.config import ConfigAuditEntry, clear_config, current_config, load_config
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.agent import app as agent_app_module
 from aceai.agent import session_service as session_service_module
@@ -43,11 +45,13 @@ from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectStore
 from aceai.agent.tui import app as tui_app_module
 from aceai.agent.tui import runner as tui_runner_module
+from aceai.agent.tui.widgets import stream as stream_widget_module
 from aceai.agent.tui.app import AceAITUI
 from aceai.agent.tui.runner import (
     UPDATE_INSTRUCTIONS,
     AceAIConfiguredTUI,
     UpdateCommandResult,
+    _iter_reference_file_candidates,
 )
 from aceai.agent.tui.setup import (
     ConfigScreen,
@@ -64,6 +68,7 @@ from aceai.agent.tui.widgets import (
     CommandInput,
     CitationPreviewWidget,
     QueuedTurnsWidget,
+    ReferenceCompletionWidget,
     StatusBarWidget,
     StreamWidget,
     SubagentStatusWidget,
@@ -141,6 +146,7 @@ def _make_interactive_tui_from_agent(agent: Agent, **kwargs):
 
 @pytest.fixture(autouse=True)
 def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
+    monkeypatch.chdir(tmp_path)
     store = SessionStore(tmp_path / "sessions")
     monkeypatch.setattr(tui_app_module, "SessionStore", lambda **kwargs: store)
     monkeypatch.setattr(
@@ -1348,6 +1354,379 @@ async def test_configured_tui_switch_model_saves_project_config(
 
 
 @pytest.mark.anyio
+async def test_configured_tui_tool_allow_all_saves_project_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#tool-tag-allow-all-0", Button).press()
+        await pilot.pause()
+        screen.query_one("#apply-tools", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.tool_permissions["run_shell_command"] == "always"
+    assert saved_config.tool_permissions["write_text_file"] == "always"
+
+
+@pytest.mark.anyio
+async def test_configured_tui_tool_permission_select_saves_project_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#tool-permission-8", Select).value = "always"
+        await pilot.pause()
+        screen.query_one("#apply-tools", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.tool_permissions["run_shell_command"] == "always"
+
+
+@pytest.mark.anyio
+async def test_configured_tui_tool_tag_disable_saves_project_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#tool-tag-enabled-0", Checkbox).value = False
+        await pilot.pause()
+        screen.query_one("#apply-tools", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.tool_enabled["run_shell_command"] is False
+    assert saved_config.tool_enabled["write_text_file"] is False
+
+
+@pytest.mark.anyio
+async def test_configured_tui_tool_max_calls_saves_project_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#tool-max-calls-8", Input).value = "7"
+        await pilot.pause()
+        screen.query_one("#apply-tools", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.tool_max_calls["run_shell_command"] == 7
+
+
+@pytest.mark.anyio
+async def test_configured_tui_removed_provider_saves_and_switches_active_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#provider", Input).value = ""
+        await pilot.pause()
+        await pilot.click("#provider-disable-0")
+        await pilot.pause()
+        assert screen.query_one("#provider", Input).value == "deepseek"
+        screen.query_one("#apply", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.provider == "deepseek"
+    assert saved_config.model == "deepseek-v4-pro"
+    assert saved_config.default_model == "deepseek-v4-pro"
+    assert saved_config.disabled_providers == ["openai"]
+
+
+@pytest.mark.anyio
+async def test_configured_tui_removed_provider_stays_removed_after_reopen(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="deepseek",
+            api_key="deepseek-key",
+            model="deepseek-v4-pro",
+            default_model="deepseek-v4-pro",
+            api_keys={"openai": "openai-key", "deepseek": "deepseek-key"},
+            disabled_providers=["openai"],
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#provider", Input).value = ""
+        await pilot.pause()
+
+        assert screen.query_one("#provider-candidate-row-0").has_class("hidden")
+        assert not screen.query_one("#provider-disabled-chip-0").has_class("hidden")
+        assert screen.query_one("#provider", Input).value == ""
+
+
+@pytest.mark.anyio
+async def test_configured_tui_removed_only_keyed_provider_falls_back_to_codex_and_saves(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#provider", Input).value = ""
+        await pilot.pause()
+        await pilot.click("#provider-disable-0")
+        await pilot.pause()
+        assert screen.query_one("#provider", Input).value == "codex"
+        screen.query_one("#apply", Button).press()
+        await pilot.pause()
+
+    saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+    assert saved_config is not None
+    assert saved_config.provider == "codex"
+    assert saved_config.api_key == CODEX_CLI_AUTH_SENTINEL
+    assert saved_config.disabled_providers == ["openai"]
+
+
+@pytest.mark.anyio
+async def test_configured_tui_removed_provider_persists_immediately_without_apply(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    llm_service = StubLLMService([])
+
+    def agent_factory(config: AgentAppConfig) -> Agent:
+        return Agent(
+            prompt="Prompt",
+            default_model=config.default_model,
+            llm_service=llm_service,  # type: ignore[arg-type]
+            executor=StubExecutor(),  # type: ignore[arg-type]
+        )
+
+    monkeypatch.chdir(tmp_path)
+    clear_config()
+    app = AceAIConfiguredTUI(
+        agent_factory,
+        initial_config=AgentAppConfig(
+            provider="openai",
+            api_key="openai-key",
+            model="gpt-5.5",
+            default_model="gpt-5.5",
+            api_keys={"openai": "openai-key"},
+        ),
+        initial_question="",
+        default_model="gpt-5.5",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_config()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ConfigScreen)
+        screen.query_one("#provider", Input).value = ""
+        await pilot.pause()
+        await pilot.click("#provider-disable-0")
+        await pilot.pause()
+
+        saved_config = load_config(tmp_path / ".aceai" / "config.yml")
+        assert saved_config is not None
+        assert saved_config.provider == "codex"
+        assert saved_config.disabled_providers == ["openai"]
+
+
+@pytest.mark.anyio
 async def test_configured_tui_applies_reasoning_level_to_requests(
     tmp_path, monkeypatch
 ) -> None:
@@ -1419,7 +1798,7 @@ async def test_interactive_tui_metadata_lists_runtime_usage_and_skills(
         sections = app._metadata_sections()
 
     section_lines = {section.title: "\n".join(section.lines) for section in sections}
-    assert "project: aceai" in section_lines["Runtime"]
+    assert f"project: {tmp_path.name}" in section_lines["Runtime"]
     assert "project_id:" in section_lines["Runtime"]
     assert f"version: {__version__}" in section_lines["Runtime"]
     assert "model: gpt-4o" in section_lines["Runtime"]
@@ -1676,6 +2055,306 @@ async def test_interactive_tui_arrow_keys_navigate_slash_command_completion() ->
 
         assert completions.selected_index == 0
         assert "> /clear" in completions.display_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_shows_reference_completions(
+    tmp_path,
+) -> None:
+    (tmp_path / "README.md").write_text("readme", encoding="utf-8")
+    project = ProjectStore(tmp_path / "projects").resolve_project(tmp_path)
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(
+        agent,
+        idea_store=idea_store,
+        project=project,
+    )
+    idea_store.capture("finish inline citation autocomplete", project=project)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(ReferenceCompletionWidget)
+        command_input.value = "please use @"
+        app._refresh_reference_completions(command_input.value)
+
+        assert completions.has_class("hidden")
+
+        command_input.value = "please use @read"
+        app._refresh_reference_completions(command_input.value)
+
+        assert not completions.has_class("hidden")
+        assert "> @README.md" in completions.display_text
+        command_input.value = "please use @idea"
+        app._refresh_reference_completions(command_input.value)
+
+        assert "@idea:1" in completions.display_text
+        assert "finish inline citation autocomplete" in completions.display_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_reference_completion_inserts_selected_item(
+    tmp_path,
+) -> None:
+    (tmp_path / "README.md").write_text("readme", encoding="utf-8")
+    project = ProjectStore(tmp_path / "projects").resolve_project(tmp_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, project=project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        command_input.value = "please use @READ"
+        command_input.focus()
+        app._refresh_reference_completions(command_input.value)
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert command_input.value == "please use @README.md "
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_reference_completion_searches_before_filtering(
+    tmp_path,
+) -> None:
+    for index in range(120):
+        (tmp_path / f"a{index:03d}.txt").write_text("filler", encoding="utf-8")
+    target = tmp_path / "spec" / "multi-agent" / "agent_inbox.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# Agent Inbox Tech Spec", encoding="utf-8")
+    project = ProjectStore(tmp_path / "projects").resolve_project(tmp_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, project=project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        completions = app.query_one(ReferenceCompletionWidget)
+        command_input.value = "@agent_inbox"
+        command_input.focus()
+        app._refresh_reference_completions(command_input.value)
+
+        assert not completions.has_class("hidden")
+        assert "> @spec/multi-agent/agent_inbox.md" in completions.display_text
+
+
+def test_reference_file_candidates_prune_large_local_dirs_and_keep_specs(
+    tmp_path,
+) -> None:
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "ignored.py").write_text("ignored", encoding="utf-8")
+    (tmp_path / ".cache" / "plugin").mkdir(parents=True)
+    (tmp_path / ".cache" / "plugin" / "manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".aceai" / "sessions").mkdir(parents=True)
+    (tmp_path / ".aceai" / "config.yml").write_text("model: gpt-5.5", encoding="utf-8")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "ignored.whl").write_text("ignored", encoding="utf-8")
+    target = tmp_path / "spec" / "multi-agent" / "agent_inbox.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# Agent Inbox Tech Spec", encoding="utf-8")
+
+    candidates = {
+        path.relative_to(tmp_path).as_posix()
+        for path in _iter_reference_file_candidates(tmp_path)
+    }
+
+    assert "spec/multi-agent/agent_inbox.md" in candidates
+    assert ".aceai/config.yml" in candidates
+    assert ".venv/lib/ignored.py" not in candidates
+    assert ".cache/plugin/manifest.json" not in candidates
+    assert "dist/ignored.whl" not in candidates
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_file_reference_cites_text_file(
+    tmp_path,
+) -> None:
+    source = tmp_path / "notes.md"
+    source.write_text("# Notes\nShip inline citations.", encoding="utf-8")
+    llm_service = StubLLMService(
+        [
+            LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="done"),
+            ),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        question = f"summarize @{source} please"
+        app.on_input_submitted(Input.Submitted(command_input, question))
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
+
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == question
+        assert visible_user_event.citations[0].content == "# Notes\nShip inline citations."
+        assert visible_user_event.citations[0].origin == FileCitationOrigin(
+            kind="file",
+            path=str(source.resolve()),
+        )
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert "source=\"file:" in user_text
+        assert "# Notes\nShip inline citations." in user_text
+        assert f"<user_request>\n{question}\n</user_request>" in user_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_file_reference_uses_project_relative_paths(
+    tmp_path,
+) -> None:
+    source = tmp_path / "docs" / "plan.txt"
+    source.parent.mkdir()
+    source.write_text("relative file content", encoding="utf-8")
+    project = ProjectStore(tmp_path / "projects").resolve_project(tmp_path)
+    llm_service = StubLLMService(
+        [LLMStreamEvent(event_type="response.completed", response=LLMResponse(text="done"))]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, project=project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "use @docs/plan.txt"))
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
+
+        assert app._state.events[0].citations[0].content == "relative file content"
+        assert app._state.events[0].citations[0].origin == FileCitationOrigin(
+            kind="file",
+            path=str(source.resolve()),
+        )
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_file_reference_reports_missing_file(tmp_path) -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "use @missing.txt"))
+
+        assert app._state.events == []
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_idea_reference_uses_display_index(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    llm_service = StubLLMService(
+        [LLMStreamEvent(event_type="response.completed", response=LLMResponse(text="done"))]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
+    idea = idea_store.capture("inline idea content", project=app._project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "use @idea:1"))
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
+
+        visible_user_event = app._state.events[0]
+        assert visible_user_event.content == "use @idea:1"
+        assert visible_user_event.citations[0].content == "inline idea content"
+        assert visible_user_event.citations[0].origin == IdeaCitationOrigin(
+            kind="idea",
+            idea_id=idea.idea_id,
+        )
+        user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
+        assert "source=\"idea\"" in user_text
+        assert "inline idea content" in user_text
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_idea_reference_uses_idea_id(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    llm_service = StubLLMService(
+        [LLMStreamEvent(event_type="response.completed", response=LLMResponse(text="done"))]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
+    idea = idea_store.capture("idea by id", project=app._project)
+
+    async with app.run_test() as pilot:
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(
+            Input.Submitted(command_input, f"remember @idea:{idea.idea_id}")
+        )
+        await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
+
+        assert app._state.events[0].citations[0].content == "idea by id"
+        assert app._state.events[0].citations[0].origin == IdeaCitationOrigin(
+            kind="idea",
+            idea_id=idea.idea_id,
+        )
+
+
+@pytest.mark.anyio
+async def test_interactive_tui_inline_idea_reference_reports_missing_idea(
+    tmp_path,
+) -> None:
+    ideas_path = tmp_path / "ideas.sqlite3"
+    idea_store = IdeaStore(ideas_path)
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),  # type: ignore[arg-type]
+        executor=StubExecutor(),  # type: ignore[arg-type]
+    )
+    app = _make_interactive_tui_from_agent(agent, idea_store=idea_store)
+
+    async with app.run_test():
+        command_input = app.query_one(CommandInput)
+        app.on_input_submitted(Input.Submitted(command_input, "use @idea:1"))
+
+        assert app._state.events == []
 
 
 @pytest.mark.anyio
@@ -2220,7 +2899,7 @@ async def test_interactive_tui_returns_focus_to_stream_after_submit() -> None:
 
 
 @pytest.mark.anyio
-async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
+async def test_tui_replaces_empty_stream_text_with_labrador(tmp_path) -> None:
     async with AceAITUI([]).run_test() as pilot:
         await pilot.pause()
 
@@ -2229,7 +2908,7 @@ async def test_tui_replaces_empty_stream_text_with_labrador() -> None:
         console.print(stream._render_empty_state())
         text = console.export_text()
         assert f"AceAI v{__version__}" in text
-        assert "Project: aceai" in text
+        assert f"Project: {tmp_path.name}" in text
         assert "shortcuts" in text
         assert "enter" in text
         assert "ask" in text
@@ -2253,6 +2932,30 @@ def test_empty_stream_text_includes_git_branch(tmp_path) -> None:
         project_name="project",
         project_root_path=str(tmp_path),
     )
+    console = Console(width=80, record=True, file=StringIO())
+
+    console.print(stream._render_empty_state())
+
+    assert "Git: feature/home-branch" in console.export_text()
+
+
+def test_empty_stream_render_uses_cached_git_branch(tmp_path, monkeypatch) -> None:
+    subprocess.run(
+        ["git", "init", "-b", "feature/home-branch"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stream = StreamWidget(
+        project_name="project",
+        project_root_path=str(tmp_path),
+    )
+
+    def fail_git_lookup(project_root_path: str) -> str | None:
+        raise AssertionError("empty-state render must not spawn git")
+
+    monkeypatch.setattr(stream_widget_module, "_git_branch_name", fail_git_lookup)
     console = Console(width=80, record=True, file=StringIO())
 
     console.print(stream._render_empty_state())
@@ -2360,6 +3063,37 @@ async def test_config_screen_apply_restores_masked_api_key() -> None:
                 reasoning_level="medium",
             )
         ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_blocks_disabled_provider() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending", "deepseek": "sk-deepseek-ending"},
+        disabled_providers=("deepseek",),
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        selections: list[ConfigSelection | None] = []
+
+        def dismiss(selection: ConfigSelection | None) -> None:
+            selections.append(selection)
+
+        screen.dismiss = dismiss
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.value = "deepseek"
+        screen.query_one("#model", Input).value = "deepseek-v4-pro"
+        _press_config_apply(screen)
+
+        assert selections == []
+        assert str(screen.query_one("#config-error", Static).render()) == (
+            "Provider is disabled"
+        )
 
 
 @pytest.mark.anyio
@@ -2655,6 +3389,112 @@ async def test_config_screen_is_fullscreen_without_system_prompt_tab() -> None:
         assert "stats-tab" not in screen_ids
         assert "system-prompt-tab" not in screen_ids
         assert "system-prompt" not in screen_ids
+
+
+@pytest.mark.anyio
+async def test_config_screen_has_audit_tab_with_recent_changes() -> None:
+    audit_entry = ConfigAuditEntry(
+        timestamp="2026-05-10T19:16:04+00:00",
+        actor="raceychan",
+        pid=123,
+        cwd="/Users/raceychan/mylab/aceai",
+        target="/Users/raceychan/mylab/aceai/.aceai/config.yml",
+        caller=("runner.py:1226:switch_model",),
+        changed_fields=("provider", "disabled_providers"),
+        before={
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "default_model": "gpt-5.5",
+            "skills": "auto",
+            "skill_selection_mode": "selected",
+            "enabled_skills": [],
+            "disabled_providers": [],
+            "api_key_providers": ["openai"],
+            "tool_permissions": {},
+            "tool_enabled": {},
+            "tool_max_calls": {},
+            "compress_threshold": "100%",
+            "reasoning_level": "auto",
+        },
+        after={
+            "provider": "codex",
+            "model": "gpt-5.5",
+            "default_model": "gpt-5.5",
+            "skills": "auto",
+            "skill_selection_mode": "selected",
+            "enabled_skills": [],
+            "disabled_providers": ["openai"],
+            "api_key_providers": ["codex", "openai"],
+            "tool_permissions": {},
+            "tool_enabled": {},
+            "tool_max_calls": {},
+            "compress_threshold": "100%",
+            "reasoning_level": "auto",
+        },
+    )
+    screen = ConfigScreen(
+        provider_name="codex",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"codex": CODEX_CLI_AUTH_SENTINEL},
+        audit_entries=(audit_entry,),
+    )
+
+    async with AceAITUI([]).run_test(size=(120, 30)) as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        tabs = screen.query_one("#config-tabs", TabbedContent)
+        meta_text = "\n".join(
+            str(node.render()) for node in screen.query(".config-audit-meta")
+        )
+        field_text = str(screen.query_one(".config-audit-fields", Static).render())
+        change_cells = [
+            str(node.render())
+            for node in screen.query("#config-audit-change-0-0 Static")
+        ]
+        disabled_change_cells = [
+            str(node.render())
+            for node in screen.query("#config-audit-change-0-1 Static")
+        ]
+
+        assert screen.query_one("#config-audit-tab") in tabs.query("*")
+        assert str(screen.query_one(".config-audit-time", Static).render()) == (
+            "2026-05-10T19:16:04+00:00"
+        )
+        assert str(screen.query_one(".config-audit-actor", Static).render()) == (
+            "raceychan"
+        )
+        assert str(screen.query_one(".config-audit-pid", Static).render()) == "pid 123"
+        assert "caller  runner.py:1226:switch_model" in meta_text
+        assert field_text == "changed provider, disabled_providers"
+        assert change_cells == ["provider", "openai", "->", "codex"]
+        assert disabled_change_cells == [
+            "disabled_providers",
+            "[]",
+            "->",
+            '["openai"]',
+        ]
+
+
+@pytest.mark.anyio
+async def test_config_screen_audit_tab_empty_state() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        assert str(screen.query_one("#config-audit-empty", Static).render()) == (
+            "No config changes recorded"
+        )
 
 
 @pytest.mark.anyio
@@ -3065,7 +3905,9 @@ async def test_config_screen_candidate_completion() -> None:
         assert provider_input.value == "deepseek"
         assert screen.query_one("#model", Input).value == "deepseek-v4-pro"
         assert screen.query_one("#api-key", Input).value == "*****************ding"
-        assert str(screen.query_one("#provider-options", Static).render()) == ""
+        assert screen.query_one("#provider-options").has_class("hidden")
+        assert screen.query_one("#provider-disabled-list").has_class("hidden")
+        assert screen.query_one("#provider-candidate-row-1").has_class("hidden")
 
         model_input = screen.query_one("#model", Input)
         model_input.focus()
@@ -3079,7 +3921,93 @@ async def test_config_screen_candidate_completion() -> None:
         provider_input.value = ""
         await pilot.pause()
 
-        assert str(screen.query_one("#provider-options", Static).render()) == ""
+        assert not screen.query_one("#provider-options").has_class("hidden")
+        assert not screen.query_one("#provider-candidate-row-0").has_class("hidden")
+        assert not screen.query_one("#provider-candidate-row-1").has_class("hidden")
+        assert not screen.query_one("#provider-candidate-row-2").has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_config_screen_empty_provider_candidates_exclude_disabled_provider() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending", "deepseek": "sk-deepseek-ending"},
+        disabled_providers=("deepseek",),
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.focus()
+        provider_input.value = ""
+        await pilot.pause()
+
+        assert not screen.query_one("#provider-options").has_class("hidden")
+        assert not screen.query_one("#provider-candidate-row-0").has_class("hidden")
+        assert screen.query_one("#provider-candidate-row-1").has_class("hidden")
+        assert not screen.query_one("#provider-candidate-row-2").has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_config_screen_provider_candidate_remove_and_add() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-test-ending", "deepseek": "sk-deepseek-ending"},
+    )
+
+    async with AceAITUI([]).run_test() as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.value = ""
+        await pilot.pause()
+
+        await pilot.click("#provider-disable-1")
+        await pilot.pause()
+
+        assert screen.query_one("#provider-candidate-row-1").has_class("hidden")
+        assert not screen.query_one("#provider-disabled-list").has_class("hidden")
+        assert not screen.query_one("#provider-disabled-chip-1").has_class("hidden")
+
+        await pilot.click("#provider-disabled-chip-1")
+        await pilot.pause()
+
+        assert not screen.query_one("#provider-candidate-row-1").has_class("hidden")
+        assert screen.query_one("#provider-disabled-list").has_class("hidden")
+        assert screen.query_one("#provider-disabled-chip-1").has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_config_screen_removing_current_provider_switches_to_remaining_provider() -> None:
+    screen = ConfigScreen(
+        provider_name="openai",
+        current_model="gpt-5.5",
+        default_model="gpt-5.5",
+        skills="auto",
+        api_keys={"openai": "sk-openai-ending", "deepseek": "sk-deepseek-ending"},
+    )
+
+    async with AceAITUI([]).run_test(size=(150, 28)) as pilot:
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        provider_input = screen.query_one("#provider", Input)
+        provider_input.value = ""
+        await pilot.pause()
+
+        await pilot.click("#provider-disable-0")
+        await pilot.pause()
+
+        assert provider_input.value == "deepseek"
+        assert screen.query_one("#model", Input).value == "deepseek-v4-pro"
+        assert screen.query_one("#provider-candidate-row-0").has_class("hidden")
+        assert not screen.query_one("#provider-disabled-chip-0").has_class("hidden")
 
 
 @pytest.mark.anyio

@@ -8,6 +8,7 @@ from typing import AsyncGenerator, Callable, cast
 
 from msgspec import Struct
 from opentelemetry.context import Context
+from rapidfuzz import fuzz
 from textual.timer import Timer
 from textual.widgets import Input
 from textual.worker import Worker
@@ -22,6 +23,7 @@ from aceai.agent.app import (
     resolve_provider_api_key,
 )
 from aceai.agent.citations import (
+    FileCitationOrigin,
     IdeaCitationOrigin,
     TurnCitation,
 )
@@ -30,7 +32,12 @@ from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
 from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import AgentAppConfig, ReasoningLevel
+from aceai.agent.config import (
+    AgentAppConfig,
+    ReasoningLevel,
+    effective_config_path,
+    load_config_audit,
+)
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
@@ -55,6 +62,8 @@ from .widgets import CitationPreviewWidget
 from .widgets import CommandCompletionItem
 from .widgets import CommandInput
 from .widgets import QueuedTurnsWidget
+from .widgets import ReferenceCompletionItem
+from .widgets import ReferenceCompletionWidget
 from .widgets import StatusBarWidget
 from .widgets import TopBarWidget
 
@@ -63,6 +72,20 @@ CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
 UPDATE_INSTRUCTIONS = "Run /update to upgrade AceAI and restart."
 UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
+REFERENCE_IGNORED_DIRS = {
+    ".cache",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "wheels",
+}
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "clear": "Clear the visible transcript",
     "config": "Open provider, model, skill, and tool settings",
@@ -141,6 +164,7 @@ class AceAIConfiguredTUI(AceAITUI):
         idea_store: IdeaStore | None = None,
         trace_ctx: Context | None = None,
         reasoning_level: ReasoningLevel = "auto",
+        inline_viewport_height: int | None = None,
     ) -> None:
         self._provider_name = (
             initial_config.provider if initial_config is not None else "openai"
@@ -168,6 +192,7 @@ class AceAIConfiguredTUI(AceAITUI):
             project=project,
             idea_store=idea_store,
             record_events=False,
+            inline_viewport_height=inline_viewport_height,
         )
         self._agent_factory = agent_factory
         self._initial_config = initial_config
@@ -182,6 +207,9 @@ class AceAIConfiguredTUI(AceAITUI):
         self._active_run = None
         self._cancel_armed = False
         self._cancel_arm_timer: Timer | None = None
+        self._reference_completion_selected_index = 0
+        self._reference_file_items_cache_root: Path | None = None
+        self._reference_file_items_cache: tuple[ReferenceCompletionItem, ...] = ()
 
     def _start_update_check(self) -> None:
         if self._agent_app is None:
@@ -267,6 +295,43 @@ class AceAIConfiguredTUI(AceAITUI):
     def on_command_input_submitted(self, event: CommandInput.Submitted) -> None:
         self._handle_command_input_submitted(event.input, event.value)
 
+    def on_text_area_changed(self, event) -> None:
+        super().on_text_area_changed(event)
+        if not isinstance(event.text_area, CommandInput):
+            return
+        self._reference_completion_selected_index = 0
+        self._refresh_reference_completions(event.text_area.value)
+
+    def on_command_input_reference_completion_requested(
+        self,
+        event: CommandInput.ReferenceCompletionRequested,
+    ) -> None:
+        matches = self._matching_reference_items(event.input.value)
+        if not matches:
+            return
+        index = min(self._reference_completion_selected_index, len(matches) - 1)
+        event.input.value = _replace_active_reference(
+            event.input.value,
+            matches[index].value,
+        )
+        self._reference_completion_selected_index = 0
+        self._refresh_reference_completions(event.input.value)
+        event.stop()
+
+    def on_command_input_reference_completion_navigation_requested(
+        self,
+        event: CommandInput.ReferenceCompletionNavigationRequested,
+    ) -> None:
+        command_input = self.query_one(CommandInput)
+        matches = self._matching_reference_items(command_input.value)
+        if not matches:
+            return
+        self._reference_completion_selected_index = (
+            self._reference_completion_selected_index + event.direction
+        ) % len(matches)
+        self._refresh_reference_completions(command_input.value)
+        event.stop()
+
     def _handle_command_input_submitted(
         self,
         command_input: CommandInput,
@@ -281,7 +346,13 @@ class AceAIConfiguredTUI(AceAITUI):
         if self._dispatch_command(question):
             self.exit_command_input(command_input)
             return
-        self.start_run(question)
+        try:
+            inline_citations = self._inline_citations(question)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            self.notify_session(str(exc))
+            return
+        citations = (*self._consume_pending_citations(), *inline_citations)
+        self.start_run(question, citations=citations)
         self.exit_command_input(command_input)
 
     def _dispatch_approval_input(self, text: str) -> bool:
@@ -366,6 +437,69 @@ class AceAIConfiguredTUI(AceAITUI):
             for name in self.command_names()
         )
 
+    def _refresh_reference_completions(self, value: str) -> None:
+        widget = self._reference_completion_widget()
+        if widget is None:
+            return
+        matches = self._matching_reference_items(value)
+        if not matches:
+            widget.hide()
+            return
+        if self._reference_completion_selected_index >= len(matches):
+            self._reference_completion_selected_index = 0
+        widget.show_references(
+            list(matches),
+            selected_index=self._reference_completion_selected_index,
+        )
+
+    def _matching_reference_items(
+        self,
+        value: str,
+    ) -> tuple[ReferenceCompletionItem, ...]:
+        prefix = _active_reference_prefix(value)
+        if prefix is None:
+            return ()
+        if prefix == "":
+            return ()
+        search_items = self._idea_reference_items()
+        if not prefix.startswith("idea:"):
+            search_items = (*self._file_reference_items(), *search_items)
+        ranked_items = _rank_reference_items(prefix, search_items)
+        return _filter_ranked_reference_items(ranked_items)
+
+    def _idea_reference_items(self) -> tuple[ReferenceCompletionItem, ...]:
+        return tuple(
+            ReferenceCompletionItem(
+                value=f"@idea:{index}",
+                description=_reference_idea_description(idea),
+            )
+            for index, idea in enumerate(self._list_ideas(), start=1)
+        )
+
+    def _file_reference_items(self) -> tuple[ReferenceCompletionItem, ...]:
+        root = Path(self._project.root_path)
+        if not root.is_dir():
+            return ()
+        if self._reference_file_items_cache_root == root:
+            return self._reference_file_items_cache
+        items: list[ReferenceCompletionItem] = []
+        for path in _iter_reference_file_candidates(root):
+            items.append(
+                ReferenceCompletionItem(
+                    value="@" + path.relative_to(root).as_posix(),
+                    description="file",
+                )
+            )
+        self._reference_file_items_cache_root = root
+        self._reference_file_items_cache = tuple(items)
+        return self._reference_file_items_cache
+
+    def _reference_completion_widget(self) -> ReferenceCompletionWidget | None:
+        matches = list(self.query(ReferenceCompletionWidget))
+        if not matches:
+            return None
+        return matches[0]
+
     @tui_command("quit")
     def _command_quit(self, arg: str) -> None:
         self.exit()
@@ -443,7 +577,12 @@ class AceAIConfiguredTUI(AceAITUI):
             f"Saved idea from {idea.created_at.strftime('%Y-%m-%d %H:%M')}."
         )
 
-    def enqueue_run(self, question: str) -> None:
+    def enqueue_run(
+        self,
+        question: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         self._clear_cancel_arm()
         agent_app = self._agent_app
         if agent_app is None:
@@ -459,9 +598,11 @@ class AceAIConfiguredTUI(AceAITUI):
         if (
             self._active_worker is None or not self._active_worker.is_running
         ) and not agent_app.is_running_suspended:
-            self._start_run_now(question)
+            self._start_run_now(question, citations=citations)
             return
         agent_app.enqueue_turn(question)
+        if citations:
+            self._queued_turn_citations()[question].append(citations)
         self._refresh_queued_turns()
 
     def steer_run(self, question: str) -> None:
@@ -508,10 +649,11 @@ class AceAIConfiguredTUI(AceAITUI):
         except IndexError:
             self._refresh_queued_turns()
             return
+        citations = self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
         if self._active_worker is not None and self._active_worker.is_running:
             self._active_worker.cancel()
-        self._start_run_now(question)
+        self._start_run_now(question, citations=citations)
 
     def _start_run_now(
         self,
@@ -545,8 +687,11 @@ class AceAIConfiguredTUI(AceAITUI):
         question = agent_app.pop_queued_turn()
         if question is None:
             return
+        citations = self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
-        self.call_after_refresh(lambda: self._start_run_now(question))
+        self.call_after_refresh(
+            lambda: self._start_run_now(question, citations=citations)
+        )
 
     def _refresh_queued_turns(self) -> None:
         if not self.is_mounted:
@@ -585,6 +730,7 @@ class AceAIConfiguredTUI(AceAITUI):
         except IndexError:
             self._refresh_queued_turns()
             return
+        self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
         self.append_event(
             TUIEvent.session_notice(
@@ -644,6 +790,69 @@ class AceAIConfiguredTUI(AceAITUI):
         citations = tuple(self._pending_citations())
         self._pending_turn_citations = []
         return citations
+
+    def _queued_turn_citations(self) -> dict[str, list[tuple[TurnCitation, ...]]]:
+        if not hasattr(self, "_queued_turn_citation_map"):
+            self._queued_turn_citation_map = {}
+        return self._queued_turn_citation_map
+
+    def _pop_queued_turn_citations(self, question: str) -> tuple[TurnCitation, ...]:
+        queued = self._queued_turn_citations()
+        values = queued.get(question)
+        if not values:
+            return ()
+        citations = values.pop(0)
+        if not values:
+            queued.pop(question, None)
+        return citations
+
+    def _inline_citations(self, question: str) -> tuple[TurnCitation, ...]:
+        citations: list[TurnCitation] = []
+        for reference in _inline_references(question):
+            if reference.kind == "file":
+                citations.append(self._file_citation(reference.value))
+            elif reference.kind == "idea":
+                citations.append(self._idea_citation(reference.value))
+        return tuple(citations)
+
+    def _file_citation(self, path_text: str) -> TurnCitation:
+        path = Path(path_text).expanduser()
+        if not path.is_absolute():
+            path = Path(self._project.root_path) / path
+        path = path.resolve()
+        if not path.is_file():
+            raise ValueError(f"File not found: {path}")
+        content = path.read_text(encoding="utf-8")
+        return TurnCitation(
+            content=content,
+            origin=FileCitationOrigin(kind="file", path=str(path)),
+        )
+
+    def _idea_citation(self, value: str) -> TurnCitation:
+        try:
+            index = int(value)
+        except ValueError:
+            idea = self._idea_by_id(value)
+        else:
+            idea = self._idea_by_display_index(index)
+        return TurnCitation(
+            content=idea.content,
+            origin=IdeaCitationOrigin(kind="idea", idea_id=idea.idea_id),
+        )
+
+    def _idea_by_display_index(self, index: int) -> Idea:
+        if index < 1:
+            raise ValueError("Idea reference index must be one-based")
+        ideas = self._list_ideas()
+        if index > len(ideas):
+            raise ValueError(f"Idea not found: {index}")
+        return ideas[index - 1]
+
+    def _idea_by_id(self, idea_id: str) -> Idea:
+        for idea in self._list_ideas():
+            if idea.idea_id == idea_id:
+                return idea
+        raise ValueError(f"Idea not found: {idea_id}")
 
     def _refresh_citation_preview(self) -> None:
         if not self.is_mounted:
@@ -756,7 +965,7 @@ class AceAIConfiguredTUI(AceAITUI):
             self.query_one(CommandInput).value = question
             return
         if self._active_worker is not None and self._active_worker.is_running:
-            self.enqueue_run(question)
+            self.enqueue_run(question, citations=citations)
             return
         self._ensure_agent_app()
         if self._agent_app.is_running_suspended:
@@ -914,11 +1123,18 @@ class AceAIConfiguredTUI(AceAITUI):
                 if self._current_config is not None
                 else (),
                 tool_permission_items=self._available_tool_permission_items(),
+                audit_entries=load_config_audit(
+                    limit=50,
+                    target=effective_config_path(),
+                ),
                 api_keys=api_keys,
                 compress_threshold=self._current_config.compress_threshold
                 if self._current_config is not None
                 else "100%",
                 reasoning_level=self._reasoning_level,
+                disabled_providers=tuple(self._current_config.disabled_providers)
+                if self._current_config is not None
+                else (),
             ),
             self._handle_config_selection,
         )
@@ -962,6 +1178,7 @@ class AceAIConfiguredTUI(AceAITUI):
                 tool_max_calls=selection.tool_max_calls,
                 compress_threshold=selection.compress_threshold,
                 reasoning_level=selection.reasoning_level,
+                disabled_providers=list(selection.disabled_providers),
             )
         )
         if same_provider:
@@ -972,6 +1189,13 @@ class AceAIConfiguredTUI(AceAITUI):
             self.notify_session(
                 f"Switched provider to {selection.provider} and model to {selection.model}"
             )
+
+    def on_config_screen_persist_requested(
+        self,
+        event: ConfigScreen.PersistRequested,
+    ) -> None:
+        event.stop()
+        self._handle_config_selection(event.selection)
 
     def _resolve_selection_api_key(
         self,
@@ -1026,6 +1250,7 @@ class AceAIConfiguredTUI(AceAITUI):
                 tool_max_calls=self._current_config.tool_max_calls,
                 compress_threshold=self._current_config.compress_threshold,
                 reasoning_level=next_level,
+                disabled_providers=self._current_config.disabled_providers,
             )
             self._current_config = normalize_user_config(next_config, persist=True)
         self._selected_model = cast(OpenAIModel, model)
@@ -1190,6 +1415,111 @@ def _idea_delete_index(arg: str) -> int | None:
     if not arg.startswith(prefix):
         return None
     return int(arg.removeprefix(prefix))
+
+
+class InlineReference(Struct, frozen=True, kw_only=True):
+    kind: str
+    value: str
+
+
+def _inline_references(text: str) -> tuple[InlineReference, ...]:
+    references: list[InlineReference] = []
+    seen: set[tuple[str, str]] = set()
+    for token in text.split():
+        reference = _inline_reference(token)
+        if reference is None:
+            continue
+        key = (reference.kind, reference.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        references.append(reference)
+    return tuple(references)
+
+
+def _inline_reference(token: str) -> InlineReference | None:
+    token = token.strip()
+    if not token.startswith("@") or len(token) == 1:
+        return None
+    value = token[1:].strip(".,;:!?)]}\"'")
+    if value == "" or "://" in value:
+        return None
+    if value.startswith("idea:"):
+        idea = value.removeprefix("idea:")
+        if idea == "":
+            return None
+        return InlineReference(kind="idea", value=idea)
+    return InlineReference(kind="file", value=value)
+
+
+def _active_reference_prefix(value: str) -> str | None:
+    tail = value.rsplit(maxsplit=1)[-1] if value.split() else value
+    if tail.startswith("@"):
+        return tail[1:]
+    return None
+
+
+def _replace_active_reference(value: str, replacement: str) -> str:
+    if not value.split():
+        return replacement + " "
+    head, separator, tail = value.rpartition(" ")
+    if not tail.startswith("@"):
+        return value
+    if separator == "":
+        return replacement + " "
+    return f"{head} {replacement} "
+
+
+def _reference_idea_description(idea: Idea) -> str:
+    first_line = idea.content.splitlines()[0] if idea.content.splitlines() else "idea"
+    if len(first_line) > 64:
+        first_line = first_line[:61] + "..."
+    return first_line
+
+
+def _rank_reference_items(
+    prefix: str,
+    items: tuple[ReferenceCompletionItem, ...],
+) -> tuple[tuple[ReferenceCompletionItem, float, int], ...]:
+    ranked_items = []
+    query = prefix.casefold()
+    for index, item in enumerate(items):
+        candidate = item.value.removeprefix("@").casefold()
+        score = fuzz.WRatio(query, candidate)
+        ranked_items.append((item, score, index))
+    return tuple(
+        sorted(
+            ranked_items,
+            key=lambda match: (-match[1], match[2]),
+        )
+    )
+
+
+def _filter_ranked_reference_items(
+    ranked_items: tuple[tuple[ReferenceCompletionItem, float, int], ...],
+    *,
+    score_cutoff: float = 50,
+    limit: int = 12,
+) -> tuple[ReferenceCompletionItem, ...]:
+    return tuple(
+        item
+        for item, score, _index in ranked_items
+        if score >= score_cutoff
+    )[:limit]
+
+
+def _iter_reference_file_candidates(root: Path):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames if dirname not in REFERENCE_IGNORED_DIRS
+        )
+        for filename in sorted(filenames):
+            if filename.startswith("."):
+                continue
+            path = Path(dirpath) / filename
+            if not path.is_file():
+                continue
+            yield path
 
 
 class UpdateCommandResult(Struct, frozen=True, kw_only=True):

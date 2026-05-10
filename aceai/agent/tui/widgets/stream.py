@@ -110,7 +110,8 @@ class StreamWidget(RichLog):
         super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
         self._state = state or TUIRunState()
         self._project_name = project_name
-        self._project_root_path = project_root_path
+        self._project_root_path = ""
+        self._git_branch_name: str | None = None
         self._debug_mode = False
         self._selected_debug_index = 0
         self._empty_state_frame_index = 0
@@ -118,6 +119,7 @@ class StreamWidget(RichLog):
         self._debug_line_spans: list[_DebugLineSpan] = []
         self._expanded_tool_activity_ids: set[str] = set()
         self._tool_activity_line_spans: list[_ToolActivityLineSpan] = []
+        self.set_project_root_path(project_root_path)
 
     @property
     def debug_mode(self) -> bool:
@@ -127,7 +129,10 @@ class StreamWidget(RichLog):
         self._project_name = project_name
 
     def set_project_root_path(self, project_root_path: str) -> None:
+        if project_root_path == self._project_root_path:
+            return
         self._project_root_path = project_root_path
+        self._git_branch_name = _git_branch_name(project_root_path)
 
     def set_debug_mode(self, enabled: bool) -> str | None:
         self._debug_mode = enabled
@@ -321,7 +326,7 @@ class StreamWidget(RichLog):
             style="bold #d8dee9",
             width=width,
         )
-        branch_name = _git_branch_name(self._project_root_path)
+        branch_name = self._git_branch_name
         branch = (
             _center_empty_state_text(
                 f"Git: {branch_name}",

@@ -20,6 +20,13 @@ class IdeaCitationOrigin(Struct, frozen=True, kw_only=True):
     idea_id: str
 
 
+class FileCitationOrigin(Struct, frozen=True, kw_only=True):
+    """Citation source that points at a local file."""
+
+    kind: Literal["file"]
+    path: str
+
+
 class AdHocCitationOrigin(Struct, frozen=True, kw_only=True):
     """Citation source for explicit quoted context without a persisted object."""
 
@@ -28,7 +35,10 @@ class AdHocCitationOrigin(Struct, frozen=True, kw_only=True):
 
 
 type CitationOrigin = (
-    ConversationCitationOrigin | IdeaCitationOrigin | AdHocCitationOrigin
+    ConversationCitationOrigin
+    | IdeaCitationOrigin
+    | FileCitationOrigin
+    | AdHocCitationOrigin
 )
 
 
@@ -58,6 +68,11 @@ def citation_origin_payload(origin: CitationOrigin) -> dict[str, Any]:
         return {
             "kind": origin.kind,
             "idea_id": origin.idea_id,
+        }
+    if origin.kind == "file":
+        return {
+            "kind": origin.kind,
+            "path": origin.path,
         }
     return {
         "kind": origin.kind,
@@ -94,6 +109,11 @@ def citation_origin_from_payload(payload: dict[str, Any]) -> CitationOrigin:
         if type(idea_id) is not str:
             raise TypeError("Idea citation idea_id must be str")
         return IdeaCitationOrigin(kind="idea", idea_id=idea_id)
+    if kind == "file":
+        path = payload["path"]
+        if type(path) is not str:
+            raise TypeError("File citation path must be str")
+        return FileCitationOrigin(kind="file", path=path)
     if kind == "ad_hoc":
         label = payload["label"]
         if type(label) is not str:
@@ -159,4 +179,6 @@ def citation_origin_name(origin: CitationOrigin) -> str:
         return f"conversation:{origin.role}"
     if origin.kind == "idea":
         return "idea"
+    if origin.kind == "file":
+        return f"file:{origin.path}"
     return origin.label
