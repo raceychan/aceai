@@ -66,8 +66,9 @@ EMPTY_STATE_DOG_PIXELS: tuple[tuple[str, ...], ...] = (
 )
 EMPTY_STATE_DOG_HEIGHT = len(EMPTY_STATE_DOG_PIXELS[0])
 EMPTY_STATE_DOG_WIDTH = max(len(row) for row in EMPTY_STATE_DOG_PIXELS[0]) * 2
-EMPTY_STATE_MIN_WIDTH = EMPTY_STATE_DOG_WIDTH + 4
-EMPTY_STATE_CONTENT_HEIGHT = EMPTY_STATE_DOG_HEIGHT + 2
+EMPTY_STATE_HELP_MIN_WIDTH = 56
+EMPTY_STATE_MIN_WIDTH = max(EMPTY_STATE_DOG_WIDTH + 4, EMPTY_STATE_HELP_MIN_WIDTH)
+EMPTY_STATE_CONTENT_HEIGHT = EMPTY_STATE_DOG_HEIGHT + 14
 TOOL_ARGUMENT_PREVIEW_MAX_CHARS = 96
 TOOL_ARGUMENT_VALUE_PREVIEW_MAX_CHARS = 48
 EMPTY_STATE_PIXEL_STYLES: dict[str, str] = {
@@ -303,30 +304,36 @@ class StreamWidget(RichLog):
         self._write_stream_renderable(self._render_empty_state())
 
     def _render_empty_state(self) -> RenderableType:
+        width = _empty_state_help_width(self)
         dog = _render_empty_state_dog(
             EMPTY_STATE_DOG_PIXELS[
                 self._empty_state_frame_index % len(EMPTY_STATE_DOG_PIXELS)
-            ]
+            ],
+            width=width,
         )
         title = _center_empty_state_text(
             f"AceAI v{__version__}",
             style="bold #8fbcbb",
+            width=width,
         )
         project = _center_empty_state_text(
             f"Project: {self._project_name}",
             style="bold #d8dee9",
+            width=width,
         )
         branch_name = _git_branch_name(self._project_root_path)
         branch = (
             _center_empty_state_text(
                 f"Git: {branch_name}",
                 style="#a7b1c2",
+                width=width,
             )
             if branch_name is not None
             else Text("")
         )
+        help_panel = _render_empty_state_help(width=width)
         content = Align.center(
-            Group(dog, Text(""), title, project, branch),
+            Group(dog, Text(""), title, project, branch, Text(""), help_panel),
             vertical="middle",
         )
         top_padding = _empty_state_top_padding(self)
@@ -1385,10 +1392,10 @@ def _looks_like_markdown(content: str) -> bool:
     return "`" in content or "**" in content or "__" in content
 
 
-def _render_empty_state_dog(frame: tuple[str, ...]) -> RenderableType:
+def _render_empty_state_dog(frame: tuple[str, ...], *, width: int) -> RenderableType:
     lines: list[Text] = []
     for row in frame:
-        line = Text()
+        line = Text(" " * max(0, (width - EMPTY_STATE_DOG_WIDTH) // 2))
         for pixel in row:
             style = EMPTY_STATE_PIXEL_STYLES.get(pixel)
             if style is None:
@@ -1399,9 +1406,48 @@ def _render_empty_state_dog(frame: tuple[str, ...]) -> RenderableType:
     return Group(*lines)
 
 
-def _center_empty_state_text(value: str, *, style: str) -> Text:
-    left_padding = max(0, (EMPTY_STATE_DOG_WIDTH - len(value)) // 2)
+def _center_empty_state_text(value: str, *, style: str, width: int) -> Text:
+    left_padding = max(0, (width - len(value)) // 2)
     return Text(f"{' ' * left_padding}{value}", style=style)
+
+
+def _render_empty_state_help(*, width: int) -> Panel:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(no_wrap=True, width=18)
+    table.add_column(no_wrap=True, width=18)
+    table.add_column(no_wrap=True, width=18)
+    table.add_row(
+        _shortcut("enter", "ask"),
+        _shortcut("c", "config"),
+        _shortcut("s", "sessions"),
+    )
+    table.add_row(
+        _shortcut("d", "debug"),
+        _shortcut("i", "ideas"),
+        _shortcut("/", "commands"),
+    )
+    table.add_row(
+        _shortcut("esc", "cancel"),
+        _shortcut("q", "quit"),
+        Text(""),
+    )
+    return Panel(
+        table,
+        title="shortcuts",
+        title_align="left",
+        border_style="#4c566a",
+        padding=(0, 1),
+        width=width,
+    )
+
+
+def _shortcut(key: str, label: str) -> Text:
+    text = Text()
+    text.append("[", style="#5e81ac")
+    text.append(key, style="bold #8fbcbb")
+    text.append("]", style="#5e81ac")
+    text.append(f" {label}", style="#d8dee9")
+    return text
 
 
 def _git_branch_name(project_root_path: str) -> str | None:
@@ -1431,6 +1477,10 @@ def _empty_state_top_padding(stream: StreamWidget) -> int:
         if height > EMPTY_STATE_CONTENT_HEIGHT:
             return (height - EMPTY_STATE_CONTENT_HEIGHT) // 2
     return 0
+
+
+def _empty_state_help_width(stream: StreamWidget) -> int:
+    return max(EMPTY_STATE_HELP_MIN_WIDTH, min(_available_stream_width(stream), 72))
 
 
 def _available_stream_width(stream: StreamWidget) -> int:

@@ -468,26 +468,42 @@ def _skill_checkboxes(
     checked_items: tuple[SkillConfigItem, ...],
 ):
     if not skill_items:
-        return (Static("No skills available", id="skills-empty"),)
+        return (
+            Container(
+                Static("No skills loaded", classes="skill-empty-title"),
+                Static(
+                    "Search this project or add skills to the agent to make them available.",
+                    classes="skill-empty-copy",
+                ),
+                id="skills-empty",
+                classes="skill-empty-card",
+            ),
+        )
     checked_names = {item.name for item in checked_items}
     controls: list[Container] = []
     for index, item in enumerate(skill_items):
         controls.append(
             Container(
-                Checkbox(
-                    item.name,
-                    value=item.name in checked_names,
-                    id=f"skill-{index}",
+                Horizontal(
+                    Checkbox(
+                        item.name,
+                        value=item.name in checked_names,
+                        id=f"skill-{index}",
+                    ),
+                    Static(
+                        _skill_source_label(item),
+                        classes=(
+                            "skill-source "
+                            f"skill-source-{item.source.replace(' ', '-')}"
+                        ),
+                        id=f"skill-source-{index}",
+                    ),
+                    classes="skill-entry-header",
                 ),
                 Static(
                     item.description,
                     classes="skill-description",
                     id=f"skill-description-{index}",
-                ),
-                Static(
-                    _skill_source_label(item),
-                    classes=f"skill-source skill-source-{item.source.replace(' ', '-')}",
-                    id=f"skill-source-{index}",
                 ),
                 Static(
                     item.location,
@@ -517,22 +533,53 @@ def _project_skill_link_paths() -> tuple[Path, ...]:
 
 def _skill_candidate_controls(
     skill_items: tuple[SkillConfigItem, ...],
-) -> tuple[Static | Horizontal, ...]:
+) -> tuple[Container, ...]:
     if not skill_items:
-        return (Static("No new skills found", id="skill-candidates-empty"),)
-    rows: list[Horizontal] = []
+        return (
+            Container(
+                Static("No new skills", classes="skill-empty-title"),
+                Static(
+                    "Search found no project SKILL.md files outside the loaded skill set.",
+                    classes="skill-empty-copy",
+                ),
+                id="skill-candidates-empty",
+                classes="skill-empty-card",
+            ),
+        )
+    rows: list[Container] = []
     for index, item in enumerate(skill_items):
         rows.append(
-            Horizontal(
-                Static(
-                    f"{item.name} - {item.location}",
-                    classes="skill-candidate-value",
-                    id=f"skill-candidate-{index}",
+            Container(
+                Horizontal(
+                    Static(
+                        item.name,
+                        classes="skill-candidate-name",
+                        id=f"skill-candidate-{index}",
+                    ),
+                    Static(
+                        _skill_source_label(item),
+                        classes=(
+                            "skill-source "
+                            f"skill-source-{item.source.replace(' ', '-')}"
+                        ),
+                        id=f"skill-candidate-source-{index}",
+                    ),
+                    Button(
+                        "Load",
+                        id=f"load-skill-{index}",
+                        classes="load-skill",
+                    ),
+                    classes="skill-candidate-header",
                 ),
-                Button(
-                    "Load",
-                    id=f"load-skill-{index}",
-                    classes="load-skill",
+                Static(
+                    item.description,
+                    classes="skill-description",
+                    id=f"skill-candidate-description-{index}",
+                ),
+                Static(
+                    item.location,
+                    classes="skill-location",
+                    id=f"skill-candidate-location-{index}",
                 ),
                 classes="skill-candidate-row",
                 id=f"skill-candidate-row-{index}",
@@ -976,16 +1023,25 @@ class ConfigScreen(Screen[ConfigSelection | None]):
 
     .skill-candidate-row {
         width: 100%;
-        height: 3;
+        height: auto;
         margin-bottom: 1;
+        padding: 1 1;
+        background: #303746;
+        border: round #5e6b80;
+    }
+
+    .skill-candidate-header {
+        width: 100%;
+        height: 3;
         align: center middle;
     }
 
-    .skill-candidate-value {
+    .skill-candidate-name {
         width: 1fr;
         height: 3;
         content-align: left middle;
         color: #e5e9f0;
+        text-style: bold;
     }
 
     .load-skill {
@@ -1133,11 +1189,11 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     }
 
     .tool-tag-allow-toggle {
-        width: 18;
+        width: 16;
         height: 3;
         background: #263241;
         color: #a3be8c;
-        border: round #6f8f70;
+        border: round #5e6b80;
         padding: 0 1;
         text-style: bold;
     }
@@ -1155,25 +1211,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         border: round #a3be8c;
     }
 
-    .tool-tag-allow-toggle.-on {
+    .tool-tag-allow-toggle.allowed {
         background: #2f3f35;
         color: #d8f0c8;
         border: round #a3be8c;
-    }
-
-    .tool-tag-allow-toggle > .toggle--button {
-        background: #1f2b24;
-        color: #a3be8c;
-    }
-
-    .tool-tag-allow-toggle.-on > .toggle--button {
-        background: #1f2b24;
-        color: #d8f0c8;
-    }
-
-    .tool-tag-allow-toggle > .toggle--label {
-        color: #d8f0c8;
-        text-style: bold;
     }
 
     .tool-tag-status {
@@ -1186,37 +1227,68 @@ class ConfigScreen(Screen[ConfigSelection | None]):
         width: 100%;
         height: auto;
         margin-bottom: 1;
-    }
-
-    .skill-entry > Checkbox {
-        width: 37;
-        height: 3;
-        background: #343b49;
+        padding: 1 1;
+        background: #303746;
         border: round #5e6b80;
     }
 
-    .skill-entry > Checkbox:focus {
-        background: #3b4252;
-        background-tint: #3b4252 0%;
-        border: round #88c0d0;
+    .skill-entry-header {
+        width: 100%;
+        height: 3;
+        align: center middle;
+    }
+
+    .skill-entry-header > Checkbox {
+        width: 1fr;
+        height: 3;
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+
+    .skill-entry-header > Checkbox:focus {
+        background: transparent;
+        background-tint: transparent 0%;
+        border: none;
     }
 
     .skill-description {
         color: #e5e9f0;
-        margin-left: 3;
+        margin-left: 0;
         height: auto;
     }
 
     .skill-source {
+        width: 22;
         color: #88c0d0;
-        margin-left: 3;
-        height: auto;
+        height: 3;
+        content-align: right middle;
     }
 
     .skill-location {
         color: #a7b1c2;
-        margin-left: 3;
+        margin-left: 0;
         height: auto;
+    }
+
+    .skill-empty-card {
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+        padding: 1 1;
+        background: #303746;
+        border: round #4c566a;
+    }
+
+    .skill-empty-title {
+        height: 1;
+        color: #eceff4;
+        text-style: bold;
+    }
+
+    .skill-empty-copy {
+        height: auto;
+        color: #a7b1c2;
     }
 
     #config-actions {
@@ -1371,7 +1443,7 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                                 id="search-skills",
                             )
                         yield Static("", id="skill-search-error")
-                        yield Label("new skills")
+                        yield Label("discovered skills")
                         with Container(id="skill-candidates"):
                             yield from _skill_candidate_controls(
                                 self._candidate_skill_items
@@ -1538,6 +1610,15 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             return
         if event.button.id == "search-skills":
             self._search_project_skills()
+            return
+        if (
+            event.button.id is not None
+            and event.button.id.startswith("tool-tag-allow-all-")
+        ):
+            self._sync_tool_settings_from_controls()
+            tag = self._tool_tag_allow_control_names[event.button.id]
+            self._allow_all_tools_for_tag(tag)
+            self._refresh_tool_permission_control_values()
             return
         if event.button.id is not None and event.button.id.startswith("load-skill-"):
             index = int(event.button.id.removeprefix("load-skill-"))
@@ -1792,13 +1873,6 @@ class ConfigScreen(Screen[ConfigSelection | None]):
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id is None:
             return
-        if event.checkbox.id.startswith("tool-tag-allow-all-"):
-            self._sync_tool_settings_from_controls()
-            tag = self._tool_tag_allow_control_names[event.checkbox.id]
-            if event.value:
-                self._allow_all_tools_for_tag(tag)
-                self._refresh_tool_permission_control_values()
-            return
         if event.checkbox.id.startswith("tool-tag-enabled-"):
             self._sync_tool_settings_from_controls()
             tag = self._tool_tag_control_names[event.checkbox.id]
@@ -1888,9 +1962,13 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             self.query_one(f"#tool-tag-status-{index}", Static).update(
                 f"{enabled_count}/{len(tools)} enabled"
             )
-            self.query_one(f"#tool-tag-allow-all-{index}", Checkbox).value = (
-                self._tag_permissions_are_always(tag)
-            )
+            allow_button = self.query_one(f"#tool-tag-allow-all-{index}", Button)
+            if self._tag_permissions_are_always(tag):
+                allow_button.label = "All allowed"
+                allow_button.add_class("allowed")
+            else:
+                allow_button.label = "Allow all"
+                allow_button.remove_class("allowed")
         for index, tool_name in enumerate(self._tool_names):
             disabled_class = "tool-disabled"
             enabled = self._tool_enabled[tool_name]
@@ -1899,7 +1977,10 @@ class ConfigScreen(Screen[ConfigSelection | None]):
             name = self.query_one(f"#tool-name-{index}", Static)
             permission = self.query_one(f"#tool-permission-{index}", Select)
             max_calls = self.query_one(f"#tool-max-calls-{index}", Input)
-            description = self.query_one(f"#tool-permission-description-{index}", Static)
+            description = self.query_one(
+                f"#tool-permission-description-{index}",
+                Static,
+            )
             targets = (row, name, permission, max_calls, description)
             for target in targets:
                 if enabled:
@@ -1935,11 +2016,18 @@ class ConfigScreen(Screen[ConfigSelection | None]):
                     id=f"tool-tag-status-{index}",
                     classes="tool-tag-status",
                 ),
-                Checkbox(
-                    "allow all",
-                    value=self._tag_permissions_are_always(tag),
+                Button(
+                    (
+                        "All allowed"
+                        if self._tag_permissions_are_always(tag)
+                        else "Allow all"
+                    ),
                     id=f"tool-tag-allow-all-{index}",
-                    classes="tool-tag-allow-toggle",
+                    classes=(
+                        "tool-tag-allow-toggle allowed"
+                        if self._tag_permissions_are_always(tag)
+                        else "tool-tag-allow-toggle"
+                    ),
                 ),
                 classes="tool-tag-actions",
             ),
@@ -2100,7 +2188,7 @@ def _skills_field_label() -> str:
     for config_field in config_schema().fields:
         if config_field.name == "skills":
             marker = " *" if config_field.required else ""
-            return f"skills for current model{marker}"
+            return f"skills for current agent{marker}"
     raise ValueError("Unknown config field")
 
 
