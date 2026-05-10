@@ -182,9 +182,12 @@ class _RuntimeStreamMixin:
         self,
         stream: AsyncGenerator[AgentEvent, None],
     ) -> None:
+        provider_name = (
+            self._agent_app.provider_name if self._agent_app is not None else None
+        )
         try:
             async for event in stream:
-                self.append_agent_event(event)
+                self.append_agent_event(event, provider_name=provider_name)
                 if isinstance(event, RunSuspendedEvent):
                     self.show_pending_approval()
         finally:

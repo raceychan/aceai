@@ -271,8 +271,13 @@ class AceAITUI(App[None]):
         if self._record_events and self._session_recorder is not None:
             self._session_recorder.record(tui_event_to_session_event(event))
 
-    def append_agent_event(self, event: AgentEvent) -> None:
-        tui_event = TUIEvent.from_agent_event(event)
+    def append_agent_event(
+        self,
+        event: AgentEvent,
+        *,
+        provider_name: str | None = None,
+    ) -> None:
+        tui_event = TUIEvent.from_agent_event(event, provider_name=provider_name)
         if tui_event.kind == "llm_retrying":
             self.notify(
                 tui_event.content,
