@@ -57,7 +57,12 @@ def _run_suspended_event_for_pending_approval(
 
 
 def _expires_pending_approval(kind: str) -> bool:
-    return kind in ("user_message", "assistant_message", "assistant_tool_call")
+    return kind in (
+        "user_message",
+        "user_steer",
+        "assistant_message",
+        "assistant_tool_call",
+    )
 
 
 def _expired_approval_events(pending_approvals: dict[str, TUIEvent]) -> list[TUIEvent]:

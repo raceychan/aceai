@@ -180,7 +180,7 @@ class TUIEvent(Record, kw_only=True):
 
     @classmethod
     def from_session_event(cls, event: SessionEvent) -> "TUIEvent | None":
-        if event.kind == "user_message":
+        if event.kind in ("user_message", "user_steer"):
             citations: tuple[TurnCitation, ...] = ()
             if "citations" in event.payload:
                 citations = citations_from_payload(event.payload["citations"])

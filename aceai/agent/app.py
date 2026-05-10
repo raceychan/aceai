@@ -38,12 +38,14 @@ from aceai.agent.provider_catalog import (
 from aceai.agent.session import (
     EventLog,
     MAIN_THREAD_ID,
+    SessionEvent,
     SessionRecorder,
     SessionState,
     SessionStore,
 )
 from aceai.agent.session_service import AgentSessionSnapshot, SessionService
 from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
+from aceai.core.helpers.string import uuid_str
 from aceai.core import (
     Agent,
     AgentRunContext,
@@ -104,6 +106,7 @@ class ChildThreadRuntime:
     run: AgentRunContext
     handoff: asyncio.Future[ChildAgentResult]
     task: asyncio.Task[None]
+    intervention_count: int = 0
 
 
 class AceAgentApp:
@@ -157,6 +160,8 @@ class AceAgentApp:
         self._active_thread_id = MAIN_THREAD_ID
         self._thread_agents: dict[str, Agent] = {MAIN_THREAD_ID: self._agent}
         self._child_runtimes: dict[str, ChildThreadRuntime] = {}
+        self._steered_child_run_ids: set[str] = set()
+        self._stale_child_runtime_tasks: set[asyncio.Task[None]] = set()
         self._queued_questions: dict[str, list[str]] = {}
         self._app_event_subscribers: set[asyncio.Queue[AgentAppEvent | None]] = set()
         self._idea_store = idea_store or IdeaStore()
@@ -355,6 +360,66 @@ class AceAgentApp:
         questions.append(question)
         return len(questions)
 
+    def steer_active_child_thread(self, question: str) -> bool:
+        thread_id = self._active_thread_id
+        runtime = self._child_runtimes.get(thread_id)
+        if runtime is None:
+            return False
+        if question == "":
+            raise ValueError("child steer question cannot be empty")
+        if runtime.task.done():
+            self._child_runtimes.pop(thread_id, None)
+            return False
+        child_agent = self._agent_for_thread(thread_id)
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
+        event_log = self._session_service.store.load_thread_event_log(
+            session_id,
+            thread_id,
+        )
+        child_run = child_agent.create_resume_run(
+            question,
+            event_log.replay_llm_history(),
+            trace_ctx=self._trace_ctx,
+            **self._request_meta_for_run(),
+        )
+        child_run.run_state.tools.approved_tool_names = (
+            self._approved_tool_names_for_thread(thread_id)
+        )
+        runtime.intervention_count += 1
+        self._steered_child_run_ids.add(runtime.run.run_id)
+        runtime.run = child_run
+        self._thread_runs[thread_id] = child_run
+        self._active_run = child_run
+        event_id = self._record_child_steer_event(
+            thread_id=thread_id,
+            agent_id=runtime.agent_id,
+            run_id=child_run.run_id,
+            question=question,
+        )
+        self._child_context_event_ids[thread_id] = event_id
+        self._last_context_event_ids[thread_id] = event_id
+        old_task = runtime.task
+        self._stale_child_runtime_tasks.add(old_task)
+        old_task.cancel()
+        runtime.task = asyncio.create_task(
+            self._run_child_thread_runtime(
+                thread_id=thread_id,
+                child_agent=child_agent,
+                child_run=child_run,
+                handoff=runtime.handoff,
+            )
+        )
+        runtime.task.add_done_callback(
+            lambda completed_task: self._complete_child_runtime_task(
+                thread_id=thread_id,
+                task=completed_task,
+                handoff=runtime.handoff,
+            )
+        )
+        return True
+
     def pop_queued_turn(self) -> str | None:
         questions = self._queued_questions_for_active_thread()
         if not questions:
@@ -362,6 +427,9 @@ class AceAgentApp:
         return questions.pop(0)
 
     def take_queued_turn(self, index: int) -> str:
+        return self._queued_questions_for_active_thread().pop(index)
+
+    def cancel_queued_turn(self, index: int) -> str:
         return self._queued_questions_for_active_thread().pop(index)
 
     def switch_model(
@@ -478,10 +546,8 @@ class AceAgentApp:
         self.persist_session_state()
         thread_id = self._active_thread_id
         if thread_id in self._child_runtimes:
-            raise RuntimeError(
-                "Delegated subagent thread is still running; switch to main or wait "
-                "for delegate_to_subagent to finish before sending a new message."
-            )
+            self.steer_active_child_thread(question)
+            return
         agent = self._agent_for_thread(thread_id)
         history = self._history_for_thread(thread_id)
         llm_question = message_with_citations(question, citations)
@@ -838,14 +904,16 @@ class AceAgentApp:
         try:
             return await handoff
         except asyncio.CancelledError:
-            if not runtime_task.done():
-                runtime_task.cancel()
+            runtime = self._child_runtimes.get(thread_id)
+            task_to_cancel = runtime.task if runtime is not None else runtime_task
+            if not task_to_cancel.done():
+                task_to_cancel.cancel()
             self.finish_child_thread(
                 thread_id=thread_id,
                 status="failed",
             )
             try:
-                await runtime_task
+                await task_to_cancel
             except asyncio.CancelledError:
                 pass
             raise
@@ -907,6 +975,9 @@ class AceAgentApp:
                         handoff.set_exception(ToolExecutionError(event.error))
                     return
         except asyncio.CancelledError:
+            if child_run.run_id in self._steered_child_run_ids:
+                self._steered_child_run_ids.remove(child_run.run_id)
+                raise
             error = "delegated subagent run was cancelled before a terminal event"
             child_run.run_state.status = "failed"
             event = _cancelled_child_run_failed_event(
@@ -928,6 +999,9 @@ class AceAgentApp:
                 handoff.set_exception(ToolExecutionError(error))
             raise
         if child_run.status == "running":
+            if child_run.run_id in self._steered_child_run_ids:
+                self._steered_child_run_ids.remove(child_run.run_id)
+                return
             error = "delegated subagent run was cancelled before a terminal event"
             child_run.run_state.status = "failed"
             event = _cancelled_child_run_failed_event(
@@ -970,6 +1044,12 @@ class AceAgentApp:
         task: asyncio.Task[None],
         handoff: asyncio.Future[ChildAgentResult],
     ) -> None:
+        if task in self._stale_child_runtime_tasks:
+            self._stale_child_runtime_tasks.remove(task)
+            return
+        runtime = self._child_runtimes.get(thread_id)
+        if runtime is not None and runtime.task is not task:
+            return
         self._child_runtimes.pop(thread_id, None)
         if task.cancelled():
             if not handoff.done():
@@ -982,6 +1062,30 @@ class AceAgentApp:
                 status="failed",
             )
             handoff.set_exception(exception)
+
+    def _record_child_steer_event(
+        self,
+        *,
+        thread_id: str,
+        agent_id: str,
+        run_id: str,
+        question: str,
+    ) -> str:
+        event_id = self._session_service.record_session_event(
+            SessionEvent(
+                event_id=uuid_str(),
+                thread_id=thread_id,
+                agent_id=agent_id,
+                run_id=run_id,
+                step_id=None,
+                step_index=None,
+                kind="user_steer",
+                payload={"content": question},
+            )
+        )
+        if event_id is None:
+            raise RuntimeError("user_steer did not persist a session event")
+        return event_id
 
     def record_child_event(
         self,

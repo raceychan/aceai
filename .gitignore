@@ -29,3 +29,6 @@ lab/
 # Project release skill
 !.agent/skills/aceai-release/
 !.agent/skills/aceai-release/**
+
+# Local design specs, not included in public source for now
+spec/

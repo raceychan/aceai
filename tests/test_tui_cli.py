@@ -1,7 +1,12 @@
 import pytest
 
 from aceai import __version__
-from aceai.agent.config import AgentAppConfig, clear_config, save_config
+from aceai.agent.config import (
+    AgentAppConfig,
+    clear_config,
+    default_config_path,
+    save_config,
+)
 from aceai.agent.tui import cli
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
 
@@ -257,6 +262,45 @@ def test_cli_prefers_project_config_over_env_provider(tmp_path, monkeypatch) -> 
     cli.main([])
 
     assert calls[0] == ("build", ("openai", "project-key", "gpt-4o-mini"))
+
+
+def test_cli_replaces_project_test_key_with_global_key(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    agent = StubAgent()
+
+    def build_agent(config):
+        calls.append(("build", (config.provider, config.api_key, config.model)))
+        return agent
+
+    def on_launch(**kwargs):
+        built = build_agent(kwargs["initial_config"])
+        calls.append(("interactive", (built, kwargs)))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ACEAI_MODEL", raising=False)
+    save_config(
+        AgentAppConfig(
+            provider="openai",
+            api_key="real-global-key",
+            model="gpt-5.5",
+            api_keys={"openai": "real-global-key"},
+        ),
+        path=default_config_path(),
+    )
+    save_config(
+        AgentAppConfig(
+            provider="openai",
+            api_key="test-key",
+            model="gpt-5.5",
+            api_keys={"openai": "test-key"},
+        )
+    )
+    install_tui_extra_stub(monkeypatch, on_launch=on_launch)
+
+    cli.main([])
+
+    assert calls[0] == ("build", ("openai", "real-global-key", "gpt-5.5"))
 
 
 def test_cli_resume_prefers_persisted_session_model(monkeypatch) -> None:

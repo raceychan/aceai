@@ -60,6 +60,7 @@ SessionEventKind = Literal[
     "tool_output",
     "tool_result",
     "tool_started",
+    "user_steer",
     "user_message",
 ]
 
@@ -203,6 +204,7 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "tool_output",
             "tool_result",
             "tool_started",
+            "user_steer",
             "user_message",
         ):
             raise ValueError("Unsupported session event kind")
@@ -308,6 +310,7 @@ class EventLog:
                 "assistant_tool_call",
                 "error",
                 "tool_result",
+                "user_steer",
                 "user_message",
             ):
                 return True
@@ -350,7 +353,7 @@ class EventLog:
         pending_tool_call_ids: set[str] = set()
         pending_tool_call_recorded = False
         for event in self.events:
-            if event.kind == "user_message":
+            if event.kind in ("user_message", "user_steer"):
                 pending_tool_call = None
                 pending_tool_call_ids = set()
                 pending_tool_call_recorded = False
@@ -912,9 +915,9 @@ class SessionRecorder:
 
         self.flush_assistant(event.thread_id)
         self.flush_reasoning(event.thread_id)
-        if event.kind == "user_message":
+        if event.kind in ("user_message", "user_steer"):
             return self._append_event(
-                "user_message",
+                event.kind,
                 _user_message_payload_for_record(event.payload),
                 event,
             )
@@ -1187,7 +1190,7 @@ def _run_log_from_events(run_id: str, events: list[SessionEvent]) -> AgentRunLog
 
 def _run_question(events: list[SessionEvent]) -> str:
     for event in events:
-        if event.kind == "user_message":
+        if event.kind in ("user_message", "user_steer"):
             return event.payload["content"]
     return ""
 

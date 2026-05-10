@@ -860,6 +860,8 @@ def _subagent_panel_states(
     for option in thread_options:
         if option.role != "subagent":
             continue
+        if option.thread_id == active_thread_id:
+            continue
         panel_states.append(
             TUISubagentState(
                 call_id=option.thread_id,

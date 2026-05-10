@@ -452,12 +452,9 @@ class AceAIConfiguredTUI(AceAITUI):
             )
             return
         if not agent_app.active_thread_accepts_user_turn:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "This subagent is still running under delegate_to_subagent. "
-                    "Switch to main or wait before sending a new message."
-                )
-            )
+            if agent_app.steer_active_child_thread(question):
+                self.append_event(TUIEvent.user_message(question))
+                self.append_event(TUIEvent.session_notice("Steered running subagent."))
             return
         if (
             self._active_worker is None or not self._active_worker.is_running
@@ -476,12 +473,9 @@ class AceAIConfiguredTUI(AceAITUI):
             )
             return
         if not agent_app.active_thread_accepts_user_turn:
-            self.append_event(
-                TUIEvent.session_notice(
-                    "This subagent is still running under delegate_to_subagent. "
-                    "Switch to main or wait before steering."
-                )
-            )
+            if agent_app.steer_active_child_thread(question):
+                self.append_event(TUIEvent.user_message(question))
+                self.append_event(TUIEvent.session_notice("Steered running subagent."))
             return
         if agent_app.is_running_suspended:
             self.append_event(
@@ -570,6 +564,33 @@ class AceAIConfiguredTUI(AceAITUI):
     ) -> None:
         event.stop()
         self.steer_queued_run(event.index)
+
+    def on_queued_turns_widget_cancelled(
+        self,
+        event: QueuedTurnsWidget.Cancelled,
+    ) -> None:
+        event.stop()
+        self.cancel_queued_run(event.index)
+
+    def cancel_queued_run(self, index: int) -> None:
+        self._clear_cancel_arm()
+        agent_app = self._agent_app
+        if agent_app is None:
+            self.append_event(
+                TUIEvent.session_notice("Configure AceAI before cancelling a queued run.")
+            )
+            return
+        try:
+            question = agent_app.cancel_queued_turn(index)
+        except IndexError:
+            self._refresh_queued_turns()
+            return
+        self._refresh_queued_turns()
+        self.append_event(
+            TUIEvent.session_notice(
+                f"Cancelled queued message {index + 1}: {question}"
+            )
+        )
 
     def _capture_idea(self, content: str) -> Idea:
         agent_app = self._agent_app

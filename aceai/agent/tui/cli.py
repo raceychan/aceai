@@ -24,6 +24,7 @@ from aceai.llm.openai import OpenAIModel
 
 from aceai.agent.config import (
     AgentAppConfig,
+    default_config_path,
     load_config,
     replace_config,
 )
@@ -31,6 +32,7 @@ from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
 TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
+PLACEHOLDER_API_KEYS = frozenset(("test-key",))
 TUI_EXTRA_INSTALL_HINT = (
     "AceAI TUI dependencies are not installed.\n"
     "Install them with one of:\n"
@@ -118,6 +120,7 @@ def resolve_initial_config(
 ) -> AgentAppConfig | None:
     stored = load_config()
     if stored is not None:
+        stored = _replace_placeholder_api_key(stored)
         if model_from_env:
             selected_model = resolve_model(stored.provider, model)
             return replace_config(
@@ -180,6 +183,49 @@ def resolve_initial_config(
             )
         )
     return None
+
+
+def _replace_placeholder_api_key(config: AgentAppConfig) -> AgentAppConfig:
+    if config.api_key not in PLACEHOLDER_API_KEYS:
+        return config
+    replacement = _api_key_replacement_for_provider(config.provider)
+    if replacement == "":
+        return config
+    api_keys = dict(config.api_keys)
+    api_keys[config.provider] = replacement
+    return replace_config(
+        AgentAppConfig(
+            provider=config.provider,
+            api_key=replacement,
+            model=config.model,
+            default_model=config.default_model,
+            skills=config.skills,
+            skill_selection_mode=config.skill_selection_mode,
+            enabled_skills=config.enabled_skills,
+            api_keys=api_keys,
+            tool_permissions=config.tool_permissions,
+            tool_enabled=config.tool_enabled,
+            tool_max_calls=config.tool_max_calls,
+            compress_threshold=config.compress_threshold,
+            reasoning_level=config.reasoning_level,
+        )
+    )
+
+
+def _api_key_replacement_for_provider(provider: str) -> str:
+    env_name = api_key_env(provider)
+    if env_name in os.environ:
+        return os.environ[env_name]
+    global_config_path = default_config_path()
+    if not global_config_path.exists():
+        return ""
+    global_config = load_config(global_config_path)
+    if global_config is None:
+        return ""
+    candidate = global_config.api_keys.get(provider, "")
+    if candidate in PLACEHOLDER_API_KEYS:
+        return ""
+    return candidate
 
 
 def apply_session_state_to_initial_config(
