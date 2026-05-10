@@ -1,5 +1,15 @@
 # Changelog
 
+## AceAI v0.2.26
+
+### Fixes
+
+- `cli`: Report stale or incomplete TUI runtime environments with a refresh command instead of crashing with a raw missing dependency traceback.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.25
 
 ### Improvements

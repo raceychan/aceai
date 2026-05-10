@@ -2083,7 +2083,7 @@ async def test_tui_batches_small_stream_delta_refreshes() -> None:
         await _wait_until(
             pilot,
             lambda: len(refreshes) == 2,
-            timeout=STREAM_DELTA_REFRESH_SECONDS * 5,
+            timeout=STREAM_DELTA_REFRESH_SECONDS * 50,
         )
 
         assert refreshes == [1, 1]

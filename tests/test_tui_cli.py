@@ -109,6 +109,36 @@ def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
     assert str(exc_info.value) == cli.TUI_EXTRA_INSTALL_HINT
 
 
+def test_cli_missing_runtime_dependency_explains_refresh(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "SessionRecorder", None)
+    monkeypatch.setattr(cli, "SessionStore", None)
+    monkeypatch.setattr(cli, "event_log_to_tui_events", None)
+    monkeypatch.setattr(cli, "AceAIConfiguredTUI", None)
+
+    class StubModule:
+        pass
+
+    def import_module(name: str):
+        if name in ("aceai.agent.session", "aceai.agent.tui.session_replay"):
+            return StubModule()
+        if name == "aceai.agent.tui.runner":
+            raise ModuleNotFoundError(
+                "No module named 'rapidfuzz'",
+                name="rapidfuzz",
+            )
+        raise AssertionError(name)
+
+    monkeypatch.setattr(cli.importlib, "import_module", import_module)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([])
+
+    assert str(exc_info.value) == cli.TUI_EXTRA_INSTALL_HINT
+    assert "uv tool install --force --refresh-package aceai 'aceai[tui]'" in str(
+        exc_info.value
+    )
+
+
 def test_cli_version_prints_package_version(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["--version"])

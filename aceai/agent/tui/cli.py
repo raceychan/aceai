@@ -31,12 +31,13 @@ from aceai.agent.config import (
 from aceai.agent.cost import format_usd
 
 CLI_MODELS: tuple[OpenAIModel, ...] = all_supported_models()
-TUI_EXTRA_MODULES = frozenset(("rich", "sqlalchemy", "textual"))
+TUI_RUNTIME_MODULES = frozenset(("rapidfuzz", "rich", "sqlalchemy", "textual"))
 TUI_EXTRA_INSTALL_HINT = (
-    "AceAI TUI dependencies are not installed.\n"
-    "Install them with one of:\n"
+    "AceAI TUI runtime dependencies are not installed or are out of sync.\n"
+    "Install or refresh them with one of:\n"
+    "  uv tool install --force --refresh-package aceai 'aceai[tui]'\n"
     "  uv add 'aceai[tui]'\n"
-    "  pip install 'aceai[tui]'"
+    "  pip install --upgrade 'aceai[tui]'"
 )
 
 SessionStore = None
@@ -67,7 +68,7 @@ def require_tui_extra() -> None:
         replay_module = importlib.import_module("aceai.agent.tui.session_replay")
         runner_module = importlib.import_module("aceai.agent.tui.runner")
     except ModuleNotFoundError as exc:
-        if exc.name in TUI_EXTRA_MODULES:
+        if exc.name in TUI_RUNTIME_MODULES:
             raise SystemExit(TUI_EXTRA_INSTALL_HINT) from None
         raise
     SessionStore = session_module.SessionStore
@@ -374,7 +375,7 @@ def run_with_tui_extra(action: Callable[[], None]) -> None:
     try:
         action()
     except ModuleNotFoundError as exc:
-        if exc.name in TUI_EXTRA_MODULES:
+        if exc.name in TUI_RUNTIME_MODULES:
             raise SystemExit(TUI_EXTRA_INSTALL_HINT) from None
         raise
 
