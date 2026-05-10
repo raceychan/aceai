@@ -13,8 +13,20 @@ metadata, request shapes, manifest JSON, or internal message formats.
 ## Status (2026-05-10)
 
 - ✅ **Phase 1 — request-meta in app layer** (commit `20b7ef4`).
-- 🚧 **Phase 2 — provider/usage display state** (in progress).
-- ⏳ Phases 3–8 pending.
+- ✅ **Phase 2 — provider/usage display state** (commit `8b2dfc5`).
+- ✅ **Phase 3 — cost & context-summary helpers in app layer** (commit `4579b8f`).
+- ✅ **Phase 4 — api-key resolution & config persistence in app layer** (commit `6731327`).
+- ⏳ Phases 5–8 pending.
+
+Pyright errors went from 90 baseline → 85 over Phases 1–4. All 570 tests
+continue to pass after each phase.
+
+Remaining `aceai.core` / `aceai.llm` imports in `tui/runner.py`:
+
+- `Agent` — for the `AgentFactory` type alias (Phase 5+).
+- `AgentEvent`, `RunSuspendedEvent` — for event-stream type annotations.
+- `SkillLoader`, `SkillLoadingError`, `SkillRegistry` — Phase 5.
+- `LLMMessage`, `OpenAIModel` — field type annotations.
 
 ## Phase 1 — Move request-meta construction into `AceAgentApp` (DONE)
 
@@ -52,56 +64,48 @@ inspecting `Agent` directly.
 
 **Risks**: format of `max_steps` line (preserved as `f"{agent.max_steps}"`).
 
-## Phase 3 — Cost & context-summary normalization in app-layer adapter
+## Phase 3 — Cost & context-summary helpers in app layer (DONE)
 
-**Goal**: Stop TUI from reading `event.step.llm_response.usage` /
-`provider_meta` for cost (events.py:439-441) and from parsing
-`ContextCompressedEvent.history` for the `<aceai_context_summary>` text
-(events.py:654-680).
+**Done.** TUI events depending on `AgentEvent` is the correct direction, so
+the conversion (`_agent_event_to_tui_event`) stayed in `tui/events.py`. Only
+the deep-access bits flagged by the boundary review were extracted:
 
-**New API**:
-- `AceAgentApp.start_turn_tui_events(...)` /
-  `approve_tool_tui_events(...)` / `reject_tool_tui_events(...)` —
-  AsyncGenerators that emit `AgentAppTUIEvent(thread_id, agent_id, tui_event)`
-  with `cost` and `context_summary_text` already populated.
-- `TUIEvent` gains optional `context_summary_text: str = ""`.
-- Move `_agent_event_to_tui_event`, `_latest_context_summary_text`,
-  `_strip_context_summary_tags` into a new module
-  `aceai/agent/tui_adapter.py` (still app layer).
+`aceai/agent/tui_adapter.py` (new) exposes three helpers:
+- `usage_for_llm_completed(event)` — encapsulates `is_set(response.usage)`.
+- `cost_for_llm_completed(event, *, provider_name=None)` — encapsulates the
+  `estimate_usage_cost` call and the `response.provider_meta` provider
+  inference fallback.
+- `context_summary_text(event)` — encapsulates the `<aceai_context_summary>`
+  parsing of `event.history`.
 
-**TUI changes**:
-- `tui/events.py` keeps `TUIEvent` data shape. Drop `AgentEvent` /
-  `LLMReasoningSegmentMeta` / `LLMUsage` imports and `estimate_usage_cost`
-  call. The classmethod `TUIEvent.from_agent_event` becomes a thin shim or is
-  removed in favour of the app-emitted stream.
-- `runner.py:_consume_app_event_stream` consumes `AgentAppTUIEvent`.
+`TUIEvent.from_agent_event` and `_agent_event_to_tui_event` accept an
+optional `provider_name`. `_RuntimeStreamMixin._consume_agent_stream`
+snapshots `agent_app.provider_name` once per stream and passes it through, so
+cost calculation uses the app's known provider directly instead of inferring
+from `provider_meta`.
 
-**Risks**: session-replay path (`session_replay.py`) and demo path keep using
-the freestanding builder; live runner switches to app-emitted events.
-`provider_meta[0].provider_name` access becomes redundant — `AceAgentApp`
-already knows its provider.
+## Phase 4 — API-key resolution & config persistence in app layer (DONE)
 
-## Phase 4 — App-owned config apply / persist / API key resolution
+**Done.** Two app-layer module helpers replace the env-var/default fallback
+and the `replace_config` / `save_config` calls in TUI:
 
-**Goal**: Collapse `runner.py:_handle_config_selection` and
-`apply_user_config` (~80 lines of env-var lookup, `default_api_key_for_provider`
-calls, `AgentAppConfig` assembly, `save_config`) into a single
-`AceAgentApp.apply_config(selection)` call.
+- `resolve_provider_api_key(provider) -> str` — env var (`api_key_env`) >
+  default auth file (`default_api_key_for_provider`); returns `""` if neither
+  source has a key.
+- `normalize_user_config(config, *, persist=False) -> AgentAppConfig` —
+  validates via `replace_config` and optionally saves to disk.
 
-**New API**:
-- `AppConfigApplyResult { config: AgentAppConfig | None, status: Literal["applied", "missing_api_key", "unsupported_provider"], message: str }`.
-- `AceAgentApp.apply_config(selection: ConfigSelection, *, persist: bool = True) -> AppConfigApplyResult`.
-- `AceAgentApp.rebuild_for_config(config) -> None` (or implicit lazy build).
-- New `AgentFactory = Callable[[AgentAppConfig], AceAgentApp]` (preferred) so
-  TUI no longer constructs `Agent`.
+`runner.py:_handle_config_selection` collapses by ~40 lines and factors out
+`_resolve_selection_api_key`. `apply_user_config` is one call to
+`normalize_user_config(config, persist=True)`.
 
-**TUI changes**:
-- `_handle_config_selection` collapses to ~15 lines.
-- Drop runner.py imports: `Agent`, `default_api_key_for_provider`, `api_key_env`,
-  `replace_config`, `save_config`.
+Dropped runner imports: `default_api_key_for_provider`, `api_key_env`,
+`replace_config`, `save_config`, `os.environ` access.
 
-**Risks**: lazy vs eager rebuild on `apply_config`. Decide whether
-`AgentFactory` returns `Agent` or `AceAgentApp`.
+**Deferred to Phase 5+**: `Agent` import (for `AgentFactory` type alias) and
+the question of whether `AgentFactory` should return `AceAgentApp` instead of
+`Agent`. The current shape — TUI receives `Agent` from a factory and wraps it
+in `AceAgentApp` — is left intact for now.
 
 ## Phase 5 — Move skill discovery / loading / symlinks into `AceAgentApp`
 
