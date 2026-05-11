@@ -45,6 +45,9 @@ def test_config_schema_lists_required_fields() -> None:
     assert fields["tool_max_calls"].value_type == "mapping"
     assert fields["compress_threshold"].value_type == "string"
     assert fields["reasoning_level"].value_type == "string"
+    assert fields["api_timeout_seconds"].value_type == "string"
+    assert fields["stream_start_timeout_seconds"].value_type == "string"
+    assert fields["stream_event_timeout_seconds"].value_type == "string"
 
 
 def test_save_and_load_config_round_trips(tmp_path) -> None:
@@ -59,6 +62,9 @@ def test_save_and_load_config_round_trips(tmp_path) -> None:
         tool_max_calls={"search_text": 4},
         compress_threshold="80%",
         reasoning_level="auto",
+        api_timeout_seconds=240.0,
+        stream_start_timeout_seconds=90.0,
+        stream_event_timeout_seconds=45.0,
         disabled_providers=["deepseek"],
     )
 

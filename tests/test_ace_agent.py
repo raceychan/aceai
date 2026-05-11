@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
+from aceai.agent.ace_agent import (
+    ACE_AGENT_API_TIMEOUT_SECONDS,
+    ACE_AGENT_SKILL_PATH,
+    ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
+    ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
+    build_ace_agent,
+)
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
@@ -97,6 +103,15 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
     agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
 
     assert agent.default_model == "gpt-5.5"
+    assert agent.llm_service._timeout_seconds == ACE_AGENT_API_TIMEOUT_SECONDS
+    assert (
+        agent.llm_service._stream_start_timeout_seconds
+        == ACE_AGENT_STREAM_START_TIMEOUT_SECONDS
+    )
+    assert (
+        agent.llm_service._stream_event_timeout_seconds
+        == ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS
+    )
     assert agent.max_steps is UNSET
     assert agent._compression_policy.context_window_tokens == 1050000
     assert ACE_AGENT_SKILL_PATH == "auto"

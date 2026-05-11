@@ -465,6 +465,9 @@ def test_build_agent_uses_main_ace_agent(monkeypatch) -> None:
             tool_enabled={"run_shell_command": False},
             tool_max_calls={"search_text": 2},
             compress_threshold="80%",
+            api_timeout_seconds=240.0,
+            stream_start_timeout_seconds=90.0,
+            stream_event_timeout_seconds=45.0,
         )
     )
 
@@ -480,6 +483,9 @@ def test_build_agent_uses_main_ace_agent(monkeypatch) -> None:
             "tool_enabled": {"run_shell_command": False},
             "tool_max_calls": {"search_text": 2},
             "compress_threshold": "80%",
+            "api_timeout_seconds": 240.0,
+            "stream_start_timeout_seconds": 90.0,
+            "stream_event_timeout_seconds": 45.0,
         }
     ]
 

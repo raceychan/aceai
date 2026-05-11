@@ -24,7 +24,12 @@ from aceai.agent.provider_catalog import (
 )
 from aceai.agent.provider_auth import default_api_key_for_provider
 from aceai.agent.permissions import ToolPermission
-from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH
+from aceai.agent.ace_agent import (
+    ACE_AGENT_API_TIMEOUT_SECONDS,
+    ACE_AGENT_SKILL_PATH,
+    ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
+    ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
+)
 from aceai.core.context_manager import CompressThreshold, ContextCompressionPolicy
 from aceai.llm.interface import Record
 from aceai.llm.openai import OpenAIModel
@@ -33,7 +38,7 @@ ProviderName = str
 ConfigValueType = Literal["string", "mapping", "list"]
 SkillSelectionMode = Literal["all", "selected"]
 ReasoningLevel = Literal["auto", "low", "medium", "high", "max"]
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 DEFAULT_OPENAI_MODEL: OpenAIModel = default_model("openai")
 STALE_DEFAULT_OPENAI_MODELS: tuple[OpenAIModel, ...] = stale_default_models("openai")
 OPENAI_MODEL_OPTIONS: tuple[tuple[str, OpenAIModel], ...] = model_options("openai")
@@ -56,6 +61,9 @@ class ConfigAuditState(TypedDict):
     tool_max_calls: object
     compress_threshold: object
     reasoning_level: object
+    api_timeout_seconds: object
+    stream_start_timeout_seconds: object
+    stream_event_timeout_seconds: object
 
 
 class ConfigAuditEntry(Record, kw_only=True):
@@ -98,6 +106,9 @@ class AgentAppConfig(Record, kw_only=True):
     tool_max_calls: dict[str, int] = field(default_factory=dict[str, int])
     compress_threshold: CompressThreshold = "100%"
     reasoning_level: ReasoningLevel = "auto"
+    api_timeout_seconds: float = ACE_AGENT_API_TIMEOUT_SECONDS
+    stream_start_timeout_seconds: float = ACE_AGENT_STREAM_START_TIMEOUT_SECONDS
+    stream_event_timeout_seconds: float = ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS
     disabled_providers: list[str] = field(default_factory=list[str])
 
 
@@ -188,6 +199,24 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             required=True,
             description="Reasoning effort level for models that support it.",
         ),
+        ConfigField(
+            name="api_timeout_seconds",
+            value_type="string",
+            required=True,
+            description="Timeout in seconds for non-streaming LLM API calls.",
+        ),
+        ConfigField(
+            name="stream_start_timeout_seconds",
+            value_type="string",
+            required=True,
+            description="Timeout in seconds while waiting for the first streaming event.",
+        ),
+        ConfigField(
+            name="stream_event_timeout_seconds",
+            value_type="string",
+            required=True,
+            description="Idle timeout in seconds between streaming events.",
+        ),
     ),
 )
 
@@ -268,6 +297,15 @@ def validate_config(config: AgentAppConfig) -> None:
             raise TypeError("AceAI config tool_max_calls values must be int")
         if max_calls < 1:
             raise ValueError("AceAI config tool_max_calls values must be positive")
+    _validate_timeout_seconds("api_timeout_seconds", config.api_timeout_seconds)
+    _validate_timeout_seconds(
+        "stream_start_timeout_seconds",
+        config.stream_start_timeout_seconds,
+    )
+    _validate_timeout_seconds(
+        "stream_event_timeout_seconds",
+        config.stream_event_timeout_seconds,
+    )
     ContextCompressionPolicy(config.compress_threshold)
 
 
@@ -364,6 +402,21 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
     tool_max_calls = _load_tool_max_calls(data)
     compress_threshold = _load_compress_threshold(data)
     reasoning_level = _load_reasoning_level(data)
+    api_timeout_seconds = _load_timeout_seconds(
+        data,
+        "api_timeout_seconds",
+        ACE_AGENT_API_TIMEOUT_SECONDS,
+    )
+    stream_start_timeout_seconds = _load_timeout_seconds(
+        data,
+        "stream_start_timeout_seconds",
+        ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
+    )
+    stream_event_timeout_seconds = _load_timeout_seconds(
+        data,
+        "stream_event_timeout_seconds",
+        ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
+    )
     if legacy_skill_path:
         skill_selection_mode = "all"
         enabled_skills = []
@@ -399,6 +452,9 @@ def load_config(path: Path | None = None) -> AgentAppConfig | None:
             tool_max_calls=tool_max_calls,
             compress_threshold=compress_threshold,
             reasoning_level=reasoning_level,
+            api_timeout_seconds=api_timeout_seconds,
+            stream_start_timeout_seconds=stream_start_timeout_seconds,
+            stream_event_timeout_seconds=stream_event_timeout_seconds,
             disabled_providers=disabled_providers,
         )
     )
@@ -429,6 +485,9 @@ def save_config(config: AgentAppConfig, path: Path | None = None) -> None:
                 "tool_max_calls": config.tool_max_calls,
                 "compress_threshold": config.compress_threshold,
                 "reasoning_level": config.reasoning_level,
+                "api_timeout_seconds": config.api_timeout_seconds,
+                "stream_start_timeout_seconds": config.stream_start_timeout_seconds,
+                "stream_event_timeout_seconds": config.stream_event_timeout_seconds,
             },
             sort_keys=False,
         )
@@ -511,6 +570,9 @@ def _config_audit_state_from_config(config: AgentAppConfig) -> ConfigAuditState:
         "tool_max_calls": dict(config.tool_max_calls),
         "compress_threshold": config.compress_threshold,
         "reasoning_level": config.reasoning_level,
+        "api_timeout_seconds": config.api_timeout_seconds,
+        "stream_start_timeout_seconds": config.stream_start_timeout_seconds,
+        "stream_event_timeout_seconds": config.stream_event_timeout_seconds,
     }
 
 
@@ -545,6 +607,15 @@ def _config_audit_state_from_mapping(data: dict[object, object]) -> ConfigAuditS
         if "compress_threshold" in data
         else None,
         "reasoning_level": data["reasoning_level"] if "reasoning_level" in data else None,
+        "api_timeout_seconds": data["api_timeout_seconds"]
+        if "api_timeout_seconds" in data
+        else None,
+        "stream_start_timeout_seconds": data["stream_start_timeout_seconds"]
+        if "stream_start_timeout_seconds" in data
+        else None,
+        "stream_event_timeout_seconds": data["stream_event_timeout_seconds"]
+        if "stream_event_timeout_seconds" in data
+        else None,
     }
 
 
@@ -785,3 +856,25 @@ def _load_reasoning_level(data: dict[object, object]) -> ReasoningLevel:
     if level not in ("auto", "low", "medium", "high", "max"):
         raise ValueError("AceAI config reasoning_level is unsupported")
     return level
+
+
+def _load_timeout_seconds(
+    data: dict[object, object],
+    name: str,
+    default: float,
+) -> float:
+    if name not in data:
+        return default
+    value = data[name]
+    if type(value) not in (int, float):
+        raise TypeError(f"AceAI config {name} must be int or float")
+    timeout = float(value)
+    _validate_timeout_seconds(name, timeout)
+    return timeout
+
+
+def _validate_timeout_seconds(name: str, value: float) -> None:
+    if type(value) not in (int, float):
+        raise TypeError(f"AceAI config {name} must be int or float")
+    if value <= 0:
+        raise ValueError(f"AceAI config {name} must be positive")
