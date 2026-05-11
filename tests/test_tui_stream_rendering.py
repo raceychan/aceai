@@ -236,15 +236,11 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
         ]
     )
 
-    group = renderables[0]
-    assert isinstance(group, Group)
-    source = group.renderables[0]
-    question = group.renderables[1]
-    assert isinstance(source, Panel)
-    assert source.title == "cited source"
-    assert "conversation:assistant" in source.renderable.renderables[0].plain
-    assert source.renderable.renderables[1].plain == "The job is pending."
+    question = renderables[0]
     assert isinstance(question, _PromptBar)
+    assert len(question.citations) == 1
+    assert question.citations[0].quote == "The job is pending."
+    assert question.citations[0].origin.kind == "conversation"
     _assert_prompt_bar_contains(question, "▌ Explain it")
 
 
@@ -264,12 +260,11 @@ def test_file_citation_with_empty_content_renders_path_only() -> None:
         ]
     )
 
-    group = renderables[0]
-    assert isinstance(group, Group)
-    source = group.renderables[0]
-    assert isinstance(source, Panel)
-    assert source.renderable.renderables[0].plain == f"[1] file:{path}"
-    assert len(source.renderable.renderables) == 1
+    question = renderables[0]
+    assert isinstance(question, _PromptBar)
+    assert len(question.citations) == 1
+    assert question.citations[0].quote == path
+    assert question.citations[0].origin.kind == "file"
 
 
 def test_user_messages_after_answers_get_turn_spacing() -> None:
