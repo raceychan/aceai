@@ -91,6 +91,132 @@ def test_consecutive_assistant_deltas_render_as_one_block() -> None:
     assert block.plain == "  Hi!"
 
 
+def test_agent_inbox_item_renders_without_missing_label() -> None:
+    renderables = _render_events(
+        [
+            TUIEvent(
+                kind="agent_inbox_item",
+                step_index=-1,
+                step_id="step-inbox",
+                title="inbox",
+                raw_event=None,
+                content=(
+                    "Background subagent completed.\n"
+                    "Task: inspect app.py\n"
+                    "Summary:\nlong details"
+                ),
+            )
+        ]
+    )
+
+    assert len(renderables) == 1
+    assert isinstance(renderables[0], Text)
+    assert "Background subagent completed." in renderables[0].plain
+    assert "Task: inspect app.py" in renderables[0].plain
+    assert "Summary:" not in renderables[0].plain
+
+
+def test_agent_inbox_item_renders_in_completed_collapsed_stream() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.user_message("check background work"),
+        TUIEvent(
+            kind="agent_inbox_item",
+            step_index=-1,
+            step_id="step-inbox",
+            title="inbox",
+            raw_event=None,
+            content="Background subagent job abc completed.",
+        ),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="done")),
+                final_answer="done",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    assert len(renderables) == 4
+    assert isinstance(renderables[2], Text)
+    assert renderables[2].plain == "  ─ [+] work history · 1 inbox"
+
+
+def test_agent_inbox_item_does_not_split_completed_work_history() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    first_call = LLMToolCall(
+        name="search_text",
+        arguments='{"query":"a"}',
+        call_id="call-1",
+    )
+    second_call = LLMToolCall(
+        name="wait_subagent",
+        arguments='{"job_id":"job-1"}',
+        call_id="call-2",
+    )
+    events = [
+        TUIEvent.user_message("check background work"),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=first_call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=first_call,
+                tool_result=ToolExecutionResult(call=first_call, output="ready"),
+            )
+        ),
+        TUIEvent(
+            kind="agent_inbox_item",
+            step_index=-1,
+            step_id="step-inbox",
+            title="inbox",
+            raw_event=None,
+            content=(
+                "Background subagent job abc completed.\n"
+                "Task: inspect app.py\n"
+                "Summary:\nlong details"
+            ),
+        ),
+        TUIEvent.from_agent_event(builder.tool_started(tool_call=second_call)),
+        TUIEvent.from_agent_event(
+            builder.tool_completed(
+                tool_call=second_call,
+                tool_result=ToolExecutionResult(call=second_call, output="done"),
+            )
+        ),
+        TUIEvent.from_agent_event(
+            builder.run_completed(
+                step=AgentStep(llm_response=LLMResponse(text="done")),
+                final_answer="done",
+            )
+        ),
+    ]
+
+    renderables = _render_events(events, collapse_tool_activity=True)
+
+    work_history = [
+        renderable
+        for renderable in renderables
+        if isinstance(renderable, Text) and "work history" in renderable.plain
+    ]
+    assert len(work_history) == 1
+    assert work_history[0].plain == "  ─ [+] work history · 2 tool calls · 1 inbox"
+
+
+def test_agent_inbox_delivered_is_hidden_from_stream() -> None:
+    assert _render_events(
+        [
+            TUIEvent(
+                kind="agent_inbox_delivered",
+                step_index=-1,
+                step_id="step-inbox",
+                title="inbox",
+                raw_event=None,
+                content="inbox-1",
+            )
+        ]
+    ) == []
+
+
 def test_context_compaction_events_render_progress_and_summary() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     events = [

@@ -419,6 +419,7 @@ class _ToolBlockState(Struct, kw_only=True):
 class _WorkingHistoryItem(Struct, kw_only=True):
     renderable: RenderableType | None = None
     tool_block: _ToolBlockState | None = None
+    kind: str = ""
 
 
 class _ToolActivityState(Struct, kw_only=True):
@@ -738,6 +739,21 @@ def _render_completed_event_entries(
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
+        if event.kind == "agent_inbox_item":
+            pending_working_history = _flush_thinking_buffer_to_working_history(
+                pending_working_history,
+                thinking_buffer,
+            )
+            thinking_buffer = ""
+            rendered = _render_event(event)
+            if rendered is not None:
+                pending_working_history = _append_working_history_renderable(
+                    pending_working_history,
+                    rendered,
+                    item_kind="agent_inbox_item",
+                )
+            continue
+
         if event.kind in ("session_notice", "idea_list"):
             pending_working_history = _flush_thinking_buffer_to_working_history(
                 pending_working_history,
@@ -939,11 +955,13 @@ def _flush_thinking_buffer_to_working_history(
 def _append_working_history_renderable(
     pending_working_history: _ToolActivityState | None,
     renderable: RenderableType,
+    *,
+    item_kind: str = "",
 ) -> _ToolActivityState:
     if pending_working_history is None:
         pending_working_history = _ToolActivityState(items=[])
     pending_working_history.items.append(
-        _WorkingHistoryItem(renderable=renderable)
+        _WorkingHistoryItem(renderable=renderable, kind=item_kind)
     )
     return pending_working_history
 
@@ -978,9 +996,8 @@ def _flush_tool_activity(
     pending_tool_activity: _ToolActivityState | None,
     expanded_tool_activity_ids: set[str],
 ) -> None:
-    if (
-        pending_tool_activity is not None
-        and _working_history_tool_blocks(pending_tool_activity)
+    if pending_tool_activity is not None and _working_history_has_visible_items(
+        pending_tool_activity
     ):
         if _last_renderable_is_prompt_bar(renderables):
             renderables.append(_StreamRenderable(renderable=Text("")))
@@ -1108,11 +1125,15 @@ def _render_tool_activity_header(
     text.append("[-]" if expanded else "[+]", style=EXPAND_MARK_STYLE)
     text.append(" ")
     text.append("work history", style=f"bold {style}")
-    text.append(" · ", style=EXPAND_MARK_STYLE)
-    text.append(
-        f"{len(blocks)} tool {_pluralize('call', len(blocks))}",
-        style=style,
-    )
+    summaries = []
+    if blocks:
+        summaries.append(f"{len(blocks)} tool {_pluralize('call', len(blocks))}")
+    inbox_count = _working_history_inbox_count(tool_activity)
+    if inbox_count:
+        summaries.append(f"{inbox_count} inbox")
+    if summaries:
+        text.append(" · ", style=EXPAND_MARK_STYLE)
+        text.append(" · ".join(summaries), style=style)
     text.stylize(_tool_activity_click_style(activity_id), 0, len(text))
     return text
 
@@ -1189,6 +1210,18 @@ def _working_history_tool_blocks(
         if item.tool_block is not None:
             blocks.append(item.tool_block)
     return blocks
+
+
+def _working_history_has_visible_items(tool_activity: _ToolActivityState) -> bool:
+    return bool(_working_history_tool_blocks(tool_activity)) or (
+        _working_history_inbox_count(tool_activity) > 0
+    )
+
+
+def _working_history_inbox_count(tool_activity: _ToolActivityState) -> int:
+    return len(
+        [item for item in tool_activity.items if item.kind == "agent_inbox_item"]
+    )
 
 
 def _tool_activity_names_summary(blocks: list[_ToolBlockState]) -> str:
@@ -1403,6 +1436,14 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
         )
     if event.kind == "session_notice":
         return _render_text_block(label, event.content, event_kind=event.kind)
+    if event.kind == "agent_inbox_item":
+        return _render_text_block(
+            label,
+            _agent_inbox_preview(event.content),
+            event_kind=event.kind,
+        )
+    if event.kind == "agent_inbox_delivered":
+        return None
     if event.kind == "idea_list":
         return _render_idea_list(event.idea_items)
     if event.kind == "tool_call_delta":
@@ -1460,6 +1501,17 @@ def _is_invisible_control_event(event: TUIEvent) -> bool:
         "run_completed",
         "run_suspended",
     )
+
+
+def _agent_inbox_preview(content: str) -> str:
+    lines = content.splitlines()
+    if not lines:
+        return ""
+    headline = lines[0]
+    for line in lines[1:]:
+        if line.startswith("Task: "):
+            return f"{headline} · {line}"
+    return headline
 
 
 def _tool_title(label: str, event: TUIEvent) -> str:

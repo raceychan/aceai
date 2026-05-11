@@ -15,6 +15,7 @@ from textual.worker import Worker
 
 from aceai.agent.app import (
     AceAgentApp,
+    AgentAppEvent,
     effective_reasoning_level,
     is_model_supported,
     model_options_text_for,
@@ -29,7 +30,7 @@ from aceai.agent.citations import (
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
-from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
+from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import (
     AgentAppConfig,
@@ -242,8 +243,8 @@ class AceAIConfiguredTUI(AceAITUI):
     ) -> None:
         if self._agent_app is None:
             raise RuntimeError("AceAI app is not configured")
-        await self._consume_agent_stream(
-            self._agent_app.start_turn(question, citations=citations)
+        await self._consume_agent_app_stream(
+            self._agent_app.start_turn_events(question, citations=citations)
         )
         self._start_next_queued_run()
 
@@ -266,6 +267,30 @@ class AceAIConfiguredTUI(AceAITUI):
         )
         try:
             async for event in stream:
+                self.append_agent_event(event, provider_name=provider_name)
+                if isinstance(event, RunSuspendedEvent):
+                    self.show_pending_approval()
+        finally:
+            await stream.aclose()
+            self._sync_app_state()
+
+    async def _consume_agent_app_stream(
+        self,
+        stream: AsyncGenerator[AgentAppEvent, None],
+    ) -> None:
+        provider_name = (
+            self._agent_app.provider_name if self._agent_app is not None else None
+        )
+        try:
+            async for app_event in stream:
+                event = app_event.event
+                if isinstance(event, SessionEvent):
+                    tui_event = TUIEvent.from_session_event(event)
+                    if tui_event is not None:
+                        self.append_persisted_event(tui_event)
+                    continue
+                if app_event.thread_id != self._active_thread_id:
+                    continue
                 self.append_agent_event(event, provider_name=provider_name)
                 if isinstance(event, RunSuspendedEvent):
                     self.show_pending_approval()

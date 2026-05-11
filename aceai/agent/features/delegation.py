@@ -31,6 +31,22 @@ from aceai.llm.interface import UNSET, Unset
 from aceai.llm.models import LLMHostedToolSpec
 
 
+DEV_READ_ONLY_TOOLSET = "dev_read_only"
+CUSTOM_CHILD_TOOLSET = "custom"
+NO_CHILD_TOOLSET = "none"
+DEV_READ_ONLY_CHILD_TOOLS = (
+    "list_directory",
+    "read_text_file",
+    "search_text",
+    "git_status",
+    "git_diff",
+)
+CHILD_TOOLSETS: dict[str, tuple[str, ...]] = {
+    DEV_READ_ONLY_TOOLSET: DEV_READ_ONLY_CHILD_TOOLS,
+    NO_CHILD_TOOLSET: (),
+}
+
+
 DELEGATED_AGENT_SYSTEM_BOUNDARY = """
 You are a delegated child agent created by AceAI's main agent.
 
@@ -91,6 +107,32 @@ class ChildAgentHandoff(Struct, frozen=True, kw_only=True):
     tool_names: list[str]
 
 
+class SubagentJobCreated(Struct, frozen=True, kw_only=True):
+    job_id: str
+    thread_id: str
+    agent_id: str
+    run_id: str
+    status: str
+    task: str
+
+
+class SubagentJobSnapshot(Struct, frozen=True, kw_only=True):
+    job_id: str
+    thread_id: str
+    agent_id: str
+    run_id: str
+    status: str
+    task: str
+    summary: str = ""
+    final_answer: str = ""
+    error: str = ""
+    step_count: int = 0
+
+
+class SubagentJobCollection(Struct, frozen=True, kw_only=True):
+    jobs: list[SubagentJobSnapshot]
+
+
 class DelegatedChildRunRecorder(Protocol):
     async def run_child_thread(
         self,
@@ -103,6 +145,30 @@ class DelegatedChildRunRecorder(Protocol):
         child_run: AgentRunContext,
         child_question: str,
     ) -> ChildAgentResult: ...
+
+    async def spawn_child_thread(
+        self,
+        *,
+        task: str,
+        instructions: str,
+        context_brief: str,
+        allowed_tools: list[str],
+        child_agent: Agent,
+        child_run: AgentRunContext,
+        child_question: str,
+    ) -> SubagentJobCreated: ...
+
+    def check_subagent_job(self, job_id: str) -> SubagentJobSnapshot: ...
+
+    async def wait_subagent_job(
+        self,
+        job_id: str,
+        timeout_seconds: float,
+    ) -> SubagentJobSnapshot: ...
+
+    def cancel_subagent_job(self, job_id: str, reason: str) -> SubagentJobSnapshot: ...
+
+    def collect_subagent_jobs(self, job_ids: list[str]) -> SubagentJobCollection: ...
 
 
 _CURRENT_CHILD_RUN_RECORDER: ContextVar[DelegatedChildRunRecorder | None] = (
@@ -139,7 +205,7 @@ def build_delegate_to_subagent_tool(
         _hosted_tool_key(hosted_tool): hosted_tool
         for hosted_tool in available_hosted_tools or []
     }
-    allowed_tools_description = _allowed_tools_description(hosted_tool_map)
+    allowed_tools_schema = _allowed_tools_schema(tool_map, hosted_tool_map)
 
     @tool(
         tags=["agent_app", "delegation"],
@@ -181,21 +247,29 @@ def build_delegate_to_subagent_tool(
                 )
             ),
         ],
+        toolset: Annotated[
+            str,
+            spec(**_child_toolset_schema()),
+        ] = DEV_READ_ONLY_TOOLSET,
         allowed_tools: Annotated[
             list[str],
-            spec(
-                description=allowed_tools_description
-            ),
-        ],
+            spec(**allowed_tools_schema),
+        ] = [],
     ) -> ToolExecutionOutput:
+        selected_allowed_tools = _resolve_child_allowed_tools(
+            tool_map,
+            hosted_tool_map,
+            toolset,
+            allowed_tools,
+        )
         selected_tools = _select_child_tools(
             tool_map,
             hosted_tool_map,
-            allowed_tools,
+            selected_allowed_tools,
         )
         selected_hosted_tools = _select_child_hosted_tools(
             hosted_tool_map,
-            allowed_tools,
+            selected_allowed_tools,
         )
         child_agent = build_delegated_child_agent(
             llm_service=llm_service,
@@ -218,7 +292,7 @@ def build_delegate_to_subagent_tool(
                 task=task,
                 instructions=instructions,
                 context_brief=context_brief,
-                allowed_tools=allowed_tools,
+                allowed_tools=selected_allowed_tools,
                 child_agent=child_agent,
                 child_run=child_run,
                 child_question=child_question,
@@ -268,6 +342,180 @@ def build_delegate_to_subagent_tool(
         )
 
     return delegate_to_subagent
+
+
+def build_background_subagent_tools(
+    *,
+    llm_service: ILLMService,
+    default_model: str,
+    available_tools: list[Tool[Any, Any]],
+    available_hosted_tools: list[LLMHostedToolSpec] | None = None,
+    child_max_steps: Unset[int] = UNSET,
+    compress_threshold: CompressThreshold = "100%",
+    context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
+) -> list[Tool[Any, Any]]:
+    tool_map = {available_tool.name: available_tool for available_tool in available_tools}
+    hosted_tool_map = {
+        _hosted_tool_key(hosted_tool): hosted_tool
+        for hosted_tool in available_hosted_tools or []
+    }
+    allowed_tools_schema = _allowed_tools_schema(tool_map, hosted_tool_map)
+
+    @tool(
+        tags=["agent_app", "delegation"],
+        description=(
+            "Start a subagent in the background and return immediately with a "
+            "job id. Use this for independent work that can run while the main "
+            "agent continues. Use check_subagent, wait_subagent, or "
+            "collect_subagent_results later to read the result."
+        ),
+    )
+    async def spawn_subagent(
+        task: Annotated[str, spec(description="Specific bounded work the subagent must complete.")],
+        instructions: Annotated[str, spec(description="Task-specific instructions for the subagent.")],
+        context_brief: Annotated[str, spec(description="Evidence and background for the subagent.")],
+        toolset: Annotated[str, spec(**_child_toolset_schema())] = DEV_READ_ONLY_TOOLSET,
+        allowed_tools: Annotated[list[str], spec(**allowed_tools_schema)] = [],
+    ) -> ToolExecutionOutput:
+        selected_allowed_tools = _resolve_child_allowed_tools(
+            tool_map,
+            hosted_tool_map,
+            toolset,
+            allowed_tools,
+        )
+        child_agent, child_run, child_question = _prepare_child_run(
+            llm_service=llm_service,
+            default_model=default_model,
+            tool_map=tool_map,
+            hosted_tool_map=hosted_tool_map,
+            child_max_steps=child_max_steps,
+            compress_threshold=compress_threshold,
+            context_window_tokens=context_window_tokens,
+            task=task,
+            instructions=instructions,
+            context_brief=context_brief,
+            allowed_tools=selected_allowed_tools,
+        )
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        if recorder is None:
+            raise ToolExecutionError("spawn_subagent requires the AceAI app runtime")
+        result = await recorder.spawn_child_thread(
+            task=task,
+            instructions=instructions,
+            context_brief=context_brief,
+            allowed_tools=selected_allowed_tools,
+            child_agent=child_agent,
+            child_run=child_run,
+            child_question=child_question,
+        )
+        payload = msg_encode(result).decode("utf-8")
+        return ToolExecutionOutput(output=payload, truncated_output=payload)
+
+    @tool(
+        tags=["agent_app", "delegation"],
+        description="Check a background subagent job without waiting for it.",
+    )
+    def check_subagent(job_id: Annotated[str, spec(description="Background subagent job id.")]) -> ToolExecutionOutput:
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        if recorder is None:
+            raise ToolExecutionError("check_subagent requires the AceAI app runtime")
+        payload = msg_encode(recorder.check_subagent_job(job_id)).decode("utf-8")
+        return ToolExecutionOutput(output=payload, truncated_output=payload)
+
+    @tool(
+        tags=["agent_app", "delegation"],
+        description=(
+            "Wait for a background subagent job. timeout_seconds=0 waits until "
+            "the job reaches a terminal state."
+        ),
+    )
+    async def wait_subagent(
+        job_id: Annotated[str, spec(description="Background subagent job id.")],
+        timeout_seconds: Annotated[float, spec(description="Seconds to wait; 0 means wait indefinitely.")] = 0,
+    ) -> ToolExecutionOutput:
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        if recorder is None:
+            raise ToolExecutionError("wait_subagent requires the AceAI app runtime")
+        payload = msg_encode(
+            await recorder.wait_subagent_job(job_id, timeout_seconds)
+        ).decode("utf-8")
+        return ToolExecutionOutput(output=payload, truncated_output=payload)
+
+    @tool(
+        tags=["agent_app", "delegation"],
+        description="Cancel a running background subagent job.",
+    )
+    def cancel_subagent(
+        job_id: Annotated[str, spec(description="Background subagent job id.")],
+        reason: Annotated[str, spec(description="Cancellation reason visible in the child transcript.")] = "",
+    ) -> ToolExecutionOutput:
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        if recorder is None:
+            raise ToolExecutionError("cancel_subagent requires the AceAI app runtime")
+        payload = msg_encode(recorder.cancel_subagent_job(job_id, reason)).decode("utf-8")
+        return ToolExecutionOutput(output=payload, truncated_output=payload)
+
+    @tool(
+        tags=["agent_app", "delegation"],
+        description="Collect the current snapshots/results for multiple background subagent jobs.",
+    )
+    def collect_subagent_results(
+        job_ids: Annotated[list[str], spec(description="Background subagent job ids to collect.")],
+    ) -> ToolExecutionOutput:
+        recorder = _CURRENT_CHILD_RUN_RECORDER.get()
+        if recorder is None:
+            raise ToolExecutionError("collect_subagent_results requires the AceAI app runtime")
+        payload = msg_encode(recorder.collect_subagent_jobs(job_ids)).decode("utf-8")
+        return ToolExecutionOutput(output=payload, truncated_output=payload)
+
+    return [
+        spawn_subagent,
+        check_subagent,
+        wait_subagent,
+        cancel_subagent,
+        collect_subagent_results,
+    ]
+
+
+def _prepare_child_run(
+    *,
+    llm_service: ILLMService,
+    default_model: str,
+    tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+    child_max_steps: Unset[int],
+    compress_threshold: CompressThreshold,
+    context_window_tokens: int,
+    task: str,
+    instructions: str,
+    context_brief: str,
+    allowed_tools: list[str],
+) -> tuple[Agent, AgentRunContext, str]:
+    selected_tools = _select_child_tools(
+        tool_map,
+        hosted_tool_map,
+        allowed_tools,
+    )
+    selected_hosted_tools = _select_child_hosted_tools(
+        hosted_tool_map,
+        allowed_tools,
+    )
+    child_agent = build_delegated_child_agent(
+        llm_service=llm_service,
+        default_model=default_model,
+        instructions=instructions,
+        selected_tools=selected_tools,
+        selected_hosted_tools=selected_hosted_tools,
+        child_max_steps=child_max_steps,
+        compress_threshold=compress_threshold,
+        context_window_tokens=context_window_tokens,
+    )
+    child_question = _format_child_question(
+        task=task,
+        context_brief=context_brief,
+    )
+    child_run = child_agent.create_run(child_question)
+    return child_agent, child_run, child_question
 
 
 def build_child_agent_result(
@@ -381,6 +629,65 @@ def _select_child_tools(
     return selected_tools
 
 
+def _resolve_child_allowed_tools(
+    tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+    toolset: str,
+    allowed_tools: list[str],
+) -> list[str]:
+    if allowed_tools:
+        _validate_allowed_tool_names(tool_map, hosted_tool_map, allowed_tools)
+        return allowed_tools
+    if toolset == CUSTOM_CHILD_TOOLSET:
+        raise ToolExecutionError(
+            "delegate_to_subagent custom toolset requires allowed_tools. "
+            + _allowed_tool_recovery_hint(tool_map, hosted_tool_map)
+        )
+    if toolset not in CHILD_TOOLSETS:
+        raise ToolExecutionError(
+            "delegate_to_subagent received unknown child toolset: "
+            + toolset
+            + ". Valid toolsets: "
+            + ", ".join(_child_toolset_names())
+        )
+    preset_tools = [
+        tool_name for tool_name in CHILD_TOOLSETS[toolset] if tool_name in tool_map
+    ]
+    _validate_allowed_tool_names(tool_map, hosted_tool_map, preset_tools)
+    return preset_tools
+
+
+def _validate_allowed_tool_names(
+    tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+    allowed_tools: list[str],
+) -> None:
+    for tool_name in allowed_tools:
+        if tool_name in hosted_tool_map or tool_name in tool_map:
+            continue
+        raise ToolExecutionError(
+            "delegate_to_subagent received unknown child tool: "
+            + tool_name
+            + ". "
+            + _allowed_tool_recovery_hint(tool_map, hosted_tool_map)
+        )
+
+
+def _allowed_tool_recovery_hint(
+    tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+) -> str:
+    valid_names = _available_child_tool_names(tool_map, hosted_tool_map)
+    if not valid_names:
+        return "No child tools are available."
+    return (
+        "Use exact names from allowed_tools enum only; do not prefix local tools "
+        "with functions. Valid child tools: "
+        + ", ".join(valid_names)
+        + "."
+    )
+
+
 def _select_child_hosted_tools(
     hosted_tool_map: dict[str, LLMHostedToolSpec],
     allowed_tools: list[str],
@@ -396,23 +703,48 @@ def _hosted_tool_key(hosted_tool: LLMHostedToolSpec) -> str:
     return hosted_tool.provider_name + ":" + hosted_tool.native_name
 
 
-def _allowed_tools_description(
+def _child_toolset_schema() -> dict[str, Any]:
+    return {
+        "description": (
+            "Named child capability preset. Use dev_read_only for normal code "
+            "review/search/read-only inspection, none for no tools, or custom "
+            "only when allowed_tools contains an exact non-empty list."
+        ),
+        "extra_json_schema": {"enum": _child_toolset_names()},
+    }
+
+
+def _child_toolset_names() -> list[str]:
+    return [DEV_READ_ONLY_TOOLSET, CUSTOM_CHILD_TOOLSET, NO_CHILD_TOOLSET]
+
+
+def _allowed_tools_schema(
+    tool_map: dict[str, Tool[Any, Any]],
     hosted_tool_map: dict[str, LLMHostedToolSpec],
-) -> str:
-    description = (
-        "Exact local tool names or hosted tool identifiers the subagent may use. "
-        "Hosted tool identifiers use provider:native_name. Keep this narrow. Use "
-        "an empty list when no tool access is needed. Do not include "
-        "approval-required local tools."
-    )
-    if not hosted_tool_map:
-        return description
-    return (
-        description
-        + " Available hosted tool identifiers: "
-        + ", ".join(hosted_tool_map)
-        + "."
-    )
+) -> dict[str, Any]:
+    child_tool_names = _available_child_tool_names(tool_map, hosted_tool_map)
+    schema: dict[str, Any] = {
+        "description": (
+            "Exact child tool names. Use [] unless toolset is custom. For custom, "
+            "choose only names from this enum. Local tool names never use a "
+            "functions. prefix."
+        )
+    }
+    if child_tool_names:
+        schema["extra_json_schema"] = {"items": {"enum": child_tool_names}}
+    return schema
+
+
+def _available_child_tool_names(
+    tool_map: dict[str, Tool[Any, Any]],
+    hosted_tool_map: dict[str, LLMHostedToolSpec],
+) -> list[str]:
+    local_tool_names = [
+        tool_name
+        for tool_name, tool_value in tool_map.items()
+        if not tool_value.metadata.require_approval
+    ]
+    return sorted(local_tool_names + list(hosted_tool_map))
 
 
 def _build_child_agent(

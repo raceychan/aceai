@@ -1,5 +1,8 @@
 """Shared display labels for the read-only TUI prototype."""
 
+from collections.abc import Mapping
+from typing import get_args
+
 from .events import TUIEventKind
 
 NORD_POLAR_NIGHT_0 = "#2e3440"
@@ -21,6 +24,8 @@ NORD_PURPLE = "#b48ead"
 
 EVENT_LABELS: dict[TUIEventKind, str] = {
     "user_message": "you",
+    "agent_inbox_delivered": "inbox",
+    "agent_inbox_item": "inbox",
     "session_notice": "session",
     "idea_list": "ideas",
     "run_completed": "completed",
@@ -49,6 +54,8 @@ EVENT_LABELS: dict[TUIEventKind, str] = {
 
 EVENT_STYLES: dict[TUIEventKind, str] = {
     "user_message": f"bold {NORD_FROST_1}",
+    "agent_inbox_delivered": f"bold {NORD_YELLOW}",
+    "agent_inbox_item": f"bold {NORD_YELLOW}",
     "session_notice": f"bold {NORD_FROST_0}",
     "idea_list": f"bold {NORD_FROST_0}",
     "run_completed": f"bold {NORD_GREEN}",
@@ -74,3 +81,36 @@ EVENT_STYLES: dict[TUIEventKind, str] = {
     "tool_failed": NORD_RED,
     "media": NORD_FROST_0,
 }
+
+
+def validate_event_theme_registry(
+    labels: Mapping[str, str],
+    styles: Mapping[str, str],
+) -> None:
+    event_kinds = set(get_args(TUIEventKind))
+    label_keys = set(labels)
+    style_keys = set(styles)
+    missing_labels = sorted(event_kinds - label_keys)
+    missing_styles = sorted(event_kinds - style_keys)
+    extra_labels = sorted(label_keys - event_kinds)
+    extra_styles = sorted(style_keys - event_kinds)
+    if (
+        not missing_labels
+        and not missing_styles
+        and not extra_labels
+        and not extra_styles
+    ):
+        return
+    details = []
+    if missing_labels:
+        details.append("missing labels: " + ", ".join(missing_labels))
+    if missing_styles:
+        details.append("missing styles: " + ", ".join(missing_styles))
+    if extra_labels:
+        details.append("extra labels: " + ", ".join(extra_labels))
+    if extra_styles:
+        details.append("extra styles: " + ", ".join(extra_styles))
+    raise RuntimeError("TUI event theme registry is incomplete: " + "; ".join(details))
+
+
+validate_event_theme_registry(EVENT_LABELS, EVENT_STYLES)

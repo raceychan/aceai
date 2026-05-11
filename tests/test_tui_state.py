@@ -1105,6 +1105,77 @@ def test_subagent_panel_states_exclude_active_child_and_style_main_entry() -> No
     assert "1 total | 0 running | 1 done | 0 failed" in widget.renderable
 
 
+def test_tui_event_replays_agent_inbox_session_events() -> None:
+    inbox_event = SessionEvent(
+        event_id="inbox-1",
+        thread_id=MAIN_THREAD_ID,
+        kind="agent_inbox_item",
+        payload={
+            "source_thread_id": "child-thread-1",
+            "source_agent_id": "child-agent-1",
+            "severity": "info",
+            "message": "child is done",
+            "status": "pending",
+        },
+    )
+    delivered_event = SessionEvent(
+        event_id="delivered-1",
+        thread_id=MAIN_THREAD_ID,
+        kind="agent_inbox_delivered",
+        payload={"inbox_event_id": "inbox-1"},
+    )
+
+    inbox_tui_event = TUIEvent.from_session_event(inbox_event)
+    delivered_tui_event = TUIEvent.from_session_event(delivered_event)
+
+    assert inbox_tui_event is not None
+    assert inbox_tui_event.kind == "agent_inbox_item"
+    assert inbox_tui_event.content == "child is done"
+    assert delivered_tui_event is not None
+    assert delivered_tui_event.kind == "agent_inbox_delivered"
+    assert delivered_tui_event.content == "inbox-1"
+
+
+def test_subagent_panel_states_include_inbox_counts() -> None:
+    states = tui_app_module._subagent_panel_states(
+        thread_options=[
+            tui_app_module.SubagentThreadOption(
+                thread_id=MAIN_THREAD_ID,
+                label="Main",
+                status="completed",
+                role="main",
+                inbox_pending_count=2,
+                inbox_latest="latest main inbox",
+            ),
+            tui_app_module.SubagentThreadOption(
+                thread_id="child-thread-1",
+                label="Child 1",
+                status="blocked",
+                role="subagent",
+                inbox_pending_count=1,
+                inbox_latest="needs parent input",
+            ),
+        ],
+        active_thread_id=MAIN_THREAD_ID,
+    )
+
+    assert len(states) == 1
+    assert states[0].thread_id == "child-thread-1"
+    assert states[0].status == "blocked"
+    assert states[0].inbox_pending_count == 1
+    assert states[0].inbox_latest == "needs parent input"
+
+    widget = SubagentStatusWidget()
+    widget.set_state(
+        subagents=states,
+        thread_options=[],
+        active_thread_id=MAIN_THREAD_ID,
+    )
+
+    assert "inbox: 1" in widget.renderable
+    assert "task / inbox\n     needs parent input" in widget.renderable
+
+
 @pytest.mark.anyio
 async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
     store = SessionStore(tmp_path)
@@ -1145,6 +1216,50 @@ async def test_subagent_panel_uses_thread_table_as_source(tmp_path) -> None:
         assert "Child 2" in subagents.renderable
         subagents.next_page()
         assert "Child 3" in subagents.renderable
+
+
+@pytest.mark.anyio
+async def test_subagent_panel_uses_event_log_inbox_as_source(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-agent-1",
+        role="subagent",
+        title="Child 1",
+        status="running",
+        parent_thread_id=MAIN_THREAD_ID,
+    )
+    recorder = SessionRecorder(store, metadata.session_id)
+    recorder.record(
+        SessionEvent(
+            event_id="inbox-1",
+            thread_id="child-thread-1",
+            agent_id="main-agent",
+            kind="agent_inbox_item",
+            payload={
+                "source_thread_id": MAIN_THREAD_ID,
+                "source_agent_id": "main-agent",
+                "severity": "blocked",
+                "message": "parent update",
+                "status": "pending",
+            },
+        )
+    )
+    app = AceAITUI(
+        [],
+        session_recorder=recorder,
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        app.action_show_subagents()
+        subagents = app.query_one(SubagentStatusWidget)
+
+        assert "Child 1" in subagents.renderable
+        assert "inbox: 1" in subagents.renderable
+        assert "parent update" in subagents.renderable
 
 
 @pytest.mark.anyio

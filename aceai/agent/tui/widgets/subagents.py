@@ -28,6 +28,8 @@ class SubagentThreadOption:
     instructions: str = ""
     context_brief: str = ""
     allowed_tools: tuple[str, ...] = ()
+    inbox_pending_count: int = 0
+    inbox_latest: str = ""
 
 
 class SubagentStatusWidget(Vertical):
@@ -554,10 +556,12 @@ def _subagent_status_panel(subagent: TUISubagentState) -> RenderableType:
     metrics.add_column(ratio=1)
     metrics.add_column(ratio=1)
     metrics.add_column(ratio=1)
+    metrics.add_column(ratio=1)
     metrics.add_row(
         _metric_block("state", _subagent_status_label(subagent.status), _subagent_status_style(subagent.status)),
         _metric_block("steps", f"{subagent.step_count}", "#d8dee9"),
         _metric_block("results", f"{len(subagent.tool_results)}", "#d8dee9"),
+        _metric_block("inbox", f"{subagent.inbox_pending_count}", "#ebcb8b"),
     )
     return _section_panel("run", metrics)
 
@@ -578,6 +582,8 @@ def _subagent_task_panel(subagent: TUISubagentState) -> RenderableType:
         rows.append(_field_block("ask", subagent.instructions))
     if subagent.summary != "":
         rows.append(_field_block("summary", subagent.summary, value_style="#a3be8c"))
+    if subagent.inbox_latest != "":
+        rows.append(_field_block("inbox", subagent.inbox_latest, value_style="#ebcb8b"))
     if not rows:
         return Text("")
     return _section_panel("task", Group(*rows))
@@ -692,6 +698,10 @@ def _subagent_status_badge(status: str) -> str:
         return "✓"
     if status == "failed":
         return "✕"
+    if status == "blocked":
+        return "!"
+    if status == "cancelled":
+        return "-"
     if status == "pending":
         return "○"
     return "•"
@@ -702,6 +712,10 @@ def _subagent_status_mark(status: str) -> str:
         return "✓"
     if status == "failed":
         return "✕"
+    if status == "blocked":
+        return "!"
+    if status == "cancelled":
+        return "-"
     if status == "pending":
         return "○"
     return "↻"
@@ -716,6 +730,10 @@ def _subagent_status_label(status: str) -> str:
         return "○ pending"
     if status == "running":
         return "↻ running"
+    if status == "blocked":
+        return "! blocked"
+    if status == "cancelled":
+        return "- cancelled"
     return status
 
 
@@ -726,6 +744,10 @@ def _subagent_dot_style(status: str) -> str:
         return "bold #a3be8c"
     if status == "failed":
         return "bold #bf616a"
+    if status == "blocked":
+        return "bold #d08770"
+    if status == "cancelled":
+        return "bold #9aa3b2"
     return "bold #88c0d0"
 
 
@@ -735,6 +757,7 @@ def _subagent_summary_lines(subagent: TUISubagentState) -> list[str]:
         f"   status: {subagent.status}",
         f"   steps: {subagent.step_count}",
         f"   results: {len(subagent.tool_results)}",
+        f"   inbox: {subagent.inbox_pending_count}",
     ]
     lines.append("   tools")
     for tool_name in _allowed_tool_lines(subagent):
@@ -755,6 +778,9 @@ def _subagent_summary_lines(subagent: TUISubagentState) -> list[str]:
     if subagent.summary != "":
         lines.append("   task / summary")
         lines.append(f"     {subagent.summary}")
+    if subagent.inbox_latest != "":
+        lines.append("   task / inbox")
+        lines.append(f"     {subagent.inbox_latest}")
     return lines
 
 
@@ -777,6 +803,14 @@ def _append_agent_metadata(text: Text, subagent: TUISubagentState) -> None:
             text,
             "results",
             str(len(subagent.tool_results)),
+            "",
+            "",
+        )
+    if subagent.inbox_pending_count > 0:
+        _append_metadata_pair(
+            text,
+            "inbox",
+            str(subagent.inbox_pending_count),
             "",
             "",
         )
@@ -804,6 +838,10 @@ def _append_agent_metadata(text: Text, subagent: TUISubagentState) -> None:
         _append_metadata_gap(text)
         _append_metadata_heading(text, "summary")
         _append_metadata_text(text, subagent.summary, "#a3be8c")
+    if subagent.inbox_latest != "":
+        _append_metadata_gap(text)
+        _append_metadata_heading(text, "inbox")
+        _append_metadata_text(text, subagent.inbox_latest, "#ebcb8b")
     text.append("\n")
     text.append("   ")
     text.append("╰", style="#4c566a")
@@ -953,4 +991,8 @@ def _subagent_status_style(status: str) -> str:
         return "bold #a3be8c"
     if status == "failed":
         return "bold #bf616a"
+    if status == "blocked":
+        return "bold #d08770"
+    if status == "cancelled":
+        return "bold #9aa3b2"
     return "bold #88c0d0"

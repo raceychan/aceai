@@ -1,5 +1,9 @@
 from .delegation import ChildAgentResult as ChildAgentResult
 from .delegation import ChildToolResult as ChildToolResult
+from .delegation import SubagentJobCollection as SubagentJobCollection
+from .delegation import SubagentJobCreated as SubagentJobCreated
+from .delegation import SubagentJobSnapshot as SubagentJobSnapshot
+from .delegation import build_background_subagent_tools as build_background_subagent_tools
 from .delegation import build_delegated_child_agent as build_delegated_child_agent
 from .delegation import build_delegate_to_subagent_tool as build_delegate_to_subagent_tool
 from .delegation import build_restored_delegated_child_agent as build_restored_delegated_child_agent

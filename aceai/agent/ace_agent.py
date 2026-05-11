@@ -18,7 +18,11 @@ from aceai.llm.openai import OpenAI, OpenAIModel
 from aceai.llm.openai_codex import OpenAICodex
 from aceai.llm.service import LLMService
 
-from .features import build_delegate_to_subagent_tool, default_agent_tools
+from .features import (
+    build_background_subagent_tools,
+    build_delegate_to_subagent_tool,
+    default_agent_tools,
+)
 from .permissions import ToolPermission
 from .provider_auth import resolve_provider_api_key
 from .provider_catalog import context_window_for_model
@@ -117,6 +121,16 @@ def build_ace_agent(
     )
     app_tools.append(
         build_delegate_to_subagent_tool(
+            llm_service=llm_service,
+            default_model=model,
+            available_tools=app_tools,
+            available_hosted_tools=selected_hosted_tools,
+            compress_threshold=compress_threshold,
+            context_window_tokens=context_window_tokens,
+        )
+    )
+    app_tools.extend(
+        build_background_subagent_tools(
             llm_service=llm_service,
             default_model=model,
             available_tools=app_tools,
