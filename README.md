@@ -2,7 +2,9 @@
 
 ![AceAI hero](docs/aceai-hero.png)
 
-An engineering-first agent framework: tools-first, explicit signatures, early failures, and OTLP-friendly tracing.
+An engineering-first agent framework and terminal agent app for serious coding
+work: strict tool contracts, durable multi-agent sessions, provider-aware
+runtime controls, and OTLP-friendly tracing.
 
 ## Requirements & install
 - Python 3.12+.
@@ -22,7 +24,8 @@ uv tool install "aceai[tui]"
 ```
 
 This installs the TUI dependencies as a uv tool and exposes the `aceai`
-command. To run it once without installing the command:
+command, giving you the full local terminal agent rather than only the framework
+APIs. To run it once without installing the command:
 
 ```bash
 uvx --from "aceai[tui]" aceai
@@ -50,12 +53,19 @@ If no API key is available, the TUI asks for provider settings and lets you
 choose whether to persist them to `.aceai/config.yml`. On startup AceAI reads
 project config first, then falls back to `~/.aceai/config.yaml`.
 The TUI surfaces streaming work history, skill loading, tool calls, approval
-gates, subagent progress, cited context, queued follow-up turns, token/cost
-status, and per-tool permissions: `always` runs without approval, `ask` uses
-the approval flow, and `never` hides the tool from the model. User turns render
-as a full-width prompt bar with breathing room around the message, and queued
-turn controls stay aligned at the right edge so steering and cancel actions are
-easy to scan even when messages contain wide characters.
+gates, subagent progress, cited file and idea context, queued follow-up turns,
+session resume/export, token/cost status, and per-tool permissions: `always`
+runs without approval, `ask` uses the approval flow, and disabled tools are
+hidden from the model. User turns render as a full-width prompt bar with
+breathing room around the message, and queued turn controls stay aligned at the
+right edge so steering and cancel actions are easy to scan even when messages
+contain wide characters.
+Provider, model, reasoning level, context compression, API timeout, streaming
+startup timeout, streaming idle timeout, skills, and tool policies are all
+configurable from the app and persisted in AceAI config. The provider catalog
+tracks OpenAI, Codex subscription auth, DeepSeek, Anthropic API keys, and
+Anthropic OAuth, including model context windows, reasoning controls, and
+pricing metadata where available.
 
 ### Skills and tool permissions
 
@@ -64,14 +74,26 @@ easy to scan even when messages contain wide characters.
 The configuration screen keeps agent skills and local tools visible in one
 place. Skills show their source, description, and filesystem path, while tool
 groups can be enabled, capped, or switched to approval-free execution.
+Tool configuration is part of the app boundary: filesystem, shell, search,
+browser, memory, artifact, and hosted tools are loaded explicitly so the model
+only sees the capabilities the app chooses to expose.
 
 ### Multi-agent work
 
 ![AceAI multi-agent coordination view](docs/multiagent_capture.png)
 
 AceAI can delegate independent checks to child agents, track their status, keep
-their evidence separate, and merge the completed handoffs back into the main
-conversation.
+their evidence separate, and merge compact completed handoffs back into the main
+conversation. Use `delegate_to_subagent` when the parent needs an answer before
+continuing, or start non-blocking jobs with `spawn_subagent`, `check_subagent`,
+`wait_subagent`, `cancel_subagent`, and `collect_subagent_results` when the main
+agent can keep working.
+
+Child threads keep their own histories, artifacts, and statuses instead of
+disappearing into one giant tool result. Background subagents can notify the
+parent through the agent inbox when work completes, fails, or is canceled; those
+inbox items are persisted, rendered in the TUI, and delivered into the next safe
+model step as bounded context.
 
 ### Trajectory view
 
@@ -79,7 +101,9 @@ conversation.
 
 The trajectory view is a chronological audit trail of the run: turns, steps,
 LLM deltas, tool calls, tool results, approvals, failures, and final answers.
-It is useful when you need to debug exactly how a response was produced.
+It is useful when you need to debug exactly how a response was produced. For
+large tool or subagent outputs, AceAI keeps compact model-facing handoffs while
+preserving fuller audit artifacts for inspection, replay, and export.
 
 ## Architecture layers
 
@@ -112,6 +136,11 @@ If you just want to use AceAI as an app, do not import anything; run the CLI:
 ```bash
 aceai
 ```
+
+Long conversations use semantic context compaction at run and step boundaries,
+so AceAI can summarize completed work without splitting provider tool-call
+history. Transcript and export history remain complete; only the model-facing
+context is bounded.
 
 ## Why another framework?
 - Precise tool calls: force `typing.Annotated` + structured schemas; no broad “magic” unions.

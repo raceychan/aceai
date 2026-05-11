@@ -25,6 +25,7 @@ from .session_display import session_display_title
 from .session_replay import event_log_to_tui_events
 from .setup import SessionSelectScreen
 from .state import (
+    SUBAGENT_START_TOOL_NAMES,
     TUISubagentState,
     TUISubagentStatus,
     TUIRunState,
@@ -691,6 +692,26 @@ class AceAITUI(App[None]):
     def _sync_subagent_panel_visibility(self, event: TUIEvent) -> None:
         if event.kind == "user_message":
             self._subagent_panel_visible = False
+            return
+        if (
+            event.kind == "tool_completed"
+            and event.tool_name == "collect_subagent_results"
+        ):
+            self._subagent_panel_visible = False
+            return
+        if (
+            event.kind in ("tool_completed", "tool_failed")
+            and event.tool_name == "delegate_to_subagent"
+        ):
+            self._subagent_panel_visible = False
+            return
+        if (
+            event.tool_name in SUBAGENT_START_TOOL_NAMES
+            and event.kind == "tool_completed"
+            and _find_subagent_by_call_id(self._state.subagents, event.tool_call_id or "")
+            is not None
+        ):
+            self._subagent_panel_visible = True
             return
         if event.tool_call_id is None:
             return
