@@ -1,5 +1,21 @@
 # Changelog
 
+## AceAI v0.2.29
+
+### Improvements
+
+- `docs`: Refresh the README around the terminal app, provider catalog, configurable runtime controls, multi-agent background work, inbox delivery, context compaction, and export/replay behavior so current capabilities are described in the relevant feature sections.
+- `tui`: Automatically open the subagents panel after `spawn_subagent` creates a background child thread, and close it after `collect_subagent_results` or a blocking delegated subagent completes.
+- `ci`: Upgrade GitHub Actions runtime versions on the release branch so automated validation and publishing continue using current action runtimes.
+
+### Fixes
+
+- `tui`: Replay `collect_subagent_results` job payloads into subagent state so resumed sessions do not reopen the subagents panel for already collected background jobs.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.28
 
 ### Features

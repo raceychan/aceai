@@ -183,6 +183,123 @@ def test_reduce_events_tracks_threaded_delegate_to_subagent_status() -> None:
     assert subagent.output == result.output
 
 
+def test_reduce_events_tracks_spawn_subagent_thread_after_job_created() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="spawn_subagent",
+        arguments=(
+            '{"task":"Inspect in background","instructions":"report evidence",'
+            '"context_brief":"repo","toolset":"dev_read_only","allowed_tools":[]}'
+        ),
+        call_id="call-spawn-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"job_id":"job-1","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"running",'
+            '"task":"Inspect in background"}'
+        ),
+    )
+
+    state = reduce_events(
+        [
+            TUIEvent.from_agent_event(builder.tool_started(tool_call=call)),
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            ),
+        ]
+    )
+
+    assert len(state.subagents) == 1
+    subagent = state.subagents[0]
+    assert subagent.call_id == "call-spawn-1"
+    assert subagent.thread_id == "child-thread-1"
+    assert subagent.task == "Inspect in background"
+    assert subagent.instructions == "report evidence"
+    assert subagent.context_brief == "repo"
+    assert subagent.allowed_tools == []
+    assert subagent.status == "running"
+    assert subagent.agent_id == "child-1"
+    assert subagent.run_id == "run-1"
+
+
+def test_reduce_events_updates_spawn_subagent_status_after_collect_results() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    spawn_events: list[TUIEvent] = []
+    for index in range(2):
+        spawn_call = LLMToolCall(
+            name="spawn_subagent",
+            arguments=(
+                f'{{"task":"Inspect {index + 1}",'
+                '"instructions":"report evidence",'
+                '"context_brief":"repo","toolset":"dev_read_only",'
+                '"allowed_tools":[]}'
+            ),
+            call_id=f"call-spawn-{index + 1}",
+        )
+        spawn_result = ToolExecutionResult(
+            call=spawn_call,
+            output=(
+                f'{{"job_id":"job-{index + 1}",'
+                f'"thread_id":"child-thread-{index + 1}",'
+                f'"agent_id":"child-{index + 1}",'
+                f'"run_id":"run-{index + 1}",'
+                '"status":"running",'
+                f'"task":"Inspect {index + 1}"}}'
+            ),
+        )
+        spawn_events.append(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=spawn_call,
+                    tool_result=spawn_result,
+                )
+            )
+        )
+    collect_call = LLMToolCall(
+        name="collect_subagent_results",
+        arguments='{"job_ids":["job-1","job-2"]}',
+        call_id="call-collect-1",
+    )
+    collect_result = ToolExecutionResult(
+        call=collect_call,
+        output=(
+            '{"jobs":['
+            '{"job_id":"job-1","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+            '"task":"Inspect 1","summary":"done 1",'
+            '"final_answer":"answer 1","error":"","step_count":1},'
+            '{"job_id":"job-2","thread_id":"child-thread-2",'
+            '"agent_id":"child-2","run_id":"run-2","status":"completed",'
+            '"task":"Inspect 2","summary":"done 2",'
+            '"final_answer":"answer 2","error":"","step_count":1}'
+            ']}'
+        ),
+    )
+
+    state = reduce_events(
+        [
+            *spawn_events,
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=collect_call,
+                    tool_result=collect_result,
+                )
+            ),
+        ]
+    )
+
+    assert [subagent.status for subagent in state.subagents] == [
+        "completed",
+        "completed",
+    ]
+    assert [subagent.summary for subagent in state.subagents] == [
+        "done 1",
+        "done 2",
+    ]
+
+
 def test_reduce_events_excludes_delegate_to_subagent_without_thread_id() -> None:
     builder = AgentEventBuilder(step_index=0, step_id="step-1")
     call = LLMToolCall(
@@ -915,6 +1032,228 @@ async def test_tui_shows_subagent_status_widget_for_delegate_tool() -> None:
         assert "tools\n     - none" in subagents.renderable
         assert "task / context\n     repo" in subagents.renderable
         assert "task / ask\n     report evidence" in subagents.renderable
+
+
+@pytest.mark.anyio
+async def test_tui_auto_opens_after_spawn_subagent_thread_is_created_and_closes_after_collect(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.create_thread(
+        session_id=metadata.session_id,
+        thread_id="child-thread-1",
+        agent_id="child-1",
+        role="subagent",
+        title="Inspect in background",
+        status="running",
+        parent_thread_id=MAIN_THREAD_ID,
+        metadata={
+            "instructions": "report evidence",
+            "context_brief": "repo",
+            "allowed_tools": [],
+        },
+    )
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    call = LLMToolCall(
+        name="spawn_subagent",
+        arguments=(
+            '{"task":"Inspect in background","instructions":"report evidence",'
+            '"context_brief":"repo","toolset":"dev_read_only","allowed_tools":[]}'
+        ),
+        call_id="call-spawn-1",
+    )
+    result = ToolExecutionResult(
+        call=call,
+        output=(
+            '{"job_id":"job-1","thread_id":"child-thread-1",'
+            '"agent_id":"child-1","run_id":"run-1","status":"running",'
+            '"task":"Inspect in background"}'
+        ),
+    )
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+
+        app.append_event(TUIEvent.from_agent_event(builder.tool_started(tool_call=call)))
+
+        assert subagents.has_class("hidden")
+
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(tool_call=call, tool_result=result)
+            )
+        )
+
+        assert not subagents.has_class("hidden")
+        assert "subagents  1 total | 1 running | 0 done | 0 failed" in subagents.renderable
+        assert "#1 [running] Inspect in background" in subagents.renderable
+
+        app.append_persisted_event(
+            TUIEvent.from_session_event(
+                SessionEvent(
+                    event_id="inbox-1",
+                    thread_id=MAIN_THREAD_ID,
+                    agent_id="child-1",
+                    kind="agent_inbox_item",
+                    payload={
+                        "source_thread_id": "child-thread-1",
+                        "source_agent_id": "child-1",
+                        "severity": "info",
+                        "message": "Background subagent job job-1 completed.",
+                        "status": "pending",
+                    },
+                )
+            )
+        )
+
+        assert not subagents.has_class("hidden")
+
+        collect_call = LLMToolCall(
+            name="collect_subagent_results",
+            arguments='{"job_ids":["job-1"]}',
+            call_id="call-collect-1",
+        )
+        collect_result = ToolExecutionResult(
+            call=collect_call,
+            output=(
+                '{"jobs":[{"job_id":"job-1","thread_id":"child-thread-1",'
+                '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+                '"task":"Inspect in background","summary":"done",'
+                '"final_answer":"done","error":"","step_count":1}]}'
+            ),
+        )
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=collect_call,
+                    tool_result=collect_result,
+                )
+            )
+        )
+
+        assert subagents.has_class("hidden")
+
+
+@pytest.mark.anyio
+async def test_tui_closes_subagent_panel_after_collecting_multiple_background_jobs(
+    tmp_path,
+) -> None:
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    app = AceAITUI(
+        [],
+        session_recorder=SessionRecorder(store, metadata.session_id),
+        session_id=metadata.session_id,
+    )
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+
+    async with app.run_test():
+        subagents = app.query_one(SubagentStatusWidget)
+        for index in range(2):
+            job_id = f"job-{index + 1}"
+            thread_id = f"child-thread-{index + 1}"
+            store.create_thread(
+                session_id=metadata.session_id,
+                thread_id=thread_id,
+                agent_id=f"child-{index + 1}",
+                role="subagent",
+                title=f"Inspect {index + 1}",
+                status="running",
+                parent_thread_id=MAIN_THREAD_ID,
+                metadata={
+                    "instructions": "report evidence",
+                    "context_brief": "repo",
+                    "allowed_tools": [],
+                },
+            )
+            spawn_call = LLMToolCall(
+                name="spawn_subagent",
+                arguments=(
+                    f'{{"task":"Inspect {index + 1}",'
+                    '"instructions":"report evidence",'
+                    '"context_brief":"repo","toolset":"dev_read_only",'
+                    '"allowed_tools":[]}'
+                ),
+                call_id=f"call-spawn-{index + 1}",
+            )
+            spawn_result = ToolExecutionResult(
+                call=spawn_call,
+                output=(
+                    f'{{"job_id":"{job_id}","thread_id":"{thread_id}",'
+                    f'"agent_id":"child-{index + 1}","run_id":"run-{index + 1}",'
+                    '"status":"running",'
+                    f'"task":"Inspect {index + 1}"}}'
+                ),
+            )
+            app.append_event(
+                TUIEvent.from_agent_event(
+                    builder.tool_completed(
+                        tool_call=spawn_call,
+                        tool_result=spawn_result,
+                    )
+                )
+            )
+
+        assert not subagents.has_class("hidden")
+        assert "subagents  2 total | 2 running | 0 done | 0 failed" in subagents.renderable
+
+        for index in range(2):
+            app.append_persisted_event(
+                TUIEvent.from_session_event(
+                    SessionEvent(
+                        event_id=f"inbox-{index + 1}",
+                        thread_id=MAIN_THREAD_ID,
+                        agent_id=f"child-{index + 1}",
+                        kind="agent_inbox_item",
+                        payload={
+                            "source_thread_id": f"child-thread-{index + 1}",
+                            "source_agent_id": f"child-{index + 1}",
+                            "severity": "info",
+                            "message": f"Background subagent job job-{index + 1} completed.",
+                            "status": "pending",
+                        },
+                    )
+                )
+            )
+
+        assert not subagents.has_class("hidden")
+
+        collect_call = LLMToolCall(
+            name="collect_subagent_results",
+            arguments='{"job_ids":["job-1","job-2"]}',
+            call_id="call-collect-1",
+        )
+        collect_result = ToolExecutionResult(
+            call=collect_call,
+            output=(
+                '{"jobs":['
+                '{"job_id":"job-1","thread_id":"child-thread-1",'
+                '"agent_id":"child-1","run_id":"run-1","status":"completed",'
+                '"task":"Inspect 1","summary":"done",'
+                '"final_answer":"done","error":"","step_count":1},'
+                '{"job_id":"job-2","thread_id":"child-thread-2",'
+                '"agent_id":"child-2","run_id":"run-2","status":"completed",'
+                '"task":"Inspect 2","summary":"done",'
+                '"final_answer":"done","error":"","step_count":1}'
+                ']}'
+            ),
+        )
+        app.append_event(
+            TUIEvent.from_agent_event(
+                builder.tool_completed(
+                    tool_call=collect_call,
+                    tool_result=collect_result,
+                )
+            )
+        )
+
+        assert subagents.has_class("hidden")
 
 
 @pytest.mark.anyio

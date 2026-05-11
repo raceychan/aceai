@@ -2,7 +2,7 @@
 AceAI - AI agent framework that delivers.
 """
 
-__version__ = "0.2.28"
+__version__ = "0.2.29"
 
 from ididi import Graph as Graph
 

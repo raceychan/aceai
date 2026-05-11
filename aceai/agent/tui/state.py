@@ -28,6 +28,7 @@ class TUISubagentArguments(Record, kw_only=True):
     task: str = ""
     instructions: str = ""
     context_brief: str = ""
+    toolset: str = ""
     allowed_tools: list[str] = field(default_factory=list[str])
 
 
@@ -110,6 +111,9 @@ class TUIRunState(Record, kw_only=True):
     final_answer: str = ""
     error: str | None = None
     usage: TUIUsageState = field(default_factory=TUIUsageState)
+
+
+SUBAGENT_START_TOOL_NAMES = ("delegate_to_subagent", "spawn_subagent")
 
 
 def initial_state() -> TUIRunState:
@@ -399,25 +403,39 @@ def _apply_subagent_event(
     subagents: list[TUISubagentState],
     event: TUIEvent,
 ) -> list[TUISubagentState]:
+    if (
+        event.kind == "tool_completed"
+        and event.tool_name == "collect_subagent_results"
+    ):
+        return _apply_collected_subagent_results(subagents, event)
+
     if event.tool_call_id is None:
         return subagents
 
     target = _find_subagent(subagents, event.tool_call_id)
-    if target is None and event.tool_name != "delegate_to_subagent":
+    if target is None and event.tool_name not in SUBAGENT_START_TOOL_NAMES:
         return subagents
     if target is None and not _starts_threaded_subagent(event):
         return subagents
     if target is None:
         result = _subagent_result(event)
-        if result is None:
-            raise ValueError("threaded subagent result is required")
+        arguments = _subagent_arguments(event)
         target = TUISubagentState(
             call_id=event.tool_call_id,
-            task=_subagent_task(event),
-            thread_id=result.thread_id,
+            task="" if arguments is None else arguments.task,
+            instructions="" if arguments is None else arguments.instructions,
+            context_brief="" if arguments is None else arguments.context_brief,
+            allowed_tools=[] if arguments is None else arguments.allowed_tools,
+            thread_id="" if result is None else result.thread_id,
         )
 
     updated = _update_subagent(target, event)
+    if updated.thread_id == "" and event.kind in ("tool_completed", "tool_failed"):
+        return [
+            subagent
+            for subagent in subagents
+            if subagent.call_id != event.tool_call_id
+        ]
     next_subagents: list[TUISubagentState] = []
     inserted = False
     for subagent in subagents:
@@ -429,6 +447,26 @@ def _apply_subagent_event(
     if not inserted:
         next_subagents.append(updated)
     return next_subagents
+
+
+def _apply_collected_subagent_results(
+    subagents: list[TUISubagentState],
+    event: TUIEvent,
+) -> list[TUISubagentState]:
+    results = _collected_subagent_results(event)
+    if not results:
+        return subagents
+    results_by_thread_id = {
+        result.thread_id: result
+        for result in results
+        if result.thread_id != ""
+    }
+    return [
+        _update_subagent_from_result(subagent, results_by_thread_id[subagent.thread_id])
+        if subagent.thread_id in results_by_thread_id
+        else subagent
+        for subagent in subagents
+    ]
 
 
 def _find_subagent(
@@ -466,6 +504,32 @@ def _update_subagent(
         step_count=subagent.step_count if result is None else result.step_count,
         output=event.content if event.kind == "tool_completed" else subagent.output,
         error=event.error if event.kind == "tool_failed" else subagent.error,
+        inbox_pending_count=subagent.inbox_pending_count,
+        inbox_latest=subagent.inbox_latest,
+    )
+
+
+def _update_subagent_from_result(
+    subagent: TUISubagentState,
+    result: TUISubagentResult,
+) -> TUISubagentState:
+    return TUISubagentState(
+        call_id=subagent.call_id,
+        thread_id=subagent.thread_id,
+        task=subagent.task,
+        instructions=subagent.instructions,
+        context_brief=subagent.context_brief,
+        allowed_tools=subagent.allowed_tools,
+        status=_subagent_result_status(result.status),
+        agent_id=result.agent_id,
+        run_id=result.run_id,
+        summary=result.summary,
+        final_answer=result.final_answer,
+        important_evidence=result.important_evidence,
+        tool_results=result.tool_results,
+        step_count=result.step_count,
+        output=subagent.output,
+        error=subagent.error,
         inbox_pending_count=subagent.inbox_pending_count,
         inbox_latest=subagent.inbox_latest,
     )
@@ -518,7 +582,39 @@ def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
             tool_results=[],
             step_count=payload["step_count"],
         )
+    if "job_id" in payload:
+        return TUISubagentResult(
+            thread_id=payload["thread_id"],
+            agent_id=payload["agent_id"],
+            run_id=payload["run_id"],
+            status=payload["status"],
+            final_answer=payload.get("final_answer", ""),
+            summary=payload.get("summary", ""),
+            important_evidence=[],
+            tool_results=[],
+            step_count=payload.get("step_count", 0),
+        )
     return msg_decode(event.content.encode("utf-8"), type=TUISubagentResult)
+
+
+def _collected_subagent_results(event: TUIEvent) -> list[TUISubagentResult]:
+    payload = json.loads(event.content)
+    results: list[TUISubagentResult] = []
+    for job in payload["jobs"]:
+        results.append(
+            TUISubagentResult(
+                thread_id=job["thread_id"],
+                agent_id=job["agent_id"],
+                run_id=job["run_id"],
+                status=job["status"],
+                final_answer=job["final_answer"],
+                summary=job["summary"],
+                important_evidence=[],
+                tool_results=[],
+                step_count=job["step_count"],
+            )
+        )
+    return results
 
 
 def _starts_threaded_subagent(event: TUIEvent) -> bool:
@@ -601,9 +697,26 @@ def _next_subagent_status(
     if event.kind == "tool_started":
         return "running"
     if event.kind == "tool_completed":
+        result = _subagent_result(event)
+        if event.tool_name == "spawn_subagent" and result is not None:
+            return _subagent_result_status(result.status)
         return "completed"
     if event.kind == "tool_failed":
         return "failed"
     if status == "pending" and event.kind in ("tool_call_delta", "tool_output"):
         return "running"
     return status
+
+
+def _subagent_result_status(status: str) -> TUISubagentStatus:
+    if status == "running":
+        return "running"
+    if status == "completed":
+        return "completed"
+    if status == "failed":
+        return "failed"
+    if status == "blocked":
+        return "blocked"
+    if status == "cancelled":
+        return "cancelled"
+    return "pending"
