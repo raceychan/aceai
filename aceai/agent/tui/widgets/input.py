@@ -12,7 +12,7 @@ from textual.events import Click, Key
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
-from aceai.agent.citations import TurnCitation
+from aceai.agent.citations import TurnCitation, citation_origin_name
 
 CITATION_PREVIEW_LINES = 3
 CITATION_PREVIEW_WIDTH = 88
@@ -424,12 +424,18 @@ class CitationPreviewWidget(Static):
 
 
 def _citation_preview_label(citation: TurnCitation) -> str:
-    return "\n".join(_citation_content_preview_lines(citation.content))
+    return "\n".join(_citation_content_preview_lines(_citation_preview_content(citation)))
 
 
 def _citation_preview_text(citations: tuple[TurnCitation, ...]) -> str:
-    content = "\n".join(citation.content for citation in citations)
+    content = "\n".join(_citation_preview_content(citation) for citation in citations)
     return "\n".join(["cited source"] + _citation_content_preview_lines(content))
+
+
+def _citation_preview_content(citation: TurnCitation) -> str:
+    if citation.origin.kind == "file":
+        return citation_origin_name(citation.origin)
+    return citation.quote
 
 
 def _citation_preview_renderable(display_text: str) -> Text:
@@ -496,6 +502,8 @@ def _is_slash_command_selection(value: str) -> bool:
 
 
 def _active_reference_prefix(value: str) -> str | None:
+    if value.endswith((" ", "\n", "\t")):
+        return None
     tail = value.rsplit(maxsplit=1)[-1] if value.split() else value
     if tail.startswith("@"):
         return tail[1:]

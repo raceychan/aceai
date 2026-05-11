@@ -44,7 +44,7 @@ class ToolExecutionResult(Record, kw_only=True):
     output: str = ""
     """Serialized tool output returned to app/UI/audit consumers."""
 
-    model_output: str = ""
+    truncated_output: str = ""
     """Serialized tool output returned to future model context."""
 
     error: str | None = None
@@ -60,7 +60,7 @@ class ToolExecutionOutput(Record, kw_only=True):
     output: str
     """Serialized output for app/UI/audit consumers."""
 
-    model_output: str
+    truncated_output: str
     """Serialized output for future model context."""
 
 

@@ -26,6 +26,10 @@ class DirectoryListing(Struct, frozen=True, kw_only=True):
 class TextFile(Struct, frozen=True, kw_only=True):
     path: str
     content: str
+    start_line: int
+    end_line: int
+    total_lines: int
+    truncated: bool
 
 
 class FileWriteResult(Struct, frozen=True, kw_only=True):
@@ -85,16 +89,45 @@ def list_directory(
 @tool(tags=["dev"])
 def read_text_file(
     path: Annotated[str, spec(description="UTF-8 text file path to read")],
+    start_line: Annotated[
+        int,
+        spec(description="One-based line number where reading starts"),
+    ] = 1,
+    line_count: Annotated[
+        int,
+        spec(description="Maximum number of lines to return"),
+    ] = 200,
 ) -> TextFile:
-    """Read a UTF-8 text file exactly as stored on disk."""
+    """Read a bounded UTF-8 text file slice by line number."""
+    if start_line < 1:
+        raise ToolExecutionError("start_line must be at least 1")
+    if line_count < 1:
+        raise ToolExecutionError("line_count must be at least 1")
     target = Path(path).expanduser()
+    collected: list[str] = []
+    end_line = start_line - 1
+    total_lines = 0
     try:
-        content = target.read_text(encoding="utf-8")
+        with target.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                total_lines = line_number
+                if line_number < start_line:
+                    continue
+                if len(collected) < line_count:
+                    collected.append(line)
+                    end_line = line_number
     except OSError as exc:
         raise ToolExecutionError(str(exc)) from exc
     except UnicodeError as exc:
         raise ToolExecutionError(str(exc)) from exc
-    return TextFile(path=str(target), content=content)
+    return TextFile(
+        path=str(target),
+        content="".join(collected),
+        start_line=start_line,
+        end_line=end_line,
+        total_lines=total_lines,
+        truncated=end_line < total_lines,
+    )
 
 
 @tool(

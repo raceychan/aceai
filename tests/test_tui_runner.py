@@ -94,7 +94,7 @@ from textual.widgets import (
 
 def _test_citation(content: str) -> TurnCitation:
     return TurnCitation(
-        content=content,
+        quote=content,
         origin=AdHocCitationOrigin(kind="ad_hoc", label="test"),
     )
 
@@ -372,7 +372,7 @@ async def test_interactive_tui_start_run_displays_citations_separately(
             "Explain it",
             citations=(
                 TurnCitation(
-                    content="The job is pending.",
+                    quote="The job is pending.",
                     origin=ConversationCitationOrigin(
                         kind="conversation",
                         event_id="event-1",
@@ -387,7 +387,7 @@ async def test_interactive_tui_start_run_displays_citations_separately(
 
         visible_user_event = app._state.events[0]
         assert visible_user_event.content == "Explain it"
-        assert visible_user_event.citations[0].content == "The job is pending."
+        assert visible_user_event.citations[0].quote == "The job is pending."
 
         user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
         assert "<aceai_cited_context>" in user_text
@@ -396,7 +396,7 @@ async def test_interactive_tui_start_run_displays_citations_separately(
         assert app._session_id is not None
         event_log = tui_session_store.load_event_log(app._session_id)
         assert event_log.events[0].payload["content"] == "Explain it"
-        assert event_log.events[0].payload["citations"][0]["content"] == (
+        assert event_log.events[0].payload["citations"][0]["quote"] == (
             "The job is pending."
         )
 
@@ -2136,6 +2136,8 @@ async def test_interactive_tui_reference_completion_inserts_selected_item(
         await pilot.pause()
 
         assert command_input.value == "please use @README.md "
+        completions = app.query_one(ReferenceCompletionWidget)
+        assert completions.has_class("hidden")
 
 
 @pytest.mark.anyio
@@ -2197,6 +2199,7 @@ def test_reference_file_candidates_prune_large_local_dirs_and_keep_specs(
 @pytest.mark.anyio
 async def test_interactive_tui_inline_file_reference_cites_text_file(
     tmp_path,
+    tui_session_store: SessionStore,
 ) -> None:
     source = tmp_path / "notes.md"
     source.write_text("# Notes\nShip inline citations.", encoding="utf-8")
@@ -2224,20 +2227,28 @@ async def test_interactive_tui_inline_file_reference_cites_text_file(
 
         visible_user_event = app._state.events[0]
         assert visible_user_event.content == question
-        assert visible_user_event.citations[0].content == "# Notes\nShip inline citations."
         assert visible_user_event.citations[0].origin == FileCitationOrigin(
             kind="file",
             path=str(source.resolve()),
         )
+        assert visible_user_event.citations[0].quote == str(source.resolve())
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert "content" not in event_log.events[0].payload["citations"][0]
+        assert event_log.events[0].payload["citations"][0]["quote"] == str(
+            source.resolve()
+        )
         user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
         assert "source=\"file:" in user_text
-        assert "# Notes\nShip inline citations." in user_text
+        assert f'path="{source.resolve()}"' in user_text
+        assert "# Notes\nShip inline citations." not in user_text
+        assert "Contents were not attached to this prompt." in user_text
         assert f"<user_request>\n{question}\n</user_request>" in user_text
 
 
 @pytest.mark.anyio
 async def test_interactive_tui_inline_file_reference_uses_project_relative_paths(
     tmp_path,
+    tui_session_store: SessionStore,
 ) -> None:
     source = tmp_path / "docs" / "plan.txt"
     source.parent.mkdir()
@@ -2259,10 +2270,15 @@ async def test_interactive_tui_inline_file_reference_uses_project_relative_paths
         app.on_input_submitted(Input.Submitted(command_input, "use @docs/plan.txt"))
         await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
-        assert app._state.events[0].citations[0].content == "relative file content"
         assert app._state.events[0].citations[0].origin == FileCitationOrigin(
             kind="file",
             path=str(source.resolve()),
+        )
+        assert app._state.events[0].citations[0].quote == str(source.resolve())
+        event_log = tui_session_store.load_event_log(app._session_id)
+        assert "content" not in event_log.events[0].payload["citations"][0]
+        assert event_log.events[0].payload["citations"][0]["quote"] == str(
+            source.resolve()
         )
 
 
@@ -2308,7 +2324,7 @@ async def test_interactive_tui_inline_idea_reference_uses_display_index(
 
         visible_user_event = app._state.events[0]
         assert visible_user_event.content == "use @idea:1"
-        assert visible_user_event.citations[0].content == "inline idea content"
+        assert visible_user_event.citations[0].quote == "inline idea content"
         assert visible_user_event.citations[0].origin == IdeaCitationOrigin(
             kind="idea",
             idea_id=idea.idea_id,
@@ -2343,7 +2359,7 @@ async def test_interactive_tui_inline_idea_reference_uses_idea_id(
         )
         await _wait_until(pilot, lambda: len(llm_service.calls) == 1)
 
-        assert app._state.events[0].citations[0].content == "idea by id"
+        assert app._state.events[0].citations[0].quote == "idea by id"
         assert app._state.events[0].citations[0].origin == IdeaCitationOrigin(
             kind="idea",
             idea_id=idea.idea_id,
@@ -2580,7 +2596,7 @@ async def test_interactive_tui_referenced_idea_is_read_only_citation(tmp_path) -
         assert preview.display_text == ""
         visible_user_event = app._state.events[0]
         assert visible_user_event.content == "what should we do?"
-        assert visible_user_event.citations[0].content == long_content
+        assert visible_user_event.citations[0].quote == long_content
         user_text = llm_service.calls[0]["messages"][-1].content[0]["data"]
         assert long_content in user_text
         assert "<user_request>\nwhat should we do?\n</user_request>" in user_text
@@ -4279,7 +4295,7 @@ async def test_interactive_tui_subagents_command_switches_active_thread(
                 "tool_call_id": call.call_id,
                 "tool_arguments": call.arguments,
                 "output": audit_output,
-                "model_output": audit_output,
+                "truncated_output": audit_output,
                 "status": "completed",
             },
         ),
@@ -4404,7 +4420,7 @@ async def test_configured_tui_activate_subagent_initializes_runtime_and_switches
                 "tool_call_id": call.call_id,
                 "tool_arguments": call.arguments,
                 "output": audit_output,
-                "model_output": audit_output,
+                "truncated_output": audit_output,
                 "status": "completed",
             },
         ),

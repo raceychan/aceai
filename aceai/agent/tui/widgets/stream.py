@@ -7,8 +7,9 @@ from hashlib import sha1
 
 from rich import box
 from rich.align import Align
+from rich.cells import cell_len
 from msgspec import Struct
-from rich.console import Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.style import Style
@@ -28,7 +29,7 @@ from aceai.agent.tui.theme import EVENT_LABELS, EVENT_STYLES
 PROMPT_BAR_STYLE = "bold #eceff4 on #3b4252"
 PROMPT_MARK_STYLE = "bold #88c0d0 on #3b4252"
 SUBTLE_BULLET_STYLE = "bold #9aa3b2"
-REASONING_MARK_STYLE = "bold #d08770"
+REASONING_MARK_STYLE = "bold #8fbcbb"
 EXPAND_MARK_STYLE = "bold #88c0d0"
 TRANSCRIPT_GUTTER = "  "
 EMPTY_STATE_FRAME_SECONDS = 0.45
@@ -278,6 +279,9 @@ class StreamWidget(RichLog):
         if isinstance(renderable, Table):
             self.write(renderable, expand=True)
             return
+        if isinstance(renderable, _PromptBar):
+            self.write(renderable, width=_available_stream_width(self), expand=True)
+            return
         self.write(renderable, width=_available_stream_width(self))
 
     def _ensure_empty_state_timer(self) -> None:
@@ -381,6 +385,26 @@ class _ToolActivityLineSpan(Struct, kw_only=True):
     activity_id: str
     start_line: int
     end_line: int
+
+
+class _PromptBar:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def __rich_console__(
+        self,
+        console: Console,
+        options: ConsoleOptions,
+    ) -> RenderResult:
+        width = max(1, options.max_width)
+        yield _render_prompt_bar_line("", width=width)
+        for line in _wrapped_prompt_content_lines(
+            self.content,
+            console=console,
+            width=width,
+        ):
+            yield line
+        yield _render_prompt_bar_line("", width=width)
 
 
 class _DebugLineSpan(Struct, kw_only=True):
@@ -816,7 +840,7 @@ def _flush_thinking_buffer(
         renderables.append(
             _StreamRenderable(
                 renderable=_render_text_block(
-                    "reasoning",
+                    EVENT_LABELS["thinking_delta"],
                     thinking_buffer,
                     event_kind="thinking_delta",
                 )
@@ -834,7 +858,7 @@ def _flush_thinking_buffer_to_working_history(
     return _append_working_history_renderable(
         pending_working_history,
         _render_text_block(
-            "reasoning",
+            EVENT_LABELS["thinking_delta"],
             thinking_buffer,
             event_kind="thinking_delta",
         ),
@@ -902,12 +926,7 @@ def _last_renderable_is_prompt_bar(renderables: list[_StreamRenderable]) -> bool
     if not renderables:
         return False
     renderable = renderables[-1].renderable
-    if not isinstance(renderable, Table):
-        return False
-    return (
-        len(renderable.columns) == 1
-        and renderable.columns[0].style == PROMPT_BAR_STYLE
-    )
+    return isinstance(renderable, _PromptBar)
 
 
 def _tool_block_belongs_to_activity(tool_block: _ToolBlockState) -> bool:
@@ -1224,7 +1243,8 @@ def _render_text_block(
 ) -> RenderableType:
     style = EVENT_STYLES[event_kind]
     if event_kind in ("thinking_delta", "reasoning_summary"):
-        return _render_reasoning_line(label, content, style=style)
+        del label
+        return _render_reasoning_line(content, style=style)
     text = Text()
     text.append(TRANSCRIPT_GUTTER)
     text.append("●", style=SUBTLE_BULLET_STYLE)
@@ -1236,16 +1256,30 @@ def _render_text_block(
     return text
 
 
-def _render_reasoning_line(label: str, content: str, *, style: str) -> Text:
+def _render_reasoning_line(content: str, *, style: str) -> Text:
     text = Text()
     text.append(TRANSCRIPT_GUTTER)
     text.append("*", style=REASONING_MARK_STYLE)
-    text.append(" ")
-    text.append(label, style=f"bold {style}")
     if content != "":
-        text.append("  ")
-        text.append(content, style=style)
+        text.append(" ")
+        _append_inline_emphasis(text, content, style=style)
     return text
+
+
+def _append_inline_emphasis(text: Text, content: str, *, style: str) -> None:
+    cursor = 0
+    while cursor < len(content):
+        start = content.find("**", cursor)
+        if start < 0:
+            text.append(content[cursor:], style=style)
+            return
+        end = content.find("**", start + 2)
+        if end < 0:
+            text.append(content[cursor:], style=style)
+            return
+        text.append(content[cursor:start], style=style)
+        text.append(content[start + 2 : end], style=f"bold {style}")
+        cursor = end + 2
 
 
 def _render_idea_list(items: list[TUIIdeaItem]) -> RenderableType:
@@ -1374,23 +1408,42 @@ def _render_user_message(
 ) -> RenderableType:
     del label
     del event_kind
-    row = Table.grid(expand=True)
-    row.add_column(ratio=1, style=PROMPT_BAR_STYLE)
-    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
-    text = Text()
-    text.append("▌ ", style=PROMPT_MARK_STYLE)
-    text.append(content, style=PROMPT_BAR_STYLE)
-    row.add_row(text, style=PROMPT_BAR_STYLE)
-    row.add_row(_render_prompt_padding_line(), style=PROMPT_BAR_STYLE)
+    row = _PromptBar(content)
     if not citations:
         return row
     return Group(_render_cited_sources(citations), row)
 
 
-def _render_prompt_padding_line() -> Text:
+def _wrapped_prompt_content_lines(
+    content: str,
+    *,
+    console: Console,
+    width: int,
+) -> list[Text]:
+    content_width = max(1, width - 2)
+    lines: list[Text] = []
+    source_lines = content.splitlines() or [""]
+    for source_line in source_lines:
+        source = Text(source_line, style=PROMPT_BAR_STYLE)
+        wrapped_lines = source.wrap(console, content_width)
+        if not wrapped_lines:
+            lines.append(_render_prompt_bar_line("", width=width))
+            continue
+        for wrapped_line in wrapped_lines:
+            lines.append(_render_prompt_bar_line(wrapped_line, width=width))
+    return lines
+
+
+def _render_prompt_bar_line(content: str | Text, *, width: int) -> Text:
     text = Text()
     text.append("▌ ", style=PROMPT_MARK_STYLE)
-    text.append(" ", style=PROMPT_BAR_STYLE)
+    if isinstance(content, Text):
+        text.append_text(content)
+    else:
+        text.append(content, style=PROMPT_BAR_STYLE)
+    padding_width = max(0, width - cell_len(text.plain))
+    if padding_width:
+        text.append(" " * padding_width, style=PROMPT_BAR_STYLE)
     return text
 
 
@@ -1400,9 +1453,10 @@ def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:
         title = Text()
         title.append(f"[{index}] ", style=SUBTLE_BULLET_STYLE)
         title.append(citation_origin_name(citation.origin), style="bold #d8dee9")
-        body = Text(citation.content, style="#d8dee9")
         lines.append(title)
-        lines.append(body)
+        body = _citation_body(citation)
+        if body is not None:
+            lines.append(body)
     return Panel(
         Group(*lines),
         box=box.ROUNDED,
@@ -1411,6 +1465,12 @@ def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:
         border_style="#4c566a",
         padding=(0, 1),
     )
+
+
+def _citation_body(citation: TurnCitation) -> Text | None:
+    if citation.origin.kind == "file":
+        return None
+    return Text(citation.quote, style="#d8dee9")
 
 
 def _looks_like_markdown(content: str) -> bool:

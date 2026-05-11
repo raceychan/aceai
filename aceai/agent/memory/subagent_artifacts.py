@@ -19,7 +19,7 @@ class SubagentArtifactStore:
         tool_result: ToolExecutionResult,
     ) -> ToolExecutionResult:
         payload = json.loads(tool_result.output)
-        handoff = json.loads(tool_result.model_output)
+        handoff = json.loads(tool_result.truncated_output)
         agent_id = payload["agent_id"]
         artifact_id = handoff["artifact_id"]
         artifact_dir = self.sessions_root / session_id / "artifacts" / parent_run_id / agent_id
@@ -100,7 +100,7 @@ class SubagentArtifactStore:
         return ToolExecutionResult(
             call=tool_result.call,
             output=json.dumps(audit, ensure_ascii=False),
-            model_output=tool_result.model_output,
+            truncated_output=tool_result.truncated_output,
             error=tool_result.error,
             annotations=tool_result.annotations,
         )

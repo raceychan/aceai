@@ -45,7 +45,7 @@ def test_tui_event_to_session_event_preserves_user_citations() -> None:
         "Explain it",
         citations=(
             TurnCitation(
-                content="The job is pending.",
+                quote="The job is pending.",
                 origin=ConversationCitationOrigin(
                     kind="conversation",
                     event_id="event-1",
@@ -63,7 +63,7 @@ def test_tui_event_to_session_event_preserves_user_citations() -> None:
         "content": "Explain it",
         "citations": [
             {
-                "content": "The job is pending.",
+                "quote": "The job is pending.",
                 "origin": {
                     "kind": "conversation",
                     "event_id": "event-1",
@@ -86,7 +86,7 @@ def test_event_log_to_tui_events_restores_user_citations() -> None:
                         "content": "Explain it",
                         "citations": [
                             {
-                                "content": "The job is pending.",
+                                "quote": "The job is pending.",
                                 "origin": {
                                     "kind": "conversation",
                                     "event_id": "event-1",
@@ -105,7 +105,7 @@ def test_event_log_to_tui_events_restores_user_citations() -> None:
     assert events[0].content == "Explain it"
     assert events[0].citations == (
         TurnCitation(
-            content="The job is pending.",
+            quote="The job is pending.",
             origin=ConversationCitationOrigin(
                 kind="conversation",
                 event_id="event-1",
@@ -253,6 +253,7 @@ def test_event_log_to_tui_events_restores_tool_message() -> None:
                         "tool_call_id": "call-1",
                         "tool_arguments": '{"path":"."}',
                         "output": '{"entries":[]}',
+                        "truncated_output": '{"entries":[]}',
                         "status": "completed",
                     },
                 )
@@ -271,7 +272,7 @@ def test_event_log_to_tui_events_restores_tool_message() -> None:
     assert event.tool_result == ToolExecutionResult(
         call=event.tool_call,
         output='{"entries":[]}',
-        model_output='{"entries":[]}',
+        truncated_output='{"entries":[]}',
     )
 
 

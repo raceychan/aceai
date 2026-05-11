@@ -81,7 +81,7 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
     )
 
     payload = json.loads(result.output)
-    model_payload = json.loads(result.model_output)
+    truncated_payload = json.loads(result.truncated_output)
     assert payload["status"] == "completed"
     assert payload["final_answer"].startswith("Summary:\nReviewed")
     assert payload["summary"] == payload["final_answer"]
@@ -89,8 +89,8 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
     assert payload["important_evidence"] == []
     assert payload["tool_results"] == []
     assert payload["agent_id"].startswith("child-")
-    assert model_payload["type"] == "subagent_handoff"
-    assert model_payload["handoff"].startswith("Summary:\nReviewed")
+    assert truncated_payload["type"] == "subagent_handoff"
+    assert truncated_payload["handoff"].startswith("Summary:\nReviewed")
 
     messages = llm_service.stream_calls[0]["messages"]
     system_text = messages[0].content[0]["data"]
@@ -145,7 +145,7 @@ async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path
     )
 
     payload = json.loads(result.output)
-    model_payload = json.loads(result.model_output)
+    truncated_payload = json.loads(result.truncated_output)
     assert payload["status"] == "completed"
     assert payload["step_count"] == 2
     assert len(payload["tool_results"]) == 1
@@ -154,9 +154,9 @@ async def test_delegate_to_subagent_limits_child_tools_to_allowed_names(tmp_path
     assert payload["tool_results"][0]["arguments"] == '{"path":"' + str(target) + '"}'
     assert "delegated evidence" in payload["tool_results"][0]["output"]
     assert payload["important_evidence"] == [payload["tool_results"][0]["output"]]
-    assert model_payload["tool_result_count"] == 1
-    assert model_payload["tool_names"] == ["read_text_file"]
-    assert "delegated evidence" in model_payload["evidence"][0]
+    assert truncated_payload["tool_result_count"] == 1
+    assert truncated_payload["tool_names"] == ["read_text_file"]
+    assert "delegated evidence" in truncated_payload["evidence"][0]
 
     first_call_tools = llm_service.stream_calls[0]["tools"]
     assert [tool.name for tool in first_call_tools] == ["read_text_file"]

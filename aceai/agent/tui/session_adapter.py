@@ -31,7 +31,7 @@ def _payload_for_event(event: TUIEvent) -> dict[str, Any]:
     if event.tool_result is not None:
         payload["tool_result"] = {
             "output": event.tool_result.output,
-            "model_output": event.tool_result.model_output,
+            "truncated_output": event.tool_result.truncated_output,
             "error": event.tool_result.error,
         }
     if event.error is not None:

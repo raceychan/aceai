@@ -272,3 +272,45 @@ def test_app_file_tool_reports_missing_file_as_tool_execution_error(tmp_path) ->
 
     with pytest.raises(ToolExecutionError, match="No such file or directory"):
         read_text_file(path=str(missing_path))
+
+
+def test_app_file_tool_reads_bounded_line_slice(tmp_path) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("one\n two\nthree\nfour\n", encoding="utf-8")
+
+    result = read_text_file(path=str(target), start_line=2, line_count=2)
+
+    assert result.path == str(target)
+    assert result.content == " two\nthree\n"
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.total_lines == 4
+    assert result.truncated
+
+
+def test_app_file_tool_defaults_to_first_bounded_slice(tmp_path) -> None:
+    target = tmp_path / "large.md"
+    target.write_text(
+        "".join(f"line {index}\n" for index in range(1, 205)),
+        encoding="utf-8",
+    )
+
+    result = read_text_file(path=str(target))
+
+    assert result.content.startswith("line 1\n")
+    assert result.content.endswith("line 200\n")
+    assert result.start_line == 1
+    assert result.end_line == 200
+    assert result.total_lines == 204
+    assert result.truncated
+
+
+def test_app_file_tool_rejects_invalid_line_slice(tmp_path) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("one\n", encoding="utf-8")
+
+    with pytest.raises(ToolExecutionError, match="start_line must be at least 1"):
+        read_text_file(path=str(target), start_line=0)
+
+    with pytest.raises(ToolExecutionError, match="line_count must be at least 1"):
+        read_text_file(path=str(target), line_count=0)

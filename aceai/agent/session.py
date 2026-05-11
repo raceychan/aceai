@@ -390,8 +390,7 @@ class EventLog:
                     pending_tool_call_recorded = True
                 history.append(
                     LLMToolUseMessage.from_content(
-                        content=event.payload.get("model_output")
-                        or event.payload["output"],
+                        content=event.payload["truncated_output"],
                         name=event.payload["tool_name"],
                         call_id=event.payload["tool_call_id"],
                     )
@@ -1092,10 +1091,7 @@ class SessionRecorder:
                 "tool_call_id": event.payload["tool_call_id"],
                 "tool_arguments": tool_buffer.arguments,
                 "output": tool_buffer.output,
-                "model_output": event.payload.get("tool_result", {}).get(
-                    "model_output",
-                    tool_buffer.output,
-                ),
+                "truncated_output": event.payload["tool_result"]["truncated_output"],
                 "status": "failed" if event.kind == "tool_failed" else "completed",
             },
             event,
@@ -1256,7 +1252,8 @@ def _event_to_export_lines(event: SessionEvent) -> list[str]:
             lines.append("cited context:")
             for citation in citations_from_payload(event.payload["citations"]):
                 lines.append(f"- {citation_origin_name(citation.origin)}")
-                lines.append(citation.content)
+                if citation.origin.kind != "file":
+                    lines.append(citation.quote)
         return lines
     if event.kind == "assistant_message":
         return ["## assistant", event.payload["content"]]
