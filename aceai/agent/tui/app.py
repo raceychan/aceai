@@ -14,7 +14,7 @@ from aceai.core.events import AgentEvent
 
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
-from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionStore
+from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionRecorder, SessionStore
 
 from aceai.agent.app import context_window_for_model, supports_reasoning_for_model
 from aceai.agent.cost import format_usd
@@ -293,6 +293,18 @@ class AceAITUI(App[None]):
             return
         self._flush_pending_stream_delta()
         self._append_event_to_state(event)
+        self._refresh_widgets()
+
+    def append_persisted_event(self, event: TUIEvent) -> None:
+        if self._should_buffer_stream_delta(event):
+            return
+        self._flush_pending_stream_delta()
+        record_events = self._record_events
+        self._record_events = False
+        try:
+            self._append_event_to_state(event)
+        finally:
+            self._record_events = record_events
         self._refresh_widgets()
 
     def _append_event_to_state(self, event: TUIEvent) -> None:
@@ -717,6 +729,9 @@ class AceAITUI(App[None]):
             return list(self._subagent_thread_options_cache)
         store = self._session_store()
         threads = store.list_threads(self._session_id)
+        inbox_summaries = _inbox_summaries_by_thread(
+            store.load_event_log(self._session_id).events
+        )
         options = [
             SubagentThreadOption(
                 thread_id=thread.thread_id,
@@ -728,6 +743,8 @@ class AceAITUI(App[None]):
                 instructions=_thread_metadata_str(thread.metadata, "instructions"),
                 context_brief=_thread_metadata_str(thread.metadata, "context_brief"),
                 allowed_tools=tuple(_thread_metadata_list(thread.metadata, "allowed_tools")),
+                inbox_pending_count=inbox_summaries.get(thread.thread_id, (0, ""))[0],
+                inbox_latest=inbox_summaries.get(thread.thread_id, (0, ""))[1],
             )
             for thread in threads
         ]
@@ -899,6 +916,8 @@ def _all_subagents_completed(subagents: list[TUISubagentState]) -> bool:
 
 
 def _event_can_change_subagent_thread_options(event: TUIEvent) -> bool:
+    if event.kind in ("agent_inbox_delivered", "agent_inbox_item"):
+        return True
     if event.kind in (
         "run_completed",
         "run_failed",
@@ -909,6 +928,34 @@ def _event_can_change_subagent_thread_options(event: TUIEvent) -> bool:
     ):
         return True
     return False
+
+
+def _inbox_summaries_by_thread(
+    events: list[SessionEvent],
+) -> dict[str, tuple[int, str]]:
+    pending: dict[str, list[SessionEvent]] = {}
+    for event in events:
+        if event.kind == "agent_inbox_item":
+            if event.payload["status"] != "pending":
+                continue
+            if event.thread_id not in pending:
+                pending[event.thread_id] = []
+            pending[event.thread_id].append(event)
+        elif event.kind == "agent_inbox_delivered":
+            thread_items = pending.get(event.thread_id)
+            if thread_items is None:
+                continue
+            inbox_event_id = event.payload["inbox_event_id"]
+            pending[event.thread_id] = [
+                item for item in thread_items if item.event_id != inbox_event_id
+            ]
+    summaries: dict[str, tuple[int, str]] = {}
+    for thread_id, items in pending.items():
+        latest = ""
+        if items:
+            latest = items[-1].payload["message"]
+        summaries[thread_id] = (len(items), latest)
+    return summaries
 
 
 def _subagent_panel_states(
@@ -935,6 +982,8 @@ def _subagent_panel_states(
                 status=_subagent_status_from_thread_status(option.status),
                 agent_id=option.agent_id,
                 run_id="",
+                inbox_pending_count=option.inbox_pending_count,
+                inbox_latest=option.inbox_latest,
             )
         )
     return panel_states
@@ -955,6 +1004,8 @@ def _main_agent_panel_state(
                 status=_subagent_status_from_thread_status(option.status),
                 agent_id=option.agent_id,
                 run_id="",
+                inbox_pending_count=option.inbox_pending_count,
+                inbox_latest=option.inbox_latest,
             )
     return TUISubagentState(
         call_id=MAIN_THREAD_ID,
@@ -971,6 +1022,10 @@ def _subagent_status_from_thread_status(status: str) -> TUISubagentStatus:
         return "completed"
     if status == "failed":
         return "failed"
+    if status == "blocked":
+        return "blocked"
+    if status == "cancelled":
+        return "cancelled"
     return "pending"
 
 

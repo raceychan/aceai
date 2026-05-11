@@ -15,7 +15,7 @@ from textual.worker import Worker
 
 from aceai.agent.app import (
     AceAgentApp,
-    UpdateCheckResult,
+    AgentAppEvent,
     effective_reasoning_level,
     is_model_supported,
     model_options_text_for,
@@ -30,7 +30,7 @@ from aceai.agent.citations import (
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.features import default_agent_tools
-from aceai.agent.session import MAIN_THREAD_ID, SessionRecorder, SessionState
+from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import (
     AgentAppConfig,
@@ -38,6 +38,7 @@ from aceai.agent.config import (
     effective_config_path,
     load_config_audit,
 )
+from aceai.agent.update_check import UpdateCheckResult, check_for_updates
 from aceai.core import Agent
 from aceai.core.events import AgentEvent, RunSuspendedEvent
 from aceai.core.skills import SkillLoader, SkillLoadingError, SkillRegistry
@@ -210,10 +211,10 @@ class AceAIConfiguredTUI(AceAITUI):
         self._reference_completion_selected_index = 0
         self._reference_file_items_cache_root: Path | None = None
         self._reference_file_items_cache: tuple[ReferenceCompletionItem, ...] = ()
+        self._update_check_completed = False
+        self._update_check_lock = asyncio.Lock()
 
     def _start_update_check(self) -> None:
-        if self._agent_app is None:
-            return
         self.run_worker(
             self._check_for_updates(),
             name="aceai-update-check",
@@ -222,10 +223,18 @@ class AceAIConfiguredTUI(AceAITUI):
         )
 
     async def _check_for_updates(self) -> None:
-        result = await self._agent_app.check_for_updates()
-        if result is None:
+        async with self._update_check_lock:
+            if self._update_check_completed:
+                return
+            self._update_check_completed = True
+        result = await check_for_updates()
+        if result is None or not result.has_update:
             return
-        self.append_event(TUIEvent.session_notice(_update_available_notice(result)))
+        self.query_one(StatusBarWidget).show_notice(
+            _update_available_notice(result),
+            timeout=6.0,
+            style="bold #ebcb8b",
+        )
 
     async def _stream_agent_turn(
         self,
@@ -234,8 +243,8 @@ class AceAIConfiguredTUI(AceAITUI):
     ) -> None:
         if self._agent_app is None:
             raise RuntimeError("AceAI app is not configured")
-        await self._consume_agent_stream(
-            self._agent_app.start_turn(question, citations=citations)
+        await self._consume_agent_app_stream(
+            self._agent_app.start_turn_events(question, citations=citations)
         )
         self._start_next_queued_run()
 
@@ -258,6 +267,30 @@ class AceAIConfiguredTUI(AceAITUI):
         )
         try:
             async for event in stream:
+                self.append_agent_event(event, provider_name=provider_name)
+                if isinstance(event, RunSuspendedEvent):
+                    self.show_pending_approval()
+        finally:
+            await stream.aclose()
+            self._sync_app_state()
+
+    async def _consume_agent_app_stream(
+        self,
+        stream: AsyncGenerator[AgentAppEvent, None],
+    ) -> None:
+        provider_name = (
+            self._agent_app.provider_name if self._agent_app is not None else None
+        )
+        try:
+            async for app_event in stream:
+                event = app_event.event
+                if isinstance(event, SessionEvent):
+                    tui_event = TUIEvent.from_session_event(event)
+                    if tui_event is not None:
+                        self.append_persisted_event(tui_event)
+                    continue
+                if app_event.thread_id != self._active_thread_id:
+                    continue
                 self.append_agent_event(event, provider_name=provider_name)
                 if isinstance(event, RunSuspendedEvent):
                     self.show_pending_approval()
@@ -1005,7 +1038,6 @@ class AceAIConfiguredTUI(AceAITUI):
                 reasoning_level=self._reasoning_level,
             )
         self._sync_app_state()
-        self._start_update_check()
 
     def switch_session(self, session_id: str) -> None:
         if self._agent_app is None:
@@ -1383,7 +1415,7 @@ class AceAIConfiguredTUI(AceAITUI):
 def _update_available_notice(result: UpdateCheckResult) -> str:
     return (
         f"AceAI {result.latest_version} is available "
-        f"(current {result.current_version}).\n"
+        f"(current {result.current_version}). "
         f"{UPDATE_INSTRUCTIONS}"
     )
 

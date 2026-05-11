@@ -1,5 +1,29 @@
 # Changelog
 
+## AceAI v0.2.28
+
+### Features
+
+- `subagents`: Add non-blocking background subagent jobs with `spawn_subagent`, `check_subagent`, `wait_subagent`, `cancel_subagent`, and `collect_subagent_results` so the main agent can fan out work and collect results later.
+- `inbox`: Add agent inbox notifications for background subagent completion, cancellation, and failure, with delivery into the next LLM step before the agent continues.
+- `skills`: Add an AceAI real-e2e project skill for validating runtime, provider, subagent, and inbox behavior with real configured model calls.
+
+### Improvements
+
+- `delegation`: Add explicit child tool presets with `toolset="dev_read_only"` as the default, `toolset="none"` for no tools, and `toolset="custom"` for exact `allowed_tools` lists.
+- `delegation`: Restrict child `allowed_tools` schemas to concrete available tool names and return recoverable errors when a child tool name or toolset is invalid.
+- `tui`: Show inbox activity as a compact work-history item and include inbox counts in collapsed work-history headers without splitting tool activity into separate groups.
+- `tui`: Validate event label/style registry coverage at import time so missing render metadata fails before an interactive session reaches the broken event.
+
+### Fixes
+
+- `subagents`: Record only one terminal inbox notification per background job, even when cancellation and runtime callbacks race.
+- `subagents`: Keep terminal inbox messages short and point to `collect_subagent_results` for full results instead of injecting full child summaries into the parent inbox.
+
+### Breaking Changes
+
+- `delegation`: Subagent tools now use the explicit `toolset` preset contract; callers that need a custom child tool list must set `toolset="custom"` and pass exact unprefixed names in `allowed_tools`.
+
 ## AceAI v0.2.27
 
 ### Improvements

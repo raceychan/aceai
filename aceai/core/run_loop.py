@@ -1,6 +1,6 @@
 import asyncio
 from itertools import count
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable, Callable
 from uuid import uuid4
 
 from msgspec import Struct, field
@@ -15,7 +15,7 @@ from aceai.llm.errors import (
     LLMProviderError,
 )
 from aceai.llm.interface import Unset, is_set
-from aceai.llm.models import LLMRequestMeta, LLMToolCallDelta, LLMToolSpec
+from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMToolCallDelta, LLMToolSpec
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
 
 from .context_manager import ContextManager
@@ -56,6 +56,9 @@ class AgentRunContext(Struct, kw_only=True):
     request_meta: LLMRequestMeta
     steps: list[AgentStep] = field(default_factory=list[AgentStep])
     run_state: AgentRunState = field(default_factory=AgentRunState)
+    before_llm_hooks: list[
+        Callable[[str, int], Awaitable[list[LLMMessage]]]
+    ] = field(default_factory=list)
 
     @property
     def status(self) -> AgentRunStatus:
@@ -279,6 +282,7 @@ async def _call_llm(
 
     compressed_after_context_window_error = False
     while True:
+        await _run_before_llm_hooks(run_context, event_builder)
         compression_count_before_prepare = run_context.context.compression_count
         preflight_compaction_started = False
         if run_context.context.needs_compression(
@@ -417,6 +421,15 @@ async def _call_llm(
             compressed_after_context_window_error = True
         finally:
             await stream.aclose()
+
+
+async def _run_before_llm_hooks(
+    run_context: AgentRunContext,
+    event_builder: AgentEventBuilder,
+) -> None:
+    for hook in run_context.before_llm_hooks:
+        messages = await hook(event_builder.step_id, event_builder.step_index)
+        run_context.context.context.extend(messages)
 
 
 async def _make_toolcalls(

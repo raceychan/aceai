@@ -38,6 +38,8 @@ SessionEventKind = Literal[
     "assistant_delta",
     "assistant_message",
     "assistant_tool_call",
+    "agent_inbox_delivered",
+    "agent_inbox_item",
     "error",
     "llm_completed",
     "llm_retrying",
@@ -88,7 +90,15 @@ class SessionMetadata(Struct, frozen=True, kw_only=True):
 
 
 AgentThreadRole = Literal["main", "subagent"]
-AgentThreadStatus = Literal["idle", "running", "suspended", "completed", "failed"]
+AgentThreadStatus = Literal[
+    "idle",
+    "running",
+    "suspended",
+    "completed",
+    "failed",
+    "blocked",
+    "cancelled",
+]
 
 
 class AgentThreadMetadata(Struct, frozen=True, kw_only=True):
@@ -182,6 +192,8 @@ class SessionEvent(Struct, frozen=True, kw_only=True):
             "assistant_delta",
             "assistant_message",
             "assistant_tool_call",
+            "agent_inbox_delivered",
+            "agent_inbox_item",
             "error",
             "llm_completed",
             "llm_retrying",
@@ -933,7 +945,14 @@ class SessionRecorder:
             )
         elif event.kind == "tool_approval_resolved":
             return self._record_tool_approval_resolved(event)
-        elif event.kind in ("run_completed", "run_suspended", "step_completed", "step_started"):
+        elif event.kind in (
+            "agent_inbox_delivered",
+            "agent_inbox_item",
+            "run_completed",
+            "run_suspended",
+            "step_completed",
+            "step_started",
+        ):
             return self._append_event(event.kind, dict(event.payload), event)
         elif event.kind in (
             "llm_retrying",

@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from io import StringIO
 from hashlib import sha1
 
 from rich import box
@@ -15,10 +16,12 @@ from rich.panel import Panel
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
+from textual.containers import VerticalScroll
 from textual.events import Click, Key, Resize
 from textual.message import Message
+from textual.strip import Strip
 from textual.timer import Timer
-from textual.widgets import RichLog
+from textual.widgets import Static
 
 from aceai import __version__
 from aceai.agent.tui.events import TUIEvent, TUIEventKind, TUIIdeaItem
@@ -79,7 +82,7 @@ EMPTY_STATE_PIXEL_STYLES: dict[str, str] = {
 }
 
 
-class StreamWidget(RichLog):
+class StreamWidget(VerticalScroll):
     """Render the readable event transcript."""
 
     class EventSelected(Message):
@@ -98,6 +101,18 @@ class StreamWidget(RichLog):
         overflow-y: auto;
         overflow-x: hidden;
     }
+
+    StreamWidget .stream-entry {
+        width: 1fr;
+    }
+
+    StreamWidget .prompt-bar {
+        background: #3b4252;
+        color: #eceff4;
+        border-left: thick #88c0d0;
+        padding: 1 1;
+        width: 1fr;
+    }
     """
 
     def __init__(
@@ -108,7 +123,10 @@ class StreamWidget(RichLog):
         project_name: str = "",
         project_root_path: str = "",
     ) -> None:
-        super().__init__(id=id, wrap=True, auto_scroll=True, min_width=0)
+        super().__init__(id=id)
+        self.can_focus = True
+        self.styles.min_width = 0
+        self.lines: list[Strip] = []
         self._state = state or TUIRunState()
         self._project_name = project_name
         self._project_root_path = ""
@@ -177,6 +195,34 @@ class StreamWidget(RichLog):
                         )
                     )
         self.call_after_refresh(self.scroll_end, animate=False)
+
+    def clear(self) -> "StreamWidget":
+        self.lines.clear()
+        if self.is_mounted:
+            self.remove_children()
+        return self
+
+    def write(
+        self,
+        content: object,
+        width: int | None = None,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
+    ) -> "StreamWidget":
+        del expand
+        del shrink
+        del scroll_end
+        del animate
+        line_count = _renderable_line_count(
+            content,
+            width=width or _available_stream_width(self),
+        )
+        self.lines.extend(Strip.blank(1) for _ in range(line_count))
+        if self.is_mounted:
+            self._mount_renderable(content)
+        return self
 
     def on_key(self, event: Key) -> None:
         if not self._debug_mode:
@@ -284,6 +330,14 @@ class StreamWidget(RichLog):
             return
         self.write(renderable, width=_available_stream_width(self))
 
+    def _mount_renderable(self, renderable: RenderableType) -> None:
+        if isinstance(renderable, _PromptBar):
+            if renderable.citations:
+                self.mount(Static(_render_cited_sources(renderable.citations)))
+            self.mount(_PromptBarWidget(renderable.content))
+            return
+        self.mount(Static(renderable, classes="stream-entry", expand=True))
+
     def _ensure_empty_state_timer(self) -> None:
         if self._empty_state_timer is not None:
             return
@@ -365,6 +419,7 @@ class _ToolBlockState(Struct, kw_only=True):
 class _WorkingHistoryItem(Struct, kw_only=True):
     renderable: RenderableType | None = None
     tool_block: _ToolBlockState | None = None
+    kind: str = ""
 
 
 class _ToolActivityState(Struct, kw_only=True):
@@ -388,14 +443,22 @@ class _ToolActivityLineSpan(Struct, kw_only=True):
 
 
 class _PromptBar:
-    def __init__(self, content: str) -> None:
+    def __init__(
+        self,
+        content: str,
+        *,
+        citations: tuple[TurnCitation, ...] = (),
+    ) -> None:
         self.content = content
+        self.citations = citations
 
     def __rich_console__(
         self,
         console: Console,
         options: ConsoleOptions,
     ) -> RenderResult:
+        if self.citations:
+            yield _render_cited_sources(self.citations)
         width = max(1, options.max_width)
         yield _render_prompt_bar_line("", width=width)
         for line in _wrapped_prompt_content_lines(
@@ -405,6 +468,15 @@ class _PromptBar:
         ):
             yield line
         yield _render_prompt_bar_line("", width=width)
+
+
+class _PromptBarWidget(Static):
+    def __init__(self, content: str) -> None:
+        super().__init__(
+            Text(content, style="bold #eceff4"),
+            classes="prompt-bar",
+            expand=True,
+        )
 
 
 class _DebugLineSpan(Struct, kw_only=True):
@@ -667,6 +739,21 @@ def _render_completed_event_entries(
                 rendered_tool_call_ids.add(event.tool_call_id)
             continue
 
+        if event.kind == "agent_inbox_item":
+            pending_working_history = _flush_thinking_buffer_to_working_history(
+                pending_working_history,
+                thinking_buffer,
+            )
+            thinking_buffer = ""
+            rendered = _render_event(event)
+            if rendered is not None:
+                pending_working_history = _append_working_history_renderable(
+                    pending_working_history,
+                    rendered,
+                    item_kind="agent_inbox_item",
+                )
+            continue
+
         if event.kind in ("session_notice", "idea_list"):
             pending_working_history = _flush_thinking_buffer_to_working_history(
                 pending_working_history,
@@ -868,11 +955,13 @@ def _flush_thinking_buffer_to_working_history(
 def _append_working_history_renderable(
     pending_working_history: _ToolActivityState | None,
     renderable: RenderableType,
+    *,
+    item_kind: str = "",
 ) -> _ToolActivityState:
     if pending_working_history is None:
         pending_working_history = _ToolActivityState(items=[])
     pending_working_history.items.append(
-        _WorkingHistoryItem(renderable=renderable)
+        _WorkingHistoryItem(renderable=renderable, kind=item_kind)
     )
     return pending_working_history
 
@@ -907,9 +996,8 @@ def _flush_tool_activity(
     pending_tool_activity: _ToolActivityState | None,
     expanded_tool_activity_ids: set[str],
 ) -> None:
-    if (
-        pending_tool_activity is not None
-        and _working_history_tool_blocks(pending_tool_activity)
+    if pending_tool_activity is not None and _working_history_has_visible_items(
+        pending_tool_activity
     ):
         if _last_renderable_is_prompt_bar(renderables):
             renderables.append(_StreamRenderable(renderable=Text("")))
@@ -1037,11 +1125,15 @@ def _render_tool_activity_header(
     text.append("[-]" if expanded else "[+]", style=EXPAND_MARK_STYLE)
     text.append(" ")
     text.append("work history", style=f"bold {style}")
-    text.append(" · ", style=EXPAND_MARK_STYLE)
-    text.append(
-        f"{len(blocks)} tool {_pluralize('call', len(blocks))}",
-        style=style,
-    )
+    summaries = []
+    if blocks:
+        summaries.append(f"{len(blocks)} tool {_pluralize('call', len(blocks))}")
+    inbox_count = _working_history_inbox_count(tool_activity)
+    if inbox_count:
+        summaries.append(f"{inbox_count} inbox")
+    if summaries:
+        text.append(" · ", style=EXPAND_MARK_STYLE)
+        text.append(" · ".join(summaries), style=style)
     text.stylize(_tool_activity_click_style(activity_id), 0, len(text))
     return text
 
@@ -1118,6 +1210,18 @@ def _working_history_tool_blocks(
         if item.tool_block is not None:
             blocks.append(item.tool_block)
     return blocks
+
+
+def _working_history_has_visible_items(tool_activity: _ToolActivityState) -> bool:
+    return bool(_working_history_tool_blocks(tool_activity)) or (
+        _working_history_inbox_count(tool_activity) > 0
+    )
+
+
+def _working_history_inbox_count(tool_activity: _ToolActivityState) -> int:
+    return len(
+        [item for item in tool_activity.items if item.kind == "agent_inbox_item"]
+    )
 
 
 def _tool_activity_names_summary(blocks: list[_ToolBlockState]) -> str:
@@ -1332,6 +1436,14 @@ def _render_event(event: TUIEvent) -> RenderableType | None:
         )
     if event.kind == "session_notice":
         return _render_text_block(label, event.content, event_kind=event.kind)
+    if event.kind == "agent_inbox_item":
+        return _render_text_block(
+            label,
+            _agent_inbox_preview(event.content),
+            event_kind=event.kind,
+        )
+    if event.kind == "agent_inbox_delivered":
+        return None
     if event.kind == "idea_list":
         return _render_idea_list(event.idea_items)
     if event.kind == "tool_call_delta":
@@ -1391,6 +1503,17 @@ def _is_invisible_control_event(event: TUIEvent) -> bool:
     )
 
 
+def _agent_inbox_preview(content: str) -> str:
+    lines = content.splitlines()
+    if not lines:
+        return ""
+    headline = lines[0]
+    for line in lines[1:]:
+        if line.startswith("Task: "):
+            return f"{headline} · {line}"
+    return headline
+
+
 def _tool_title(label: str, event: TUIEvent) -> str:
     if event.tool_name is not None:
         return f"{label}: {event.tool_name}"
@@ -1408,10 +1531,7 @@ def _render_user_message(
 ) -> RenderableType:
     del label
     del event_kind
-    row = _PromptBar(content)
-    if not citations:
-        return row
-    return Group(_render_cited_sources(citations), row)
+    return _PromptBar(content, citations=citations)
 
 
 def _wrapped_prompt_content_lines(
@@ -1445,6 +1565,18 @@ def _render_prompt_bar_line(content: str | Text, *, width: int) -> Text:
     if padding_width:
         text.append(" " * padding_width, style=PROMPT_BAR_STYLE)
     return text
+
+
+def _renderable_line_count(renderable: object, *, width: int) -> int:
+    console = Console(
+        file=StringIO(),
+        width=max(1, width),
+        record=True,
+        color_system=None,
+    )
+    console.print(renderable)
+    lines = console.export_text().splitlines()
+    return max(1, len(lines))
 
 
 def _render_cited_sources(citations: tuple[TurnCitation, ...]) -> Panel:

@@ -4,12 +4,16 @@ import json
 import pytest
 from ididi import Graph
 
-from aceai.agent.app import AceAgentApp
+from aceai.agent.app import AceAgentApp, BackgroundSubagentJob
 from aceai.agent.citations import (
     ConversationCitationOrigin,
     TurnCitation,
 )
-from aceai.agent.features.delegation import build_delegate_to_subagent_tool
+from aceai.agent.features.delegation import (
+    ChildAgentResult,
+    build_background_subagent_tools,
+    build_delegate_to_subagent_tool,
+)
 from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
 from aceai.core import ToolExecutionOutput
 from aceai.core.agent import Agent
@@ -112,6 +116,75 @@ class SteerableChildLLMService:
 
     async def complete(self, **request) -> LLMResponse:
         raise AssertionError("Agent should not call complete() in streaming mode")
+
+
+class BackgroundSubagentLLMService:
+    def __init__(self, spawn_call: LLMToolCall) -> None:
+        self._spawn_call = spawn_call
+        self.parent_calls: list[dict] = []
+        self.child_calls: list[dict] = []
+        self.parent_second_started = asyncio.Event()
+        self.child_started = asyncio.Event()
+        self.child_can_finish = asyncio.Event()
+        self.child_completed = asyncio.Event()
+        self.child_cancelled = asyncio.Event()
+
+    async def stream(self, **request):
+        if _is_child_subagent_request(request):
+            self.child_calls.append(request)
+            self.child_started.set()
+            try:
+                await self.child_can_finish.wait()
+                self.child_completed.set()
+                yield LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="child background result"),
+                )
+            finally:
+                if not self.child_completed.is_set():
+                    self.child_cancelled.set()
+            return
+        self.parent_calls.append(request)
+        if len(self.parent_calls) == 1:
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="", tool_calls=[self._spawn_call]),
+            )
+            return
+        if len(self.parent_calls) == 2:
+            self.parent_second_started.set()
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="parent kept working"),
+            )
+            return
+        if len(self.parent_calls) == 3:
+            yield LLMStreamEvent(
+                event_type="response.completed",
+                response=LLMResponse(text="parent saw inbox"),
+            )
+            return
+        raise AssertionError("BackgroundSubagentLLMService has no remaining stream fixture")
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("Agent should not call complete() in streaming mode")
+
+
+def _is_child_subagent_request(request: dict) -> bool:
+    for message in request["messages"]:
+        content = message.content
+        for part in content:
+            if part.get("data", "").startswith("Task:\nbackground inspect"):
+                return True
+    return False
+
+
+def _request_contains_text(request: dict, text: str) -> bool:
+    for message in request["messages"]:
+        for part in message.content:
+            if text in part.get("data", ""):
+                return True
+    return False
 
 
 @pytest.mark.anyio
@@ -378,6 +451,7 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
     assert child_event_log.events[0].agent_id == child_thread.agent_id
     assert child_event_log.events[-1].kind == "run_completed"
     assert child_event_log.events[-1].payload["content"] == "child final answer"
+
     assert all(event.thread_id == child_thread.thread_id for event in child_event_log.events)
 
     main_event_log = store.load_thread_event_log(session_id, MAIN_THREAD_ID)
@@ -473,6 +547,252 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
             and event.payload["content"] == "restored child question"
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_app_spawn_subagent_returns_before_child_finishes(tmp_path) -> None:
+    call = LLMToolCall(
+        name="spawn_subagent",
+        arguments=json.dumps(
+            {
+                "task": "background inspect",
+                "instructions": "Return a concise result.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-spawn",
+    )
+    llm_service = BackgroundSubagentLLMService(call)
+    background_tools = build_background_subagent_tools(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), background_tools),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+
+    events: list[AgentEvent] = []
+
+    async def collect_events() -> None:
+        async for event in app.start_turn("Spawn background work"):
+            events.append(event)
+
+    turn_task = asyncio.create_task(collect_events())
+    await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
+    await asyncio.wait_for(llm_service.parent_second_started.wait(), timeout=1)
+
+    assert not llm_service.child_completed.is_set()
+    llm_service.child_can_finish.set()
+    await asyncio.wait_for(turn_task, timeout=1)
+
+    completed_tools = [event for event in events if isinstance(event, ToolCompletedEvent)]
+    assert len(completed_tools) == 1
+    payload = json.loads(completed_tools[0].tool_result.output)
+    assert payload["status"] == "running"
+    snapshot = await app.wait_subagent_job(payload["job_id"], timeout_seconds=1)
+    assert snapshot.status == "completed"
+
+    session_id = app.session_id
+    assert session_id is not None
+    child_threads = [
+        thread for thread in store.list_threads(session_id) if thread.role == "subagent"
+    ]
+    assert len(child_threads) == 1
+    assert child_threads[0].metadata["job_id"] == payload["job_id"]
+    assert child_threads[0].status == "completed"
+
+
+@pytest.mark.anyio
+async def test_agent_app_delivers_background_subagent_inbox_to_next_turn(tmp_path) -> None:
+    call = LLMToolCall(
+        name="spawn_subagent",
+        arguments=json.dumps(
+            {
+                "task": "background inspect",
+                "instructions": "Return a concise result.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-spawn",
+    )
+    llm_service = BackgroundSubagentLLMService(call)
+    background_tools = build_background_subagent_tools(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    store = SessionStore(tmp_path / "sessions")
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), background_tools),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+
+    first_events = [event async for event in app.start_turn("Spawn background work")]
+    spawn_event = next(
+        event for event in first_events if isinstance(event, ToolCompletedEvent)
+    )
+    job_id = json.loads(spawn_event.tool_result.output)["job_id"]
+    llm_service.child_can_finish.set()
+    await app.wait_subagent_job(job_id, timeout_seconds=1)
+
+    assert app.pending_inbox_items(thread_id=MAIN_THREAD_ID)
+
+    second_events = [event async for event in app.start_turn("Continue")]
+
+    assert _request_contains_text(llm_service.parent_calls[2], "<agent_inbox>")
+    assert _request_contains_text(
+        llm_service.parent_calls[2],
+        "Full result is available via collect_subagent_results",
+    )
+    assert not _request_contains_text(
+        llm_service.parent_calls[2],
+        "child background result",
+    )
+    assert not app.pending_inbox_items(thread_id=MAIN_THREAD_ID)
+    snapshot = app.check_subagent_job(job_id)
+    assert snapshot.summary == "child background result"
+    assert any(
+        isinstance(event, RunCompletedEvent)
+        and event.final_answer == "parent saw inbox"
+        for event in second_events
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_app_cancelled_background_subagent_records_one_inbox_item(
+    tmp_path,
+) -> None:
+    call = LLMToolCall(
+        name="spawn_subagent",
+        arguments=json.dumps(
+            {
+                "task": "background inspect",
+                "instructions": "Return a concise result.",
+                "context_brief": "Parent context",
+                "allowed_tools": [],
+            }
+        ),
+        call_id="call-spawn",
+    )
+    llm_service = BackgroundSubagentLLMService(call)
+    background_tools = build_background_subagent_tools(
+        llm_service=llm_service,
+        default_model="gpt-4o",
+        available_tools=[],
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=Executor(Graph(), background_tools),
+        max_steps=2,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    first_events = [event async for event in app.start_turn("Spawn background work")]
+    spawn_event = next(
+        event for event in first_events if isinstance(event, ToolCompletedEvent)
+    )
+    job_id = json.loads(spawn_event.tool_result.output)["job_id"]
+    await asyncio.wait_for(llm_service.child_started.wait(), timeout=1)
+
+    snapshot = app.cancel_subagent_job(job_id, "user stopped it")
+    assert snapshot.status == "cancelled"
+    await asyncio.wait_for(llm_service.child_cancelled.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    inbox_items = app.pending_inbox_items(thread_id=MAIN_THREAD_ID)
+    assert len(inbox_items) == 1
+    message = inbox_items[0].payload["message"]
+    assert message == (
+        f"Background subagent job {job_id} was cancelled.\n"
+        "Task: background inspect\n"
+        "Reason: user stopped it"
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_app_background_subagent_result_message_uses_result_status(
+    tmp_path,
+) -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        executor=StubExecutor({}),
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+    app.ensure_session()
+    handoff: asyncio.Future[ChildAgentResult] = asyncio.get_running_loop().create_future()
+    runtime_task = asyncio.create_task(asyncio.sleep(0))
+    job_id = "job-status"
+    app._background_subagent_jobs[job_id] = BackgroundSubagentJob(
+        job_id=job_id,
+        parent_thread_id=MAIN_THREAD_ID,
+        child_thread_id="child-status",
+        agent_id="child-agent",
+        run_id="child-run",
+        task="status task",
+        handoff=handoff,
+        runtime_task=runtime_task,
+    )
+    handoff.set_result(
+        ChildAgentResult(
+            thread_id="child-status",
+            agent_id="child-agent",
+            run_id="child-run",
+            status="failed",
+            final_answer="bad ending",
+            summary="bad ending",
+            important_evidence=[],
+            tool_results=[],
+            step_count=1,
+        )
+    )
+
+    app._complete_background_subagent_job(job_id)
+    await runtime_task
+
+    inbox_items = app.pending_inbox_items(thread_id=MAIN_THREAD_ID)
+    assert len(inbox_items) == 1
+    content = inbox_items[0].payload["message"]
+    assert "finished with status failed" in content
+    assert "Full result is available via collect_subagent_results" in content
+    assert "bad ending" not in content
+    assert "completed" not in content
 
 
 @pytest.mark.anyio

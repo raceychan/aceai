@@ -14,7 +14,14 @@ from .events import TUIEvent
 TUIRunStatus = Literal["idle", "running", "suspended", "completed", "failed"]
 TUIStepStatus = Literal["running", "completed", "failed"]
 TUIToolStatus = Literal["pending", "running", "awaiting_approval", "completed", "failed"]
-TUISubagentStatus = Literal["pending", "running", "completed", "failed"]
+TUISubagentStatus = Literal[
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "blocked",
+    "cancelled",
+]
 
 
 class TUISubagentArguments(Record, kw_only=True):
@@ -70,6 +77,8 @@ class TUISubagentState(Record, kw_only=True):
     step_count: int = 0
     output: str = ""
     error: str | None = None
+    inbox_pending_count: int = 0
+    inbox_latest: str = ""
 
 
 class TUIStepState(Record, kw_only=True):
@@ -282,7 +291,13 @@ def _apply_step_event(
     steps: list[TUIStepState],
     event: TUIEvent,
 ) -> list[TUIStepState]:
-    if event.kind in ("user_message", "session_notice", "idea_list"):
+    if event.kind in (
+        "agent_inbox_delivered",
+        "agent_inbox_item",
+        "user_message",
+        "session_notice",
+        "idea_list",
+    ):
         return steps
     if event.raw_event is None and event.step_index == -1:
         return steps
@@ -451,6 +466,8 @@ def _update_subagent(
         step_count=subagent.step_count if result is None else result.step_count,
         output=event.content if event.kind == "tool_completed" else subagent.output,
         error=event.error if event.kind == "tool_failed" else subagent.error,
+        inbox_pending_count=subagent.inbox_pending_count,
+        inbox_latest=subagent.inbox_latest,
     )
 
 
@@ -514,7 +531,13 @@ def _starts_threaded_subagent(event: TUIEvent) -> bool:
 def _next_run_status(status: TUIRunStatus, event: TUIEvent) -> TUIRunStatus:
     if _is_restored_transcript_event(event):
         return status
-    if event.kind in ("user_message", "session_notice", "idea_list"):
+    if event.kind in (
+        "agent_inbox_delivered",
+        "agent_inbox_item",
+        "user_message",
+        "session_notice",
+        "idea_list",
+    ):
         return status
     if event.raw_event is None and event.kind not in (
         "run_completed",

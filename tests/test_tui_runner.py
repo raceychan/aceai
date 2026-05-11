@@ -38,9 +38,8 @@ from aceai.agent.tui.config import AgentAppConfig
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.config import ConfigAuditEntry, clear_config, current_config, load_config
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
-from aceai.agent import app as agent_app_module
 from aceai.agent import session_service as session_service_module
-from aceai.agent.app import UpdateCheckResult
+from aceai.agent.update_check import UpdateCheckResult
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectStore
 from aceai.agent.tui import app as tui_app_module
@@ -159,7 +158,7 @@ def tui_session_store(monkeypatch, tmp_path) -> SessionStore:
     async def no_update() -> None:
         return None
 
-    monkeypatch.setattr(agent_app_module, "check_for_updates", no_update)
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", no_update)
     return store
 
 
@@ -2767,7 +2766,7 @@ async def test_interactive_tui_automatically_reports_available_update(
             latest_version="0.2.8",
         )
 
-    monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", available_update)
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -2777,18 +2776,17 @@ async def test_interactive_tui_automatically_reports_available_update(
     app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
-        app._ensure_agent_app()
+        status = app.query_one(StatusBarWidget)
         await _wait_until(
             pilot,
-            lambda: (
-                app._state.events and app._state.events[-1].kind == "session_notice"
-            ),
+            lambda: "AceAI 0.2.8 is available" in status.current_text,
         )
 
-    assert app._state.events[-1].kind == "session_notice"
-    assert app._state.events[-1].content == (
-        f"AceAI 0.2.8 is available (current 0.2.7).\n{UPDATE_INSTRUCTIONS}"
-    )
+        assert app._state.events == []
+        assert status.current_text == (
+            f"AceAI 0.2.8 is available (current 0.2.7). {UPDATE_INSTRUCTIONS}"
+        )
+        assert status.current_style == "bold #ebcb8b"
 
 
 @pytest.mark.anyio
@@ -2799,7 +2797,7 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
             latest_version="0.2.8",
         )
 
-    monkeypatch.setattr(agent_app_module, "check_for_updates", available_update)
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", available_update)
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -2809,22 +2807,15 @@ async def test_interactive_tui_reports_available_update_once(monkeypatch) -> Non
     app = _make_interactive_tui_from_agent(agent)
 
     async with app.run_test() as pilot:
-        app._ensure_agent_app()
+        status = app.query_one(StatusBarWidget)
         app._start_update_check()
         await _wait_until(
             pilot,
-            lambda: any(
-                event.kind == "session_notice" and "is available" in event.content
-                for event in app._state.events
-            ),
+            lambda: "AceAI 0.2.8 is available" in status.current_text,
         )
 
-    notices = [
-        event
-        for event in app._state.events
-        if event.kind == "session_notice" and "is available" in event.content
-    ]
-    assert len(notices) == 1
+        assert app._state.events == []
+        assert status._notice_queue == []
 
 
 @pytest.mark.anyio
@@ -2838,7 +2829,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
         calls += 1
         return None
 
-    monkeypatch.setattr(agent_app_module, "check_for_updates", no_update)
+    monkeypatch.setattr(tui_runner_module, "check_for_updates", no_update)
     agent = Agent(
         prompt="Prompt",
         default_model="gpt-4o",
@@ -2849,6 +2840,7 @@ async def test_interactive_tui_starts_update_check_once_when_mount_reenters(
 
     async with app.run_test() as pilot:
         app.on_mount()
+        app._start_update_check()
         app._ensure_agent_app()
         await _wait_until(pilot, lambda: calls == 1)
 

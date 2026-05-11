@@ -50,6 +50,8 @@ from aceai.agent.tui_adapter import (
 
 TUIEventKind = Literal[
     "user_message",
+    "agent_inbox_delivered",
+    "agent_inbox_item",
     "session_notice",
     "idea_list",
     "run_completed",
@@ -189,6 +191,26 @@ class TUIEvent(Record, kw_only=True):
                 citations=citations,
                 event_id=event.event_id,
                 run_id=event.run_id,
+            )
+        if event.kind == "agent_inbox_item":
+            return cls(
+                kind="agent_inbox_item",
+                step_index=_session_step_index(event),
+                step_id=event.step_id or uuid_str(),
+                title="inbox",
+                event_id=event.event_id,
+                content=event.payload["message"],
+                raw_event=None,
+            )
+        if event.kind == "agent_inbox_delivered":
+            return cls(
+                kind="agent_inbox_delivered",
+                step_index=_session_step_index(event),
+                step_id=event.step_id or uuid_str(),
+                title="inbox delivered",
+                event_id=event.event_id,
+                content=event.payload["inbox_event_id"],
+                raw_event=None,
             )
         if event.kind == "assistant_message":
             return cls._from_session_assistant_event(event)

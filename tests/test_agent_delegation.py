@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from aceai.agent.features.delegation import (
+    DEV_READ_ONLY_TOOLSET,
+    NO_CHILD_TOOLSET,
     _build_child_agent,
     build_delegate_to_subagent_tool,
 )
@@ -77,6 +79,7 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
         task="Review the proposed architecture boundary.",
         instructions="Act as a skeptical architecture reviewer.",
         context_brief="The main agent separated run state from agent definition.",
+        toolset=NO_CHILD_TOOLSET,
         allowed_tools=[],
     )
 
@@ -101,6 +104,38 @@ async def test_delegate_to_subagent_runs_child_agent_with_generated_instructions
     assert "Review the proposed architecture boundary." in user_text
     assert "The main agent separated run state" in user_text
     assert "tools" not in llm_service.stream_calls[0]
+
+
+@pytest.mark.anyio
+async def test_delegate_to_subagent_defaults_to_dev_read_only_toolset() -> None:
+    llm_service = RecordingDelegationLLMService(
+        [
+            completed_stream(
+                LLMResponse(
+                    text=(
+                        "Summary:\nChecked with read-only tools.\n\n"
+                        "Evidence:\nTools were available.\n\n"
+                        "Risks:\nNone."
+                    )
+                )
+            )
+        ]
+    )
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-5.5",
+        available_tools=[read_text_file, search_text, run_shell_command],
+    )
+
+    await delegate_to_subagent(
+        task="Inspect the repo.",
+        instructions="Use read-only tools if needed.",
+        context_brief="Need source evidence.",
+        allowed_tools=[],
+    )
+
+    first_call_tools = llm_service.stream_calls[0]["tools"]
+    assert [tool.name for tool in first_call_tools] == ["read_text_file", "search_text"]
 
 
 @pytest.mark.anyio
@@ -203,7 +238,7 @@ async def test_delegate_to_subagent_allows_child_hosted_tools() -> None:
     assert llm_service.stream_calls[0]["tools"] == [hosted_tool]
 
 
-def test_delegate_to_subagent_schema_lists_available_hosted_tools() -> None:
+def test_delegate_to_subagent_schema_exposes_toolset_and_allowed_tool_enums() -> None:
     hosted_tool = LLMHostedToolSpec(
         provider_name="openai",
         native_name="web_search",
@@ -211,14 +246,19 @@ def test_delegate_to_subagent_schema_lists_available_hosted_tools() -> None:
     delegate_to_subagent = build_delegate_to_subagent_tool(
         llm_service=RecordingDelegationLLMService([]),
         default_model="gpt-5.5",
-        available_tools=[],
+        available_tools=[read_text_file, run_shell_command],
         available_hosted_tools=[hosted_tool],
     )
 
     schema = delegate_to_subagent.tool_spec.generate_schema()
 
-    description = schema["parameters"]["properties"]["allowed_tools"]["description"]
-    assert "Available hosted tool identifiers: openai:web_search." in description
+    properties = schema["parameters"]["properties"]
+    assert properties["toolset"]["enum"] == ["dev_read_only", "custom", "none"]
+    assert properties["allowed_tools"]["items"]["enum"] == [
+        "openai:web_search",
+        "read_text_file",
+    ]
+    assert "functions. prefix" in properties["allowed_tools"]["description"]
 
 
 def test_delegated_child_agent_inherits_context_window_tokens() -> None:
@@ -276,7 +316,31 @@ async def test_delegate_to_subagent_rejects_unknown_child_tools() -> None:
             task="Use a missing tool.",
             instructions="Call the missing tool.",
             context_brief="No context.",
+            toolset="custom",
             allowed_tools=["missing_tool"],
+        )
+    assert llm_service.stream_calls == []
+
+
+@pytest.mark.anyio
+async def test_delegate_to_subagent_rejects_custom_toolset_without_allowed_tools() -> None:
+    llm_service = RecordingDelegationLLMService([])
+    delegate_to_subagent = build_delegate_to_subagent_tool(
+        llm_service=llm_service,
+        default_model="gpt-5.5",
+        available_tools=[read_text_file],
+    )
+
+    with pytest.raises(
+        ToolExecutionError,
+        match="custom toolset requires allowed_tools",
+    ):
+        await delegate_to_subagent(
+            task="Read with custom tools.",
+            instructions="Use file reads.",
+            context_brief="No context.",
+            toolset="custom",
+            allowed_tools=[],
         )
     assert llm_service.stream_calls == []
 

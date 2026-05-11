@@ -170,10 +170,18 @@ class SessionService:
         instructions: str,
         context_brief: str,
         allowed_tools: list[str],
+        extra_metadata: dict[str, Any] | None = None,
     ) -> AgentThreadMetadata:
         session_id = self.session_id
         if session_id is None:
             raise RuntimeError("AceAI session is not active")
+        metadata: dict[str, Any] = {
+            "instructions": instructions,
+            "context_brief": context_brief,
+            "allowed_tools": allowed_tools,
+        }
+        if extra_metadata is not None:
+            metadata.update(extra_metadata)
         return self._store.create_thread(
             session_id=session_id,
             thread_id=uuid_str(),
@@ -183,11 +191,7 @@ class SessionService:
             status="running",
             parent_thread_id=MAIN_THREAD_ID,
             parent_run_id=parent_run_id,
-            metadata={
-                "instructions": instructions,
-                "context_brief": context_brief,
-                "allowed_tools": allowed_tools,
-            },
+            metadata=metadata,
         )
 
     def update_thread_status(
