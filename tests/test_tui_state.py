@@ -294,6 +294,7 @@ def test_reduce_events_does_not_add_restored_transcript_to_timeline() -> None:
                         "tool_call_id": "call-1",
                         "tool_arguments": '{"path":"README.md"}',
                         "output": "contents",
+                        "truncated_output": "contents",
                         "status": "completed",
                     },
                 ),

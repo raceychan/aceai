@@ -96,6 +96,9 @@ def build_agent(config: AgentAppConfig) -> Agent:
         tool_enabled=config.tool_enabled,
         tool_max_calls=config.tool_max_calls,
         compress_threshold=config.compress_threshold,
+        api_timeout_seconds=config.api_timeout_seconds,
+        stream_start_timeout_seconds=config.stream_start_timeout_seconds,
+        stream_event_timeout_seconds=config.stream_event_timeout_seconds,
     )
 
 

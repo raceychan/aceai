@@ -38,6 +38,9 @@ ACE_AGENT_SKILL_PATH = "auto"
 ACE_AGENT_BUILTIN_SKILL_PATHS = (Path(__file__).parent / "builtin_skills",)
 ACE_AGENT_BUILTIN_SKILL_NAMES = ("skill-creator",)
 ACE_AGENT_CODEX_INSTRUCTIONS = "You are AceAI, a concise coding agent."
+ACE_AGENT_API_TIMEOUT_SECONDS = 300.0
+ACE_AGENT_STREAM_START_TIMEOUT_SECONDS = 120.0
+ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS = 60.0
 ACE_AGENT_HOSTED_TOOLS = [
     LLMHostedToolSpec(
         provider_name="openai",
@@ -58,6 +61,9 @@ def build_ace_agent(
     tool_enabled: dict[str, bool] | None = None,
     tool_max_calls: dict[str, int] | None = None,
     compress_threshold: CompressThreshold = "100%",
+    api_timeout_seconds: float = ACE_AGENT_API_TIMEOUT_SECONDS,
+    stream_start_timeout_seconds: float = ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
+    stream_event_timeout_seconds: float = ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
 ) -> Agent:
     if provider_name == "openai":
         provider = OpenAI(
@@ -89,7 +95,12 @@ def build_ace_agent(
         )
     else:
         raise ValueError("Unsupported provider")
-    llm_service = LLMService([provider], timeout_seconds=120.0)
+    llm_service = LLMService(
+        [provider],
+        timeout_seconds=api_timeout_seconds,
+        stream_start_timeout_seconds=stream_start_timeout_seconds,
+        stream_event_timeout_seconds=stream_event_timeout_seconds,
+    )
     context_window_tokens = context_window_for_model(provider_name, model)
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS

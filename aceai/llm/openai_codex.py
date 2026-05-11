@@ -11,6 +11,7 @@ from aceai.llm.openai import OpenAI, OpenAIMeta, OpenAIPayload
 
 OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 OPENAI_CODEX_PROVIDER_NAME = "codex"
+OPENAI_CODEX_CLIENT_TIMEOUT_SECONDS = 300.0
 
 
 class OpenAICodex(OpenAI):
@@ -30,6 +31,7 @@ class OpenAICodex(OpenAI):
             client=AsyncOpenAI(
                 api_key=api_key,
                 base_url=base_url,
+                timeout=OPENAI_CODEX_CLIENT_TIMEOUT_SECONDS,
             ),
             default_meta=default_meta,
             provider_name=OPENAI_CODEX_PROVIDER_NAME,

@@ -30,7 +30,7 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
         ],
         "step_count": 2,
     }
-    model_output = {
+    truncated_output = {
         "type": "subagent_handoff",
         "thread_id": "thread-child-1",
         "agent_id": "child-1",
@@ -47,7 +47,7 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
     result = ToolExecutionResult(
         call=call,
         output=json.dumps(output),
-        model_output=json.dumps(model_output),
+        truncated_output=json.dumps(truncated_output),
     )
     store = SubagentArtifactStore(tmp_path)
 
@@ -64,7 +64,7 @@ def test_subagent_artifact_store_archives_full_result_under_session(tmp_path) ->
         "full child answer"
     )
     audit = json.loads(archived.output)
-    handoff = json.loads(archived.model_output)
+    handoff = json.loads(archived.truncated_output)
     assert audit["type"] == "subagent_audit"
     assert audit["thread_id"] == "thread-child-1"
     assert audit["manifest_path"] == (

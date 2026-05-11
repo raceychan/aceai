@@ -39,6 +39,7 @@ from .models import (
     ToolExecutionOutput,
     ToolExecutionResult,
 )
+from .output_truncation import truncate_output
 from .run_state import AgentRunState, AgentRunStatus
 from .run_state import ToolInvocation
 
@@ -554,7 +555,7 @@ async def _execute_invocation_event(
         tool_result = ToolExecutionResult(
             call=call,
             output=f"Tool execution failed: {error_msg}",
-            model_output=f"Tool execution failed: {error_msg}",
+            truncated_output=f"Tool execution failed: {error_msg}",
             error=error_msg,
         )
         current_step.tool_results.append(tool_result)
@@ -567,12 +568,12 @@ async def _execute_invocation_event(
     if type(tool_output) is str:
         tool_output = ToolExecutionOutput(
             output=tool_output,
-            model_output=tool_output,
+            truncated_output=truncate_output(tool_output),
         )
     tool_result = ToolExecutionResult(
         call=call,
         output=tool_output.output,
-        model_output=tool_output.model_output,
+        truncated_output=truncate_output(tool_output.truncated_output),
     )
     current_step.tool_results.append(tool_result)
     return event_builder.tool_completed(
@@ -603,7 +604,7 @@ async def _reject_invocation(
     tool_result = ToolExecutionResult(
         call=request.call,
         output=f"Tool execution rejected: {error_msg}",
-        model_output=f"Tool execution rejected: {error_msg}",
+        truncated_output=f"Tool execution rejected: {error_msg}",
         error=error_msg,
     )
     current_step.tool_results.append(tool_result)

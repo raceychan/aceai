@@ -28,6 +28,7 @@ from aceai.llm.openai import OpenAI, OpenAIMeta, OpenAIPayload
 
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_CLIENT_TIMEOUT_SECONDS = 300.0
 
 
 class DeepSeek(OpenAI):
@@ -41,7 +42,11 @@ class DeepSeek(OpenAI):
         base_url: str = DEEPSEEK_BASE_URL,
     ):
         super().__init__(
-            client=AsyncOpenAI(api_key=api_key, base_url=base_url),
+            client=AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=DEEPSEEK_CLIENT_TIMEOUT_SECONDS,
+            ),
             default_meta=default_meta,
             provider_name="deepseek",
         )

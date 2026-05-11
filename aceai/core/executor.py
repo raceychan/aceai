@@ -12,6 +12,7 @@ from aceai.llm.interface import UNSET, Unset, is_present, is_set
 from aceai.llm.models import LLMHostedToolSpec, LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
 from aceai.core.models import ToolExecutionOutput
+from aceai.core.output_truncation import truncate_output
 from aceai.core.tools import IToolSpec, Tool
 from aceai.core.run_state import ToolInvocation, ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry, format_skills_for_prompt
@@ -196,7 +197,7 @@ class Executor(IExecutor):
                     f"the tool {tool_name} exceeds its max calls in this run, "
                     "do not call it again"
                 )
-                return ToolExecutionOutput(output=output, model_output=output)
+                return ToolExecutionOutput(output=output, truncated_output=output)
         trace_ctx = get_trace_ctx()
         with self._tracer.start_as_current_span(
             f"tool.{tool_name}",
@@ -224,7 +225,10 @@ class Executor(IExecutor):
             if isinstance(result, ToolExecutionOutput):
                 return result
             output = tool.encode_return(result)
-            return ToolExecutionOutput(output=output, model_output=output)
+            return ToolExecutionOutput(
+                output=output,
+                truncated_output=truncate_output(output),
+            )
 
 
 class ILogger:

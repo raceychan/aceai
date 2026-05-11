@@ -17,6 +17,8 @@ from aceai.llm.models import (
 )
 from aceai.llm.service import ILLMService
 
+from .output_truncation import truncate_output
+
 
 PercentageThreshold = Annotated[
     str,
@@ -260,7 +262,7 @@ class ContextManager:
         tool_use_msg = LLMToolUseMessage.from_content(
             name=call.name,
             call_id=call.call_id,
-            content=event.tool_result.model_output or event.tool_result.output,
+            content=truncate_output(event.tool_result.truncated_output),
         )
         self._context.append(tool_use_msg)
 
@@ -369,7 +371,7 @@ def parse_context_units(messages: list[LLMMessage]) -> StructuredContext:
         if isinstance(step, OpenStepUnit):
             if next_index != len(messages):
                 raise AceAIRuntimeError(
-                    "open step must be the final model-facing context unit"
+                    "open step must be the final model context unit"
                 )
             current_run.open_step = step
         else:
@@ -659,7 +661,7 @@ def _summary_chunks(
                 "Context compaction cannot summarize this request because one "
                 "context unit is larger than the compaction summary budget. "
                 "Reduce the oversized tool output, attachment, or user input "
-                "before it enters model-facing context."
+                "before it enters model context."
             )
         chunks.append(current_chunk)
         current_chunk = [message]
@@ -672,7 +674,7 @@ def _summary_chunks(
                 "Context compaction cannot summarize this request because one "
                 "context unit is larger than the compaction summary budget. "
                 "Reduce the oversized tool output, attachment, or user input "
-                "before it enters model-facing context."
+                "before it enters model context."
             )
     if current_chunk:
         chunks.append(current_chunk)

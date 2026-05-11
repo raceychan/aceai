@@ -13,6 +13,7 @@ from aceai.core.executor import (
     LoggingExecutor,
     ToolExecutionError,
 )
+from aceai.core.output_truncation import DEFAULT_TRUNCATED_OUTPUT_TOKEN_BUDGET
 from aceai.core.run_state import ToolRunState
 from aceai.llm.models import LLMToolCall
 from aceai.core.tools import tool
@@ -77,6 +78,10 @@ def echo_message(
     return message
 
 
+def long_message() -> str:
+    return "tool-output-line\n" * 5000
+
+
 def build_async_client() -> httpx.AsyncClient:
     return httpx.AsyncClient()
 
@@ -121,8 +126,28 @@ async def execute_call(
         executor.resolve_invocation(call),
         tool_state=tool_state or ToolRunState(),
     )
-    assert result.model_output == result.output
+    assert result.truncated_output == result.output
     return result.output
+
+
+@pytest.mark.anyio
+async def test_tool_executor_truncates_default_truncated_output(graph: Graph) -> None:
+    executor = Executor(graph, [tool(long_message)])
+    call = LLMToolCall(
+        name="long_message",
+        arguments="{}",
+        call_id="call-long-message",
+    )
+
+    result = await executor.execute(
+        executor.resolve_invocation(call),
+        tool_state=ToolRunState(),
+    )
+
+    assert result.output.startswith('"tool-output-line\\n')
+    assert result.truncated_output != result.output
+    assert "tokens truncated" in result.truncated_output
+    assert len(result.truncated_output) < DEFAULT_TRUNCATED_OUTPUT_TOKEN_BUDGET * 5
 
 
 def test_dummy_executor_has_no_tools() -> None:
@@ -471,4 +496,4 @@ async def test_tool_executor_resolves_invocation_with_approval_metadata(
     assert invocation.tool is approved_tool
     assert invocation.approval_required is True
     assert result.output == '"hello"'
-    assert result.model_output == '"hello"'
+    assert result.truncated_output == '"hello"'

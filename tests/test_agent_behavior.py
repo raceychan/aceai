@@ -24,10 +24,11 @@ from aceai.core.events import (
     StepCompletedEvent,
     ToolApprovalRequestedEvent,
     ToolApprovalResolvedEvent,
+    ToolCompletedEvent,
     ToolFailedEvent,
     ToolStartedEvent,
 )
-from aceai.core.models import ToolApprovalDecision
+from aceai.core.models import ToolApprovalDecision, ToolExecutionOutput
 from aceai.llm import LLMResponse
 from aceai.llm.interface import UNSET
 from aceai.llm.models import (
@@ -160,6 +161,20 @@ class RaisingExecutor(StubExecutor):
         tool_state: ToolRunState,
     ) -> str:
         raise self._error
+
+
+class ExplicitTruncatedOutputExecutor(StubExecutor):
+    async def execute(
+        self,
+        invocation,
+        *,
+        tool_state: ToolRunState,
+    ) -> ToolExecutionOutput:
+        tool_call = invocation.call
+        self.calls.append(tool_call)
+        output = "audit-output"
+        truncated_output = "truncated-output-line\n" * 5000
+        return ToolExecutionOutput(output=output, truncated_output=truncated_output)
 
 
 class BlockingExecutor(StubExecutor):
@@ -696,6 +711,41 @@ async def test_agent_compresses_older_completed_steps_inside_current_run() -> No
         and message.tool_calls[0].call_id == "call-1"
         for message in messages
     )
+
+
+@pytest.mark.anyio
+async def test_agent_truncates_explicit_tool_truncated_output_before_history() -> None:
+    call = LLMToolCall(name="lookup", arguments="{}", call_id="call-lookup")
+    llm_service = CompressingMultiStreamLLMService(
+        [
+            make_stream(response=LLMResponse(text="", tool_calls=[call])),
+            make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=ExplicitTruncatedOutputExecutor(),
+        max_steps=2,
+    )
+
+    events = await collect_events(agent, "Need lookup")
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    tool_events = [event for event in events if isinstance(event, ToolCompletedEvent)]
+    assert tool_events
+    event_truncated_text = tool_events[0].tool_result.truncated_output
+    assert "tokens truncated" in event_truncated_text
+    assert len(event_truncated_text) < len("truncated-output-line\n" * 5000)
+    messages = llm_service.stream_calls[1]["messages"]
+    tool_messages = [
+        message for message in messages if isinstance(message, LLMToolUseMessage)
+    ]
+    assert len(tool_messages) == 1
+    truncated_text = tool_messages[0].content[0]["data"]
+    assert "tokens truncated" in truncated_text
+    assert len(truncated_text) < len("truncated-output-line\n" * 5000)
 
 
 @pytest.mark.anyio

@@ -315,7 +315,9 @@ class AceAIConfiguredTUI(AceAITUI):
             matches[index].value,
         )
         self._reference_completion_selected_index = 0
-        self._refresh_reference_completions(event.input.value)
+        widget = self._reference_completion_widget()
+        if widget is not None:
+            widget.hide()
         event.stop()
 
     def on_command_input_reference_completion_navigation_requested(
@@ -774,7 +776,7 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         self._pending_turn_citations = [
             TurnCitation(
-                content=idea.content,
+                quote=idea.content,
                 origin=IdeaCitationOrigin(kind="idea", idea_id=idea.idea_id),
             )
         ]
@@ -822,9 +824,8 @@ class AceAIConfiguredTUI(AceAITUI):
         path = path.resolve()
         if not path.is_file():
             raise ValueError(f"File not found: {path}")
-        content = path.read_text(encoding="utf-8")
         return TurnCitation(
-            content=content,
+            quote=str(path),
             origin=FileCitationOrigin(kind="file", path=str(path)),
         )
 
@@ -836,7 +837,7 @@ class AceAIConfiguredTUI(AceAITUI):
         else:
             idea = self._idea_by_display_index(index)
         return TurnCitation(
-            content=idea.content,
+            quote=idea.content,
             origin=IdeaCitationOrigin(kind="idea", idea_id=idea.idea_id),
         )
 
@@ -1453,6 +1454,8 @@ def _inline_reference(token: str) -> InlineReference | None:
 
 
 def _active_reference_prefix(value: str) -> str | None:
+    if value.endswith((" ", "\n", "\t")):
+        return None
     tail = value.rsplit(maxsplit=1)[-1] if value.split() else value
     if tail.startswith("@"):
         return tail[1:]

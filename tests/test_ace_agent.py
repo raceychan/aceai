@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.ace_agent import ACE_AGENT_SKILL_PATH, build_ace_agent
+from aceai.agent.ace_agent import (
+    ACE_AGENT_API_TIMEOUT_SECONDS,
+    ACE_AGENT_SKILL_PATH,
+    ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
+    ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
+    build_ace_agent,
+)
 from aceai.agent.features import default_agent_tools
 from aceai.agent.features.tools import read_text_file
 from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
@@ -97,6 +103,15 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
     agent = build_ace_agent(api_key="test-key", model="gpt-5.5")
 
     assert agent.default_model == "gpt-5.5"
+    assert agent.llm_service._timeout_seconds == ACE_AGENT_API_TIMEOUT_SECONDS
+    assert (
+        agent.llm_service._stream_start_timeout_seconds
+        == ACE_AGENT_STREAM_START_TIMEOUT_SECONDS
+    )
+    assert (
+        agent.llm_service._stream_event_timeout_seconds
+        == ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS
+    )
     assert agent.max_steps is UNSET
     assert agent._compression_policy.context_window_tokens == 1050000
     assert ACE_AGENT_SKILL_PATH == "auto"
@@ -272,3 +287,45 @@ def test_app_file_tool_reports_missing_file_as_tool_execution_error(tmp_path) ->
 
     with pytest.raises(ToolExecutionError, match="No such file or directory"):
         read_text_file(path=str(missing_path))
+
+
+def test_app_file_tool_reads_bounded_line_slice(tmp_path) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("one\n two\nthree\nfour\n", encoding="utf-8")
+
+    result = read_text_file(path=str(target), start_line=2, line_count=2)
+
+    assert result.path == str(target)
+    assert result.content == " two\nthree\n"
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.total_lines == 4
+    assert result.truncated
+
+
+def test_app_file_tool_defaults_to_first_bounded_slice(tmp_path) -> None:
+    target = tmp_path / "large.md"
+    target.write_text(
+        "".join(f"line {index}\n" for index in range(1, 205)),
+        encoding="utf-8",
+    )
+
+    result = read_text_file(path=str(target))
+
+    assert result.content.startswith("line 1\n")
+    assert result.content.endswith("line 200\n")
+    assert result.start_line == 1
+    assert result.end_line == 200
+    assert result.total_lines == 204
+    assert result.truncated
+
+
+def test_app_file_tool_rejects_invalid_line_slice(tmp_path) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("one\n", encoding="utf-8")
+
+    with pytest.raises(ToolExecutionError, match="start_line must be at least 1"):
+        read_text_file(path=str(target), start_line=0)
+
+    with pytest.raises(ToolExecutionError, match="line_count must be at least 1"):
+        read_text_file(path=str(target), line_count=0)

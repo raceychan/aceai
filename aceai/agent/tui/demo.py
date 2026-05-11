@@ -230,7 +230,7 @@ def static_demo_events() -> list[TUIEvent]:
         ),
     ]
     citation = TurnCitation(
-        content=(
+        quote=(
             "Show AceAI coordinating child agents: independent task assignment, "
             "per-agent status, evidence, tool results, and merged release summary."
         ),

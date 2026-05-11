@@ -264,7 +264,7 @@ def build_delegate_to_subagent_tool(
         )
         return ToolExecutionOutput(
             output=msg_encode(result).decode("utf-8"),
-            model_output=msg_encode(handoff).decode("utf-8"),
+            truncated_output=msg_encode(handoff).decode("utf-8"),
         )
 
     return delegate_to_subagent

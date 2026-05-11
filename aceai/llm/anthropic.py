@@ -34,6 +34,7 @@ from aceai.llm.tool_spec import IToolSpec
 
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_CLIENT_TIMEOUT_SECONDS = 300.0
 ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_PROVIDER_NAME = "anthropic"
 ANTHROPIC_OAUTH_PROVIDER_NAME = "anthropic-oauth"
@@ -171,7 +172,7 @@ class Anthropic(LLMProviderBase):
         self._provider_name = provider_name
         self._api_url = api_url
         self._auth_mode = auth_mode
-        self._client = client or httpx.AsyncClient(timeout=120.0)
+        self._client = client or httpx.AsyncClient(timeout=ANTHROPIC_CLIENT_TIMEOUT_SECONDS)
 
     @property
     def modality(self) -> LLMProviderModality:

@@ -1,5 +1,22 @@
 # Changelog
 
+## AceAI v0.2.27
+
+### Improvements
+
+- `config`: Add configurable API and streaming timeout settings so long-running model calls can use explicit runtime values instead of fixed service defaults.
+- `providers`: Raise default Anthropic, DeepSeek, and Codex client timeouts to reduce false failures during slower provider responses.
+- `tools`: Centralize tool-output truncation so model-facing context, session persistence, and TUI rendering use the same bounded output contract.
+- `citations`: Store cited file references as path metadata and require the agent to read file contents explicitly when they are needed.
+
+### Fixes
+
+- `sessions`: Add a migration path for old citation payloads so saved conversations keep loading after the citation payload shape changes.
+
+### Breaking Changes
+
+- `citations`: Citation payloads now use `quote` instead of `content`, and file citations no longer embed file contents in the prompt; callers that persist or construct citations must write the new payload shape.
+
 ## AceAI v0.2.26
 
 ### Fixes

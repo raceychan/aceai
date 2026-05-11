@@ -249,7 +249,7 @@ class TUIEvent(Record, kw_only=True):
             tool_result=ToolExecutionResult(
                 call=call,
                 output=event.payload["output"],
-                model_output=event.payload.get("model_output", event.payload["output"]),
+                truncated_output=event.payload["truncated_output"],
                 error=event.payload["content"] if status == "failed" else None,
             ),
             error=event.payload["content"] if status == "failed" else None,
@@ -657,7 +657,10 @@ def _context_compressed_content(event: ContextCompressedEvent) -> str:
     summary_text = context_summary_text(event)
     if summary_text == "":
         return f"Context compacted. Compression #{event.compression_count}."
-    return f"Context compacted. Compression #{event.compression_count}.\n\n{summary_text}"
+    return (
+        f"Context compacted. Compression #{event.compression_count}. "
+        "Summary is available in details."
+    )
 
 
 def _session_cost(event: SessionEvent) -> CostEstimate | None:

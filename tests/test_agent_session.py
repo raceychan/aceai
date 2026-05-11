@@ -534,6 +534,12 @@ def test_session_recorder_merges_tool_deltas_into_one_message(tmp_path) -> None:
             '{"name":"tests","path":"tests","kind":"directory"}'
             "]}"
         ),
+        truncated_output=(
+            '{"path":".","entries":['
+            '{"name":"aceai","path":"aceai","kind":"directory"},'
+            '{"name":"tests","path":"tests","kind":"directory"}'
+            "]}"
+        ),
     )
 
     recorder.record(_tool_call_delta("call-1", '{"path"'))
@@ -559,7 +565,11 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
         arguments='{"path":"."}',
         call_id="call-1",
     )
-    result = ToolExecutionResult(call=call, output='{"entries":[]}')
+    result = ToolExecutionResult(
+        call=call,
+        output='{"entries":[]}',
+        truncated_output='{"entries":[]}',
+    )
     recorder.record(_llm_completed("", tool_calls=[call]))
     recorder.record(_tool_started(call))
     recorder.record(_tool_completed(call, result))
@@ -574,7 +584,7 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].content[0]["data"] == '{"entries":[]}'
 
 
-def test_event_log_restores_model_output_for_tool_messages(tmp_path) -> None:
+def test_event_log_restores_truncated_output_for_tool_messages(tmp_path) -> None:
     store = SessionStore(tmp_path)
     metadata = store.create_session()
     recorder = SessionRecorder(store, metadata.session_id)
@@ -587,7 +597,7 @@ def test_event_log_restores_model_output_for_tool_messages(tmp_path) -> None:
     result = ToolExecutionResult(
         call=call,
         output='{"type":"subagent_audit","large":"body"}',
-        model_output='{"type":"subagent_handoff","handoff":"small"}',
+        truncated_output='{"type":"subagent_handoff","handoff":"small"}',
     )
     recorder.record(_llm_completed("", tool_calls=[call]))
     recorder.record(_tool_started(call))
@@ -598,9 +608,9 @@ def test_event_log_restores_model_output_for_tool_messages(tmp_path) -> None:
 
     tool_result_event = event_log.events[-1]
     assert tool_result_event.payload["output"] == result.output
-    assert tool_result_event.payload["model_output"] == result.model_output
+    assert tool_result_event.payload["truncated_output"] == result.truncated_output
     assert history[2].role == "tool"
-    assert history[2].content[0]["data"] == result.model_output
+    assert history[2].content[0]["data"] == result.truncated_output
 
 
 def test_tool_call_assistant_content_is_not_recorded_or_replayed(tmp_path) -> None:
@@ -612,7 +622,11 @@ def test_tool_call_assistant_content_is_not_recorded_or_replayed(tmp_path) -> No
         arguments='{"path":"."}',
         call_id="call-1",
     )
-    result = ToolExecutionResult(call=call, output='{"entries":[]}')
+    result = ToolExecutionResult(
+        call=call,
+        output='{"entries":[]}',
+        truncated_output='{"entries":[]}',
+    )
 
     recorder.record(_user_message("inspect"))
     recorder.record(_assistant_delta("Need to inspect files."))
@@ -766,7 +780,7 @@ def test_session_store_exports_thread_aware_text(tmp_path) -> None:
                 "tool_call_id": "call-read-1",
                 "tool_arguments": '{"path":"README.md"}',
                 "output": "child evidence",
-                "model_output": "child evidence",
+                "truncated_output": "child evidence",
                 "status": "completed",
             },
             thread_id="child-thread-1",
@@ -938,7 +952,7 @@ def _tool_completed(
             "tool_call": call.asdict(),
             "tool_result": {
                 "output": result.output,
-                "model_output": result.model_output,
+                "truncated_output": result.truncated_output,
                 "error": result.error,
             },
         },

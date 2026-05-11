@@ -1,14 +1,20 @@
+from io import StringIO
+
 from rich.console import Group
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.style import Style
-from rich.table import Table
 from rich.text import Text
 from textual.events import Click
 from textual.strip import Strip
 
 from aceai.agent.session import EventLog, SessionEvent
-from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
+from aceai.agent.citations import (
+    ConversationCitationOrigin,
+    FileCitationOrigin,
+    TurnCitation,
+)
 from aceai.core.events import AgentEventBuilder
 from aceai.llm.models import (
     LLMMessage,
@@ -26,6 +32,7 @@ from aceai.agent.tui.session_replay import event_log_to_tui_events
 from aceai.agent.tui.state import TUIRunState, reduce_events
 from aceai.agent.tui.widgets.stream import (
     StreamWidget,
+    _PromptBar,
     _render_events,
 )
 
@@ -122,7 +129,8 @@ def test_context_compaction_events_render_progress_and_summary() -> None:
     texts = [renderable.plain for renderable in renderables if isinstance(renderable, Text)]
 
     assert "  ● compact  Compacting context (preflight budget)..." in texts
-    assert any("Earlier decisions and tool results." in text for text in texts)
+    assert any("Summary is available in details." in text for text in texts)
+    assert not any("Earlier decisions and tool results." in text for text in texts)
     assert any("summary request exceeded context window" in text for text in texts)
 
 
@@ -172,12 +180,9 @@ def test_main_stream_renders_question_before_answer() -> None:
     assert len(renderables) == 2
     question = renderables[0]
     answer = renderables[1]
-    assert isinstance(question, Table)
-    assert question.expand
+    assert isinstance(question, _PromptBar)
     assert isinstance(answer, Text)
-    question_renderable = question.columns[0]._cells[1]
-    assert isinstance(question_renderable, Text)
-    assert question_renderable.plain == "▌ How do I search?"
+    _assert_prompt_bar_contains(question, "▌ How do I search?")
     assert answer.plain == "  Use rg."
 
 
@@ -185,16 +190,29 @@ def test_user_messages_render_as_taller_prompt_bar() -> None:
     renderables = _render_events([TUIEvent.user_message("Where am I?")])
 
     message = renderables[0]
-    assert isinstance(message, Table)
-    assert message.expand
-    assert len(message.columns) == 1
-    assert message.columns[0].ratio == 1
-    assert message.columns[0].style == "bold #eceff4 on #3b4252"
-    assert message.columns[0]._cells[0].plain == "▌  "
-    text = message.columns[0]._cells[1]
-    assert isinstance(text, Text)
-    assert text.plain == "▌ Where am I?"
-    assert message.columns[0]._cells[2].plain == "▌  "
+    assert isinstance(message, _PromptBar)
+    lines = _render_prompt_bar_plain_lines(message, width=24)
+
+    assert lines == [
+        "▌                       ",
+        "▌ Where am I?           ",
+        "▌                       ",
+    ]
+
+
+def test_wrapped_user_message_keeps_continuous_left_prompt_bar() -> None:
+    renderables = [
+        TUIEvent.user_message(
+            "Use @spec/multi-agent/agent_inbox.md and explain why the file is cited.",
+        )
+    ]
+    message = _render_events(renderables)[0]
+    assert isinstance(message, _PromptBar)
+
+    lines = _render_prompt_bar_plain_lines(message, width=30)
+
+    assert len(lines) > 3
+    assert all(line.startswith("▌ ") for line in lines)
 
 
 def test_user_message_citations_render_as_separate_source_block() -> None:
@@ -204,7 +222,7 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
                 "Explain it",
                 citations=(
                     TurnCitation(
-                        content="The job is pending.",
+                        quote="The job is pending.",
                         origin=ConversationCitationOrigin(
                             kind="conversation",
                             event_id="event-1",
@@ -226,10 +244,32 @@ def test_user_message_citations_render_as_separate_source_block() -> None:
     assert source.title == "cited source"
     assert "conversation:assistant" in source.renderable.renderables[0].plain
     assert source.renderable.renderables[1].plain == "The job is pending."
-    assert isinstance(question, Table)
-    question_text = question.columns[0]._cells[1]
-    assert isinstance(question_text, Text)
-    assert question_text.plain == "▌ Explain it"
+    assert isinstance(question, _PromptBar)
+    _assert_prompt_bar_contains(question, "▌ Explain it")
+
+
+def test_file_citation_with_empty_content_renders_path_only() -> None:
+    path = "/Users/raceychan/mylab/aceai/spec/multi-agent/agent_inbox.md"
+    renderables = _render_events(
+        [
+            TUIEvent.user_message(
+                "@spec/multi-agent/agent_inbox.md discuss this",
+                citations=(
+                    TurnCitation(
+                        quote=path,
+                        origin=FileCitationOrigin(kind="file", path=path),
+                    ),
+                ),
+            )
+        ]
+    )
+
+    group = renderables[0]
+    assert isinstance(group, Group)
+    source = group.renderables[0]
+    assert isinstance(source, Panel)
+    assert source.renderable.renderables[0].plain == f"[1] file:{path}"
+    assert len(source.renderable.renderables) == 1
 
 
 def test_user_messages_after_answers_get_turn_spacing() -> None:
@@ -246,10 +286,8 @@ def test_user_messages_after_answers_get_turn_spacing() -> None:
     assert isinstance(spacer, Text)
     assert spacer.plain == ""
     question = renderables[2]
-    assert isinstance(question, Table)
-    question_text = question.columns[0]._cells[1]
-    assert isinstance(question_text, Text)
-    assert question_text.plain == "▌ next question"
+    assert isinstance(question, _PromptBar)
+    _assert_prompt_bar_contains(question, "▌ next question")
 
 
 def test_idea_list_renders_as_separate_items_with_title_and_body() -> None:
@@ -319,8 +357,24 @@ def test_stream_writes_user_message_rows_expanded() -> None:
 
     assert len(writes) == 1
     content, expand = writes[0]
-    assert isinstance(content, Table)
+    assert isinstance(content, _PromptBar)
     assert expand
+
+
+def _render_prompt_bar_plain_lines(message: _PromptBar, *, width: int) -> list[str]:
+    console = Console(
+        file=StringIO(),
+        width=width,
+        record=True,
+        color_system=None,
+    )
+    console.print(message)
+    return console.export_text().splitlines()
+
+
+def _assert_prompt_bar_contains(message: _PromptBar, expected_line: str) -> None:
+    lines = _render_prompt_bar_plain_lines(message, width=80)
+    assert expected_line in [line.rstrip() for line in lines]
 
 
 def test_stream_writes_assistant_messages_as_plain_text() -> None:
@@ -588,9 +642,9 @@ def test_expanded_working_history_preserves_reasoning_tool_order() -> None:
 
     assert [text.plain for text in writes] == [
         "  ─ [-] work history · 2 tool calls",
-        "    * reasoning  think first",
+        "    * think first",
         '    ● read_text_file("a.py")  result ready',
-        "    * reasoning  think second",
+        "    * think second",
         '    ● search_text("needle")  search finished',
         "  done",
     ]
@@ -638,10 +692,8 @@ def test_completed_working_history_renders_between_question_and_answer() -> None
     renderables = _render_events(events, collapse_tool_activity=True)
 
     assert len(renderables) == 4
-    assert isinstance(renderables[0], Table)
-    question = renderables[0].columns[0]._cells[1]
-    assert isinstance(question, Text)
-    assert question.plain == "▌ what changed?"
+    assert isinstance(renderables[0], _PromptBar)
+    _assert_prompt_bar_contains(renderables[0], "▌ what changed?")
     assert isinstance(renderables[1], Text)
     assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
@@ -678,7 +730,7 @@ def test_completed_working_history_stays_before_answer_when_tool_replays_late() 
     renderables = _render_events(events, collapse_tool_activity=True)
 
     assert len(renderables) == 4
-    assert isinstance(renderables[0], Table)
+    assert isinstance(renderables[0], _PromptBar)
     assert isinstance(renderables[1], Text)
     assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
@@ -716,7 +768,7 @@ def test_completed_working_history_stays_before_answer_when_next_question_flushe
     renderables = _render_events(events, collapse_tool_activity=True)
 
     assert len(renderables) == 6
-    assert isinstance(renderables[0], Table)
+    assert isinstance(renderables[0], _PromptBar)
     assert isinstance(renderables[1], Text)
     assert renderables[1].plain == ""
     assert isinstance(renderables[2], Text)
@@ -725,7 +777,7 @@ def test_completed_working_history_stays_before_answer_when_next_question_flushe
     assert renderables[3].plain == "  answer"
     assert isinstance(renderables[4], Text)
     assert renderables[4].plain == ""
-    assert isinstance(renderables[5], Table)
+    assert isinstance(renderables[5], _PromptBar)
 
 
 def test_completed_retry_does_not_split_or_render_working_history() -> None:
@@ -844,14 +896,15 @@ def test_completed_replayed_approval_cycles_collapse() -> None:
                 ),
                 SessionEvent(
                     kind="tool_result",
-                    payload={
-                        "content": "",
-                        "tool_name": "replace_text_in_file",
-                        "tool_call_id": "call-1",
-                        "tool_arguments": '{"path":"a.py"}',
-                        "output": '{"ok":true}',
-                        "status": "completed",
-                    },
+                        payload={
+                            "content": "",
+                            "tool_name": "replace_text_in_file",
+                            "tool_call_id": "call-1",
+                            "tool_arguments": '{"path":"a.py"}',
+                            "output": '{"ok":true}',
+                            "truncated_output": '{"ok":true}',
+                            "status": "completed",
+                        },
                     step_id="step-1",
                     step_index=0,
                 ),
@@ -976,9 +1029,32 @@ def test_reasoning_summary_renders_before_completed_answer() -> None:
     assert isinstance(reasoning, Text)
     reasoning_renderable = reasoning
     assert isinstance(reasoning_renderable, Text)
-    assert reasoning_renderable.plain == "  * reasoning  think first"
+    assert reasoning_renderable.plain == "  * think first"
     assert isinstance(answer, Text)
     assert answer.plain == "  answer"
+
+
+def test_reasoning_summary_renders_inline_emphasis() -> None:
+    builder = AgentEventBuilder(step_index=0, step_id="step-1")
+    events = [
+        TUIEvent.from_agent_event(
+            builder.llm_reasoning(
+                segment=LLMSegment(
+                    type="reasoning",
+                    content="**Search for sources**",
+                )
+            )
+        ),
+    ]
+
+    renderables = _render_events(events)
+
+    reasoning = renderables[0]
+    assert isinstance(reasoning, Text)
+    assert reasoning.plain == "  * Search for sources"
+    assert len(reasoning.spans) == 2
+    assert reasoning.spans[1].start == len("  * ")
+    assert reasoning.spans[1].end == len("  * Search for sources")
 
 
 def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
@@ -1009,7 +1085,7 @@ def test_streaming_reasoning_renders_before_later_answer_delta() -> None:
     assert isinstance(reasoning, Text)
     reasoning_renderable = reasoning
     assert isinstance(reasoning_renderable, Text)
-    assert reasoning_renderable.plain == "  * reasoning  think first"
+    assert reasoning_renderable.plain == "  * think first"
     assert isinstance(answer, Text)
     assert answer.plain == "  answer"
 
