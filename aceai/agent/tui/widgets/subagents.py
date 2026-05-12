@@ -24,10 +24,15 @@ class SubagentThreadOption:
     status: str
     role: str
     agent_id: str = ""
+    run_id: str = ""
     parent_run_id: str = ""
     instructions: str = ""
     context_brief: str = ""
     allowed_tools: tuple[str, ...] = ()
+    summary: str = ""
+    final_answer: str = ""
+    step_count: int = 0
+    tool_result_count: int = 0
     inbox_pending_count: int = 0
     inbox_latest: str = ""
 
@@ -560,7 +565,7 @@ def _subagent_status_panel(subagent: TUISubagentState) -> RenderableType:
     metrics.add_row(
         _metric_block("state", _subagent_status_label(subagent.status), _subagent_status_style(subagent.status)),
         _metric_block("steps", f"{subagent.step_count}", "#d8dee9"),
-        _metric_block("results", f"{len(subagent.tool_results)}", "#d8dee9"),
+        _metric_block("results", f"{_subagent_tool_result_count(subagent)}", "#d8dee9"),
         _metric_block("inbox", f"{subagent.inbox_pending_count}", "#ebcb8b"),
     )
     return _section_panel("run", metrics)
@@ -756,7 +761,7 @@ def _subagent_summary_lines(subagent: TUISubagentState) -> list[str]:
         "   run",
         f"   status: {subagent.status}",
         f"   steps: {subagent.step_count}",
-        f"   results: {len(subagent.tool_results)}",
+        f"   results: {_subagent_tool_result_count(subagent)}",
         f"   inbox: {subagent.inbox_pending_count}",
     ]
     lines.append("   tools")
@@ -798,11 +803,11 @@ def _append_agent_metadata(text: Text, subagent: TUISubagentState) -> None:
         "steps",
         str(subagent.step_count),
     )
-    if subagent.tool_results:
+    if _subagent_tool_result_count(subagent) > 0:
         _append_metadata_pair(
             text,
             "results",
-            str(len(subagent.tool_results)),
+            str(_subagent_tool_result_count(subagent)),
             "",
             "",
         )
@@ -919,6 +924,12 @@ def _allowed_tool_lines(subagent: TUISubagentState) -> list[str]:
     if not subagent.allowed_tools:
         return ["none"]
     return subagent.allowed_tools
+
+
+def _subagent_tool_result_count(subagent: TUISubagentState) -> int:
+    if subagent.tool_result_count > 0:
+        return subagent.tool_result_count
+    return len(subagent.tool_results)
 
 
 def _append_detail(text: Text, label: str, value: str, *, style: str) -> None:

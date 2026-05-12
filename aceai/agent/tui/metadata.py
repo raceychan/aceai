@@ -112,8 +112,8 @@ def _metadata_renderables(sections: list[MetadataSection]) -> list[RenderableTyp
 
 
 def _section_table(section: MetadataSection) -> Table:
-    if section.title.endswith("Tool Calls"):
-        return _tool_call_table(section)
+    if section.title.endswith(("Tool Calls", "Skill Calls")):
+        return _call_stat_table(section)
     if section.title.startswith(("Skills", "Tools", "Hosted Tools")):
         return _list_table(section)
     return _key_value_table(section)
@@ -140,14 +140,15 @@ def _list_table(section: MetadataSection) -> Table:
     return table
 
 
-def _tool_call_table(section: MetadataSection) -> Table:
+def _call_stat_table(section: MetadataSection) -> Table:
     table = Table.grid(expand=True)
     table.add_column(ratio=1, min_width=24, style="bold #eceff4", overflow="fold")
     table.add_column(width=8, justify="right", style="#d8dee9")
     table.add_column(width=8, justify="right", style="#a3be8c")
     table.add_column(width=8, justify="right", style="#bf616a")
+    label = "skill" if section.title.endswith("Skill Calls") else "tool"
     table.add_row(
-        Text("tool", style="#9aa3b2"),
+        Text(label, style="#9aa3b2"),
         Text("calls", style="#9aa3b2"),
         Text("ok", style="#9aa3b2"),
         Text("failed", style="#9aa3b2"),

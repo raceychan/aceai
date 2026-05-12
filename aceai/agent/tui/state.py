@@ -48,6 +48,7 @@ class TUISubagentResult(Record, kw_only=True):
     important_evidence: list[str]
     tool_results: list[TUISubagentToolResult]
     step_count: int
+    tool_result_count: int = 0
     thread_id: str = ""
 
 
@@ -75,6 +76,7 @@ class TUISubagentState(Record, kw_only=True):
     final_answer: str = ""
     important_evidence: list[str] = field(default_factory=list[str])
     tool_results: list[TUISubagentToolResult] = field(default_factory=list[TUISubagentToolResult])
+    tool_result_count: int = 0
     step_count: int = 0
     output: str = ""
     error: str | None = None
@@ -501,6 +503,11 @@ def _update_subagent(
             subagent.important_evidence if result is None else result.important_evidence
         ),
         tool_results=subagent.tool_results if result is None else result.tool_results,
+        tool_result_count=(
+            subagent.tool_result_count
+            if result is None
+            else _result_tool_result_count(result)
+        ),
         step_count=subagent.step_count if result is None else result.step_count,
         output=event.content if event.kind == "tool_completed" else subagent.output,
         error=event.error if event.kind == "tool_failed" else subagent.error,
@@ -527,6 +534,7 @@ def _update_subagent_from_result(
         final_answer=result.final_answer,
         important_evidence=result.important_evidence,
         tool_results=result.tool_results,
+        tool_result_count=_result_tool_result_count(result),
         step_count=result.step_count,
         output=subagent.output,
         error=subagent.error,
@@ -581,6 +589,7 @@ def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
             important_evidence=[],
             tool_results=[],
             step_count=payload["step_count"],
+            tool_result_count=payload.get("tool_result_count", 0),
         )
     if "job_id" in payload:
         return TUISubagentResult(
@@ -593,6 +602,7 @@ def _subagent_result(event: TUIEvent) -> TUISubagentResult | None:
             important_evidence=[],
             tool_results=[],
             step_count=payload.get("step_count", 0),
+            tool_result_count=payload.get("tool_result_count", 0),
         )
     return msg_decode(event.content.encode("utf-8"), type=TUISubagentResult)
 
@@ -612,9 +622,16 @@ def _collected_subagent_results(event: TUIEvent) -> list[TUISubagentResult]:
                 important_evidence=[],
                 tool_results=[],
                 step_count=job["step_count"],
+                tool_result_count=job.get("tool_result_count", 0),
             )
         )
     return results
+
+
+def _result_tool_result_count(result: TUISubagentResult) -> int:
+    if result.tool_result_count > 0:
+        return result.tool_result_count
+    return len(result.tool_results)
 
 
 def _starts_threaded_subagent(event: TUIEvent) -> bool:

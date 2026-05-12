@@ -1179,6 +1179,7 @@ class AceAgentApp:
             final_answer="" if result is None else result.final_answer,
             error=job.error,
             step_count=0 if result is None else result.step_count,
+            tool_result_count=0 if result is None else len(result.tool_results),
         )
 
     async def run_child_thread(

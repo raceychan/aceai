@@ -37,7 +37,12 @@ from aceai.agent.tui.state import (
     reset_cache_rate,
     select_event,
 )
-from aceai.agent.tui.tool_stats import format_tool_call_stats, tool_call_stats
+from aceai.agent.tui.tool_stats import (
+    format_skill_call_stats,
+    format_tool_call_stats,
+    skill_call_stats,
+    tool_call_stats,
+)
 from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
 from aceai.agent.tui.widgets import (
     CommandInput,
@@ -269,11 +274,13 @@ def test_reduce_events_updates_spawn_subagent_status_after_collect_results() -> 
             '{"job_id":"job-1","thread_id":"child-thread-1",'
             '"agent_id":"child-1","run_id":"run-1","status":"completed",'
             '"task":"Inspect 1","summary":"done 1",'
-            '"final_answer":"answer 1","error":"","step_count":1},'
+            '"final_answer":"answer 1","error":"","step_count":1,'
+            '"tool_result_count":3},'
             '{"job_id":"job-2","thread_id":"child-thread-2",'
             '"agent_id":"child-2","run_id":"run-2","status":"completed",'
             '"task":"Inspect 2","summary":"done 2",'
-            '"final_answer":"answer 2","error":"","step_count":1}'
+            '"final_answer":"answer 2","error":"","step_count":1,'
+            '"tool_result_count":4}'
             ']}'
         ),
     )
@@ -298,6 +305,7 @@ def test_reduce_events_updates_spawn_subagent_status_after_collect_results() -> 
         "done 1",
         "done 2",
     ]
+    assert [subagent.tool_result_count for subagent in state.subagents] == [3, 4]
 
 
 def test_reduce_events_excludes_delegate_to_subagent_without_thread_id() -> None:
@@ -677,6 +685,131 @@ def test_tool_call_stats_read_archived_subagent_manifest(tmp_path) -> None:
     assert "read_text_file: calls 2  ok 1  failed 1" in lines
 
 
+def test_skill_call_stats_include_parent_and_child_skill_view_calls(tmp_path) -> None:
+    parent_call = LLMToolCall(
+        name="skill_view",
+        arguments='{"name":"release"}',
+        call_id="call-parent-skill",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-parent",
+            title="tool skill_view completed",
+            content="release skill",
+            tool_name="skill_view",
+            tool_call_id=parent_call.call_id,
+            tool_call=parent_call,
+            raw_event=None,
+        ),
+        TUIEvent(
+            kind="tool_completed",
+            step_index=1,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "final_answer": "done",
+                    "summary": "done",
+                    "important_evidence": [],
+                    "tool_results": [
+                        {
+                            "tool_name": "skill_view",
+                            "call_id": "call-child-skill-ok",
+                            "arguments": '{"name":"release","file_path":"references/api.md"}',
+                            "output": "reference",
+                            "error": None,
+                        },
+                        {
+                            "tool_name": "skill_view",
+                            "call_id": "call-child-skill-failed",
+                            "arguments": '{"name":"debug"}',
+                            "output": "failed",
+                            "error": "failed",
+                        },
+                    ],
+                    "step_count": 2,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        ),
+    ]
+
+    lines = format_skill_call_stats(skill_call_stats(events, artifact_root=tmp_path))
+
+    assert "debug: calls 1  ok 0  failed 1" in lines
+    assert "release: calls 2  ok 2  failed 0" in lines
+
+
+def test_skill_call_stats_read_archived_subagent_manifest(tmp_path) -> None:
+    manifest_path = "session-1/artifacts/parent-run-1/child-1/manifest.json"
+    manifest_file = tmp_path / manifest_path
+    tool_artifact_dir = manifest_file.parent / "tool-results" / "artifact-skill"
+    tool_artifact_dir.mkdir(parents=True)
+    (tool_artifact_dir / "arguments.json").write_text(
+        '{"name":"release"}',
+        encoding="utf-8",
+    )
+    manifest_file.write_text(
+        json.dumps(
+            {
+                "type": "subagent_artifact_manifest",
+                "tool_results": [
+                    {
+                        "artifact_id": "artifact-skill",
+                        "tool_name": "skill_view",
+                        "tool_call_id": "call-child-skill",
+                        "has_error": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    delegate_call = LLMToolCall(
+        name="delegate_to_subagent",
+        arguments='{"task":"inspect"}',
+        call_id="call-delegate",
+    )
+    events = [
+        TUIEvent(
+            kind="tool_completed",
+            step_index=0,
+            step_id="step-delegate",
+            title="tool delegate_to_subagent completed",
+            content=json.dumps(
+                {
+                    "type": "subagent_audit",
+                    "agent_id": "child-1",
+                    "run_id": "child-run-1",
+                    "status": "completed",
+                    "manifest_path": manifest_path,
+                }
+            ),
+            tool_name="delegate_to_subagent",
+            tool_call_id=delegate_call.call_id,
+            tool_call=delegate_call,
+            raw_event=None,
+        )
+    ]
+
+    lines = format_skill_call_stats(skill_call_stats(events, artifact_root=tmp_path))
+
+    assert "release: calls 1  ok 1  failed 0" in lines
+
+
 def test_metadata_sections_include_tool_call_stats(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         tui_app_module,
@@ -713,6 +846,39 @@ def test_metadata_sections_include_tool_call_stats(monkeypatch, tmp_path) -> Non
     assert "Global Tool Calls" not in section_lines
 
 
+def test_metadata_sections_include_skill_call_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        tui_app_module,
+        "SessionStore",
+        lambda *, project: SessionStore(tmp_path, project=project),
+    )
+    call = LLMToolCall(
+        name="skill_view",
+        arguments='{"name":"release"}',
+        call_id="call-skill",
+    )
+    event = TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id="step-skill",
+        title="tool skill_view completed",
+        content="Release",
+        tool_name="skill_view",
+        tool_call_id=call.call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="Release"),
+        raw_event=None,
+    )
+    app = AceAITUI([event])
+    app._state = reduce_events([event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert "release: calls 1  ok 1  failed 0" in section_lines["Session Skill Calls"]
+    assert "Global Skill Calls" not in section_lines
+
+
 def test_metadata_sections_omit_empty_tool_call_stats(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         tui_app_module,
@@ -726,6 +892,8 @@ def test_metadata_sections_omit_empty_tool_call_stats(monkeypatch, tmp_path) -> 
     titles = [section.title for section in sections]
     assert "Session Tool Calls" not in titles
     assert "Global Tool Calls" not in titles
+    assert "Session Skill Calls" not in titles
+    assert "Global Skill Calls" not in titles
 
 
 def test_metadata_sections_include_global_tool_stats_without_active_session(
@@ -788,6 +956,32 @@ def test_metadata_sections_include_global_tool_call_stats(tmp_path) -> None:
     assert "run_shell_command" not in section_lines["Session Tool Calls"]
 
 
+def test_metadata_sections_include_global_skill_call_stats(tmp_path) -> None:
+    store = SessionStore(tmp_path)
+    current = store.create_session()
+    other = store.create_session()
+    current_event = _skill_completed_event("release", "call-current")
+    other_event = _skill_failed_event("debug", "call-other")
+    SessionRecorder(store, current.session_id).record(
+        tui_event_to_session_event(current_event)
+    )
+    SessionRecorder(store, other.session_id).record(tui_event_to_session_event(other_event))
+    app = AceAITUI(
+        [current_event],
+        session_recorder=SessionRecorder(store, current.session_id),
+        session_id=current.session_id,
+    )
+    app._state = reduce_events([current_event])
+
+    sections = app._metadata_sections()
+
+    section_lines = {section.title: "\n".join(section.lines) for section in sections}
+    assert "release: calls 1  ok 1  failed 0" in section_lines["Session Skill Calls"]
+    assert "release: calls 1  ok 1  failed 0" in section_lines["Global Skill Calls"]
+    assert "debug: calls 1  ok 0  failed 1" in section_lines["Global Skill Calls"]
+    assert "debug" not in section_lines["Session Skill Calls"]
+
+
 def test_tool_call_metadata_renders_as_stats_table() -> None:
     rendered = _render_to_text(
         Group(
@@ -811,6 +1005,31 @@ def test_tool_call_metadata_renders_as_stats_table() -> None:
     assert "failed" in rendered
     assert "delegate_to_subagent" in rendered
     assert "read_text_file" in rendered
+
+
+def test_skill_call_metadata_renders_as_stats_table() -> None:
+    rendered = _render_to_text(
+        Group(
+            *_metadata_renderables(
+                [
+                    MetadataSection(
+                        title="Global Skill Calls",
+                        lines=[
+                            "release: calls 2  ok 2  failed 0",
+                            "debug: calls 1  ok 0  failed 1",
+                        ],
+                    )
+                ]
+            )
+        )
+    )
+
+    assert "skill" in rendered
+    assert "calls" in rendered
+    assert "ok" in rendered
+    assert "failed" in rendered
+    assert "release" in rendered
+    assert "debug" in rendered
 
 
 def test_reset_cache_rate_clears_current_cache_only() -> None:
@@ -1513,6 +1732,89 @@ def test_subagent_panel_states_include_inbox_counts() -> None:
 
     assert "inbox: 1" in widget.renderable
     assert "task / inbox\n     needs parent input" in widget.renderable
+
+
+def test_subagent_panel_states_include_restored_run_stats() -> None:
+    states = tui_app_module._subagent_panel_states(
+        thread_options=[
+            tui_app_module.SubagentThreadOption(
+                thread_id=MAIN_THREAD_ID,
+                label="Main",
+                status="completed",
+                role="main",
+            ),
+            tui_app_module.SubagentThreadOption(
+                thread_id="child-thread-1",
+                label="Child 1",
+                status="completed",
+                role="subagent",
+                agent_id="child-agent-1",
+                run_id="child-run-1",
+                summary="child summary",
+                final_answer="child summary",
+                step_count=7,
+                tool_result_count=3,
+            ),
+        ],
+        active_thread_id=MAIN_THREAD_ID,
+    )
+
+    assert len(states) == 1
+    assert states[0].run_id == "child-run-1"
+    assert states[0].step_count == 7
+    assert states[0].tool_result_count == 3
+
+    widget = SubagentStatusWidget()
+    widget.set_state(
+        subagents=states,
+        thread_options=[],
+        active_thread_id=MAIN_THREAD_ID,
+    )
+
+    assert "steps: 7" in widget.renderable
+    assert "results: 3" in widget.renderable
+
+
+def test_run_summaries_by_thread_counts_restored_child_events() -> None:
+    event_log = EventLog(
+        [
+            SessionEvent(
+                thread_id="child-thread-1",
+                run_id="child-run-1",
+                kind="user_message",
+                payload={"content": "inspect"},
+            ),
+            SessionEvent(
+                thread_id="child-thread-1",
+                run_id="child-run-1",
+                step_id="step-1",
+                kind="assistant_message",
+                payload={"content": "thinking"},
+            ),
+            SessionEvent(
+                thread_id="child-thread-1",
+                run_id="child-run-1",
+                step_id="step-1",
+                kind="tool_result",
+                payload={"tool_call_id": "call-1", "content": "ok"},
+            ),
+            SessionEvent(
+                thread_id="child-thread-1",
+                run_id="child-run-1",
+                step_id="step-2",
+                kind="run_completed",
+                payload={"content": "done"},
+            ),
+        ]
+    )
+
+    summaries = tui_app_module._run_summaries_by_thread(event_log)
+
+    summary = summaries["child-thread-1"]
+    assert summary.run_id == "child-run-1"
+    assert summary.final_answer == "done"
+    assert summary.step_count == 2
+    assert summary.tool_result_count == 1
 
 
 @pytest.mark.anyio
@@ -3096,6 +3398,47 @@ def _tool_failed_event(tool_name: str, call_id: str) -> TUIEvent:
         title=f"tool {tool_name} failed",
         content="failed",
         tool_name=tool_name,
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="failed", error="failed"),
+        error="failed",
+        raw_event=None,
+    )
+
+
+def _skill_completed_event(skill_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name="skill_view",
+        arguments=json.dumps({"name": skill_name}),
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_completed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title="tool skill_view completed",
+        content="ok",
+        tool_name="skill_view",
+        tool_call_id=call_id,
+        tool_call=call,
+        tool_result=ToolExecutionResult(call=call, output="ok"),
+        raw_event=None,
+    )
+
+
+def _skill_failed_event(skill_name: str, call_id: str) -> TUIEvent:
+    call = LLMToolCall(
+        name="skill_view",
+        arguments=json.dumps({"name": skill_name}),
+        call_id=call_id,
+    )
+    return TUIEvent(
+        kind="tool_failed",
+        step_index=0,
+        step_id=f"step-{call_id}",
+        title="tool skill_view failed",
+        content="failed",
+        tool_name="skill_view",
         tool_call_id=call_id,
         tool_call=call,
         tool_result=ToolExecutionResult(call=call, output="failed", error="failed"),

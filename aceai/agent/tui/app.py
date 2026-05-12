@@ -1,5 +1,6 @@
 """Read-only Textual application for AceAI event streams."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -14,7 +15,14 @@ from aceai.core.events import AgentEvent
 
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata, default_project
-from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionRecorder, SessionStore
+from aceai.agent.session import (
+    AgentThreadMetadata,
+    EventLog,
+    MAIN_THREAD_ID,
+    SessionEvent,
+    SessionRecorder,
+    SessionStore,
+)
 
 from aceai.agent.app import context_window_for_model, supports_reasoning_for_model
 from aceai.agent.cost import format_usd
@@ -37,9 +45,13 @@ from .state import (
 )
 from .trajectory import TrajectoryScreen
 from .tool_stats import (
+    SkillCallStat,
     ToolCallStat,
+    format_skill_call_stats,
     format_tool_call_stats,
+    merge_skill_call_stats,
     merge_tool_call_stats,
+    skill_call_stats,
     tool_call_stats,
 )
 from .widgets import (
@@ -576,6 +588,13 @@ class AceAITUI(App[None]):
             )
         )
         global_tool_stat_lines = format_tool_call_stats(self._global_tool_call_stats())
+        session_skill_stat_lines = format_skill_call_stats(
+            skill_call_stats(
+                self._state.events,
+                artifact_root=self._tool_stat_artifact_root(),
+            )
+        )
+        global_skill_stat_lines = format_skill_call_stats(self._global_skill_call_stats())
         sections = [
             MetadataSection(title="Runtime", lines=lines),
             MetadataSection(title="Usage", lines=cost_lines),
@@ -587,11 +606,25 @@ class AceAITUI(App[None]):
                     lines=session_tool_stat_lines,
                 )
             )
+        if session_skill_stat_lines:
+            sections.append(
+                MetadataSection(
+                    title="Session Skill Calls",
+                    lines=session_skill_stat_lines,
+                )
+            )
         if global_tool_stat_lines:
             sections.append(
                 MetadataSection(
                     title="Global Tool Calls",
                     lines=global_tool_stat_lines,
+                )
+            )
+        if global_skill_stat_lines:
+            sections.append(
+                MetadataSection(
+                    title="Global Skill Calls",
+                    lines=global_skill_stat_lines,
                 )
             )
         return sections
@@ -606,6 +639,18 @@ class AceAITUI(App[None]):
         return merge_tool_call_stats(
             [
                 tool_call_stats(
+                    event_log_to_tui_events(store.load_event_log(session.session_id)),
+                    artifact_root=store.root,
+                )
+                for session in store.list_sessions()
+            ]
+        )
+
+    def _global_skill_call_stats(self) -> list[SkillCallStat]:
+        store = self._session_store()
+        return merge_skill_call_stats(
+            [
+                skill_call_stats(
                     event_log_to_tui_events(store.load_event_log(session.session_id)),
                     artifact_root=store.root,
                 )
@@ -750,22 +795,17 @@ class AceAITUI(App[None]):
             return list(self._subagent_thread_options_cache)
         store = self._session_store()
         threads = store.list_threads(self._session_id)
-        inbox_summaries = _inbox_summaries_by_thread(
-            store.load_event_log(self._session_id).events
-        )
+        event_log = store.load_event_log(self._session_id)
+        inbox_summaries = _inbox_summaries_by_thread(event_log.events)
+        run_summaries = _run_summaries_by_thread(event_log)
         options = [
-            SubagentThreadOption(
-                thread_id=thread.thread_id,
-                label=thread.title,
-                status=thread.status,
-                role=thread.role,
-                agent_id=thread.agent_id,
-                parent_run_id=thread.parent_run_id or "",
-                instructions=_thread_metadata_str(thread.metadata, "instructions"),
-                context_brief=_thread_metadata_str(thread.metadata, "context_brief"),
-                allowed_tools=tuple(_thread_metadata_list(thread.metadata, "allowed_tools")),
-                inbox_pending_count=inbox_summaries.get(thread.thread_id, (0, ""))[0],
-                inbox_latest=inbox_summaries.get(thread.thread_id, (0, ""))[1],
+            _subagent_thread_option(
+                thread=thread,
+                run_summary=run_summaries.get(
+                    thread.thread_id,
+                    _EMPTY_THREAD_RUN_SUMMARY,
+                ),
+                inbox_summary=inbox_summaries.get(thread.thread_id, (0, "")),
             )
             for thread in threads
         ]
@@ -951,6 +991,79 @@ def _event_can_change_subagent_thread_options(event: TUIEvent) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class _ThreadRunSummary:
+    run_id: str = ""
+    final_answer: str = ""
+    step_count: int = 0
+    tool_result_count: int = 0
+
+
+_EMPTY_THREAD_RUN_SUMMARY = _ThreadRunSummary()
+
+
+def _subagent_thread_option(
+    *,
+    thread: AgentThreadMetadata,
+    run_summary: _ThreadRunSummary,
+    inbox_summary: tuple[int, str],
+) -> SubagentThreadOption:
+    return SubagentThreadOption(
+        thread_id=thread.thread_id,
+        label=thread.title,
+        status=thread.status,
+        role=thread.role,
+        agent_id=thread.agent_id,
+        run_id=run_summary.run_id,
+        parent_run_id=thread.parent_run_id or "",
+        instructions=_thread_metadata_str(thread.metadata, "instructions"),
+        context_brief=_thread_metadata_str(thread.metadata, "context_brief"),
+        allowed_tools=tuple(_thread_metadata_list(thread.metadata, "allowed_tools")),
+        summary=run_summary.final_answer,
+        final_answer=run_summary.final_answer,
+        step_count=run_summary.step_count,
+        tool_result_count=run_summary.tool_result_count,
+        inbox_pending_count=inbox_summary[0],
+        inbox_latest=inbox_summary[1],
+    )
+
+
+def _run_summaries_by_thread(event_log: EventLog) -> dict[str, _ThreadRunSummary]:
+    summaries: dict[str, _ThreadRunSummary] = {}
+    thread_ids: list[str] = []
+    seen: set[str] = set()
+    for event in event_log.events:
+        if event.thread_id in seen:
+            continue
+        seen.add(event.thread_id)
+        thread_ids.append(event.thread_id)
+    for thread_id in thread_ids:
+        thread_log = event_log.for_thread(thread_id)
+        run_summaries = thread_log.list_runs()
+        if not run_summaries:
+            continue
+        latest = run_summaries[-1]
+        run_log = thread_log.get_run(latest.run_id)
+        summaries[thread_id] = _ThreadRunSummary(
+            run_id=latest.run_id,
+            final_answer=latest.final_answer,
+            step_count=latest.step_count,
+            tool_result_count=_tool_result_count(run_log.events),
+        )
+    return summaries
+
+
+def _tool_result_count(events: list[SessionEvent]) -> int:
+    tool_call_ids: set[str] = set()
+    for event in events:
+        if event.kind != "tool_result":
+            continue
+        tool_call_id = event.payload.get("tool_call_id")
+        if type(tool_call_id) is str and tool_call_id != "":
+            tool_call_ids.add(tool_call_id)
+    return len(tool_call_ids)
+
+
 def _inbox_summaries_by_thread(
     events: list[SessionEvent],
 ) -> dict[str, tuple[int, str]]:
@@ -1002,7 +1115,11 @@ def _subagent_panel_states(
                 allowed_tools=list(option.allowed_tools),
                 status=_subagent_status_from_thread_status(option.status),
                 agent_id=option.agent_id,
-                run_id="",
+                run_id=option.run_id,
+                summary=option.summary,
+                final_answer=option.final_answer,
+                step_count=option.step_count,
+                tool_result_count=option.tool_result_count,
                 inbox_pending_count=option.inbox_pending_count,
                 inbox_latest=option.inbox_latest,
             )
@@ -1024,7 +1141,11 @@ def _main_agent_panel_state(
                 allowed_tools=list(option.allowed_tools),
                 status=_subagent_status_from_thread_status(option.status),
                 agent_id=option.agent_id,
-                run_id="",
+                run_id=option.run_id,
+                summary=option.summary,
+                final_answer=option.final_answer,
+                step_count=option.step_count,
+                tool_result_count=option.tool_result_count,
                 inbox_pending_count=option.inbox_pending_count,
                 inbox_latest=option.inbox_latest,
             )

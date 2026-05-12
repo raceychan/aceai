@@ -127,6 +127,7 @@ class SubagentJobSnapshot(Struct, frozen=True, kw_only=True):
     final_answer: str = ""
     error: str = ""
     step_count: int = 0
+    tool_result_count: int = 0
 
 
 class SubagentJobCollection(Struct, frozen=True, kw_only=True):
