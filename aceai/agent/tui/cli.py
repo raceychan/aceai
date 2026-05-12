@@ -44,6 +44,7 @@ SessionStore = None
 SessionRecorder = None
 event_log_to_tui_events = None
 AceAIConfiguredTUI = None
+delete_empty_sessions = None
 MAIN_THREAD_ID = "main"
 
 
@@ -76,6 +77,22 @@ def require_tui_extra() -> None:
     MAIN_THREAD_ID = session_module.MAIN_THREAD_ID
     event_log_to_tui_events = replay_module.event_log_to_tui_events
     AceAIConfiguredTUI = runner_module.AceAIConfiguredTUI
+
+
+def require_session_extra() -> None:
+    global SessionStore
+    global delete_empty_sessions
+    if SessionStore is not None and delete_empty_sessions is not None:
+        return
+    try:
+        session_module = importlib.import_module("aceai.agent.session")
+        session_views_module = importlib.import_module("aceai.agent.session_views")
+    except ModuleNotFoundError as exc:
+        if exc.name in TUI_RUNTIME_MODULES:
+            raise SystemExit(TUI_EXTRA_INSTALL_HINT) from None
+        raise
+    SessionStore = session_module.SessionStore
+    delete_empty_sessions = session_views_module.delete_empty_sessions
 
 
 def build_agent(config: AgentAppConfig) -> Agent:
@@ -336,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help=(
             "Optional command: resume <session_id>, export <session_id>, "
-            "or cost."
+            "cost, or clean-empty-sessions."
         ),
     )
     parser.add_argument(
@@ -428,6 +445,15 @@ def run_main(args: argparse.Namespace) -> None:
         require_tui_extra()
         print(format_usd(SessionStore().total_cost_usd()))
         return
+    if command_parts and command_parts[0] == "clean-empty-sessions":
+        if len(command_parts) != 1:
+            raise ValueError("aceai clean-empty-sessions does not accept arguments")
+        require_session_extra()
+        deleted_session_ids = delete_empty_sessions(SessionStore())
+        print(f"Deleted empty sessions: {len(deleted_session_ids)}")
+        for session_id in deleted_session_ids:
+            print(session_id)
+        return
     resume_session_id: str | None = None
     if command_parts and command_parts[0] == "resume":
         if len(command_parts) > 2:
@@ -440,7 +466,7 @@ def run_main(args: argparse.Namespace) -> None:
     elif command_parts:
         raise ValueError(
             "aceai only accepts no arguments, resume <session_id>, "
-            "export <session_id>, or cost"
+            "export <session_id>, cost, or clean-empty-sessions"
         )
     provider = resolve_env_provider()
     model_value = args.model or os.environ.get("ACEAI_MODEL")

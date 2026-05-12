@@ -720,6 +720,37 @@ def test_cli_cost_prints_total_session_cost(monkeypatch, capsys) -> None:
     assert captured.out == "$0.0123\n"
 
 
+def test_cli_clean_empty_sessions_prints_deleted_session_ids(monkeypatch, capsys) -> None:
+    class StubStore:
+        pass
+
+    def delete_empty_sessions(store):
+        assert isinstance(store, StubStore)
+        return ["session-empty-1", "session-empty-2"]
+
+    monkeypatch.setattr(cli, "SessionStore", StubStore)
+    monkeypatch.setattr(cli, "delete_empty_sessions", delete_empty_sessions)
+
+    cli.main(["clean-empty-sessions"])
+
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Deleted empty sessions: 2\n"
+        "session-empty-1\n"
+        "session-empty-2\n"
+    )
+
+
+def test_cli_clean_empty_sessions_rejects_arguments(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "require_session_extra", lambda: None)
+
+    with pytest.raises(
+        ValueError,
+        match="aceai clean-empty-sessions does not accept arguments",
+    ):
+        cli.main(["clean-empty-sessions", "extra"])
+
+
 def test_cli_inline_runs_textual_app_inline(monkeypatch) -> None:
     run_calls: list[dict[str, object]] = []
 

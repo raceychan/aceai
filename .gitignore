@@ -21,6 +21,10 @@ lab/
 
 # Local caches
 .cache/
+node_modules/
+*.tsbuildinfo
+apps/gui/vite.config.js
+apps/gui/vite.config.d.ts
 
 # Local AceAI user config and secrets
 .aceai/

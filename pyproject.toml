@@ -26,9 +26,14 @@ tui = [
     "sqlalchemy>=2.0",
     "textual>=8.2.5",
 ]
+gui = [
+    "lihil[standard]>=0.2.40",
+    "sqlalchemy>=2.0",
+]
 
 [project.scripts]
 aceai = "aceai.agent.tui.cli:main"
+aceai-gui = "aceai.agent.gui.cli:main"
 "aceai.agent.tui.demo" = "aceai.agent.tui.demo:main"
 "aceai.agent.tui.trajectory_demo" = "aceai.agent.tui.demo:trajectory_main"
 
@@ -68,6 +73,7 @@ dev = [
     "textual>=8.2.5",
     "sqlalchemy>=2.0",
     "ruff>=0.15.12",
+    "lihil[standard]==0.2.40",
 ]
 
 [tool.pytest.ini_options]

@@ -29,6 +29,10 @@ from aceai.agent.citations import (
 )
 from aceai.agent.memory.ideas import Idea, IdeaStore
 from aceai.agent.project import ProjectMetadata
+from aceai.agent.references import (
+    iter_reference_file_candidates,
+    reference_idea_description,
+)
 from aceai.agent.features import default_agent_tools
 from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionRecorder, SessionState
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
@@ -73,20 +77,7 @@ CommandHandler = Callable[[str], None]
 COMMAND_NAMES_ATTR = "_aceai_tui_command_names"
 UPDATE_INSTRUCTIONS = "Run /update to upgrade AceAI and restart."
 UPDATE_COMMAND: tuple[str, ...] = ("uv", "tool", "upgrade", "aceai")
-REFERENCE_IGNORED_DIRS = {
-    ".cache",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "wheels",
-}
+_iter_reference_file_candidates = iter_reference_file_candidates
 COMMAND_DESCRIPTIONS: dict[str, str] = {
     "clear": "Clear the visible transcript",
     "config": "Open provider, model, skill, and tool settings",
@@ -506,7 +497,7 @@ class AceAIConfiguredTUI(AceAITUI):
         return tuple(
             ReferenceCompletionItem(
                 value=f"@idea:{index}",
-                description=_reference_idea_description(idea),
+                description=reference_idea_description(idea, limit=64),
             )
             for index, idea in enumerate(self._list_ideas(), start=1)
         )
@@ -1505,13 +1496,6 @@ def _replace_active_reference(value: str, replacement: str) -> str:
     return f"{head} {replacement} "
 
 
-def _reference_idea_description(idea: Idea) -> str:
-    first_line = idea.content.splitlines()[0] if idea.content.splitlines() else "idea"
-    if len(first_line) > 64:
-        first_line = first_line[:61] + "..."
-    return first_line
-
-
 def _rank_reference_items(
     prefix: str,
     items: tuple[ReferenceCompletionItem, ...],
@@ -1541,20 +1525,6 @@ def _filter_ranked_reference_items(
         for item, score, _index in ranked_items
         if score >= score_cutoff
     )[:limit]
-
-
-def _iter_reference_file_candidates(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            dirname for dirname in dirnames if dirname not in REFERENCE_IGNORED_DIRS
-        )
-        for filename in sorted(filenames):
-            if filename.startswith("."):
-                continue
-            path = Path(dirpath) / filename
-            if not path.is_file():
-                continue
-            yield path
 
 
 class UpdateCommandResult(Struct, frozen=True, kw_only=True):

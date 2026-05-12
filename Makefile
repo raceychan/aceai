@@ -1,4 +1,4 @@
-.PHONY: test debug cov demo
+.PHONY: test debug cov demo server
 test:
 	uv run pytest -v tests/
 
@@ -13,6 +13,11 @@ demo:
 
 tui:
 	uv run aceai
+
+HOST ?= 127.0.0.1
+PORT ?= 8765
+server:
+	uv run --extra gui aceai-gui --host $(HOST) --port $(PORT)
 
 
 VERSION ?=
