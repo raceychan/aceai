@@ -270,6 +270,38 @@ def test_gui_sessions_api_lists_saved_sessions(tmp_path) -> None:
     assert first_payload["active_thread"]["thread_id"] == MAIN_THREAD_ID
 
 
+def test_gui_openapi_schema_includes_http_api(tmp_path) -> None:
+    app = build_gui_app(_runtime(SessionStore(tmp_path / "sessions")))
+
+    schema = app.genereate_oas()
+
+    assert "/api/sessions" in schema.paths
+    assert "/api/config" in schema.paths
+    assert "/api/files" in schema.paths
+    assert "/api/ideas" in schema.paths
+    assert "SessionsPayload" in schema.components.schemas
+    assert "GuiConfigPayload" in schema.components.schemas
+    assert "FileResponsePayload" in schema.components.schemas
+    assert "IdeaResponsePayload" in schema.components.schemas
+
+
+def test_gui_config_api_includes_tools_and_skills(tmp_path) -> None:
+    app = build_gui_app(_runtime(SessionStore(tmp_path / "sessions")))
+    client = TestClient(app)
+
+    with client:
+        response = client.get("/api/config")
+
+    assert response.status_code == 200
+    payload = response.json()
+    skill_names = {skill["name"] for skill in payload["skills"]}
+    tool_names = {tool["name"] for tool in payload["tools"]}
+    assert "developer" in skill_names
+    assert "skill-creator" in skill_names
+    assert "read_text_file" in tool_names
+    assert "run_shell_command" in tool_names
+
+
 def test_gui_api_allows_cross_origin_browser_clients(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
     store.create_session()

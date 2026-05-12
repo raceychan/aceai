@@ -24,6 +24,7 @@ import {
   Save,
   Search,
   Send,
+  SlidersHorizontal,
   Sparkles,
   SquareTerminal,
   TerminalSquare,
@@ -31,24 +32,27 @@ import {
   WifiOff
 } from "lucide-react";
 import Editor, { Monaco } from "@monaco-editor/react";
-import { CSSProperties, FormEvent, KeyboardEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import hljs from "highlight.js/lib/common";
+import "highlight.js/styles/github-dark.css";
+import { CSSProperties, FormEvent, KeyboardEvent, MouseEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ApiApi, Configuration, FetchError, ResponseError } from "./generated/api";
+import type {
+  FilePayload as GeneratedFilePayload,
+  IdeaItemPayload,
+  ReferenceItemPayload,
+  SessionListItemPayload,
+  ThreadMetadataPayload
+} from "./generated/api";
 import {
   AppEventPayload,
-  EmptySessionCleanupPayload,
   FilePayload,
-  FileSavePayload,
-  IdeaCapturePayload,
   IdeaItem,
-  IdeaMutationPayload,
-  IdeasPayload,
   ReplyPayload,
   ReferenceItem,
-  ReferencesPayload,
   SessionListItem,
   SessionEvent,
-  SessionsPayload,
   SnapshotPayload,
   SocketEnvelope,
   ToolApprovalRequest,
@@ -87,6 +91,7 @@ type ComposerCommand = {
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 const INSPECTOR_WIDTH_KEY = "aceai.gui.inspectorWidth";
+const SESSION_URL_PARAM = "session";
 const DEFAULT_INSPECTOR_WIDTH = 420;
 const MIN_INSPECTOR_WIDTH = 320;
 const MIN_CONVERSATION_WIDTH = 520;
@@ -108,8 +113,79 @@ type ArtifactItem = {
 
 type OpenFileItem = FilePayload;
 
-type WorkspaceMode = "chat" | "sessions" | "ideas" | "threads" | "events" | "artifacts";
+type WorkspaceMode = "chat" | "sessions" | "ideas" | "threads" | "events" | "artifacts" | "settings";
 type MonacoThemeChoice = "aceai" | "light" | "dark";
+type InspectorGroupId = "run" | "context" | "work" | "signals";
+type ProjectGroupedItem = {
+  project_id: string;
+  project_name: string;
+};
+
+type ProjectGroup<T extends ProjectGroupedItem> = {
+  project_id: string;
+  project_name: string;
+  items: T[];
+};
+
+type ProviderOption = {
+  label: string;
+  value: string;
+  auth_mode: string;
+  api_key_env: string;
+};
+
+type ModelOption = {
+  label: string;
+  value: string;
+};
+
+type ToolPermissionConfig = {
+  name: string;
+  description: string;
+  permission: "always" | "ask";
+  enabled: boolean;
+  tags: string[];
+  max_calls_per_run?: number | null;
+};
+
+type SkillConfig = {
+  name: string;
+  description: string;
+  location: string;
+  source: string;
+  builtin: boolean;
+  enabled: boolean;
+};
+
+type GuiConfig = {
+  provider: string;
+  model: string;
+  default_model: string;
+  reasoning_level: string;
+  compress_threshold: string;
+  api_timeout_seconds: number;
+  stream_start_timeout_seconds: number;
+  stream_event_timeout_seconds: number;
+  skill_selection_mode: string;
+  enabled_skills: string[];
+  disabled_providers: string[];
+  api_key_set: boolean;
+  api_key_env: string;
+  config_path: string;
+  providers: ProviderOption[];
+  models: ModelOption[];
+  models_by_provider: Record<string, ModelOption[]>;
+  reasoning_options: string[];
+  skills: SkillConfig[];
+  tools: ToolPermissionConfig[];
+};
+
+const DEFAULT_INSPECTOR_GROUPS: Record<InspectorGroupId, boolean> = {
+  run: true,
+  context: false,
+  work: true,
+  signals: false
+};
 
 const COMPOSER_COMMANDS: ComposerCommand[] = [
   { name: "/clear", label: "Clear transcript view", hint: "Hide visible messages for this view" },
@@ -165,7 +241,13 @@ export function App() {
   const [showTranscriptWorkHistory, setShowTranscriptWorkHistory] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
+  const [openInspectorGroups, setOpenInspectorGroups] = useState(DEFAULT_INSPECTOR_GROUPS);
+  const [settings, setSettings] = useState<GuiConfig | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<GuiConfig | null>(null);
+  const [settingsApiKey, setSettingsApiKey] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const apiBaseUrl = useMemo(() => apiBaseFromWebSocketUrl(serverUrl), [serverUrl]);
+  const apiClient = useMemo(() => new ApiApi(new Configuration({ basePath: apiBasePath(apiBaseUrl) })), [apiBaseUrl]);
   const socketRef = useRef<WebSocket | null>(null);
   const activeTopicRef = useRef("session:new");
   const refCounter = useRef(0);
@@ -203,6 +285,8 @@ export function App() {
   );
   const workHistoryLabel = useMemo(() => workHistoryDuration(events, latestRun, isRunning), [events, latestRun, isRunning]);
   const visibleSessions = useMemo(() => filterSessions(sessions, sessionQuery), [sessions, sessionQuery]);
+  const visibleSessionGroups = useMemo(() => groupByProject(visibleSessions), [visibleSessions]);
+  const ideaGroups = useMemo(() => groupByProject(ideas), [ideas]);
   const emptySessionCount = useMemo(() => sessions.filter((session) => session.event_count === 0).length, [sessions]);
   const commandMatches = useMemo(() => matchingCommands(input), [input]);
   const activeReference = useMemo(() => activeReferencePrefix(input), [input]);
@@ -236,6 +320,25 @@ export function App() {
   useEffect(() => {
     void loadSessions();
     void loadIdeas();
+    void loadSettings();
+    const sessionId = sessionIdFromUrl();
+    if (sessionId !== null) {
+      connectSession(sessionId, { replaceUrl: true });
+    }
+  }, []);
+
+  useEffect(() => {
+    function handlePopState() {
+      const sessionId = sessionIdFromUrl();
+      if (sessionId === null) {
+        resetActiveSession();
+        return;
+      }
+      connectSession(sessionId, { replaceUrl: true });
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   useEffect(() => {
@@ -285,11 +388,10 @@ export function App() {
   async function loadSessions() {
     setSessionsLoading(true);
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, "/api/sessions"));
-      const payload = await readApiJson<SessionsPayload>(response, "Load sessions");
-      setSessions(payload.sessions);
+      const payload = await apiClient.listSessionsApiSessionsGet();
+      setSessions(payload.sessions.map(sessionListItemFromApi));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load sessions");
+      setError(apiFailureMessage("Load sessions", err));
     } finally {
       setSessionsLoading(false);
     }
@@ -297,31 +399,87 @@ export function App() {
 
   async function loadIdeas(preferredIndex = selectedIdeaIndex) {
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, "/api/ideas"));
-      const payload = await readApiJson<IdeasPayload>(response, "Load ideas");
-      setIdeas(payload.ideas);
-      const nextIdea = payload.ideas.find((idea) => idea.index === preferredIndex) ?? payload.ideas[0];
+      const payload = await apiClient.listIdeasApiIdeasGet();
+      const normalizedIdeas = payload.ideas.map(ideaItemFromApi);
+      setIdeas(normalizedIdeas);
+      const nextIdea = normalizedIdeas.find((idea) => idea.index === preferredIndex) ?? normalizedIdeas[0];
       setSelectedIdeaIndex(nextIdea?.index ?? 1);
       setIdeaDraft(nextIdea?.content ?? "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load ideas");
+      setError(apiFailureMessage("Load ideas", err));
     }
   }
 
   async function loadReferences(query: string, signal: AbortSignal) {
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/references?q=${encodeURIComponent(query)}`), { signal });
-      const payload = await readApiJson<ReferencesPayload>(response, "Load references");
-      setReferenceItems(payload.items);
+      const payload = await apiClient.listReferencesApiReferencesGet({ q: query }, { signal });
+      setReferenceItems(payload.items.map(referenceItemFromApi));
       setSelectedReferenceIndex(0);
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
+      if (isAbortError(err)) return;
       setReferenceItems([]);
     }
   }
 
-  function connectSession(sessionId: string) {
+  async function loadSettings() {
+    try {
+      const payload = await fetchJson<GuiConfig>(restApiUrl("/api/config"));
+      setSettings(payload);
+      setSettingsDraft(payload);
+      setSettingsApiKey("");
+    } catch (err) {
+      setError(apiFailureMessage("Load settings", err));
+    }
+  }
+
+  function updateSettingsDraft(updater: (draft: GuiConfig) => GuiConfig) {
+    setSettingsDraft((current) => {
+      if (current === null) return current;
+      return updater(current);
+    });
+  }
+
+  function updateToolDraft(toolName: string, updater: (tool: ToolPermissionConfig) => ToolPermissionConfig) {
+    updateSettingsDraft((draft) => ({
+      ...draft,
+      tools: draft.tools.map((tool) => tool.name === toolName ? updater(tool) : tool)
+    }));
+  }
+
+  async function saveSettings() {
+    if (settingsDraft === null) return;
+    setSettingsSaving(true);
+    setError(null);
+    try {
+      const payload = await fetchJson<GuiConfig>(restApiUrl("/api/config"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configUpdatePayload(settingsDraft, settingsApiKey))
+      });
+      setSettings(payload);
+      setSettingsDraft(payload);
+      setSettingsApiKey("");
+      setNotice("Settings saved.");
+    } catch (err) {
+      setError(apiFailureMessage("Save settings", err));
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function connectSession(sessionId: string, options: { replaceUrl?: boolean; updateUrl?: boolean } = {}) {
     const nextTopic = `session:${sessionId}`;
+    if (options.updateUrl !== false) {
+      writeSessionIdToUrl(sessionId, { replace: options.replaceUrl === true });
+    }
+    const currentSocket = socketRef.current;
+    if (
+      activeTopicRef.current === nextTopic &&
+      currentSocket !== null &&
+      (currentSocket.readyState === WebSocket.CONNECTING || currentSocket.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
     activeTopicRef.current = nextTopic;
     socketRef.current?.close();
     pending.current.clear();
@@ -415,7 +573,28 @@ export function App() {
   }
 
   function createSession() {
-    connectSession("new");
+    clearSessionIdFromUrl({ replace: false });
+    connectSession("new", { updateUrl: false });
+  }
+
+  function resetActiveSession() {
+    socketRef.current?.close();
+    pending.current.clear();
+    setSnapshot(null);
+    setEvents([]);
+    setActivity([]);
+    setQueuedTurns([]);
+    setOptimisticTurns([]);
+    setLiveAssistantText("");
+    setLiveTimeline([]);
+    setPendingApproval(null);
+    setSelectedDebugEventId(null);
+    setSelectedArtifactId(null);
+    setOpenFile(null);
+    setFileDraft("");
+    setFileEditMode(false);
+    setConnectionState("idle");
+    activeTopicRef.current = "session:new";
   }
 
   async function deleteSession(session: SessionListItem) {
@@ -423,31 +602,14 @@ export function App() {
       return;
     }
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/sessions/${session.session_id}`), { method: "DELETE" });
-      if (!response.ok) {
-        setError("Session delete failed");
-        return;
-      }
+      await apiClient.deleteSessionApiSessionsSessionIdDelete({ session_id: session.session_id });
       if (snapshot?.session.session_id === session.session_id) {
-        socketRef.current?.close();
-        setSnapshot(null);
-        setEvents([]);
-        setActivity([]);
-        setQueuedTurns([]);
-        setOptimisticTurns([]);
-        setLiveAssistantText("");
-        setLiveTimeline([]);
-        setPendingApproval(null);
-        setSelectedDebugEventId(null);
-        setOpenFile(null);
-        setFileDraft("");
-        setFileEditMode(false);
-        setConnectionState("idle");
-        activeTopicRef.current = "session:new";
+        clearSessionIdFromUrl({ replace: true });
+        resetActiveSession();
       }
       await loadSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Session delete failed");
+      setError(apiFailureMessage("Delete session", err));
     }
   }
 
@@ -457,33 +619,15 @@ export function App() {
       return;
     }
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, "/api/session-cleanup/empty"), { method: "DELETE" });
-      if (!response.ok) {
-        setError("Empty session cleanup failed");
-        return;
-      }
-      const payload = await readApiJson<EmptySessionCleanupPayload>(response, "Clean empty sessions");
-      if (snapshot && payload.session_ids.includes(snapshot.session.session_id)) {
-        socketRef.current?.close();
-        setSnapshot(null);
-        setEvents([]);
-        setActivity([]);
-        setQueuedTurns([]);
-        setOptimisticTurns([]);
-        setLiveAssistantText("");
-        setLiveTimeline([]);
-        setPendingApproval(null);
-        setSelectedDebugEventId(null);
-        setOpenFile(null);
-        setFileDraft("");
-        setFileEditMode(false);
-        setConnectionState("idle");
-        activeTopicRef.current = "session:new";
+      const payload = await apiClient.deleteEmptySessionsApiSessionCleanupEmptyDelete();
+      if (snapshot && payload.sessionIds.includes(snapshot.session.session_id)) {
+        clearSessionIdFromUrl({ replace: true });
+        resetActiveSession();
       }
       setNotice(`Deleted ${payload.deleted} empty sessions.`);
       await loadSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Empty session cleanup failed");
+      setError(apiFailureMessage("Clean empty sessions", err));
     }
   }
 
@@ -551,6 +695,7 @@ export function App() {
     try {
       const response = await sendCommand<SnapshotPayload>("snapshot", {});
       setSnapshot(response);
+      writeSessionIdToUrl(response.session.session_id, { replace: true });
       setEvents(response.events);
       setQueuedTurns(snapshotQueuedTurns(response));
       const responseRuntime = runtimeOf(response);
@@ -734,14 +879,13 @@ export function App() {
     setFileLoading(true);
     setError(null);
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/files?path=${encodeURIComponent(path)}`));
-      const payload = await readApiJson<FileSavePayload>(response, "Open file");
-      setOpenFile(payload.file);
+      const payload = await apiClient.readFileApiFilesGet({ path });
+      setOpenFile(filePayloadFromApi(payload.file));
       setFileDraft(payload.file.content);
       setFileEditMode(options.edit === true);
       setSelectedArtifactId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Open file failed");
+      setError(apiFailureMessage("Open file", err));
     } finally {
       setFileLoading(false);
     }
@@ -750,18 +894,16 @@ export function App() {
   async function saveOpenFile() {
     if (openFile === null) return;
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/files?path=${encodeURIComponent(openFile.path)}`), {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: fileDraft })
+      const payload = await apiClient.saveFileApiFilesPut({
+        path: openFile.path,
+        fileSaveRequest: { content: fileDraft }
       });
-      const payload = await readApiJson<FileSavePayload>(response, "Save file");
-      setOpenFile(payload.file);
+      setOpenFile(filePayloadFromApi(payload.file));
       setFileDraft(payload.file.content);
       setFileEditMode(false);
       setNotice(`Saved ${payload.file.path}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save file failed");
+      setError(apiFailureMessage("Save file", err));
     }
   }
 
@@ -800,25 +942,23 @@ export function App() {
     window.addEventListener("mouseup", stopResize);
   }
 
+  function toggleInspectorGroup(groupId: InspectorGroupId) {
+    setOpenInspectorGroups((current) => ({
+      ...current,
+      [groupId]: !current[groupId]
+    }));
+  }
+
   async function saveIdea(content: string) {
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, "/api/ideas"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content })
-      });
-      if (!response.ok) {
-        setError("Idea save failed");
-        return false;
-      }
-      const payload = await readApiJson<IdeaCapturePayload>(response, "Save idea");
+      const payload = await apiClient.captureIdeaApiIdeasPost({ ideaCaptureRequest: { content } });
       setNotice(`Saved idea ${payload.idea.index}.`);
       setSelectedIdeaIndex(payload.idea.index);
       setIdeaDraft(payload.idea.content);
       await loadIdeas(payload.idea.index);
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Idea save failed");
+      setError(apiFailureMessage("Save idea", err));
       return false;
     }
   }
@@ -834,16 +974,14 @@ export function App() {
   async function updateSelectedIdea() {
     if (!selectedIdea) return;
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/ideas/${selectedIdea.index}`), {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: ideaDraft })
+      const payload = await apiClient.updateIdeaApiIdeasIndexPut({
+        index: selectedIdea.index,
+        ideaUpdateRequest: { content: ideaDraft }
       });
-      const payload = await readApiJson<IdeaMutationPayload>(response, "Update idea");
       setNotice(`Updated idea ${payload.idea.index}.`);
       await loadIdeas();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Idea update failed");
+      setError(apiFailureMessage("Update idea", err));
     }
   }
 
@@ -851,12 +989,11 @@ export function App() {
     if (!selectedIdea) return;
     if (!window.confirm(`Delete idea ${selectedIdea.index}?`)) return;
     try {
-      const response = await fetch(apiEndpoint(apiBaseUrl, `/api/ideas/${selectedIdea.index}`), { method: "DELETE" });
-      const payload = await readApiJson<IdeaMutationPayload>(response, "Delete idea");
+      const payload = await apiClient.deleteIdeaApiIdeasIndexDelete({ index: selectedIdea.index });
       setNotice(`Deleted idea ${payload.idea.index}.`);
       await loadIdeas();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Idea delete failed");
+      setError(apiFailureMessage("Delete idea", err));
     }
   }
 
@@ -907,7 +1044,8 @@ export function App() {
       return;
     }
     if (commandName === "/config") {
-      setNotice("Settings are not exposed in this GUI yet.");
+      setWorkspaceMode("settings");
+      void loadSettings();
       return;
     }
     if (commandName === "/idea") {
@@ -989,30 +1127,35 @@ export function App() {
           <div className="session-stack">
             {sessionsLoading ? <div className="subtle-empty">Loading sessions...</div> : null}
             {visibleSessions.length === 0 && !sessionsLoading ? <div className="subtle-empty">No saved sessions.</div> : null}
-            {visibleSessions.map((session) => {
-              const active = snapshot?.session.session_id === session.session_id;
-              return (
-                <div className={`session-row ${active ? "active online" : ""}`} key={session.session_id}>
-                  <button className="session-open" onClick={() => connectSession(session.session_id)} title={`Open ${session.title}`}>
-                    <span className="session-status" />
-                    <div>
-                      <strong>{session.title}</strong>
-                      <span>{session.project_name} / {formatShortDate(session.updated_at)}</span>
-                      <small>{session.thread_count} threads / {formatUsd(session.total_cost_usd)}</small>
+            {visibleSessionGroups.map((group) => (
+              <section className="project-session-group" key={group.project_id}>
+                <ProjectGroupHeader count={group.items.length} label={group.project_name} />
+                {group.items.map((session) => {
+                  const active = snapshot?.session.session_id === session.session_id;
+                  return (
+                    <div className={`session-row ${active ? "active online" : ""}`} key={session.session_id}>
+                      <button className="session-open" onClick={() => connectSession(session.session_id)} title={`Open ${session.title}`}>
+                        <span className="session-status" />
+                        <div>
+                          <strong>{session.title}</strong>
+                          <span>{formatShortDate(session.updated_at)}</span>
+                          <small>{session.thread_count} threads / {formatUsd(session.total_cost_usd)}</small>
+                        </div>
+                        <code>{session.event_count}</code>
+                      </button>
+                      <button
+                        aria-label={`Delete ${session.title} ${session.session_id}`}
+                        className="session-delete"
+                        onClick={() => void deleteSession(session)}
+                        title="Delete session"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
-                    <code>{session.event_count}</code>
-                  </button>
-                  <button
-                    aria-label={`Delete ${session.title} ${session.session_id}`}
-                    className="session-delete"
-                    onClick={() => void deleteSession(session)}
-                    title="Delete session"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              );
-            })}
+                  );
+                })}
+              </section>
+            ))}
           </div>
         </section>
 
@@ -1041,30 +1184,6 @@ export function App() {
               Chat
             </button>
             <button
-              className={`mode-pill ${workspaceMode === "sessions" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("sessions")}
-              title="Show saved sessions"
-            >
-              <Layers size={13} />
-              Sessions
-            </button>
-            <button
-              className={`mode-pill ${workspaceMode === "ideas" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("ideas")}
-              title="Show saved ideas"
-            >
-              <FileText size={13} />
-              Ideas
-            </button>
-            <button
-              className={`mode-pill ${workspaceMode === "threads" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("threads")}
-              title="Show threads and subagents"
-            >
-              <GitBranch size={13} />
-              Threads
-            </button>
-            <button
               className={`mode-pill ${workspaceMode === "events" ? "active" : ""}`}
               onClick={() => setWorkspaceMode("events")}
               title="Show events view"
@@ -1091,9 +1210,22 @@ export function App() {
             <button onClick={refreshSnapshot} disabled={!connected} title="Refresh session snapshot">
               <RefreshCw size={16} />
             </button>
-            <button onClick={cancelRun} disabled={!connected || !isRunning} title="Cancel active run">
-              <CircleStop size={16} />
-            </button>
+            {connected && isRunning ? (
+              <button onClick={cancelRun} title="Cancel active run">
+                <CircleStop size={16} />
+              </button>
+            ) : (
+              <button
+                className={workspaceMode === "settings" ? "topbar-action-active" : ""}
+                onClick={() => {
+                  setWorkspaceMode("settings");
+                  void loadSettings();
+                }}
+                title="Settings"
+              >
+                <SlidersHorizontal size={16} />
+              </button>
+            )}
           </div>
         </header>
 
@@ -1112,11 +1244,11 @@ export function App() {
         ) : null}
 
         <div
-          className="content-grid"
+          className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""}`}
           style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
         >
           <section className="conversation-pane" aria-label="Transcript">
-            <div className="pane-header">
+            {workspaceMode !== "settings" ? <div className="pane-header">
               <div>
                 <span>Conversation</span>
                 <strong>{isRunning ? "Streaming" : connected ? "Ready" : "Offline"}</strong>
@@ -1145,7 +1277,7 @@ export function App() {
                 {isRunning ? <Sparkles size={14} /> : <Clock3 size={14} />}
                 {isRunning ? "running" : latestRun ? "completed" : "idle"}
               </div>
-            </div>
+            </div> : null}
 
             {workspaceMode === "chat" ? <div className="transcript">
               {visibleTranscript.length === 0 ? (
@@ -1225,35 +1357,40 @@ export function App() {
                       <span>Start a new chat or adjust the search.</span>
                     </div>
                   ) : null}
-                  {visibleSessions.map((session) => {
-                    const active = snapshot?.session.session_id === session.session_id;
-                    return (
-                      <div className={`session-workspace-row ${active ? "active" : ""}`} key={session.session_id}>
-                        <button
-                          className="session-workspace-open"
-                          onClick={() => {
-                            connectSession(session.session_id);
-                            setWorkspaceMode("chat");
-                          }}
-                          title={`Open ${session.title}`}
-                        >
-                          <div>
-                            <strong>{session.title}</strong>
-                            <span>{session.project_name} / {formatShortDate(session.updated_at)}</span>
+                  {visibleSessionGroups.map((group) => (
+                    <section className="project-workspace-group" key={group.project_id}>
+                      <ProjectGroupHeader count={group.items.length} label={group.project_name} />
+                      {group.items.map((session) => {
+                        const active = snapshot?.session.session_id === session.session_id;
+                        return (
+                          <div className={`session-workspace-row ${active ? "active" : ""}`} key={session.session_id}>
+                            <button
+                              className="session-workspace-open"
+                              onClick={() => {
+                                connectSession(session.session_id);
+                                setWorkspaceMode("chat");
+                              }}
+                              title={`Open ${session.title}`}
+                            >
+                              <div>
+                                <strong>{session.title}</strong>
+                                <span>{formatShortDate(session.updated_at)}</span>
+                              </div>
+                              <code>{session.thread_count} threads</code>
+                            </button>
+                            <button
+                              aria-label={`Delete ${session.title} ${session.session_id}`}
+                              className="session-workspace-delete"
+                              onClick={() => void deleteSession(session)}
+                              title="Delete session"
+                            >
+                              <Trash2 size={14} />
+                            </button>
                           </div>
-                          <code>{session.thread_count} threads</code>
-                        </button>
-                        <button
-                          aria-label={`Delete ${session.title} ${session.session_id}`}
-                          className="session-workspace-delete"
-                          onClick={() => void deleteSession(session)}
-                          title="Delete session"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </section>
+                  ))}
                 </div>
               </div>
             ) : null}
@@ -1282,15 +1419,20 @@ export function App() {
                 ) : (
                   <div className="idea-workspace">
                     <div className="idea-workspace-list">
-                      {ideas.map((idea) => (
-                        <button
-                          className={idea.index === selectedIdea?.index ? "active" : ""}
-                          key={idea.idea_id}
-                          onClick={() => selectIdea(idea)}
-                        >
-                          <span>{ideaTitle(idea.content)}</span>
-                          <code>@idea:{idea.index}</code>
-                        </button>
+                      {ideaGroups.map((group) => (
+                        <section className="project-idea-group" key={group.project_id}>
+                          <ProjectGroupHeader count={group.items.length} label={group.project_name} />
+                          {group.items.map((idea) => (
+                            <button
+                              className={idea.index === selectedIdea?.index ? "active" : ""}
+                              key={idea.idea_id}
+                              onClick={() => selectIdea(idea)}
+                            >
+                              <span>{ideaTitle(idea.content)}</span>
+                              <code>@idea:{idea.index}</code>
+                            </button>
+                          ))}
+                        </section>
                       ))}
                     </div>
                     {selectedIdea ? (
@@ -1479,6 +1621,20 @@ export function App() {
               </div>
             ) : null}
 
+            {workspaceMode === "settings" ? (
+              <SettingsWorkspace
+                apiKey={settingsApiKey}
+                current={settings}
+                draft={settingsDraft}
+                saving={settingsSaving}
+                onApiKeyChange={setSettingsApiKey}
+                onReload={() => void loadSettings()}
+                onSave={() => void saveSettings()}
+                onUpdate={updateSettingsDraft}
+                onUpdateTool={updateToolDraft}
+              />
+            ) : null}
+
             {pendingApproval ? (
               <section className="approval-card" aria-label="Tool approval">
                 <div className="approval-main">
@@ -1524,7 +1680,7 @@ export function App() {
               </section>
             ) : null}
 
-            <form className="composer" onSubmit={submitMessage}>
+            {workspaceMode !== "settings" ? <form className="composer" onSubmit={submitMessage}>
               <div className="composer-card">
                 <div className="composer-input-area">
                 <textarea
@@ -1591,12 +1747,6 @@ export function App() {
                       <span>{formatReasoningLevel(runtime.reasoning_level)}</span>
                       <ChevronDown size={15} />
                     </button>
-                    <button type="button" className="composer-icon-button" onClick={() => setWorkspaceMode("ideas")} title="Open ideas" aria-label="Open ideas">
-                      <FileText size={16} />
-                    </button>
-                    <button type="button" className="composer-icon-button" onClick={() => setWorkspaceMode("events")} title="Open events" aria-label="Open events">
-                      <Activity size={16} />
-                    </button>
                     <button type="button" className="composer-icon-button" title="Voice input" aria-label="Voice input" disabled>
                       <Mic size={16} />
                     </button>
@@ -1606,18 +1756,18 @@ export function App() {
                   </div>
                 </div>
               </div>
-            </form>
+            </form> : null}
           </section>
 
-          <div
+          {workspaceMode !== "settings" ? <div
             aria-label="Resize workspace"
             className="split-resizer"
             onMouseDown={startInspectorResize}
             role="separator"
             title="Drag to resize workspace"
-          />
+          /> : null}
 
-          <aside
+          {workspaceMode !== "settings" ? <aside
             className={`inspector ${hasWorkspaceObject ? "object-open" : ""}`}
             aria-label="Run inspector"
           >
@@ -1735,11 +1885,14 @@ export function App() {
 
             {!hasWorkspaceObject ? (
               <div className="work-history" aria-label="Work history">
+                <InspectorGroup
+                  icon={<PanelRight size={15} />}
+                  open={openInspectorGroups.run}
+                  onToggle={() => toggleInspectorGroup("run")}
+                  summary={pendingApproval ? "approval needed" : isRunning ? "active run" : latestRun ? "settled" : "waiting"}
+                  title="Run"
+                >
                 <section className="inspector-section" ref={statsRef}>
-                  <div className="section-title">
-                    <PanelRight size={15} />
-                    Run
-                  </div>
                   <div className="run-card">
                     <div>
                       <span>State</span>
@@ -1769,7 +1922,15 @@ export function App() {
                     <span>Cache {formatPercent(observableUsage?.cache_hit_rate)}</span>
                   </div>
                 </section>
+                </InspectorGroup>
 
+            <InspectorGroup
+              icon={<GitBranch size={15} />}
+              open={openInspectorGroups.context}
+              onToggle={() => toggleInspectorGroup("context")}
+              summary={`${snapshot?.threads.length ?? 0} threads / ${ideas.length} ideas`}
+              title="Context"
+            >
             <section className="inspector-section" ref={threadsRef}>
               <div className="section-title">
                 <GitBranch size={15} />
@@ -1796,27 +1957,32 @@ export function App() {
               )}
             </section>
 
-            <section className="inspector-section">
-              <div className="section-title">
-                <FileText size={15} />
-                Ideas
-              </div>
-              {ideas.length === 0 ? (
-                <div className="subtle-empty">No saved ideas.</div>
-              ) : (
-                <div className="idea-panel">
-                  <div className="idea-list">
-                    {ideas.map((idea) => (
-                      <button
-                        className={idea.index === selectedIdea?.index ? "active" : ""}
-                        key={idea.idea_id}
-                        onClick={() => selectIdea(idea)}
-                      >
-                        <span>{ideaTitle(idea.content)}</span>
-                        <code>@idea:{idea.index}</code>
-                      </button>
-                    ))}
-                  </div>
+                  <section className="inspector-section">
+                    <div className="section-title">
+                      <FileText size={15} />
+                      Ideas
+                    </div>
+                    {ideas.length === 0 ? (
+                      <div className="subtle-empty">No saved ideas.</div>
+                    ) : (
+                      <div className="idea-panel">
+                        <div className="idea-list">
+                          {ideaGroups.map((group) => (
+                            <section className="project-idea-group" key={group.project_id}>
+                              <ProjectGroupHeader count={group.items.length} label={group.project_name} />
+                              {group.items.map((idea) => (
+                                <button
+                                  className={idea.index === selectedIdea?.index ? "active" : ""}
+                                  key={idea.idea_id}
+                                  onClick={() => selectIdea(idea)}
+                                >
+                                  <span>{ideaTitle(idea.content)}</span>
+                                  <code>@idea:{idea.index}</code>
+                                </button>
+                              ))}
+                            </section>
+                          ))}
+                        </div>
                   {selectedIdea ? (
                     <div className="idea-editor">
                       <textarea
@@ -1843,7 +2009,15 @@ export function App() {
                 </div>
               )}
             </section>
+            </InspectorGroup>
 
+            <InspectorGroup
+              icon={<Sparkles size={15} />}
+              open={openInspectorGroups.work}
+              onToggle={() => toggleInspectorGroup("work")}
+              summary={`${timeline.length + observableTrajectory.length} steps / ${observableToolCalls.length} tools`}
+              title="Work"
+            >
             <section className="inspector-section" ref={timelineRef}>
               <div className="section-title">
                 <Sparkles size={15} />
@@ -1896,7 +2070,15 @@ export function App() {
                 </div>
               )}
             </section>
+            </InspectorGroup>
 
+            <InspectorGroup
+              icon={<Activity size={15} />}
+              open={openInspectorGroups.signals}
+              onToggle={() => toggleInspectorGroup("signals")}
+              summary={`${observableEventKinds.length} event kinds / ${observableDebugEvents.length} debug`}
+              title="Signals"
+            >
             <section className="inspector-section" ref={eventsRef}>
               <div className="section-title">
                 <GitBranch size={15} />
@@ -1963,9 +2145,10 @@ export function App() {
                 </div>
               )}
             </section>
+            </InspectorGroup>
               </div>
             ) : null}
-          </aside>
+          </aside> : null}
         </div>
       </section>
     </main>
@@ -1978,6 +2161,45 @@ function Metric({ label, value, valueText }: { label: string; value?: number; va
       <strong>{valueText ?? value}</strong>
       <span>{label}</span>
     </div>
+  );
+}
+
+function ProjectGroupHeader({ count, label }: { count: number; label: string }) {
+  return (
+    <div className="project-group-header">
+      <span>{label}</span>
+      <code>{count}</code>
+    </div>
+  );
+}
+
+function InspectorGroup({
+  children,
+  icon,
+  onToggle,
+  open,
+  summary,
+  title
+}: {
+  children: ReactNode;
+  icon: ReactNode;
+  onToggle: () => void;
+  open: boolean;
+  summary: string;
+  title: string;
+}) {
+  return (
+    <section className={`inspector-group ${open ? "open" : ""}`}>
+      <button className="inspector-group-toggle" type="button" onClick={onToggle}>
+        <span className="inspector-group-icon">{icon}</span>
+        <span className="inspector-group-copy">
+          <strong>{title}</strong>
+          <small>{summary}</small>
+        </span>
+        {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+      </button>
+      {open ? <div className="inspector-group-body">{children}</div> : null}
+    </section>
   );
 }
 
@@ -2053,7 +2275,8 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
       <ReactMarkdown
         components={{
           code({ children, className, ...props }) {
-            const value = String(children).trim();
+            const rawValue = String(children);
+            const value = rawValue.trim();
             const filePath = filePathFromText(value);
             if (!className && filePath !== null && onOpenFile !== undefined) {
               return (
@@ -2066,6 +2289,11 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
                   {value}
                 </button>
               );
+            }
+            const highlightedHtml = highlightedCodeHtml(rawValue, className);
+            if (highlightedHtml !== null) {
+              const codeClassName = ["hljs", className].filter(Boolean).join(" ");
+              return <code {...props} className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedHtml }} />;
             }
             return <code className={className} {...props}>{children}</code>;
           },
@@ -2092,6 +2320,23 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
       </ReactMarkdown>
     </div>
   );
+}
+
+function highlightedCodeHtml(value: string, className: string | undefined) {
+  const code = value.endsWith("\n") ? value.slice(0, -1) : value;
+  const language = markdownCodeLanguage(className);
+  if (language !== null && hljs.getLanguage(language)) {
+    return hljs.highlight(code, { language }).value;
+  }
+  if (code.includes("\n")) {
+    return hljs.highlightAuto(code).value;
+  }
+  return null;
+}
+
+function markdownCodeLanguage(className: string | undefined) {
+  const match = className?.match(/(?:^|\s)language-([^\s]+)/);
+  return match?.[1] ?? null;
 }
 
 function ApprovalArguments({ argumentsJson }: { argumentsJson: string }) {
@@ -2332,32 +2577,158 @@ function filterSessions(sessions: SessionListItem[], query: string) {
   }).slice(0, 30);
 }
 
+function groupByProject<T extends ProjectGroupedItem>(items: T[]): ProjectGroup<T>[] {
+  const groups: ProjectGroup<T>[] = [];
+  const projectIndexes = new Map<string, number>();
+  for (const item of items) {
+    const index = projectIndexes.get(item.project_id);
+    if (index === undefined) {
+      projectIndexes.set(item.project_id, groups.length);
+      groups.push({
+        project_id: item.project_id,
+        project_name: item.project_name,
+        items: [item]
+      });
+      continue;
+    }
+    groups[index].items.push(item);
+  }
+  return groups;
+}
+
 function matchingCommands(input: string) {
   if (!input.startsWith("/")) return [];
   const commandName = input.split(/\s+/, 1)[0];
   return COMPOSER_COMMANDS.filter((command) => command.name.startsWith(commandName)).slice(0, 10);
 }
 
-async function readApiJson<T>(response: Response, label: string): Promise<T> {
-  const text = await response.text();
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
   if (!response.ok) {
-    throw new Error(apiErrorMessage(label, response, text));
+    throw new Error(`Request failed (${response.status}).`);
   }
-  if (text === "") {
-    throw new Error(`${label} failed: AceAI GUI backend returned an empty response.`);
-  }
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error(`${label} failed: AceAI GUI backend returned invalid JSON.`);
-  }
+  return response.json() as Promise<T>;
 }
 
-function apiErrorMessage(label: string, response: Response, body: string) {
-  if (response.status === 502 || response.status === 503 || body === "") {
+function configUpdatePayload(config: GuiConfig, apiKey: string) {
+  const tool_permissions: Record<string, string> = {};
+  const tool_enabled: Record<string, boolean> = {};
+  const tool_max_calls: Record<string, number> = {};
+  for (const tool of config.tools) {
+    tool_permissions[tool.name] = tool.permission;
+    tool_enabled[tool.name] = tool.enabled;
+    if (typeof tool.max_calls_per_run === "number") {
+      tool_max_calls[tool.name] = tool.max_calls_per_run;
+    }
+  }
+  return {
+    provider: config.provider,
+    model: config.model,
+    default_model: config.default_model,
+    reasoning_level: config.reasoning_level,
+    compress_threshold: config.compress_threshold,
+    api_timeout_seconds: config.api_timeout_seconds,
+    stream_start_timeout_seconds: config.stream_start_timeout_seconds,
+    stream_event_timeout_seconds: config.stream_event_timeout_seconds,
+    skill_selection_mode: config.skill_selection_mode,
+    enabled_skills: config.enabled_skills,
+    disabled_providers: config.disabled_providers,
+    api_key: apiKey === "" ? null : apiKey,
+    tool_permissions,
+    tool_enabled,
+    tool_max_calls
+  };
+}
+
+function apiFailureMessage(label: string, error: unknown) {
+  if (error instanceof ResponseError && (error.response.status === 502 || error.response.status === 503)) {
     return `${label} failed: AceAI GUI backend is unavailable. Restart aceai-gui.`;
   }
-  return `${label} failed (${response.status}).`;
+  if (error instanceof ResponseError) {
+    return `${label} failed (${error.response.status}).`;
+  }
+  if (error instanceof FetchError) {
+    return `${label} failed: AceAI GUI backend is unavailable. Restart aceai-gui.`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return `${label} failed.`;
+}
+
+function isAbortError(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  return error instanceof FetchError && error.cause instanceof DOMException && error.cause.name === "AbortError";
+}
+
+function sessionListItemFromApi(item: SessionListItemPayload): SessionListItem {
+  return {
+    session_id: item.sessionId,
+    project_id: item.projectId,
+    project_name: item.projectName,
+    title: item.title,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+    path: item.path ?? undefined,
+    event_count: item.eventCount,
+    total_cost_usd: item.totalCostUsd,
+    thread_count: item.threadCount,
+    active_thread: threadMetadataFromApi(item.activeThread)
+  };
+}
+
+function threadMetadataFromApi(item: ThreadMetadataPayload) {
+  return {
+    session_id: item.sessionId,
+    thread_id: item.threadId,
+    role: item.role,
+    title: item.title,
+    status: item.status,
+    agent_id: item.agentId,
+    parent_thread_id: item.parentThreadId,
+    parent_run_id: item.parentRunId,
+    parent_tool_call_id: item.parentToolCallId,
+    metadata: item.metadata as Record<string, unknown>,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt
+  };
+}
+
+function referenceItemFromApi(item: ReferenceItemPayload): ReferenceItem {
+  if (item.kind !== "file" && item.kind !== "idea") {
+    throw new Error(`Unknown reference kind: ${item.kind}`);
+  }
+  return {
+    kind: item.kind,
+    value: item.value,
+    label: item.label,
+    description: item.description,
+    idea_id: item.ideaId ?? undefined
+  };
+}
+
+function filePayloadFromApi(item: GeneratedFilePayload): FilePayload {
+  return {
+    path: item.path,
+    content: item.content,
+    size: item.size,
+    updated_at: item.updatedAt
+  };
+}
+
+function ideaItemFromApi(item: IdeaItemPayload): IdeaItem {
+  return {
+    index: item.index,
+    idea_id: item.ideaId,
+    created_at: item.createdAt,
+    project_id: item.projectId,
+    project_name: item.projectName,
+    workspace: item.workspace,
+    content: item.content,
+    source_session_id: item.sourceSessionId
+  };
 }
 
 function activeReferencePrefix(input: string) {
@@ -2641,6 +3012,33 @@ function friendlyTopic(topic: string) {
   return topic;
 }
 
+function sessionIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get(SESSION_URL_PARAM);
+  return sessionId === "" ? null : sessionId;
+}
+
+function writeSessionIdToUrl(sessionId: string, options: { replace: boolean }) {
+  const url = new URL(window.location.href);
+  url.searchParams.set(SESSION_URL_PARAM, sessionId);
+  updateBrowserUrl(url, options);
+}
+
+function clearSessionIdFromUrl(options: { replace: boolean }) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(SESSION_URL_PARAM);
+  updateBrowserUrl(url, options);
+}
+
+function updateBrowserUrl(url: URL, options: { replace: boolean }) {
+  if (url.href === window.location.href) return;
+  if (options.replace) {
+    window.history.replaceState({}, "", url);
+    return;
+  }
+  window.history.pushState({}, "", url);
+}
+
 function defaultWebSocketUrl() {
   if (!window.location.host) return "ws://127.0.0.1:8765/ws";
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -2656,8 +3054,12 @@ function apiBaseFromWebSocketUrl(serverUrl: string) {
   return url.toString();
 }
 
-function apiEndpoint(apiBaseUrl: string, path: string) {
-  return new URL(path, apiBaseUrl).toString();
+function apiBasePath(apiBaseUrl: string) {
+  return apiBaseUrl.replace(/\/+$/, "");
+}
+
+function restApiUrl(path: string) {
+  return `${apiBasePath(window.location.origin)}${path}`;
 }
 
 function formatShortDate(value: string) {
@@ -2695,6 +3097,304 @@ function sessionCost(sessionId: string | undefined, sessions: SessionListItem[])
   if (!sessionId) return 0;
   const session = sessions.find((item) => item.session_id === sessionId);
   return session?.total_cost_usd ?? 0;
+}
+
+function SettingsWorkspace({
+  apiKey,
+  current,
+  draft,
+  saving,
+  onApiKeyChange,
+  onReload,
+  onSave,
+  onUpdate,
+  onUpdateTool
+}: {
+  apiKey: string;
+  current: GuiConfig | null;
+  draft: GuiConfig | null;
+  saving: boolean;
+  onApiKeyChange: (value: string) => void;
+  onReload: () => void;
+  onSave: () => void;
+  onUpdate: (updater: (draft: GuiConfig) => GuiConfig) => void;
+  onUpdateTool: (toolName: string, updater: (tool: ToolPermissionConfig) => ToolPermissionConfig) => void;
+}) {
+  if (draft === null) {
+    return (
+      <div className="workspace-panel settings-workspace loading">
+        <div className="empty-state inline-empty">
+          <strong>Loading settings</strong>
+          <span>Reading the active AceAI config.</span>
+        </div>
+      </div>
+    );
+  }
+  const modelOptions = draft.models_by_provider[draft.provider] ?? draft.models;
+  const skills = draft.skills ?? [];
+  const enabledSkillCount = skills.filter((skill) => skill.enabled).length;
+  const toolGroups = groupToolsByTag(draft.tools);
+  return (
+    <div className="workspace-panel settings-workspace">
+      <aside className="settings-rail">
+        <div className="settings-rail-title">
+          <strong>Settings</strong>
+          <span>Project preferences</span>
+        </div>
+        <nav className="settings-nav" aria-label="Settings sections">
+          <a href="#settings-model">Model</a>
+          <a href="#settings-skills">Skills</a>
+          <a href="#settings-context">Context</a>
+          <a href="#settings-tools">Tools</a>
+        </nav>
+        <div className="settings-rail-meta">
+          <span>Provider</span>
+          <strong>{providerLabel(draft)}</strong>
+          <span>Model</span>
+          <strong>{draft.model}</strong>
+          <span>Skills</span>
+          <strong>{enabledSkillCount} enabled</strong>
+          <span>Config</span>
+          <code>{shortPath(draft.config_path)}</code>
+        </div>
+      </aside>
+
+      <div className="settings-main">
+        <header className="settings-toolbar">
+          <div>
+            <strong>Preferences</strong>
+            <span>{draft.config_path}</span>
+          </div>
+          <div className="settings-actions">
+            <button type="button" onClick={onReload}>
+              <RefreshCw size={13} />
+              Reload
+            </button>
+            <button type="button" className="primary" disabled={saving} onClick={onSave}>
+              <Save size={13} />
+              {saving ? "Saving" : "Save"}
+            </button>
+          </div>
+        </header>
+
+        <section className="settings-section" id="settings-model">
+          <div className="settings-section-title">
+            <strong>Model</strong>
+            <span>Provider, model, credentials, and reasoning effort.</span>
+          </div>
+          <div className="preference-list">
+            <PreferenceRow title="Provider" description="The backend used for new agent turns.">
+              <select
+                value={draft.provider}
+                onChange={(event) => {
+                  const provider = event.target.value;
+                  const nextModels = draft.models_by_provider[provider] ?? [];
+                  const nextModel = nextModels[0]?.value ?? draft.model;
+                  onUpdate((value) => ({ ...value, provider, model: nextModel, default_model: nextModel }));
+                }}
+              >
+                {draft.providers.map((provider) => (
+                  <option key={provider.value} value={provider.value}>{provider.label}</option>
+                ))}
+              </select>
+            </PreferenceRow>
+            <PreferenceRow title="Model" description="Default model for subsequent runs.">
+              <select
+                value={draft.model}
+                onChange={(event) => {
+                  const model = event.target.value;
+                  onUpdate((value) => ({ ...value, model, default_model: model }));
+                }}
+              >
+                {modelOptions.map((model) => (
+                  <option key={model.value} value={model.value}>{model.label}</option>
+                ))}
+              </select>
+            </PreferenceRow>
+            <PreferenceRow title="Reasoning" description="Effort level when the selected model supports it.">
+              <select
+                value={draft.reasoning_level}
+                onChange={(event) => onUpdate((value) => ({ ...value, reasoning_level: event.target.value }))}
+              >
+                {draft.reasoning_options.map((level) => (
+                  <option key={level} value={level}>{formatReasoningLevel(level)}</option>
+                ))}
+              </select>
+            </PreferenceRow>
+            <PreferenceRow title="API key" description={current?.api_key_set ? `Stored credential detected in ${draft.api_key_env}.` : `Expected environment key: ${draft.api_key_env}.`}>
+              <input
+                value={apiKey}
+                onChange={(event) => onApiKeyChange(event.target.value)}
+                placeholder={current?.api_key_set ? "Leave blank to keep stored key" : draft.api_key_env}
+                type="password"
+              />
+            </PreferenceRow>
+          </div>
+        </section>
+
+        <section className="settings-section" id="settings-skills">
+          <div className="settings-section-title">
+            <strong>Skills</strong>
+            <span>Reusable instructions loaded into the active agent.</span>
+          </div>
+          <div className="skill-settings-list">
+            {skills.length === 0 ? (
+              <div className="settings-empty-row">No skills are available for this project.</div>
+            ) : skills.map((skill) => (
+              <div className="skill-settings-row" key={skill.name}>
+                <label className="settings-switch" title={skill.enabled ? "Enabled" : "Disabled"}>
+                  <input
+                    checked={skill.enabled}
+                    type="checkbox"
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      onUpdate((value) => {
+                        const nextSkills = value.skills.map((item) => item.name === skill.name ? { ...item, enabled } : item);
+                        return {
+                          ...value,
+                          skill_selection_mode: "selected",
+                          enabled_skills: nextSkills.filter((item) => item.enabled).map((item) => item.name),
+                          skills: nextSkills
+                        };
+                      });
+                    }}
+                  />
+                  <span />
+                </label>
+                <div>
+                  <div className="skill-settings-title">
+                    <strong>{skill.name}</strong>
+                    <code>{skill.source}</code>
+                  </div>
+                  <p>{skill.description}</p>
+                  <small>{skill.location}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-section" id="settings-context">
+          <div className="settings-section-title">
+            <strong>Context</strong>
+            <span>Compression and request timeout behavior.</span>
+          </div>
+          <div className="preference-list">
+            <PreferenceRow title="Compress at" description="Context compression threshold, percentage or token count.">
+              <input value={draft.compress_threshold} onChange={(event) => onUpdate((value) => ({ ...value, compress_threshold: event.target.value }))} />
+            </PreferenceRow>
+            <PreferenceRow title="API timeout" description="Timeout for non-streaming LLM requests, in seconds.">
+              <input type="number" value={draft.api_timeout_seconds} onChange={(event) => onUpdate((value) => ({ ...value, api_timeout_seconds: Number(event.target.value) }))} />
+            </PreferenceRow>
+            <PreferenceRow title="Stream start" description="How long to wait for the first streaming event.">
+              <input type="number" value={draft.stream_start_timeout_seconds} onChange={(event) => onUpdate((value) => ({ ...value, stream_start_timeout_seconds: Number(event.target.value) }))} />
+            </PreferenceRow>
+            <PreferenceRow title="Stream idle" description="Maximum idle gap between streaming events.">
+              <input type="number" value={draft.stream_event_timeout_seconds} onChange={(event) => onUpdate((value) => ({ ...value, stream_event_timeout_seconds: Number(event.target.value) }))} />
+            </PreferenceRow>
+          </div>
+        </section>
+
+        <section className="settings-section" id="settings-tools">
+          <div className="settings-section-title">
+            <strong>Tools</strong>
+            <span>Capability groups with enablement, approval policy, and per-run limits.</span>
+          </div>
+          <div className="settings-tool-groups">
+            {toolGroups.map((group) => (
+              <section className="settings-tool-group" key={group.tag}>
+                <div className="settings-tool-group-title">
+                  <strong>{group.tag}</strong>
+                  <span>{group.tools.length} tools</span>
+                </div>
+                {group.tools.map((tool) => (
+                  <div className="settings-tool-row" key={tool.name}>
+                    <div className="settings-tool-identity">
+                      <label className="settings-switch" title={tool.enabled ? "Enabled" : "Disabled"}>
+                        <input checked={tool.enabled} type="checkbox" onChange={(event) => onUpdateTool(tool.name, (value) => ({ ...value, enabled: event.target.checked }))} />
+                        <span />
+                      </label>
+                      <div>
+                        <strong>{tool.name}</strong>
+                        <p>{tool.description}</p>
+                      </div>
+                    </div>
+                    <div className="settings-tool-controls">
+                      <div className="segmented-control" aria-label={`${tool.name} permission`}>
+                        <button
+                          type="button"
+                          className={tool.permission === "always" ? "active" : ""}
+                          onClick={() => onUpdateTool(tool.name, (value) => ({ ...value, permission: "always" }))}
+                        >
+                          Always
+                        </button>
+                        <button
+                          type="button"
+                          className={tool.permission === "ask" ? "active" : ""}
+                          onClick={() => onUpdateTool(tool.name, (value) => ({ ...value, permission: "ask" }))}
+                        >
+                          Ask
+                        </button>
+                      </div>
+                      <input
+                        aria-label={`${tool.name} maximum calls`}
+                        min={1}
+                        placeholder="No limit"
+                        type="number"
+                        value={tool.max_calls_per_run ?? ""}
+                        onChange={(event) => onUpdateTool(tool.name, (value) => ({
+                          ...value,
+                          max_calls_per_run: event.target.value === "" ? null : Number(event.target.value)
+                        }))}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </section>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function PreferenceRow({ children, description, title }: { children: ReactNode; description: string; title: string }) {
+  return (
+    <div className="preference-row">
+      <div>
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </div>
+      <div className="preference-control">{children}</div>
+    </div>
+  );
+}
+
+function providerLabel(config: GuiConfig) {
+  return config.providers.find((provider) => provider.value === config.provider)?.label ?? config.provider;
+}
+
+function shortPath(path: string) {
+  const parts = path.split("/");
+  if (parts.length <= 3) return path;
+  return `.../${parts.slice(-3).join("/")}`;
+}
+
+function groupToolsByTag(tools: ToolPermissionConfig[]) {
+  const groups: { tag: string; tools: ToolPermissionConfig[] }[] = [];
+  const indexes = new Map<string, number>();
+  for (const tool of tools) {
+    const tag = tool.tags[0] ?? "untagged";
+    const index = indexes.get(tag);
+    if (index === undefined) {
+      indexes.set(tag, groups.length);
+      groups.push({ tag, tools: [tool] });
+      continue;
+    }
+    groups[index].tools.push(tool);
+  }
+  return groups;
 }
 
 function formatUsd(value: number) {

@@ -6,9 +6,18 @@ from typing import Any
 
 from msgspec import Struct
 
+from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.app import AceAgentApp, AgentAppEvent
-from aceai.agent.config import AgentAppConfig
+from aceai.agent.config import AgentAppConfig, project_config_path, save_config
+from aceai.agent.features.tools import default_agent_tools
 from aceai.agent.memory.ideas import Idea, IdeaStore
+from aceai.agent.provider_catalog import (
+    api_key_env,
+    auth_mode,
+    model_options,
+    provider_options,
+    reasoning_effort_options,
+)
 from aceai.agent.references import ReferenceCandidate, reference_candidates
 from aceai.agent.session import SessionEvent, SessionStore
 from aceai.agent.session_views import (
@@ -24,6 +33,7 @@ from aceai.agent.session_views import (
 )
 from aceai.agent.tui.cli import build_agent
 from aceai.core import Agent
+from aceai.core.skills import SkillLoader
 
 NEW_SESSION_TOPIC_ID = "new"
 SESSION_EVENT = "session.event"
@@ -69,6 +79,167 @@ class FileSaveRequest(Struct, frozen=True, kw_only=True):
     content: str
 
 
+class ThreadMetadataPayload(Struct, frozen=True, kw_only=True):
+    session_id: str
+    thread_id: str
+    role: str
+    title: str
+    status: str
+    agent_id: str
+    parent_thread_id: str | None
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    metadata: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+class SessionListItemPayload(Struct, frozen=True, kw_only=True, omit_defaults=True):
+    session_id: str
+    project_id: str
+    project_name: str
+    title: str
+    created_at: str
+    updated_at: str
+    event_count: int
+    total_cost_usd: float
+    thread_count: int
+    active_thread: ThreadMetadataPayload
+    path: str | None = None
+
+
+class SessionsPayload(Struct, frozen=True, kw_only=True):
+    sessions: list[SessionListItemPayload]
+
+
+class EmptySessionCleanupPayload(Struct, frozen=True, kw_only=True):
+    deleted: int
+    session_ids: list[str]
+
+
+class SessionDeletePayload(Struct, frozen=True, kw_only=True):
+    deleted: bool
+    session_id: str
+
+
+class ReferenceItemPayload(Struct, frozen=True, kw_only=True, omit_defaults=True):
+    kind: str
+    value: str
+    label: str
+    description: str
+    idea_id: str | None = None
+
+
+class ReferencesPayload(Struct, frozen=True, kw_only=True):
+    items: list[ReferenceItemPayload]
+
+
+class FilePayload(Struct, frozen=True, kw_only=True):
+    path: str
+    content: str
+    size: int
+    updated_at: str
+
+
+class FileResponsePayload(Struct, frozen=True, kw_only=True):
+    file: FilePayload
+
+
+class IdeaItemPayload(Struct, frozen=True, kw_only=True):
+    index: int
+    idea_id: str
+    created_at: str
+    project_id: str
+    project_name: str
+    workspace: str
+    content: str
+    source_session_id: str | None
+
+
+class IdeasPayload(Struct, frozen=True, kw_only=True):
+    ideas: list[IdeaItemPayload]
+
+
+class IdeaResponsePayload(Struct, frozen=True, kw_only=True):
+    idea: IdeaItemPayload
+
+
+class IdeaDeletePayload(Struct, frozen=True, kw_only=True):
+    deleted: bool
+    idea: IdeaItemPayload
+
+
+class ProviderOptionPayload(Struct, frozen=True, kw_only=True):
+    label: str
+    value: str
+    auth_mode: str
+    api_key_env: str
+
+
+class ModelOptionPayload(Struct, frozen=True, kw_only=True):
+    label: str
+    value: str
+
+
+class ToolPermissionPayload(Struct, frozen=True, kw_only=True, omit_defaults=True):
+    name: str
+    description: str
+    permission: str
+    enabled: bool
+    tags: list[str]
+    max_calls_per_run: int | None = None
+
+
+class SkillItemPayload(Struct, frozen=True, kw_only=True):
+    name: str
+    description: str
+    location: str
+    source: str
+    builtin: bool
+    enabled: bool
+
+
+class GuiConfigPayload(Struct, frozen=True, kw_only=True):
+    provider: str
+    model: str
+    default_model: str
+    reasoning_level: str
+    compress_threshold: str
+    api_timeout_seconds: float
+    stream_start_timeout_seconds: float
+    stream_event_timeout_seconds: float
+    skill_selection_mode: str
+    enabled_skills: list[str]
+    disabled_providers: list[str]
+    api_key_set: bool
+    api_key_env: str
+    config_path: str
+    providers: list[ProviderOptionPayload]
+    models: list[ModelOptionPayload]
+    models_by_provider: dict[str, list[ModelOptionPayload]]
+    reasoning_options: list[str]
+    skills: list[SkillItemPayload]
+    tools: list[ToolPermissionPayload]
+
+
+class GuiConfigUpdateRequest(Struct, frozen=True, kw_only=True, omit_defaults=True):
+    provider: str
+    model: str
+    default_model: str
+    reasoning_level: str
+    compress_threshold: str
+    api_timeout_seconds: float
+    stream_start_timeout_seconds: float
+    stream_event_timeout_seconds: float
+    skill_selection_mode: str
+    enabled_skills: list[str]
+    disabled_providers: list[str]
+    api_key: str | None = None
+    tool_permissions: dict[str, str]
+    tool_enabled: dict[str, bool]
+    tool_max_calls: dict[str, int]
+
+
 class AceAIGuiRuntime:
     """Factory and session-store boundary shared by GUI channels."""
 
@@ -94,6 +265,15 @@ class AceAIGuiRuntime:
     @property
     def project_root(self) -> Path:
         return Path(self._session_store.project.root_path).resolve()
+
+    @property
+    def config(self) -> AgentAppConfig:
+        return self._config
+
+    def update_config(self, config: AgentAppConfig) -> AgentAppConfig:
+        save_config(config, path=project_config_path(self.project_root))
+        self._config = config
+        return self._config
 
     def list_ideas(self) -> list[Idea]:
         return self._idea_store.list_for_display(
@@ -316,10 +496,10 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
     hub = SocketHub("/ws")
     hub.channel(AceAISessionChannel)
 
-    sessions_route = Route("/api/sessions", in_schema=False)
+    sessions_route = Route("/api/sessions")
 
     @sessions_route.get
-    def list_sessions() -> dict[str, Any]:
+    def list_sessions() -> SessionsPayload:
         session_payloads = [
             (
                 metadata,
@@ -333,34 +513,71 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                 -item[0].updated_at.timestamp(),
             )
         )
-        return {
-            "sessions": [payload for _metadata, payload in session_payloads]
-        }
+        return SessionsPayload(
+            sessions=[
+                _session_list_item_response_payload(payload)
+                for _metadata, payload in session_payloads
+            ]
+        )
 
-    session_cleanup_route = Route("/api/session-cleanup/empty", in_schema=False)
+    session_cleanup_route = Route("/api/session-cleanup/empty")
 
     @session_cleanup_route.delete
-    def delete_empty_sessions() -> dict[str, Any]:
+    def delete_empty_sessions() -> EmptySessionCleanupPayload:
         deleted_session_ids = delete_empty_session_ids(runtime.session_store)
-        return {
-            "deleted": len(deleted_session_ids),
-            "session_ids": deleted_session_ids,
-        }
+        return EmptySessionCleanupPayload(
+            deleted=len(deleted_session_ids),
+            session_ids=deleted_session_ids,
+        )
 
-    session_route = Route("/api/sessions/{session_id}", in_schema=False)
+    session_route = Route("/api/sessions/{session_id}")
 
     @session_route.delete
-    def delete_session(session_id: str) -> dict[str, Any]:
+    def delete_session(session_id: str) -> SessionDeletePayload:
         runtime.session_store.delete_session(session_id)
-        return {"deleted": True, "session_id": session_id}
+        return SessionDeletePayload(deleted=True, session_id=session_id)
 
-    references_route = Route("/api/references", in_schema=False)
+    config_route = Route("/api/config")
+
+    @config_route.get
+    def read_config() -> GuiConfigPayload:
+        return _gui_config_payload(runtime)
+
+    @config_route.put
+    def update_config(payload: GuiConfigUpdateRequest) -> GuiConfigPayload:
+        current = runtime.config
+        api_key = current.api_key if payload.api_key is None else payload.api_key
+        api_keys = dict(current.api_keys)
+        api_keys[payload.provider] = api_key
+        next_config = AgentAppConfig(
+            provider=payload.provider,
+            api_key=api_key,
+            model=payload.model,
+            default_model=payload.default_model,
+            skills=current.skills,
+            skill_selection_mode=payload.skill_selection_mode,
+            enabled_skills=payload.enabled_skills,
+            api_keys=api_keys,
+            tool_permissions=payload.tool_permissions,
+            tool_enabled=payload.tool_enabled,
+            tool_max_calls=payload.tool_max_calls,
+            compress_threshold=payload.compress_threshold,
+            reasoning_level=payload.reasoning_level,
+            api_timeout_seconds=payload.api_timeout_seconds,
+            stream_start_timeout_seconds=payload.stream_start_timeout_seconds,
+            stream_event_timeout_seconds=payload.stream_event_timeout_seconds,
+            disabled_providers=payload.disabled_providers,
+        )
+        runtime.update_config(next_config)
+        return _gui_config_payload(runtime)
+
+    references_route = Route("/api/references")
 
     @references_route.get
-    def list_references(q: str = "", kind: str = "all") -> dict[str, Any]:
-        return {
-            "items": [
-                _reference_candidate_payload(candidate)
+    def list_references(q: str = "", kind: str = "all") -> ReferencesPayload:
+        return ReferencesPayload(
+            items=[
+                ReferenceItemPayload(**_reference_candidate_payload(candidate))
                 for candidate in reference_candidates(
                     root=runtime.project_root,
                     ideas=runtime.list_ideas(),
@@ -368,57 +585,71 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                     kind=kind,
                     limit=30,
                 )
-            ]
-        }
+            ],
+        )
 
-    file_route = Route("/api/files", in_schema=False)
+    file_route = Route("/api/files")
 
     @file_route.get
-    def read_file(path: str) -> dict[str, Any]:
-        return {"file": project_file_payload(runtime.project_root, path)}
+    def read_file(path: str) -> FileResponsePayload:
+        return FileResponsePayload(
+            file=FilePayload(**project_file_payload(runtime.project_root, path))
+        )
 
     @file_route.put
-    def save_file(path: str, payload: FileSaveRequest) -> dict[str, Any]:
+    def save_file(path: str, payload: FileSaveRequest) -> FileResponsePayload:
         target = project_file_path(runtime.project_root, path)
         target.write_text(payload.content)
-        return {"file": project_file_payload(runtime.project_root, path)}
+        return FileResponsePayload(
+            file=FilePayload(**project_file_payload(runtime.project_root, path))
+        )
 
-    ideas_route = Route("/api/ideas", in_schema=False)
+    ideas_route = Route("/api/ideas")
 
     @ideas_route.get
-    def list_ideas() -> dict[str, Any]:
-        return {
-            "ideas": [
-                idea_payload(idea, index)
+    def list_ideas() -> IdeasPayload:
+        return IdeasPayload(
+            ideas=[
+                IdeaItemPayload(**idea_payload(idea, index))
                 for index, idea in enumerate(runtime.list_ideas(), start=1)
-            ]
-        }
+            ],
+        )
 
     @ideas_route.post
-    def capture_idea(payload: IdeaCaptureRequest) -> dict[str, Any]:
+    def capture_idea(payload: IdeaCaptureRequest) -> IdeaResponsePayload:
         idea = runtime.capture_idea(payload.content)
-        return {
-            "idea": idea_payload(
-                idea,
-                idea_display_index(runtime.list_ideas(), idea.idea_id),
+        return IdeaResponsePayload(
+            idea=IdeaItemPayload(
+                **idea_payload(
+                    idea,
+                    idea_display_index(runtime.list_ideas(), idea.idea_id),
+                )
             )
-        }
+        )
 
-    idea_route = Route("/api/ideas/{index}", in_schema=False)
+    idea_route = Route("/api/ideas/{index}")
 
     @idea_route.put
-    def update_idea(index: int, payload: IdeaUpdateRequest) -> dict[str, Any]:
-        return {"idea": idea_payload(runtime.update_idea(index, payload.content), index)}
+    def update_idea(index: int, payload: IdeaUpdateRequest) -> IdeaResponsePayload:
+        return IdeaResponsePayload(
+            idea=IdeaItemPayload(
+                **idea_payload(runtime.update_idea(index, payload.content), index)
+            )
+        )
 
     @idea_route.delete
-    def delete_idea(index: int) -> dict[str, Any]:
-        return {"deleted": True, "idea": idea_payload(runtime.delete_idea(index), index)}
+    def delete_idea(index: int) -> IdeaDeletePayload:
+        return IdeaDeletePayload(
+            deleted=True,
+            idea=IdeaItemPayload(**idea_payload(runtime.delete_idea(index), index)),
+        )
 
     app = Lihil(
         hub,
         sessions_route,
         session_cleanup_route,
         session_route,
+        config_route,
         references_route,
         file_route,
         ideas_route,
@@ -436,6 +667,116 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
     return app
 
 
+def _gui_config_payload(runtime: AceAIGuiRuntime) -> GuiConfigPayload:
+    config = runtime.config
+    provider_payloads = [
+        ProviderOptionPayload(
+            label=label,
+            value=value,
+            auth_mode=auth_mode(value),
+            api_key_env=api_key_env(value),
+        )
+        for label, value in provider_options()
+    ]
+    model_payloads = [
+        ModelOptionPayload(label=label, value=value)
+        for label, value in model_options(config.provider)
+    ]
+    models_by_provider = {
+        provider.value: [
+            ModelOptionPayload(label=label, value=value)
+            for label, value in model_options(provider.value)
+        ]
+        for provider in provider_payloads
+    }
+    reasoning_options = list(reasoning_effort_options(config.provider, config.model))
+    if "auto" not in reasoning_options:
+        reasoning_options.insert(0, "auto")
+    return GuiConfigPayload(
+        provider=config.provider,
+        model=config.model,
+        default_model=config.default_model,
+        reasoning_level=config.reasoning_level,
+        compress_threshold=str(config.compress_threshold),
+        api_timeout_seconds=config.api_timeout_seconds,
+        stream_start_timeout_seconds=config.stream_start_timeout_seconds,
+        stream_event_timeout_seconds=config.stream_event_timeout_seconds,
+        skill_selection_mode=config.skill_selection_mode,
+        enabled_skills=list(config.enabled_skills),
+        disabled_providers=list(config.disabled_providers),
+        api_key_set=config.api_key != "",
+        api_key_env=api_key_env(config.provider),
+        config_path=str(project_config_path(runtime.project_root)),
+        providers=provider_payloads,
+        models=model_payloads,
+        models_by_provider=models_by_provider,
+        reasoning_options=reasoning_options,
+        skills=_skill_item_payloads(config),
+        tools=_tool_permission_payloads(config),
+    )
+
+
+def _skill_item_payloads(config: AgentAppConfig) -> list[SkillItemPayload]:
+    registry = SkillLoader.load_registry(
+        config.skills,
+        extra_skill_paths=ACE_AGENT_BUILTIN_SKILL_PATHS,
+    )
+    enabled_names = set(config.enabled_skills)
+    skills: list[SkillItemPayload] = []
+    for skill in registry.get_skills():
+        source = _skill_source(skill.skill_file)
+        skills.append(
+            SkillItemPayload(
+                name=skill.name,
+                description=skill.description,
+                location=str(skill.skill_file),
+                source=source,
+                builtin=source == "aceai builtin",
+                enabled=config.skill_selection_mode == "all" or skill.name in enabled_names,
+            )
+        )
+    return skills
+
+
+def _skill_source(skill_file: Path) -> str:
+    resolved = skill_file.resolve()
+    if any(
+        resolved.is_relative_to(builtin_path.resolve())
+        for builtin_path in ACE_AGENT_BUILTIN_SKILL_PATHS
+    ):
+        return "aceai builtin"
+    if _is_under(skill_file, Path.cwd() / ".agents" / "skills"):
+        return "project"
+    if _is_under(skill_file, Path.home() / ".aceai" / "skills"):
+        return "global"
+    return "project"
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    absolute_path = path.expanduser().absolute()
+    absolute_root = root.expanduser().absolute()
+    return absolute_path.is_relative_to(absolute_root)
+
+
+def _tool_permission_payloads(config: AgentAppConfig) -> list[ToolPermissionPayload]:
+    items: list[ToolPermissionPayload] = []
+    for configured_tool in default_agent_tools():
+        permission = config.tool_permissions.get(configured_tool.name)
+        if permission is None:
+            permission = "ask" if configured_tool.metadata.require_approval else "always"
+        items.append(
+            ToolPermissionPayload(
+                name=configured_tool.name,
+                description=configured_tool.description,
+                permission=permission,
+                enabled=config.tool_enabled.get(configured_tool.name, True),
+                max_calls_per_run=config.tool_max_calls.get(configured_tool.name),
+                tags=list(configured_tool.metadata.tags),
+            )
+        )
+    return items
+
+
 def _reference_candidate_payload(candidate: ReferenceCandidate) -> dict[str, Any]:
     payload = {
         "kind": candidate.kind,
@@ -446,6 +787,38 @@ def _reference_candidate_payload(candidate: ReferenceCandidate) -> dict[str, Any
     if candidate.idea_id is not None:
         payload["idea_id"] = candidate.idea_id
     return payload
+
+
+def _session_list_item_response_payload(
+    payload: dict[str, Any],
+) -> SessionListItemPayload:
+    active_thread = payload["active_thread"]
+    return SessionListItemPayload(
+        session_id=payload["session_id"],
+        project_id=payload["project_id"],
+        project_name=payload["project_name"],
+        title=payload["title"],
+        created_at=payload["created_at"],
+        updated_at=payload["updated_at"],
+        event_count=payload["event_count"],
+        total_cost_usd=payload["total_cost_usd"],
+        thread_count=payload["thread_count"],
+        active_thread=ThreadMetadataPayload(
+            session_id=active_thread["session_id"],
+            thread_id=active_thread["thread_id"],
+            role=active_thread["role"],
+            title=active_thread["title"],
+            status=active_thread["status"],
+            agent_id=active_thread["agent_id"],
+            parent_thread_id=active_thread["parent_thread_id"],
+            parent_run_id=active_thread["parent_run_id"],
+            parent_tool_call_id=active_thread["parent_tool_call_id"],
+            metadata=active_thread["metadata"],
+            created_at=active_thread["created_at"],
+            updated_at=active_thread["updated_at"],
+        ),
+        path=payload.get("path"),
+    )
 
 
 def _app_event_payload(app_event: AgentAppEvent) -> dict[str, Any]:

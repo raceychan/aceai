@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "schema": "uv --project ../.. run aceai-gui schema --out openapi.json",
+    "generate:api": "npm run schema && uv --project ../.. run openapi-ts-client openapi.json -o src/generated/api --clean",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@vitejs/plugin-react": "^5.1.1",
+    "highlight.js": "^11.11.1",
     "lucide-react": "^0.561.0",
     "monaco-editor": "^0.55.1",
     "react": "^19.2.1",
