@@ -55,6 +55,11 @@ class AgentSessionSnapshot(Struct, frozen=True, kw_only=True):
     state: SessionState
 
 
+class UserImageAttachment(Struct, frozen=True, kw_only=True):
+    mime_type: str
+    data: str
+
+
 class SessionService:
     """Agent app session boundary over the low-level store and recorder."""
 
@@ -217,10 +222,16 @@ class SessionService:
         thread_id: str = MAIN_THREAD_ID,
         agent_id: str = "",
         citations: tuple[TurnCitation, ...] = (),
+        images: tuple[UserImageAttachment, ...] = (),
     ) -> str:
         payload: dict[str, Any] = {"content": content}
         if citations:
             payload["citations"] = citation_payload(citations)
+        if images:
+            payload["images"] = [
+                {"mime_type": image.mime_type, "data": image.data}
+                for image in images
+            ]
         event_id = self.record_session_event(
             SessionEvent(
                 event_id=uuid_str(),

@@ -76,7 +76,7 @@ class FakeAgentApp:
     def pending_approval_request(self):
         return self._pending_approval
 
-    async def start_turn_events(self, content: str):
+    async def start_turn_events(self, content: str, images=()):
         session_id = self.session_id
         if session_id is None:
             raise RuntimeError("fake session is not active")
@@ -85,6 +85,7 @@ class FakeAgentApp:
             content,
             run_id=run_id,
             thread_id=MAIN_THREAD_ID,
+            images=images,
         )
         persisted_event_id = self.session_service.record_session_event(
             SessionEvent(
@@ -209,6 +210,39 @@ def test_gui_session_channel_snapshot_and_message_stream(tmp_path) -> None:
             assert _reply_payload(replies[0])["accepted"] is True
             assert events[0]["payload"]["kind"] == "session"
             assert events[0]["payload"]["event"]["kind"] == "run_completed"
+
+
+def test_gui_session_channel_sends_image_attachments(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    app = build_gui_app(_runtime(store))
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "send_message",
+                    {
+                        "content": "look",
+                        "attachments": [
+                            {"mime_type": "image/png", "data": "cG5n"}
+                        ],
+                    },
+                    "send-1",
+                )
+            )
+            ws.receive_json()
+            ws.receive_json()
+
+    event_log = store.load_event_log(store.list_sessions()[0].session_id)
+    user_message = next(event for event in event_log.events if event.kind == "user_message")
+    assert user_message.payload["images"] == [
+        {"mime_type": "image/png", "data": "cG5n"}
+    ]
 
 
 def test_gui_session_snapshot_filters_after_event_id(tmp_path) -> None:

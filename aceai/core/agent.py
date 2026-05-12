@@ -7,7 +7,13 @@ from opentelemetry.context import Context
 from ..llm import ILLMService
 from ..llm.errors import AceAIConfigurationError, AceAIRuntimeError
 from ..llm.interface import UNSET, Unset, is_set
-from ..llm.models import LLMHostedToolSpec, LLMMessage, LLMRequestMeta
+from ..llm.models import (
+    LLMHostedToolSpec,
+    LLMMessage,
+    LLMMessagePart,
+    LLMRequestMeta,
+    SupportedValueType,
+)
 from .context_manager import CompressThreshold, ContextCompressionPolicy, ContextManager
 from .events import AgentEvent, RunCompletedEvent
 from .executor import DummyExecutor, IExecutor
@@ -99,7 +105,7 @@ class Agent:
 
     def create_run(
         self,
-        question: str,
+        question: SupportedValueType,
         trace_ctx: Context | None = None,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AgentRunContext:
@@ -110,7 +116,7 @@ class Agent:
         context.init_context([LLMMessage.build(role="user", content=question)])
         return self._create_run_context(
             agent_id=self._agent_id,
-            question=question,
+            question=_question_preview(question),
             context=context,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
@@ -118,7 +124,7 @@ class Agent:
 
     def create_resume_run(
         self,
-        question: str,
+        question: SupportedValueType,
         history: list[LLMMessage],
         trace_ctx: Context | None = None,
         **request_meta: Unpack[LLMRequestMeta],
@@ -132,7 +138,7 @@ class Agent:
         )
         return self._create_run_context(
             agent_id=self._agent_id,
-            question=question,
+            question=_question_preview(question),
             context=context,
             trace_ctx=trace_ctx,
             request_meta=request_meta,
@@ -193,7 +199,7 @@ class Agent:
 
     async def run(
         self,
-        question: str,
+        question: SupportedValueType,
         trace_ctx: Context | None = None,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AsyncGenerator[AgentEvent, None]:
@@ -204,7 +210,7 @@ class Agent:
 
     async def resume(
         self,
-        question: str,
+        question: SupportedValueType,
         history: list[LLMMessage],
         trace_ctx: Context | None = None,
         **request_meta: Unpack[LLMRequestMeta],
@@ -221,7 +227,7 @@ class Agent:
 
     async def ask(
         self,
-        question: str,
+        question: SupportedValueType,
         trace_ctx: Context | None = None,
         **request_meta: Unpack[LLMRequestMeta],
     ) -> str:
@@ -235,3 +241,23 @@ class Agent:
                 return event.final_answer
 
         raise AceAIRuntimeError("Agent run did not complete successfully")
+
+
+def _question_preview(content: SupportedValueType) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        parts: list[LLMMessagePart] = [content]
+    else:
+        parts = content
+    previews: list[str] = []
+    image_count = 0
+    for part in parts:
+        if part["type"] == "text":
+            previews.append(part["data"])
+        elif part["type"] == "image":
+            image_count += 1
+    if image_count > 0:
+        suffix = "" if image_count == 1 else "s"
+        previews.append(f"[{image_count} image{suffix}]")
+    return "\n".join(previews)

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 from dataclasses import dataclass
 from typing import AsyncGenerator
@@ -41,7 +42,11 @@ from aceai.agent.session import (
     SessionState,
     SessionStore,
 )
-from aceai.agent.session_service import AgentSessionSnapshot, SessionService
+from aceai.agent.session_service import (
+    AgentSessionSnapshot,
+    SessionService,
+    UserImageAttachment,
+)
 from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
 from aceai.core.helpers.string import uuid_str
 from aceai.core import (
@@ -65,7 +70,7 @@ from aceai.core.events import (
 )
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolApprovalRequest
-from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMResponse
+from aceai.llm.models import LLMMessage, LLMMessagePart, LLMRequestMeta, LLMResponse
 
 class AgentAppEvent(Struct, frozen=True, kw_only=True):
     thread_id: str
@@ -521,11 +526,13 @@ class AceAgentApp:
         question: str,
         *,
         citations: tuple[TurnCitation, ...] = (),
+        images: tuple[UserImageAttachment, ...] = (),
     ) -> AsyncGenerator[AgentEvent, None]:
         thread_id = self._active_thread_id
         async for app_event in self.start_turn_events(
             question,
             citations=citations,
+            images=images,
         ):
             if app_event.thread_id == thread_id and not isinstance(
                 app_event.event,
@@ -538,18 +545,22 @@ class AceAgentApp:
         question: str,
         *,
         citations: tuple[TurnCitation, ...] = (),
+        images: tuple[UserImageAttachment, ...] = (),
     ) -> AsyncGenerator[AgentAppEvent, None]:
         self.ensure_session()
         self.persist_session_state()
         thread_id = self._active_thread_id
         if thread_id in self._child_runtimes:
+            if images:
+                raise ValueError("Child thread steering does not support image input")
             self.steer_active_child_thread(question)
             return
         agent = self._agent_for_thread(thread_id)
         history = self._history_for_thread(thread_id)
         llm_question = message_with_citations(question, citations)
+        llm_input = _user_message_parts(llm_question, images)
         self._active_run = agent.create_resume_run(
-            llm_question,
+            llm_input,
             history,
             trace_ctx=self._trace_ctx,
             **self._request_meta_for_run(),
@@ -559,6 +570,7 @@ class AceAgentApp:
         self._last_context_event_id = self._session_service.record_user_message(
             question,
             citations=citations,
+            images=images,
             run_id=self._active_run.run_id,
             thread_id=thread_id,
             agent_id="" if thread_id == MAIN_THREAD_ID else agent.agent_id,
@@ -1722,6 +1734,21 @@ def _last_context_source_event_id(event_log: EventLog) -> str | None:
             return event.event_id
     return None
 
+
+def _user_message_parts(
+    text: str,
+    images: tuple[UserImageAttachment, ...],
+) -> list[LLMMessagePart]:
+    parts: list[LLMMessagePart] = [LLMMessagePart(type="text", data=text)]
+    for image in images:
+        parts.append(
+            LLMMessagePart(
+                type="image",
+                binary=base64.b64decode(image.data, validate=True),
+                mime_type=image.mime_type,
+            )
+        )
+    return parts
 
 
 def _approved_tool_names_from_event_log(event_log: EventLog) -> set[str]:

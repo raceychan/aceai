@@ -34,7 +34,7 @@ import {
 import Editor, { Monaco } from "@monaco-editor/react";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
-import { CSSProperties, FormEvent, KeyboardEvent, MouseEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, ClipboardEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApiApi, Configuration, FetchError, ResponseError } from "./generated/api";
@@ -66,9 +66,9 @@ import {
 type ConnectionState = "idle" | "connecting" | "connected" | "closed" | "error";
 
 type TranscriptItem =
-  | { id: string; role: "user"; text: string; time: string }
-  | { id: string; role: "assistant"; text: string; time: string }
-  | { id: string; role: "system"; text: string; time: string };
+  | { id: string; images?: ImageAttachmentPayload[]; role: "user"; text: string; time: string }
+  | { id: string; images?: ImageAttachmentPayload[]; role: "assistant"; text: string; time: string }
+  | { id: string; images?: ImageAttachmentPayload[]; role: "system"; text: string; time: string };
 
 type PendingRequest = {
   event: string;
@@ -98,7 +98,17 @@ const MIN_CONVERSATION_WIDTH = 520;
 
 type QueuedTurn = {
   id: string;
+  attachments: ImageAttachmentPayload[];
   content: string;
+};
+
+type ImageAttachmentPayload = {
+  mime_type: string;
+  data: string;
+};
+
+type ComposerImageAttachment = ImageAttachmentPayload & {
+  id: string;
 };
 
 type ArtifactItem = {
@@ -209,6 +219,7 @@ export function App() {
   const [joinRef, setJoinRef] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [input, setInput] = useState("");
+  const [composerImages, setComposerImages] = useState<ComposerImageAttachment[]>([]);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
   const [selectedIdeaIndex, setSelectedIdeaIndex] = useState(1);
@@ -304,7 +315,7 @@ export function App() {
     if (!connected || isRunning || isBlockedForApproval || queuedTurns.length === 0) return;
     const [nextTurn, ...remainingTurns] = queuedTurns;
     setQueuedTurns(remainingTurns);
-    void startMessage(nextTurn.content);
+    void startMessage(nextTurn.content, nextTurn.attachments);
   }, [connected, isRunning, isBlockedForApproval, queuedTurns]);
 
   useEffect(() => {
@@ -714,27 +725,29 @@ export function App() {
 
   async function submitMessage(event: FormEvent) {
     event.preventDefault();
-    if (!input) return;
-    if (input.startsWith("/")) {
+    if (!input && composerImages.length === 0) return;
+    if (input.startsWith("/") && composerImages.length === 0) {
       executeComposerCommand(input);
       return;
     }
     const content = input;
+    const attachments = composerImages.map(({ mime_type, data }) => ({ mime_type, data }));
     setInput("");
+    setComposerImages([]);
     if (isRunning || isBlockedForApproval) {
-      enqueueComposerTurn(content);
+      enqueueComposerTurn(content, attachments);
       return;
     }
-    await startMessage(content);
+    await startMessage(content, attachments);
   }
 
-  async function startMessage(content: string) {
-    appendOptimisticUserMessage(content);
+  async function startMessage(content: string, attachments: ImageAttachmentPayload[] = []) {
+    appendOptimisticUserMessage(content, attachments);
     setLiveAssistantText("");
     setLiveTimeline([]);
     setIsRunning(true);
     try {
-      await sendCommand("send_message", { content });
+      await sendCommand("send_message", { content, attachments });
     } catch (err) {
       setIsRunning(false);
       setError(err instanceof Error ? err.message : "Send failed");
@@ -751,15 +764,16 @@ export function App() {
     }
   }
 
-  function enqueueComposerTurn(content: string) {
-    setQueuedTurns((turns) => [...turns, { id: nextRef("queued"), content }]);
+  function enqueueComposerTurn(content: string, attachments: ImageAttachmentPayload[]) {
+    setQueuedTurns((turns) => [...turns, { id: nextRef("queued"), attachments, content }]);
   }
 
-  function appendOptimisticUserMessage(content: string) {
+  function appendOptimisticUserMessage(content: string, attachments: ImageAttachmentPayload[]) {
     setOptimisticTurns((turns) => [
       ...turns,
       {
         id: nextRef("optimistic-user"),
+        images: attachments,
         role: "user",
         text: content,
         time: new Date().toISOString()
@@ -780,6 +794,18 @@ export function App() {
     setLiveTimeline((items) => [item, ...items.filter((existing) => existing.id !== item.id)].slice(0, 8));
   }
 
+  async function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const imageItems = Array.from(event.clipboardData.items).filter((item) => item.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+    event.preventDefault();
+    try {
+      const images = await Promise.all(imageItems.map(readClipboardImage));
+      setComposerImages((items) => [...items, ...images]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Image paste failed");
+    }
+  }
+
   function cancelQueuedTurn(index: number) {
     setQueuedTurns((turns) => turns.filter((_, turnIndex) => turnIndex !== index));
   }
@@ -791,7 +817,7 @@ export function App() {
     if (isRunning) {
       await cancelRun();
     }
-    await startMessage(queuedTurn.content);
+    await startMessage(queuedTurn.content, queuedTurn.attachments);
   }
 
   async function approvePendingTool() {
@@ -1307,6 +1333,7 @@ export function App() {
                       </div>
                     </div>
                     <MarkdownText text={item.text} onOpenFile={(path) => void openProjectFile(path)} />
+                    {item.images && item.images.length > 0 ? <MessageImages images={item.images} /> : null}
                   </article>
                 ))
               )}
@@ -1668,6 +1695,7 @@ export function App() {
                   {queuedTurns.map((turn, index) => (
                     <div className="queued-row" key={turn.id}>
                       <MarkdownText text={turn.content} compact />
+                      {turn.attachments.length > 0 ? <MessageImages images={turn.attachments} compact /> : null}
                       <button type="button" onClick={() => void steerQueuedTurn(index)}>
                         Send now
                       </button>
@@ -1689,8 +1717,26 @@ export function App() {
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder={connected ? composerPlaceholder(isRunning, isBlockedForApproval) : "Choose a session first"}
-                  disabled={!connected}
+                      disabled={!connected}
+                  onPaste={(event) => void handleComposerPaste(event)}
                 />
+                {composerImages.length > 0 ? (
+                  <div className="composer-attachments" aria-label="Image attachments">
+                    {composerImages.map((image) => (
+                      <div className="composer-attachment" key={image.id}>
+                        <img alt="Pasted attachment" src={imageDataUrl(image)} />
+                        <button
+                          type="button"
+                          onClick={() => setComposerImages((items) => items.filter((item) => item.id !== image.id))}
+                          aria-label="Remove image"
+                          title="Remove image"
+                        >
+                          <CircleStop size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {showCommandMenu ? (
                   <div className="command-menu" role="listbox" aria-label="Commands">
                     {commandMatches.map((command, index) => (
@@ -1750,7 +1796,7 @@ export function App() {
                     <button type="button" className="composer-icon-button" title="Voice input" aria-label="Voice input" disabled>
                       <Mic size={16} />
                     </button>
-                    <button type="submit" className="composer-send-button" disabled={!connected || !input} title="Send">
+                    <button type="submit" className="composer-send-button" disabled={!connected || (!input && composerImages.length === 0)} title="Send">
                       <Send size={17} />
                     </button>
                   </div>
@@ -2322,6 +2368,20 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
   );
 }
 
+function MessageImages({ compact = false, images }: { compact?: boolean; images: ImageAttachmentPayload[] }) {
+  return (
+    <div className={compact ? "message-images compact" : "message-images"}>
+      {images.map((image, index) => (
+        <img
+          alt={`Attached image ${index + 1}`}
+          key={`${image.mime_type}-${index}`}
+          src={imageDataUrl(image)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function highlightedCodeHtml(value: string, className: string | undefined) {
   const code = value.endsWith("\n") ? value.slice(0, -1) : value;
   const language = markdownCodeLanguage(className);
@@ -2495,9 +2555,10 @@ function _shortText(value: string, maxLength: number) {
 function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
   const items = events.flatMap<TranscriptItem>((event) => {
     const content = typeof event.payload.content === "string" ? event.payload.content : "";
-    if (!content && event.kind !== "run_failed") return [];
+    const images = imagesFromPayload(event.payload);
+    if (!content && images.length === 0 && event.kind !== "run_failed") return [];
     if (event.kind === "user_message") {
-      return [{ id: event.event_id, role: "user", text: content, time: event.created_at }];
+      return [{ id: event.event_id, images, role: "user", text: content, time: event.created_at }];
     }
     if (event.kind === "assistant_message" || event.kind === "run_completed") {
       return [{ id: event.event_id, role: "assistant", text: content, time: event.created_at }];
@@ -2508,6 +2569,18 @@ function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
     return [];
   });
   return dedupeTranscript(items);
+}
+
+function imagesFromPayload(payload: Record<string, unknown>): ImageAttachmentPayload[] {
+  const images = payload.images;
+  if (!Array.isArray(images)) return [];
+  return images.flatMap((image) => {
+    if (!isRecord(image)) return [];
+    const mimeType = image.mime_type;
+    const data = image.data;
+    if (typeof mimeType !== "string" || typeof data !== "string") return [];
+    return [{ mime_type: mimeType, data }];
+  });
 }
 
 function mergeOptimisticTranscript(
@@ -2600,6 +2673,44 @@ function matchingCommands(input: string) {
   if (!input.startsWith("/")) return [];
   const commandName = input.split(/\s+/, 1)[0];
   return COMPOSER_COMMANDS.filter((command) => command.name.startsWith(commandName)).slice(0, 10);
+}
+
+function readClipboardImage(item: DataTransferItem): Promise<ComposerImageAttachment> {
+  const file = item.getAsFile();
+  if (file === null) {
+    return Promise.reject(new Error("Pasted image is empty."));
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Image paste failed."));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Image paste did not produce a data URL."));
+        return;
+      }
+      const parsed = imageFromDataUrl(reader.result);
+      resolve({
+        id: crypto.randomUUID(),
+        ...parsed
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function imageFromDataUrl(value: string): ImageAttachmentPayload {
+  const match = /^data:([^;]+);base64,(.*)$/.exec(value);
+  if (match === null) {
+    throw new Error("Pasted image data URL is invalid.");
+  }
+  return {
+    mime_type: match[1],
+    data: match[2]
+  };
+}
+
+function imageDataUrl(image: ImageAttachmentPayload) {
+  return `data:${image.mime_type};base64,${image.data}`;
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -2833,6 +2944,7 @@ function observabilityOf(snapshot: SnapshotPayload | null): ObservabilityPayload
 
 function snapshotQueuedTurns(snapshot: SnapshotPayload): QueuedTurn[] {
   return runtimeOf(snapshot).queued_questions.map((content, index) => ({
+    attachments: [],
     id: `${snapshot.session.session_id}-queued-${index}`,
     content
   }));

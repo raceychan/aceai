@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from msgspec import Struct
+from msgspec import Struct, field
 
 from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
 from aceai.agent.app import AceAgentApp, AgentAppEvent
@@ -20,6 +20,7 @@ from aceai.agent.provider_catalog import (
 )
 from aceai.agent.references import ReferenceCandidate, reference_candidates
 from aceai.agent.session import SessionEvent, SessionStore
+from aceai.agent.session_service import UserImageAttachment
 from aceai.agent.session_views import (
     agent_snapshot_payload,
     delete_empty_sessions as delete_empty_session_ids,
@@ -42,8 +43,14 @@ RUN_CANCELLED_EVENT = "run.cancelled"
 RUN_TASK_NAME = "active_run"
 
 
+class ImageAttachmentPayload(Struct, frozen=True, kw_only=True):
+    mime_type: str
+    data: str
+
+
 class SendMessageRequest(Struct, frozen=True, kw_only=True):
     content: str
+    attachments: list[ImageAttachmentPayload] = field(default_factory=list)
 
 
 class SnapshotRequest(Struct, frozen=True, kw_only=True):
@@ -395,7 +402,10 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
             self,
             payload: SendMessageRequest,
         ) -> dict[str, Any]:
-            self.start_task(RUN_TASK_NAME, self._stream_turn(payload.content))
+            self.start_task(
+                RUN_TASK_NAME,
+                self._stream_turn(payload.content, payload.attachments),
+            )
             return {
                 "accepted": True,
                 "session_id": self.session_id,
@@ -454,8 +464,22 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                 for event in events
             ]
 
-        async def _stream_turn(self, content: str) -> None:
-            async for event in self.agent_app.start_turn_events(content):
+        async def _stream_turn(
+            self,
+            content: str,
+            attachments: list[ImageAttachmentPayload],
+        ) -> None:
+            images = tuple(
+                UserImageAttachment(
+                    mime_type=attachment.mime_type,
+                    data=attachment.data,
+                )
+                for attachment in attachments
+            )
+            async for event in self.agent_app.start_turn_events(
+                content,
+                images=images,
+            ):
                 await self.publish(_app_event_payload(event), event=APP_EVENT)
 
         async def _stream_approval(self, payload: ApprovalRequest) -> None:

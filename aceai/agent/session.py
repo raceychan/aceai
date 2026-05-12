@@ -1,3 +1,4 @@
+import base64
 import json
 import shutil
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from aceai.agent.project import ProjectMetadata, ProjectStore, default_project
 from aceai.core.helpers.string import uuid_str
 from aceai.llm.models import (
     LLMMessage,
+    LLMMessagePart,
     LLMToolCall,
     LLMToolCallMessage,
     LLMToolUseMessage,
@@ -372,7 +374,7 @@ class EventLog:
                 history.append(
                     LLMMessage.build(
                         role="user",
-                        content=_user_message_history_content(event.payload),
+                        content=_user_message_history_parts(event.payload),
                     )
                 )
             elif event.kind == "assistant_message":
@@ -1250,17 +1252,41 @@ def _user_message_payload_for_record(payload: dict[str, Any]) -> dict[str, Any]:
     recorded: dict[str, Any] = {"content": payload["content"]}
     if "citations" in payload:
         recorded["citations"] = payload["citations"]
+    if "images" in payload:
+        recorded["images"] = payload["images"]
     return recorded
 
 
-def _user_message_history_content(payload: dict[str, Any]) -> str:
+def _user_message_history_parts(payload: dict[str, Any]) -> list[LLMMessagePart]:
     content = payload["content"]
     if type(content) is not str:
         raise TypeError("User message content must be str")
-    if "citations" not in payload:
-        return content
-    citations = citations_from_payload(payload["citations"])
-    return message_with_citations(content, citations)
+    if "citations" in payload:
+        citations = citations_from_payload(payload["citations"])
+        content = message_with_citations(content, citations)
+    parts: list[LLMMessagePart] = [LLMMessagePart(type="text", data=content)]
+    if "images" not in payload:
+        return parts
+    images = payload["images"]
+    if type(images) is not list:
+        raise TypeError("User message images must be list")
+    for image in images:
+        if type(image) is not dict:
+            raise TypeError("User message image must be dict")
+        mime_type = image["mime_type"]
+        data = image["data"]
+        if type(mime_type) is not str:
+            raise TypeError("User message image mime_type must be str")
+        if type(data) is not str:
+            raise TypeError("User message image data must be str")
+        parts.append(
+            LLMMessagePart(
+                type="image",
+                binary=base64.b64decode(data, validate=True),
+                mime_type=mime_type,
+            )
+        )
+    return parts
 
 
 def _event_to_export_lines(event: SessionEvent) -> list[str]:

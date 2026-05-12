@@ -1867,6 +1867,32 @@ dd {
   opacity: 1;
 }
 
+.message-images {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.message-images img {
+  width: 164px;
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px solid #cad8d3;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #f4f7f5;
+}
+
+.message-images.compact {
+  margin-top: 0;
+}
+
+.message-images.compact img {
+  width: 52px;
+  border-radius: 6px;
+}
+
 .transcript-history {
   max-width: min(920px, 92%);
   width: 100%;
@@ -2284,6 +2310,10 @@ dd {
   gap: 6px;
 }
 
+.queued-row .message-images {
+  grid-column: 1 / -1;
+}
+
 .queued-row span {
   color: #26332f;
   font-size: 13px;
@@ -2339,6 +2369,46 @@ dd {
 .composer-input-area textarea:focus {
   border-color: transparent;
   box-shadow: none;
+}
+
+.composer-attachments {
+  padding: 0 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer-attachment {
+  width: 78px;
+  aspect-ratio: 1;
+  border: 1px solid #cfdad4;
+  border-radius: 10px;
+  background: #f6faf8;
+  position: relative;
+  overflow: hidden;
+}
+
+.composer-attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.composer-attachment button {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  background: rgba(30, 42, 38, 0.72);
+  color: #ffffff;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  position: absolute;
+  top: 5px;
+  right: 5px;
 }
 
 .composer-toolbar {

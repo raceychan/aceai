@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -582,6 +583,34 @@ def test_event_log_restores_tool_messages_in_llm_history(tmp_path) -> None:
     assert history[2].role == "tool"
     assert history[2].call_id == "call-1"
     assert history[2].content[0]["data"] == '{"entries":[]}'
+
+
+def test_event_log_restores_user_message_images_in_llm_history(tmp_path) -> None:
+    image_data = base64.b64encode(b"png-bytes").decode("ascii")
+    store = SessionStore(tmp_path)
+    metadata = store.create_session()
+    store.append_event(
+        metadata.session_id,
+        SessionEvent(
+            kind="user_message",
+            payload={
+                "content": "what is in this image?",
+                "images": [{"mime_type": "image/png", "data": image_data}],
+            },
+        ),
+    )
+
+    history = store.load_event_log(metadata.session_id).replay_llm_history()
+
+    assert history[0].content[0] == {
+        "type": "text",
+        "data": "what is in this image?",
+    }
+    assert history[0].content[1] == {
+        "type": "image",
+        "binary": b"png-bytes",
+        "mime_type": "image/png",
+    }
 
 
 def test_event_log_restores_truncated_output_for_tool_messages(tmp_path) -> None:
