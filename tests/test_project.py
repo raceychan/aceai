@@ -1,4 +1,4 @@
-from aceai.agent.project import ProjectStore
+from agent_core.project import ProjectStore
 
 
 def test_project_store_resolves_current_directory_to_stable_project(tmp_path) -> None:

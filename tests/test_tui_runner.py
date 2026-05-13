@@ -10,7 +10,7 @@ from rich.style import Style
 from rich.text import Text
 
 from aceai import __version__
-from aceai.agent.citations import (
+from agent_core.citations import (
     AdHocCitationOrigin,
     ConversationCitationOrigin,
     FileCitationOrigin,
@@ -19,7 +19,7 @@ from aceai.agent.citations import (
 )
 from aceai.core.agent import Agent
 from aceai.core.executor import Executor
-from aceai.agent.session import (
+from agent_core.session import (
     MAIN_THREAD_ID,
     SessionEvent,
     SessionRecorder,
@@ -31,28 +31,28 @@ from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry
 from aceai.llm.models import LLMToolCall, LLMUsage
 from aceai.llm.models import LLMStreamEvent
-from aceai.agent.tui.events import TUIEvent
-from aceai.agent.tui.session_adapter import tui_event_to_session_event
-from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.config import AgentAppConfig
-from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.config import ConfigAuditEntry, clear_config, current_config, load_config
-from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
-from aceai.agent import session_service as session_service_module
-from aceai.agent.update_check import UpdateCheckResult
-from aceai.agent.memory.ideas import IdeaStore
-from aceai.agent.project import ProjectStore
-from aceai.agent.tui import app as tui_app_module
-from aceai.agent.tui import runner as tui_runner_module
-from aceai.agent.tui.widgets import stream as stream_widget_module
-from aceai.agent.tui.app import AceAITUI
-from aceai.agent.tui.runner import (
+from agent_core.tui.events import TUIEvent
+from agent_core.tui.session_adapter import tui_event_to_session_event
+from agent_core.tui.session_replay import event_log_to_tui_events
+from agent_core.tui.config import AgentAppConfig
+from agent_core.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
+from agent_core.config import ConfigAuditEntry, clear_config, current_config, load_config
+from agent_core.provider_auth import CODEX_CLI_AUTH_SENTINEL
+from agent_core import session_service as session_service_module
+from agent_core.update_check import UpdateCheckResult
+from agent_core.memory.ideas import IdeaStore
+from agent_core.project import ProjectStore
+from agent_core.tui import app as tui_app_module
+from agent_core.tui import runner as tui_runner_module
+from agent_core.tui.widgets import stream as stream_widget_module
+from agent_core.tui.app import AceAITUI
+from agent_core.tui.runner import (
     UPDATE_INSTRUCTIONS,
     AceAIConfiguredTUI,
     UpdateCommandResult,
     _iter_reference_file_candidates,
 )
-from aceai.agent.tui.setup import (
+from agent_core.tui.setup import (
     ConfigScreen,
     ConfigSelection,
     IdeaListWidget,
@@ -61,8 +61,8 @@ from aceai.agent.tui.setup import (
     ToolPermissionItem,
     _skill_config_items,
 )
-from aceai.agent.tui.widgets import ApprovalWidget
-from aceai.agent.tui.widgets import (
+from agent_core.tui.widgets import ApprovalWidget
+from agent_core.tui.widgets import (
     CommandCompletionWidget,
     CommandInput,
     CitationPreviewWidget,
@@ -73,7 +73,7 @@ from aceai.agent.tui.widgets import (
     SubagentStatusWidget,
     TopBarWidget,
 )
-from aceai.agent.tui.widgets.input import (
+from agent_core.tui.widgets.input import (
     _citation_preview_renderable,
     _citation_preview_text,
     _queued_turns_renderable,
@@ -584,6 +584,10 @@ async def test_interactive_tui_keeps_history_between_questions() -> None:
 
         assert len(app._state.events) > first_event_count
         assert app._state.final_answer == "second"
+        user_messages = [
+            event for event in app._state.events if event.kind == "user_message"
+        ]
+        assert [event.content for event in user_messages] == ["First?", "Second?"]
         assert llm_service.calls[0]["messages"][-1].content[0]["data"] == "First?"
         assert llm_service.calls[1]["messages"][-1].content[0]["data"] == "Second?"
 
@@ -3301,6 +3305,7 @@ async def test_config_screen_searches_project_skills_and_loads_new_skill_links(
             "release",
             "review",
             "skill-creator",
+            "developer",
         )
 
 
@@ -3329,7 +3334,7 @@ async def test_config_screen_reports_skill_search_failure(
         await pilot.pause()
 
         monkeypatch.setattr(
-            "aceai.agent.tui.setup._find_project_skill_dirs",
+            "agent_core.tui.setup._find_project_skill_dirs",
             lambda: (_ for _ in ()).throw(OSError("invalid skill path")),
         )
         screen.query_one("#search-skills", Button).press()

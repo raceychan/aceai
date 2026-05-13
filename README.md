@@ -113,7 +113,7 @@ AceAI has three layers. Start from the lowest layer that gives you what you
 need:
 
 ```text
-aceai.agent  app layer      run AceAI as a ready-made app
+agent_core  app layer      run AceAI as a ready-made app
 aceai.core   agent layer    build your own tool-using agents
 aceai.llm    LLM layer      call LLM providers directly
 ```
@@ -549,7 +549,7 @@ exporter = OTLPSpanExporter(
 otel_provider.add_span_processor(BatchSpanProcessor(exporter))
 trace.set_tracer_provider(otel_provider)
 
-tracer = trace.get_tracer("aceai-app")
+tracer = trace.get_tracer("agent-core")
 
 llm_service = LLMService(providers=[provider], timeout_seconds=60)
 executor = Executor(graph=graph, tools=[greet], tracer=tracer)

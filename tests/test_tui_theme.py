@@ -1,6 +1,6 @@
 import pytest
 
-from aceai.agent.tui.theme import (
+from agent_core.tui.theme import (
     EVENT_LABELS,
     EVENT_STYLES,
     validate_event_theme_registry,

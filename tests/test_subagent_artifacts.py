@@ -1,6 +1,6 @@
 import json
 
-from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
+from agent_core.memory.subagent_artifacts import SubagentArtifactStore
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import LLMToolCall
 

@@ -1,9 +1,9 @@
 import pytest
 import json
 
-from aceai.agent import config as config_module
-from aceai.agent.provider_catalog import auth_mode, provider_options
-from aceai.agent.config import (
+from agent_core import config as config_module
+from agent_core.provider_catalog import auth_mode, provider_options
+from agent_core.config import (
     AgentAppConfig,
     LEGACY_AGENT_SKILLS_DIR,
     clear_config,

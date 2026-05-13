@@ -1,4 +1,4 @@
-from aceai.agent.provider_catalog import (
+from agent_core.provider_catalog import (
     context_window_for_model,
     default_model,
     load_provider_catalog,

@@ -31,7 +31,7 @@ The installed package exposes an `aceai` command:
 
 ```toml
 [project.scripts]
-aceai = "aceai.agent.tui.cli:main"
+aceai = "agent_core.tui.cli:main"
 ```
 
 `aceai` launches the terminal UI after installation. Provider authentication is
@@ -137,17 +137,17 @@ Use redundant signals so the UI does not rely on color alone.
    timeline, stream, and detail panes. A static prototype is available through:
 
    ```bash
-   python -m aceai.agent.tui
+   python -m agent_core.tui
    ```
 
 5. Live agent runner:
    Add `aceai/agent/tui/runner.py` to bridge `Agent.run()` into the Textual app,
    then wire cancellation and command handling. The live runner bridge is
-   available as `aceai.agent.tui.runner.run_agent_tui`.
+   available as `agent_core.tui.runner.run_agent_tui`.
 
 6. Interactive input:
    Use the bottom input bar to submit a question with Enter. The interactive
-   runner is available as `aceai.agent.tui.runner.run_interactive_tui`.
+   runner is available as `agent_core.tui.runner.run_interactive_tui`.
 
    The installed command starts the interactive TUI:
 

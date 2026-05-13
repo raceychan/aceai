@@ -8,22 +8,22 @@ from typing import Any
 
 from msgspec import Struct, field
 
-from aceai.agent.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
-from aceai.agent.app import AceAgentApp, AgentAppEvent
-from aceai.agent.config import AgentAppConfig, project_config_path, save_config
-from aceai.agent.features.tools import default_agent_tools
-from aceai.agent.memory.ideas import Idea, IdeaStore
-from aceai.agent.provider_catalog import (
+from agent_core.ace_agent import ACE_AGENT_BUILTIN_SKILL_PATHS
+from agent_core.app import AceAgentApp, AgentAppEvent
+from agent_core.config import AgentAppConfig, project_config_path, save_config
+from agent_core.features.tools import default_agent_tools
+from agent_core.memory.ideas import Idea, IdeaStore
+from agent_core.provider_catalog import (
     api_key_env,
     auth_mode,
     model_options,
     provider_options,
     reasoning_effort_options,
 )
-from aceai.agent.references import ReferenceCandidate, reference_candidates
-from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
-from aceai.agent.session_service import UserImageAttachment
-from aceai.agent.session_views import (
+from agent_core.references import ReferenceCandidate, reference_candidates
+from agent_core.session import MAIN_THREAD_ID, SessionEvent, SessionStore
+from agent_core.session_service import UserImageAttachment
+from agent_core.session_views import (
     agent_snapshot_payload,
     agent_runtime_payload,
     delete_empty_sessions as delete_empty_session_ids,
@@ -35,7 +35,7 @@ from aceai.agent.session_views import (
     project_file_payload,
     session_list_item_payload,
 )
-from aceai.agent.tui.cli import build_agent
+from agent_core.tui.cli import build_agent
 from aceai.core import Agent
 from aceai.core.skills import SkillLoader
 

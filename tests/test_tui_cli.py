@@ -1,14 +1,14 @@
 import pytest
 
 from aceai import __version__
-from aceai.agent.config import (
+from agent_core.config import (
     AgentAppConfig,
     clear_config,
     default_config_path,
     save_config,
 )
-from aceai.agent.tui import cli
-from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
+from agent_core.tui import cli
+from agent_core.provider_auth import CODEX_CLI_AUTH_SENTINEL
 
 
 class StubAgent:
@@ -97,7 +97,7 @@ def test_cli_missing_tui_extra_explains_install(monkeypatch) -> None:
     monkeypatch.setattr(cli, "AceAIConfiguredTUI", None)
 
     def import_module(name: str):
-        if name == "aceai.agent.session":
+        if name == "agent_core.session":
             raise ModuleNotFoundError("No module named 'sqlalchemy'", name="sqlalchemy")
         raise AssertionError(name)
 
@@ -119,9 +119,9 @@ def test_cli_missing_runtime_dependency_explains_refresh(monkeypatch) -> None:
         pass
 
     def import_module(name: str):
-        if name in ("aceai.agent.session", "aceai.agent.tui.session_replay"):
+        if name in ("agent_core.session", "agent_core.tui.session_replay"):
             return StubModule()
-        if name == "aceai.agent.tui.runner":
+        if name == "agent_core.tui.runner":
             raise ModuleNotFoundError(
                 "No module named 'rapidfuzz'",
                 name="rapidfuzz",

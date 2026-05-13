@@ -2,8 +2,8 @@ import subprocess
 
 import pytest
 
-from aceai.agent.features.patch import apply_patch, preview_patch
-from aceai.agent.features.repo import git_diff, git_status
+from agent_core.features.patch import apply_patch, preview_patch
+from agent_core.features.repo import git_diff, git_status
 from aceai.core import ToolExecutionError
 
 

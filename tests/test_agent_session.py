@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import insert as sql_insert
 
-from aceai.agent.cost import estimate_usage_cost
-from aceai.agent.session import (
+from agent_core.cost import estimate_usage_cost
+from agent_core.session import (
     EventLog,
     MAIN_THREAD_ID,
     SessionEvent,
@@ -18,8 +18,8 @@ from aceai.agent.session import (
     SessionState,
     SessionStore,
 )
-from aceai.agent.event_store import JsonlEventStore
-from aceai.agent.project import ProjectStore
+from agent_core.event_store import JsonlEventStore
+from agent_core.project import ProjectStore
 from aceai.core.helpers.string import uuid_str
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import (

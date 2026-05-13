@@ -12,12 +12,12 @@ demo:
 	uv run python examples/logistics_agent_demo.py
 
 tui:
-	uv run aceai
+	uv --project apps/agent run python -m agent_core.tui.cli
 
 HOST ?= 127.0.0.1
 PORT ?= 8765
 server:
-	uv --project apps/web/backend run --with-editable . python -m src.cli --host $(HOST) --port $(PORT)
+	uv --project apps/web/backend run python -m src.cli --host $(HOST) --port $(PORT)
 
 
 VERSION ?=

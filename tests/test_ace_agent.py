@@ -3,16 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.ace_agent import (
+from agent_core.ace_agent import (
     ACE_AGENT_API_TIMEOUT_SECONDS,
     ACE_AGENT_SKILL_PATH,
     ACE_AGENT_STREAM_EVENT_TIMEOUT_SECONDS,
     ACE_AGENT_STREAM_START_TIMEOUT_SECONDS,
     build_ace_agent,
 )
-from aceai.agent.features import default_agent_tools
-from aceai.agent.features.tools import read_text_file
-from aceai.agent.provider_auth import CODEX_CLI_AUTH_SENTINEL
+from agent_core.features import default_agent_tools
+from agent_core.features.tools import read_text_file
+from agent_core.provider_auth import CODEX_CLI_AUTH_SENTINEL
 from aceai.core import ToolExecutionError, Executor
 from aceai.llm.interface import UNSET, is_present
 
@@ -133,7 +133,11 @@ def test_build_ace_agent_wires_app_tools_and_project_skills(
         "skill_view",
     }
     assert "delegate_to_subagent" in agent._executor.tools
-    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
+    assert set(agent.skill_registry.skills) == {
+        "aceai-release",
+        "developer",
+        "skill-creator",
+    }
 
 
 def test_build_ace_agent_wires_delegation_tool(tmp_path, monkeypatch) -> None:
@@ -171,7 +175,11 @@ def test_build_ace_agent_keeps_builtin_skills_enabled_in_selected_mode(
         enabled_skill_names=("aceai-release",),
     )
 
-    assert set(agent.skill_registry.skills) == {"aceai-release", "skill-creator"}
+    assert set(agent.skill_registry.skills) == {
+        "aceai-release",
+        "developer",
+        "skill-creator",
+    }
 
 
 def test_build_ace_agent_excludes_disabled_app_tools(tmp_path, monkeypatch) -> None:

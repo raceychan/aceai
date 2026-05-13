@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from aceai.agent.features.delegation import (
+from agent_core.features.delegation import (
     DEV_READ_ONLY_TOOLSET,
     NO_CHILD_TOOLSET,
     _build_child_agent,
     build_delegate_to_subagent_tool,
 )
-from aceai.agent.features.tools import (
+from agent_core.features.tools import (
     default_agent_tools,
     read_text_file,
     run_shell_command,

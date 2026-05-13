@@ -4,7 +4,7 @@ import argparse
 import importlib
 from pathlib import Path
 
-from aceai.agent.config import AgentAppConfig, load_config
+from agent_core.config import AgentAppConfig, load_config
 
 from .server import AceAIGuiRuntime, build_gui_app
 

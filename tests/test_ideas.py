@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import insert as sql_insert
 
-from aceai.agent.memory.ideas import Idea, IdeaStore, ideas_to_markdown
-from aceai.agent.project import ProjectMetadata
+from agent_core.memory.ideas import Idea, IdeaStore, ideas_to_markdown
+from agent_core.project import ProjectMetadata
 
 
 def test_idea_store_persists_structured_ideas_and_renders_markdown(tmp_path) -> None:

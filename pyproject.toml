@@ -11,7 +11,6 @@ dependencies = [
     "openai>=2.9.0",
     "opentelemetry-api>=1.39.1",
     "pyyaml>=6.0.3",
-    "rapidfuzz>=3.0.0",
     "typing-extensions>=4.15.0",
 ]
 authors = [{ name = "raceychan", email = "raceychan@gmail.com" }]
@@ -21,15 +20,6 @@ otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.39.1",
     "opentelemetry-sdk>=1.39.1",
 ]
-tui = [
-    "rich>=14.2.0",
-    "sqlalchemy>=2.0",
-    "textual>=8.2.5",
-]
-[project.scripts]
-aceai = "aceai.agent.tui.cli:main"
-"aceai.agent.tui.demo" = "aceai.agent.tui.demo:main"
-"aceai.agent.tui.trajectory_demo" = "aceai.agent.tui.demo:trajectory_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -43,6 +33,7 @@ packages = ["aceai"]
 
 [dependency-groups]
 dev = [
+    "agent-core",
     "dotenv>=0.9.9",
     "hatch>=1.16.1",
     "jupyterlab>=4.5.0",
@@ -71,9 +62,12 @@ dev = [
     "lihil[standard]==0.2.40",
 ]
 
+[tool.uv.sources]
+agent-core = { path = "apps/agent", editable = true }
+
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/e2e"
-pythonpath = ["apps/web/backend"]
+pythonpath = ["apps/agent/src", "apps/web/backend"]
 markers = [
     "debug: marks tests intended for focused debugging runs",
     "e2e: marks end-to-end tests that should be run explicitly",

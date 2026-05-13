@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "schema": "uv --project ../backend run --with-editable ../../.. python -m src.cli schema --out openapi.json",
+    "schema": "uv --project ../backend run python -m src.cli schema --out openapi.json",
     "generate:api": "npm run schema && uv --project ../../.. run --group dev openapi-ts-client openapi.json -o src/generated/api --clean",
     "preview": "vite preview --host 127.0.0.1"
   },

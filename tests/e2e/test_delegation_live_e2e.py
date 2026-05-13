@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from aceai.agent.ace_agent import build_ace_agent
+from agent_core.ace_agent import build_ace_agent
 from aceai.core.events import RunCompletedEvent, ToolCompletedEvent
 
 

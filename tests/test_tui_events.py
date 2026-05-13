@@ -16,7 +16,7 @@ from aceai.llm.models import (
     LLMToolCallDelta,
 )
 from aceai.core.models import AgentStep, ToolApprovalRequest, ToolExecutionResult
-from aceai.agent.tui.events import TUIEvent
+from agent_core.tui.events import TUIEvent
 
 
 def test_adapt_text_delta_event() -> None:

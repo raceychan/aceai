@@ -2,16 +2,16 @@ import json
 
 import pytest
 
-from aceai.agent.app import AceAgentApp
-from aceai.agent.memory.context_checkpoint_store import (
+from agent_core.app import AceAgentApp
+from agent_core.memory.context_checkpoint_store import (
     ContextCheckpoint,
     ContextCheckpointStore,
     context_units_payload_from_messages,
     llm_message_from_payload,
     llm_message_to_payload,
 )
-from aceai.agent.memory.context_history import build_context_history
-from aceai.agent.session import EventLog, SessionEvent, SessionStore
+from agent_core.memory.context_history import build_context_history
+from agent_core.session import EventLog, SessionEvent, SessionStore
 from aceai.core.agent import Agent
 from aceai.llm import LLMResponse
 from aceai.llm.models import (

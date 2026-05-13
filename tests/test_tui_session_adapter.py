@@ -1,8 +1,8 @@
-from aceai.agent.citations import ConversationCitationOrigin, TurnCitation
-from aceai.agent.session import EventLog, SessionEvent
-from aceai.agent.tui.events import TUIEvent
-from aceai.agent.tui.session_adapter import tui_event_to_session_event
-from aceai.agent.tui.session_replay import event_log_to_tui_events
+from agent_core.citations import ConversationCitationOrigin, TurnCitation
+from agent_core.session import EventLog, SessionEvent
+from agent_core.tui.events import TUIEvent
+from agent_core.tui.session_adapter import tui_event_to_session_event
+from agent_core.tui.session_replay import event_log_to_tui_events
 from aceai.core.models import ToolExecutionResult
 from aceai.llm.models import LLMToolCall, LLMUsage
 

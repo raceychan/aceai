@@ -9,7 +9,7 @@ from aceai.llm.anthropic import (
     ANTHROPIC_OAUTH_PROVIDER_NAME,
     Anthropic,
 )
-from aceai.agent.provider_auth import (
+from agent_core.provider_auth import (
     api_key_placeholder,
     default_api_key_for_provider,
     resolve_provider_api_key,

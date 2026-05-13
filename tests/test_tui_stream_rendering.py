@@ -9,8 +9,8 @@ from rich.text import Text
 from textual.events import Click
 from textual.strip import Strip
 
-from aceai.agent.session import EventLog, SessionEvent
-from aceai.agent.citations import (
+from agent_core.session import EventLog, SessionEvent
+from agent_core.citations import (
     ConversationCitationOrigin,
     FileCitationOrigin,
     TurnCitation,
@@ -27,10 +27,10 @@ from aceai.llm.models import (
 from aceai.core.models import AgentStep
 from aceai.core.models import ToolApprovalRequest
 from aceai.core.models import ToolExecutionResult
-from aceai.agent.tui.events import TUIEvent, TUIIdeaItem
-from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.state import TUIRunState, reduce_events
-from aceai.agent.tui.widgets.stream import (
+from agent_core.tui.events import TUIEvent, TUIIdeaItem
+from agent_core.tui.session_replay import event_log_to_tui_events
+from agent_core.tui.state import TUIRunState, reduce_events
+from agent_core.tui.widgets.stream import (
     StreamWidget,
     _PromptBar,
     _render_events,

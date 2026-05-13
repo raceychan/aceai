@@ -8,13 +8,13 @@ lihil = pytest.importorskip("lihil")
 
 from lihil.vendors import TestClient
 
-from aceai.agent.app import AgentAppEvent, QueuedTurn
-from aceai.agent.config import AgentAppConfig
+from agent_core.app import AgentAppEvent, QueuedTurn
+from agent_core.config import AgentAppConfig
 from src.server import AceAIGuiRuntime, build_gui_app
-from aceai.agent.memory.ideas import IdeaStore
-from aceai.agent.project import ProjectMetadata
-from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
-from aceai.agent.session_service import (
+from agent_core.memory.ideas import IdeaStore
+from agent_core.project import ProjectMetadata
+from agent_core.session import MAIN_THREAD_ID, SessionEvent, SessionStore
+from agent_core.session_service import (
     SessionService,
     UserImageAttachment,
     agent_event_to_session_event,

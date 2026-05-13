@@ -5,8 +5,8 @@ from io import StringIO
 
 import pytest
 
-from aceai.agent.memory.ideas import Idea
-from aceai.agent.session import (
+from agent_core.memory.ideas import Idea
+from agent_core.session import (
     EventLog,
     MAIN_THREAD_ID,
     SessionEvent,
@@ -15,21 +15,21 @@ from aceai.agent.session import (
 )
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import AgentStep, ToolExecutionResult
-from aceai.agent.tui import app as tui_app_module
-from aceai.agent.tui.app import AceAITUI
-from aceai.agent.tui.app import STREAM_DELTA_REFRESH_CHARS
-from aceai.agent.tui.app import STREAM_DELTA_REFRESH_SECONDS
-from aceai.agent.tui.demo import static_demo_events
-from aceai.agent.tui.events import TUIEvent
-from aceai.agent.tui.metadata import MetadataSection, _metadata_renderables
-from aceai.agent.tui.session_adapter import tui_event_to_session_event
-from aceai.agent.tui.session_replay import event_log_to_tui_events
-from aceai.agent.tui.setup import (
+from agent_core.tui import app as tui_app_module
+from agent_core.tui.app import AceAITUI
+from agent_core.tui.app import STREAM_DELTA_REFRESH_CHARS
+from agent_core.tui.app import STREAM_DELTA_REFRESH_SECONDS
+from agent_core.tui.demo import static_demo_events
+from agent_core.tui.events import TUIEvent
+from agent_core.tui.metadata import MetadataSection, _metadata_renderables
+from agent_core.tui.session_adapter import tui_event_to_session_event
+from agent_core.tui.session_replay import event_log_to_tui_events
+from agent_core.tui.setup import (
     SessionListWidget,
     _idea_body_text,
     _session_picker_renderables,
 )
-from aceai.agent.tui.state import (
+from agent_core.tui.state import (
     TUISubagentState,
     TUISubagentToolResult,
     initial_state,
@@ -37,14 +37,14 @@ from aceai.agent.tui.state import (
     reset_cache_rate,
     select_event,
 )
-from aceai.agent.tui.tool_stats import (
+from agent_core.tui.tool_stats import (
     format_skill_call_stats,
     format_tool_call_stats,
     skill_call_stats,
     tool_call_stats,
 )
-from aceai.agent.tui.trajectory import TrajectoryScreen, _trajectory_renderables
-from aceai.agent.tui.widgets import (
+from agent_core.tui.trajectory import TrajectoryScreen, _trajectory_renderables
+from agent_core.tui.widgets import (
     CommandInput,
     DetailWidget,
     StreamWidget,
@@ -1189,7 +1189,7 @@ async def test_static_tui_loads_fixture_events() -> None:
 
 @pytest.mark.anyio
 async def test_static_tui_demo_can_start_with_subagent_panel_visible() -> None:
-    from aceai.agent.tui.demo import static_demo_events
+    from agent_core.tui.demo import static_demo_events
 
     class StaticDemoTUI(AceAITUI):
         def on_mount(self) -> None:

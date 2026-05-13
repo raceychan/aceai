@@ -4,18 +4,18 @@ import json
 import pytest
 from ididi import Graph
 
-from aceai.agent.app import AceAgentApp, BackgroundSubagentJob
-from aceai.agent.citations import (
+from agent_core.app import AceAgentApp, BackgroundSubagentJob
+from agent_core.citations import (
     ConversationCitationOrigin,
     TurnCitation,
 )
-from aceai.agent.features.delegation import (
+from agent_core.features.delegation import (
     ChildAgentResult,
     build_background_subagent_tools,
     build_delegate_to_subagent_tool,
 )
-from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
-from aceai.agent.session_service import UserImageAttachment
+from agent_core.session import MAIN_THREAD_ID, SessionEvent, SessionStore
+from agent_core.session_service import UserImageAttachment
 from aceai.core import ToolExecutionOutput
 from aceai.core.agent import Agent
 from aceai.core.events import (
