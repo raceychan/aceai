@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from msgspec import Struct
+from msgspec import Struct, field
 from sqlalchemy import Column, DateTime, MetaData, String, Table, create_engine
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import inspect as sql_inspect
@@ -138,9 +138,22 @@ class AgentThreadMetadata(Struct, frozen=True, kw_only=True):
         )
 
 
+class SessionQueuedImage(Struct, frozen=True, kw_only=True):
+    mime_type: str
+    data: str
+
+
+class SessionQueuedTurn(Struct, frozen=True, kw_only=True):
+    content: str
+    images: list[SessionQueuedImage] = field(default_factory=list)
+
+
 class SessionState(Struct, frozen=True, kw_only=True):
     selected_provider: str = ""
     selected_model: str = ""
+    queued_turns_by_thread: dict[str, list[SessionQueuedTurn]] = field(
+        default_factory=dict
+    )
     version: int = SESSION_STATE_VERSION
 
     @classmethod
@@ -153,6 +166,9 @@ class SessionState(Struct, frozen=True, kw_only=True):
             return cls.empty()
         selected_provider = payload["selected_provider"]
         selected_model = payload["selected_model"]
+        queued_turns_by_thread = _session_queued_turns_from_payload(
+            payload.get("queued_turns_by_thread", {})
+        )
         version = payload["version"]
         if type(selected_provider) is not str:
             raise TypeError("Session state selected_provider must be str")
@@ -163,6 +179,7 @@ class SessionState(Struct, frozen=True, kw_only=True):
         return cls(
             selected_provider=selected_provider,
             selected_model=selected_model,
+            queued_turns_by_thread=queued_turns_by_thread,
             version=version,
         )
 
@@ -171,7 +188,76 @@ class SessionState(Struct, frozen=True, kw_only=True):
             "version": self.version,
             "selected_provider": self.selected_provider,
             "selected_model": self.selected_model,
+            "queued_turns_by_thread": _session_queued_turns_payload(
+                self.queued_turns_by_thread
+            ),
         }
+
+
+def _session_queued_turns_from_payload(
+    payload: object,
+) -> dict[str, list[SessionQueuedTurn]]:
+    if type(payload) is not dict:
+        raise TypeError("Session state queued_turns_by_thread must be mapping")
+    turns_by_thread: dict[str, list[SessionQueuedTurn]] = {}
+    for thread_id, turns_payload in payload.items():
+        if type(thread_id) is not str:
+            raise TypeError("Session state queued turn thread id must be str")
+        if type(turns_payload) is not list:
+            raise TypeError("Session state queued turns must be list")
+        turns_by_thread[thread_id] = [
+            _session_queued_turn_from_payload(turn_payload)
+            for turn_payload in turns_payload
+        ]
+    return turns_by_thread
+
+
+def _session_queued_turn_from_payload(payload: object) -> SessionQueuedTurn:
+    if type(payload) is not dict:
+        raise TypeError("Session state queued turn must be mapping")
+    content = payload["content"]
+    images_payload = payload["images"]
+    if type(content) is not str:
+        raise TypeError("Session state queued turn content must be str")
+    if type(images_payload) is not list:
+        raise TypeError("Session state queued turn images must be list")
+    return SessionQueuedTurn(
+        content=content,
+        images=[
+            _session_queued_image_from_payload(image_payload)
+            for image_payload in images_payload
+        ],
+    )
+
+
+def _session_queued_image_from_payload(payload: object) -> SessionQueuedImage:
+    if type(payload) is not dict:
+        raise TypeError("Session state queued image must be mapping")
+    mime_type = payload["mime_type"]
+    data = payload["data"]
+    if type(mime_type) is not str:
+        raise TypeError("Session state queued image mime_type must be str")
+    if type(data) is not str:
+        raise TypeError("Session state queued image data must be str")
+    return SessionQueuedImage(mime_type=mime_type, data=data)
+
+
+def _session_queued_turns_payload(
+    turns_by_thread: dict[str, list[SessionQueuedTurn]],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        thread_id: [
+            {
+                "content": turn.content,
+                "images": [
+                    {"mime_type": image.mime_type, "data": image.data}
+                    for image in turn.images
+                ],
+            }
+            for turn in turns
+        ]
+        for thread_id, turns in turns_by_thread.items()
+    }
 
 
 class SessionEvent(Struct, frozen=True, kw_only=True):
@@ -1187,6 +1273,12 @@ class SessionRecorder:
                 payload=payload,
             ),
         )
+        if kind == "user_message":
+            current_title = self.store.get_session(self.session_id).title
+            if current_title == "New session":
+                content = payload.get("content")
+                if isinstance(content, str) and content != "":
+                    self.store.update_session_title(self.session_id, content[:40])
         self._last_recorded_event_id = event_id
         return event_id
 

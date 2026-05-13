@@ -52,6 +52,7 @@ def agent_runtime_payload(app: AceAgentApp) -> dict[str, Any]:
     active_run = app.active_run
     return {
         "queued_questions": list(app.queued_questions),
+        "queued_turns": jsonable_value(app.queued_turns),
         "pending_approval": (
             jsonable_value(pending_approval)
             if pending_approval is not None

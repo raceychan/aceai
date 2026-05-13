@@ -15,6 +15,7 @@ from aceai.agent.features.delegation import (
     build_delegate_to_subagent_tool,
 )
 from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
+from aceai.agent.session_service import UserImageAttachment
 from aceai.core import ToolExecutionOutput
 from aceai.core.agent import Agent
 from aceai.core.events import (
@@ -569,9 +570,9 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
     assert app.queued_questions == ("child queued",)
     app.switch_thread(MAIN_THREAD_ID)
     assert app.queued_questions == ("main queued",)
-    assert app.pop_queued_turn() == "main queued"
+    assert app.pop_queued_turn().content == "main queued"
     app.switch_thread(child_thread.thread_id)
-    assert app.pop_queued_turn() == "child queued"
+    assert app.pop_queued_turn().content == "child queued"
 
     follow_up_events = [event async for event in app.start_turn("follow child")]
     assert follow_up_events[-1].final_answer == "child follow-up answer"
@@ -586,6 +587,7 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
     ]
     assert child_user_messages[-1] == "follow child"
     assert child_event_log.events[-1].payload["content"] == "child follow-up answer"
+
     main_event_log = store.load_thread_event_log(session_id, MAIN_THREAD_ID)
     assert not [
         event
@@ -637,6 +639,74 @@ async def test_agent_app_records_delegated_subagent_as_child_thread(tmp_path) ->
             and event.payload["content"] == "restored child question"
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_app_queued_turns_preserve_images(tmp_path) -> None:
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    image = UserImageAttachment(mime_type="image/png", data="cG5n")
+
+    assert app.enqueue_turn("queued with image", images=(image,)) == 1
+    assert app.queued_questions == ("queued with image",)
+    assert app.queued_turns[0].images == (image,)
+
+    queued_turn = app.pop_queued_turn()
+
+    assert queued_turn is not None
+    assert queued_turn.content == "queued with image"
+    assert queued_turn.images == (image,)
+
+
+@pytest.mark.anyio
+async def test_agent_app_restores_queued_image_turns_from_session_state(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    llm_service = StubLLMService([])
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+    )
+    app.ensure_session()
+    session_id = app.session_id
+    assert session_id is not None
+    image = UserImageAttachment(mime_type="image/png", data="cG5n")
+
+    app.enqueue_turn("queued with image", images=(image,))
+
+    restored_app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=store,
+        session_id=session_id,
+    )
+
+    assert restored_app.queued_questions == ("queued with image",)
+    assert restored_app.queued_turns[0].images == (image,)
 
 
 @pytest.mark.anyio
@@ -953,7 +1023,7 @@ async def test_agent_app_event_stream_emits_realtime_child_thread_events(
         for index, app_event in enumerate(app_events)
         if (
             app_event.thread_id == child_thread_id
-            and isinstance(app_event.event, RunCompletedEvent)
+            and isinstance(app_event.raw_event, RunCompletedEvent)
         )
     )
     parent_tool_completed_index = next(
@@ -961,7 +1031,7 @@ async def test_agent_app_event_stream_emits_realtime_child_thread_events(
         for index, app_event in enumerate(app_events)
         if (
             app_event.thread_id == MAIN_THREAD_ID
-            and isinstance(app_event.event, ToolCompletedEvent)
+            and isinstance(app_event.raw_event, ToolCompletedEvent)
         )
     )
     assert child_completed_index < parent_tool_completed_index
@@ -1041,7 +1111,7 @@ async def test_agent_app_child_runtime_failure_resolves_parent_tool_call(
         for index, app_event in enumerate(app_events)
         if (
             app_event.thread_id == child_thread.thread_id
-            and isinstance(app_event.event, RunFailedEvent)
+            and isinstance(app_event.raw_event, RunFailedEvent)
         )
     )
     parent_tool_failed_index = next(
@@ -1049,7 +1119,7 @@ async def test_agent_app_child_runtime_failure_resolves_parent_tool_call(
         for index, app_event in enumerate(app_events)
         if (
             app_event.thread_id == MAIN_THREAD_ID
-            and isinstance(app_event.event, ToolFailedEvent)
+            and isinstance(app_event.raw_event, ToolFailedEvent)
         )
     )
     assert child_failed_index < parent_tool_failed_index
@@ -1059,8 +1129,8 @@ async def test_agent_app_child_runtime_failure_resolves_parent_tool_call(
     )
     assert child_event_log.events[-1].kind == "error"
     assert child_event_log.events[-1].payload["content"] == "child failed"
-    assert isinstance(app_events[-1].event, RunCompletedEvent)
-    assert app_events[-1].event.final_answer == "parent handled child failure"
+    assert isinstance(app_events[-1].raw_event, RunCompletedEvent)
+    assert app_events[-1].raw_event.final_answer == "parent handled child failure"
 
 
 @pytest.mark.anyio
@@ -1219,9 +1289,9 @@ async def test_agent_app_steers_running_child_thread_without_failing_parent(
     assert child_event_log.events[-1].kind == "run_completed"
     assert child_event_log.events[-1].payload["content"] == "corrected child result"
     assert any(
-        isinstance(app_event.event, RunCompletedEvent)
+        isinstance(app_event.raw_event, RunCompletedEvent)
         and app_event.thread_id == MAIN_THREAD_ID
-        and app_event.event.final_answer == "parent used corrected child result"
+        and app_event.raw_event.final_answer == "parent used corrected child result"
         for app_event in collected_events
     )
     assert app._stale_child_runtime_tasks == set()

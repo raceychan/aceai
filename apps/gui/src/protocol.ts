@@ -119,8 +119,19 @@ export type ToolApprovalRequest = {
   policy: string;
 };
 
+export type ImageAttachmentPayload = {
+  mime_type: string;
+  data: string;
+};
+
+export type QueuedTurnPayload = {
+  content: string;
+  images: ImageAttachmentPayload[];
+};
+
 export type RuntimePayload = {
   queued_questions: string[];
+  queued_turns: QueuedTurnPayload[];
   pending_approval: ToolApprovalRequest | null;
   is_running_suspended: boolean;
   active_thread_accepts_user_turn: boolean;

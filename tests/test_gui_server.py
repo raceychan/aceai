@@ -8,13 +8,17 @@ lihil = pytest.importorskip("lihil")
 
 from lihil.vendors import TestClient
 
-from aceai.agent.app import AgentAppEvent
+from aceai.agent.app import AgentAppEvent, QueuedTurn
 from aceai.agent.config import AgentAppConfig
 from aceai.agent.gui.server import AceAIGuiRuntime, build_gui_app
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
-from aceai.agent.session_service import SessionService
+from aceai.agent.session_service import (
+    SessionService,
+    UserImageAttachment,
+    agent_event_to_session_event,
+)
 from aceai.core.events import AgentEventBuilder
 from aceai.core.models import ToolApprovalDecision, ToolApprovalRequest
 from aceai.llm.models import LLMToolCall
@@ -41,7 +45,7 @@ class FakeAgentApp:
             self.session_service.attach_session(session_id)
         self.active_thread_id = MAIN_THREAD_ID
         self.cancelled = False
-        self._queued_questions: list[str] = []
+        self._queued_turns: list[QueuedTurn] = []
         self._pending_approval: ToolApprovalRequest | None = None
         self._active_run = None
         self.accepts_user_turn = True
@@ -53,7 +57,11 @@ class FakeAgentApp:
 
     @property
     def queued_questions(self) -> tuple[str, ...]:
-        return tuple(self._queued_questions)
+        return tuple(turn.content for turn in self._queued_turns)
+
+    @property
+    def queued_turns(self) -> tuple[QueuedTurn, ...]:
+        return tuple(self._queued_turns)
 
     @property
     def is_running_suspended(self) -> bool:
@@ -109,20 +117,34 @@ class FakeAgentApp:
         yield AgentAppEvent(thread_id=MAIN_THREAD_ID, agent_id="", event=event)
 
     async def approve_tool(self, **kwargs: Any):
+        async for event in self.approve_tool_events(**kwargs):
+            if event.raw_event is not None:
+                yield event.raw_event
+
+    async def approve_tool_events(self, **kwargs: Any):
         self._pending_approval = None
         builder = AgentEventBuilder(run_id="run-approval", step_id="step-1", step_index=0)
-        yield builder.tool_approval_resolved(
+        raw_event = builder.tool_approval_resolved(
             request=APPROVAL_REQUEST,
             decision=ToolApprovalDecision.approve(APPROVAL_REQUEST),
         )
+        session_event = agent_event_to_session_event(raw_event)
+        yield AgentAppEvent(event=session_event, raw_event=raw_event, thread_id=MAIN_THREAD_ID, agent_id="")
 
     async def reject_tool(self, reason: str, **kwargs: Any):
+        async for event in self.reject_tool_events(reason, **kwargs):
+            if event.raw_event is not None:
+                yield event.raw_event
+
+    async def reject_tool_events(self, reason: str, **kwargs: Any):
         self._pending_approval = None
         builder = AgentEventBuilder(run_id="run-approval", step_id="step-1", step_index=0)
-        yield builder.tool_approval_resolved(
+        raw_event = builder.tool_approval_resolved(
             request=APPROVAL_REQUEST,
             decision=ToolApprovalDecision.reject(APPROVAL_REQUEST, reason=reason),
         )
+        session_event = agent_event_to_session_event(raw_event)
+        yield AgentAppEvent(event=session_event, raw_event=raw_event, thread_id=MAIN_THREAD_ID, agent_id="")
 
     def switch_thread(self, thread_id: str):
         self.active_thread_id = thread_id
@@ -134,17 +156,22 @@ class FakeAgentApp:
     def cancel_active_turn(self) -> None:
         self.cancelled = True
 
-    def enqueue_turn(self, question: str) -> int:
+    def enqueue_turn(
+        self,
+        question: str,
+        *,
+        images: tuple[UserImageAttachment, ...] = (),
+    ) -> int:
         if not self.accepts_user_turn:
             raise RuntimeError("Delegated subagent thread is still running")
-        self._queued_questions.append(question)
-        return len(self._queued_questions)
+        self._queued_turns.append(QueuedTurn(content=question, images=images))
+        return len(self._queued_turns)
 
-    def take_queued_turn(self, index: int) -> str:
-        return self._queued_questions.pop(index)
+    def take_queued_turn(self, index: int) -> QueuedTurn:
+        return self._queued_turns.pop(index)
 
-    def cancel_queued_turn(self, index: int) -> str:
-        return self._queued_questions.pop(index)
+    def cancel_queued_turn(self, index: int) -> QueuedTurn:
+        return self._queued_turns.pop(index)
 
     def steer_active_child_thread(self, question: str) -> bool:
         if self.accepts_user_turn:
@@ -238,6 +265,7 @@ def test_gui_session_channel_snapshot_and_message_stream(tmp_path) -> None:
             assert snapshot["active_thread_id"] == MAIN_THREAD_ID
             assert snapshot["threads"][0]["thread_id"] == MAIN_THREAD_ID
             assert snapshot["runtime"]["queued_questions"] == []
+            assert snapshot["runtime"]["queued_turns"] == []
             assert snapshot["runtime"]["pending_approval"] is None
 
             ws.send_bytes(
@@ -311,6 +339,9 @@ def test_gui_session_channel_queues_and_cancels_messages(tmp_path) -> None:
             )
             queued = _reply_payload(ws.receive_json())
             assert queued["queued_questions"] == ["later"]
+            assert queued["queued_turns"] == [
+                {"content": "later", "images": []}
+            ]
             assert fake_app.queued_questions == ("later",)
 
             ws.send_bytes(
@@ -323,7 +354,64 @@ def test_gui_session_channel_queues_and_cancels_messages(tmp_path) -> None:
             )
             cancelled = _reply_payload(ws.receive_json())
             assert cancelled["queued_questions"] == []
+            assert cancelled["queued_turns"] == []
             assert fake_app.queued_questions == ()
+
+
+def test_gui_session_channel_starts_queued_image_message(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    runtime, apps = _runtime_with_app(store)
+    app = build_gui_app(runtime)
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+            fake_app = next(iter(apps.values()))
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "enqueue_message",
+                    {
+                        "content": "look later",
+                        "attachments": [
+                            {"mime_type": "image/png", "data": "cG5n"}
+                        ],
+                    },
+                    "queue-1",
+                )
+            )
+            queued = _reply_payload(ws.receive_json())
+            assert queued["queued_questions"] == ["look later"]
+            assert queued["queued_turns"] == [
+                {
+                    "content": "look later",
+                    "images": [{"mime_type": "image/png", "data": "cG5n"}],
+                }
+            ]
+            assert fake_app.queued_questions == ("look later",)
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "start_queued_message",
+                    {"index": 0},
+                    "start-1",
+                )
+            )
+            started = _reply_payload(ws.receive_json())
+            assert started["queued_questions"] == []
+            assert started["queued_turns"] == []
+            ws.receive_json()
+
+    event_log = store.load_event_log(store.list_sessions()[0].session_id)
+    user_message = next(event for event in event_log.events if event.kind == "user_message")
+    assert user_message.payload["content"] == "look later"
+    assert user_message.payload["images"] == [
+        {"mime_type": "image/png", "data": "cG5n"}
+    ]
 
 
 def test_gui_session_channel_steers_child_thread_without_run_task(tmp_path) -> None:
@@ -848,5 +936,5 @@ def test_gui_approval_resume_events_use_app_event_envelope(tmp_path) -> None:
     replies = [msg for msg in messages if msg["event"] == "reply"]
     events = [msg for msg in messages if msg["event"] == "agent.event"]
     assert _reply_payload(replies[0])["accepted"] is True
-    assert events[0]["payload"]["kind"] == "agent"
-    assert events[0]["payload"]["event"]["event_type"] == "agent.tool.approval_resolved"
+    assert events[0]["payload"]["kind"] == "session"
+    assert events[0]["payload"]["event"]["kind"] == "tool_approval_resolved"

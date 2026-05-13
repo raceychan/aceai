@@ -95,6 +95,18 @@ class FileSaveRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=T
     content: str
 
 
+def _user_image_attachments(
+    attachments: list[ImageAttachmentPayload],
+) -> tuple[UserImageAttachment, ...]:
+    return tuple(
+        UserImageAttachment(
+            mime_type=attachment.mime_type,
+            data=attachment.data,
+        )
+        for attachment in attachments
+    )
+
+
 class ThreadMetadataPayload(Struct, frozen=True, kw_only=True):
     session_id: str
     thread_id: str
@@ -429,7 +441,10 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                 }
             self.start_task(
                 RUN_TASK_NAME,
-                self._stream_turn(payload.content, payload.attachments),
+                self._stream_turn(
+                    payload.content,
+                    _user_image_attachments(payload.attachments),
+                ),
             )
             return {
                 "accepted": True,
@@ -442,27 +457,30 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
             self,
             payload: SendMessageRequest,
         ) -> dict[str, Any]:
-            if payload.attachments:
-                raise ValueError("Queued image messages are not supported")
-            self.agent_app.enqueue_turn(payload.content)
+            self.agent_app.enqueue_turn(
+                payload.content,
+                images=_user_image_attachments(payload.attachments),
+            )
             return {
                 "accepted": True,
                 "session_id": self.session_id,
                 "thread_id": self.agent_app.active_thread_id,
                 "queued_questions": list(self.agent_app.queued_questions),
+                "queued_turns": jsonable_value(self.agent_app.queued_turns),
             }
 
         async def on_start_queued_message(
             self,
             payload: QueuedMessageRequest,
         ) -> dict[str, Any]:
-            content = self.agent_app.take_queued_turn(payload.index)
-            self.start_task(RUN_TASK_NAME, self._stream_turn(content, []))
+            turn = self.agent_app.take_queued_turn(payload.index)
+            self.start_task(RUN_TASK_NAME, self._stream_turn(turn.content, turn.images))
             return {
                 "accepted": True,
                 "session_id": self.session_id,
                 "thread_id": self.agent_app.active_thread_id,
                 "queued_questions": list(self.agent_app.queued_questions),
+                "queued_turns": jsonable_value(self.agent_app.queued_turns),
             }
 
         async def on_steer_message(
@@ -485,7 +503,10 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
             self.agent_app.cancel_active_turn()
             self.start_task(
                 RUN_TASK_NAME,
-                self._stream_turn(payload.content, payload.attachments),
+                self._stream_turn(
+                    payload.content,
+                    _user_image_attachments(payload.attachments),
+                ),
             )
             return {
                 "accepted": True,
@@ -500,15 +521,16 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
         ) -> dict[str, Any]:
             if self.agent_app.is_running_suspended:
                 raise RuntimeError("Choose Approve or Reject before steering this run")
-            content = self.agent_app.take_queued_turn(payload.index)
+            turn = self.agent_app.take_queued_turn(payload.index)
             await self.cancel_task(RUN_TASK_NAME)
             self.agent_app.cancel_active_turn()
-            self.start_task(RUN_TASK_NAME, self._stream_turn(content, []))
+            self.start_task(RUN_TASK_NAME, self._stream_turn(turn.content, turn.images))
             return {
                 "accepted": True,
                 "session_id": self.session_id,
                 "thread_id": self.agent_app.active_thread_id,
                 "queued_questions": list(self.agent_app.queued_questions),
+                "queued_turns": jsonable_value(self.agent_app.queued_turns),
             }
 
         async def on_cancel_queued_message(
@@ -521,6 +543,7 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                 "session_id": self.session_id,
                 "thread_id": self.agent_app.active_thread_id,
                 "queued_questions": list(self.agent_app.queued_questions),
+                "queued_turns": jsonable_value(self.agent_app.queued_turns),
             }
 
         async def on_approve_tool(self, payload: ApprovalRequest) -> dict[str, Any]:
@@ -578,55 +601,30 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
         async def _stream_turn(
             self,
             content: str,
-            attachments: list[ImageAttachmentPayload],
+            attachments: tuple[UserImageAttachment, ...],
         ) -> None:
-            images = tuple(
-                UserImageAttachment(
-                    mime_type=attachment.mime_type,
-                    data=attachment.data,
-                )
-                for attachment in attachments
-            )
             async for event in self.agent_app.start_turn_events(
                 content,
-                images=images,
+                images=attachments,
             ):
                 await self.publish(_app_event_payload(event), event=APP_EVENT)
 
         async def _stream_approval(self, payload: ApprovalRequest) -> None:
-            async for event in self.agent_app.approve_tool(
+            async for event in self.agent_app.approve_tool_events(
                 thread_id=payload.thread_id,
                 run_id=payload.run_id,
                 tool_call_id=payload.tool_call_id,
             ):
-                await self.publish(
-                    _app_event_payload(
-                        AgentAppEvent(
-                            thread_id=payload.thread_id or self.agent_app.active_thread_id,
-                            agent_id="",
-                            event=event,
-                        )
-                    ),
-                    event=APP_EVENT,
-                )
+                await self.publish(_app_event_payload(event), event=APP_EVENT)
 
         async def _stream_rejection(self, payload: RejectToolRequest) -> None:
-            async for event in self.agent_app.reject_tool(
+            async for event in self.agent_app.reject_tool_events(
                 payload.reason,
                 thread_id=payload.thread_id,
                 run_id=payload.run_id,
                 tool_call_id=payload.tool_call_id,
             ):
-                await self.publish(
-                    _app_event_payload(
-                        AgentAppEvent(
-                            thread_id=payload.thread_id or self.agent_app.active_thread_id,
-                            agent_id="",
-                            event=event,
-                        )
-                    ),
-                    event=APP_EVENT,
-                )
+                await self.publish(_app_event_payload(event), event=APP_EVENT)
 
     hub = SocketHub("/ws")
     hub.channel(AceAISessionChannel)

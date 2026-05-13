@@ -212,7 +212,7 @@ class TUIEvent(Record, kw_only=True):
                 content=event.payload["inbox_event_id"],
                 raw_event=None,
             )
-        if event.kind == "assistant_message":
+        if event.kind in ("assistant_message", "assistant_delta"):
             return cls._from_session_assistant_event(event)
         if event.kind == "assistant_tool_call":
             return None

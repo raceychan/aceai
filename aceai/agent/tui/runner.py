@@ -279,6 +279,13 @@ class AceAIConfiguredTUI(AceAITUI):
                     tui_event = TUIEvent.from_session_event(event)
                     if tui_event is not None:
                         self.append_persisted_event(tui_event)
+                        if event.kind == "run_suspended":
+                            self.show_pending_approval()
+                    elif app_event.raw_event is not None:
+                        self.append_agent_event(
+                            app_event.raw_event,
+                            provider_name=provider_name,
+                        )
                     continue
                 if app_event.thread_id != self._active_thread_id:
                     continue
@@ -671,10 +678,11 @@ class AceAIConfiguredTUI(AceAITUI):
             )
             return
         try:
-            question = agent_app.take_queued_turn(index)
+            turn = agent_app.take_queued_turn(index)
         except IndexError:
             self._refresh_queued_turns()
             return
+        question = turn.content
         citations = self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
         if self._active_worker is not None and self._active_worker.is_running:
@@ -710,9 +718,10 @@ class AceAIConfiguredTUI(AceAITUI):
             return
         if agent_app.is_running_suspended:
             return
-        question = agent_app.pop_queued_turn()
-        if question is None:
+        turn = agent_app.pop_queued_turn()
+        if turn is None:
             return
+        question = turn.content
         citations = self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
         self.call_after_refresh(
@@ -752,10 +761,11 @@ class AceAIConfiguredTUI(AceAITUI):
             )
             return
         try:
-            question = agent_app.cancel_queued_turn(index)
+            turn = agent_app.cancel_queued_turn(index)
         except IndexError:
             self._refresh_queued_turns()
             return
+        question = turn.content
         self._pop_queued_turn_citations(question)
         self._refresh_queued_turns()
         self.append_event(

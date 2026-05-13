@@ -60,6 +60,7 @@ import {
   ToolApprovalRequest,
   DebugEvent,
   ObservabilityPayload,
+  QueuedTurnPayload,
   RuntimePayload,
   encodeEnvelope,
   isOkReply
@@ -119,6 +120,10 @@ type QueuedTurn = {
   id: string;
   attachments: ImageAttachmentPayload[];
   content: string;
+};
+
+type QueuedTurnsResponse = {
+  queued_turns: QueuedTurnPayload[];
 };
 
 type ImageAttachmentPayload = {
@@ -257,10 +262,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [durationTick, setDurationTick] = useState(0);
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([]);
   const [optimisticTurns, setOptimisticTurns] = useState<TranscriptItem[]>([]);
-  const [liveAssistantText, setLiveAssistantText] = useState("");
-  const [liveReasoningText, setLiveReasoningText] = useState("");
   const [liveRunId, setLiveRunId] = useState("");
   const [liveTimeline, setLiveTimeline] = useState<TimelineItem[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ToolApprovalRequest | null>(null);
@@ -400,14 +404,14 @@ export function App() {
   const activeWorkRun = liveRunId || liveTimeline.find((item) => item.runId)?.runId || latestRun;
   const runReasoning = useMemo(() => buildRunReasoning(events), [events]);
   const runWorkHistories = useMemo(
-    () => buildRunWorkHistories(events, liveTimeline, activeWorkRun, isRunning, runReasoning),
-    [events, liveTimeline, activeWorkRun, isRunning, runReasoning]
+    () => buildRunWorkHistories(events, liveTimeline, activeWorkRun, isRunning),
+    [events, liveTimeline, activeWorkRun, isRunning, durationTick]
   );
   const transcript = useMemo(() => buildTranscript(events, runWorkHistories, runReasoning), [events, runWorkHistories, runReasoning]);
   const liveAssistantWorkHistory = activeWorkRun ? runWorkHistories.get(activeWorkRun) : undefined;
   const visibleTranscript = useMemo(
-    () => mergeOptimisticTranscript(transcript, optimisticTurns, liveAssistantText, liveReasoningText, liveRunId, liveAssistantWorkHistory),
-    [transcript, optimisticTurns, liveAssistantText, liveReasoningText, liveRunId, liveAssistantWorkHistory]
+    () => mergeOptimisticTranscript(transcript, optimisticTurns, liveRunId, liveAssistantWorkHistory),
+    [transcript, optimisticTurns, liveRunId, liveAssistantWorkHistory]
   );
   const artifacts = useMemo(() => buildArtifacts(events), [events]);
   const eventKinds = useMemo(() => summarizeEventKinds(events), [events]);
@@ -456,13 +460,19 @@ export function App() {
     window.requestAnimationFrame(() => {
       transcriptElement.scrollTop = transcriptElement.scrollHeight;
     });
-  }, [visibleTranscript.length, liveAssistantText, liveReasoningText]);
+  }, [visibleTranscript.length, events.length]);
 
   useEffect(() => {
     if (!connected || !isRunning) return;
     const timer = window.setInterval(() => void refreshSnapshot(), 2500);
     return () => window.clearInterval(timer);
   }, [connected, isRunning]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => setDurationTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
 
   useEffect(() => {
     const sessionId = sessionIdFromUrl();
@@ -611,8 +621,6 @@ export function App() {
     setActivity([]);
     setQueuedTurns([]);
     setOptimisticTurns([]);
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setPendingApproval(null);
@@ -708,8 +716,6 @@ export function App() {
     setActivity([]);
     setQueuedTurns([]);
     setOptimisticTurns([]);
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setPendingApproval(null);
@@ -759,14 +765,12 @@ export function App() {
     try {
       const response = await sendCommand<SnapshotPayload>("switch_thread", { thread_id: threadId });
       setSnapshot(response);
-      setEvents(response.events);
+      setEvents((current) => mergeSessionEventLogs(current, response.events));
       setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
       setIsRunning(snapshotIsRunning(responseRuntime));
       if (!snapshotIsRunning(responseRuntime)) {
-        setLiveAssistantText("");
-        setLiveReasoningText("");
         setLiveRunId("");
         setLiveTimeline([]);
       }
@@ -779,11 +783,20 @@ export function App() {
   function handleAppEvent(payload: AppEventPayload) {
     if (payload.kind === "session") {
       appendSessionEvent(payload.event);
+      setLiveRunId(payload.event.run_id);
+      if (payload.event.kind === "tool_approval_requested" || payload.event.kind === "run_suspended") {
+        setPendingApproval(eventApprovalRequest(payload.event.payload));
+        setIsRunning(false);
+        return;
+      }
+      if (payload.event.kind === "tool_approval_resolved") {
+        setPendingApproval(null);
+        setIsRunning(true);
+        return;
+      }
       if (payload.event.kind === "run_completed" || payload.event.kind === "run_failed") {
         setIsRunning(false);
         setPendingApproval(null);
-        setLiveAssistantText("");
-        setLiveReasoningText("");
         setLiveRunId("");
         setLiveTimeline([]);
       }
@@ -791,14 +804,6 @@ export function App() {
     }
     setLiveRunId(payload.event.run_id);
     const eventType = payload.event.event_type;
-    if (eventType === "agent.llm.output_text.delta") {
-      appendLiveAssistantDelta(payload.event.payload);
-      return;
-    }
-    if (eventType === "agent.llm.reasoning") {
-      appendLiveReasoningDelta(payload.event.payload);
-      return;
-    }
     appendLiveTimelineEvent(payload);
     if (eventType === "agent.tool.approval_requested" || eventType === "agent.run.suspended") {
       setPendingApproval(eventApprovalRequest(payload.event.payload));
@@ -829,19 +834,46 @@ export function App() {
     });
   }
 
+  function mergeSessionEventLogs(current: SessionEvent[], snapshotEvents: SessionEvent[]) {
+    const snapshotAssistantRuns = new Set(
+      snapshotEvents
+        .filter((event) => event.kind === "assistant_message" || event.kind === "assistant_tool_call")
+        .map(sessionRunKey)
+    );
+    const snapshotReasoningRuns = new Set(
+      snapshotEvents
+        .filter((event) => event.kind === "reasoning_summary")
+        .map(sessionRunKey)
+    );
+    const mergedById = new Map<string, SessionEvent>();
+    for (const event of current) {
+      if (event.kind === "assistant_delta" && snapshotAssistantRuns.has(sessionRunKey(event))) continue;
+      if (event.kind === "thinking_delta" && snapshotReasoningRuns.has(sessionRunKey(event))) continue;
+      mergedById.set(event.event_id, event);
+    }
+    for (const event of snapshotEvents) {
+      mergedById.set(event.event_id, event);
+    }
+    return Array.from(mergedById.values()).sort((left, right) => (
+      left.created_at.localeCompare(right.created_at)
+    ));
+  }
+
+  function sessionRunKey(event: SessionEvent) {
+    return `${event.thread_id}:${event.run_id}`;
+  }
+
   async function refreshSnapshot() {
     try {
       const response = await sendCommand<SnapshotPayload>("snapshot", {});
       setSnapshot(response);
       writeSessionIdToUrl(response.session.session_id, { replace: true });
-      setEvents(response.events);
+      setEvents((current) => mergeSessionEventLogs(current, response.events));
       setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
       setIsRunning(snapshotIsRunning(responseRuntime));
       if (!snapshotIsRunning(responseRuntime)) {
-        setLiveAssistantText("");
-        setLiveReasoningText("");
         setLiveRunId("");
         setLiveTimeline([]);
       }
@@ -871,10 +903,6 @@ export function App() {
       return;
     }
     if (isRunning) {
-      if (attachments.length > 0) {
-        setError("Queued image messages are not supported.");
-        return;
-      }
       await enqueueComposerTurn(content, attachments);
       return;
     }
@@ -884,8 +912,6 @@ export function App() {
   async function startMessage(content: string, attachments: ImageAttachmentPayload[] = []) {
     stickToTranscriptEndRef.current = true;
     appendOptimisticUserMessage(content, attachments);
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setIsRunning(true);
@@ -912,8 +938,8 @@ export function App() {
     appendOptimisticUserMessage(content, attachments);
     setQueuedTurns((turns) => [...turns, { id: nextRef("queued"), attachments, content }]);
     try {
-      const response = await sendCommand<{ queued_questions: string[] }>("enqueue_message", { content, attachments });
-      setQueuedTurns((current) => snapshotQueuedTurnsFromQuestions(response.queued_questions, current));
+      const response = await sendCommand<QueuedTurnsResponse>("enqueue_message", { content, attachments });
+      setQueuedTurns(snapshotQueuedTurnsFromPayloads(response.queued_turns));
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Queue failed");
@@ -940,33 +966,11 @@ export function App() {
     stickToTranscriptEndRef.current = distanceFromEnd < 96;
   }
 
-  function appendLiveAssistantDelta(payload: Record<string, unknown>) {
-    const delta = payload.text_delta;
-    if (typeof delta !== "string" || delta === "") return;
-    setLiveAssistantText((current) => current + delta);
-  }
-
-  function appendLiveReasoningDelta(payload: Record<string, unknown>) {
-    const delta = extractLiveReasoningText(payload);
-    if (delta === null || delta === "") return;
-    setLiveReasoningText((current) => current + delta);
-  }
-
   function appendLiveTimelineEvent(payload: AppEventPayload) {
     if (payload.kind !== "agent") return;
     const item = liveTimelineItem(payload);
     if (item === null) return;
     setLiveTimeline((items) => {
-      const existing = items.find((current) => current.id === item.id);
-      if (existing && item.kind === "agent.llm.reasoning") {
-        const currentText = existing.content ?? existing.detail;
-        const delta = item.content ?? item.detail;
-        const content = `${currentText}${delta}`;
-        return [
-          { ...existing, content, detail: content },
-          ...items.filter((current) => current.id !== item.id)
-        ].slice(0, 8);
-      }
       return [item, ...items.filter((existingItem) => existingItem.id !== item.id)].slice(0, 8);
     });
   }
@@ -986,8 +990,8 @@ export function App() {
   async function cancelQueuedTurn(index: number) {
     setQueuedTurns((turns) => turns.filter((_, turnIndex) => turnIndex !== index));
     try {
-      const response = await sendCommand<{ queued_questions: string[] }>("cancel_queued_message", { index });
-      setQueuedTurns(snapshotQueuedTurnsFromQuestions(response.queued_questions, []));
+      const response = await sendCommand<QueuedTurnsResponse>("cancel_queued_message", { index });
+      setQueuedTurns(snapshotQueuedTurnsFromPayloads(response.queued_turns));
       await refreshSnapshot();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cancel queued message failed");
@@ -1007,8 +1011,6 @@ export function App() {
 
   async function startQueuedMessage(index: number, queuedTurn: QueuedTurn) {
     stickToTranscriptEndRef.current = true;
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setIsRunning(true);
@@ -1023,8 +1025,6 @@ export function App() {
 
   async function startSteeredQueuedMessage(index: number, queuedTurn: QueuedTurn) {
     stickToTranscriptEndRef.current = true;
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setIsRunning(true);
@@ -1040,8 +1040,6 @@ export function App() {
   async function steerMessage(content: string, attachments: ImageAttachmentPayload[] = []) {
     stickToTranscriptEndRef.current = true;
     appendOptimisticUserMessage(content, attachments);
-    setLiveAssistantText("");
-    setLiveReasoningText("");
     setLiveRunId("");
     setLiveTimeline([]);
     setIsRunning(true);
@@ -1566,7 +1564,7 @@ export function App() {
                       </div>
                     </div>
                     {item.role === "assistant" && item.workHistory ? (
-                      <MessageWorkHistory history={item.workHistory} />
+                      <MessageWorkHistory history={item.workHistory} onOpenFile={(path) => void openProjectFile(path)} />
                     ) : null}
                     {item.role === "assistant" && item.reasoning ? (
                       <MessageReasoning text={item.reasoning} />
@@ -2484,7 +2482,7 @@ function StatusDot({ state }: { state: ConnectionState }) {
   return <span className={`status-dot ${state}`} />;
 }
 
-function MessageWorkHistory({ history }: { history: RunWorkHistory }) {
+function MessageWorkHistory({ history, onOpenFile }: { history: RunWorkHistory; onOpenFile?: (path: string) => void }) {
   const visibleItems = history.items.slice(0, 8);
   if (visibleItems.length === 0) return null;
   return (
@@ -2498,12 +2496,33 @@ function MessageWorkHistory({ history }: { history: RunWorkHistory }) {
           <div className={`transcript-history-row ${item.tone}`} key={item.id}>
             <span />
             <div>
-              <strong>{item.title}</strong>
+              <strong>
+                <FileLinkedText text={item.title} onOpenFile={onOpenFile} />
+              </strong>
             </div>
           </div>
         ))}
       </div>
     </details>
+  );
+}
+
+function FileLinkedText({ text, onOpenFile }: { text: string; onOpenFile?: (path: string) => void }) {
+  const match = filePathMatchFromText(text);
+  if (match === null || onOpenFile === undefined) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, match.start)}
+      <button
+        type="button"
+        className="file-reference-button"
+        onClick={() => onOpenFile(match.path)}
+        title={`Preview ${match.path}`}
+      >
+        {match.path}
+      </button>
+      {text.slice(match.end)}
+    </>
   );
 }
 
@@ -2797,6 +2816,12 @@ function buildTranscript(
   runWorkHistories: Map<string, RunWorkHistory>,
   runReasoning: Map<string, string>,
 ): TranscriptItem[] {
+  const deltaDrafts = assistantDeltaDrafts(events);
+  const finalizedRuns = new Set(
+    events
+      .filter((event) => event.kind === "assistant_message" || event.kind === "run_completed")
+      .map((event) => event.run_id)
+  );
   const items = events.flatMap<TranscriptItem>((event) => {
     const content = typeof event.payload.content === "string" ? event.payload.content : "";
     const images = imagesFromPayload(event.payload);
@@ -2807,6 +2832,7 @@ function buildTranscript(
     if (event.kind === "assistant_message" || event.kind === "run_completed") {
       return [{
         id: event.event_id,
+        reasoning: runReasoning.get(event.run_id),
         role: "assistant",
         runId: event.run_id,
         text: content,
@@ -2819,7 +2845,48 @@ function buildTranscript(
     }
     return [];
   });
+  for (const [runId, draft] of deltaDrafts.entries()) {
+    if (finalizedRuns.has(runId)) continue;
+    items.push({
+      id: `${runId}-assistant-draft`,
+      reasoning: runReasoning.get(runId),
+      role: "assistant",
+      runId,
+      text: draft.text,
+      time: draft.time,
+      workHistory: runWorkHistories.get(runId)
+    });
+  }
+  for (const [runId, workHistory] of runWorkHistories.entries()) {
+    if (finalizedRuns.has(runId) || deltaDrafts.has(runId)) continue;
+    const reasoning = runReasoning.get(runId);
+    if (!workHistory.isRunning && (reasoning === undefined || reasoning === "")) continue;
+    items.push({
+      id: `${runId}-assistant-work-draft`,
+      reasoning,
+      role: "assistant",
+      runId,
+      text: "",
+      time: new Date().toISOString(),
+      workHistory
+    });
+  }
   return dedupeTranscript(items);
+}
+
+function assistantDeltaDrafts(events: SessionEvent[]) {
+  const drafts = new Map<string, { text: string; time: string }>();
+  for (const event of events) {
+    if (event.kind !== "assistant_delta" || event.run_id === "") continue;
+    const content = typeof event.payload.content === "string" ? event.payload.content : "";
+    if (content === "") continue;
+    const draft = drafts.get(event.run_id);
+    drafts.set(event.run_id, {
+      text: `${draft?.text ?? ""}${content}`,
+      time: event.created_at
+    });
+  }
+  return drafts;
 }
 
 function imagesFromPayload(payload: Record<string, unknown>): ImageAttachmentPayload[] {
@@ -2837,8 +2904,6 @@ function imagesFromPayload(payload: Record<string, unknown>): ImageAttachmentPay
 function mergeOptimisticTranscript(
   persisted: TranscriptItem[],
   optimistic: TranscriptItem[],
-  liveAssistantText: string,
-  liveReasoningText: string,
   liveRunId: string,
   liveAssistantWorkHistory: RunWorkHistory | undefined,
 ) {
@@ -2848,21 +2913,30 @@ function mergeOptimisticTranscript(
   );
   const merged = [...persisted, ...unmatched];
   const hasLiveWorkHistory = liveAssistantWorkHistory !== undefined && liveAssistantWorkHistory.items.length > 0;
-  const hasLiveReasoning = liveReasoningText !== "";
   const liveAssistantRunId = liveRunId || liveAssistantWorkHistory?.runId || "";
+  if (liveAssistantRunId !== "" && liveAssistantWorkHistory !== undefined) {
+    const liveIndex = merged.findIndex((item) => item.role === "assistant" && item.runId === liveAssistantRunId);
+    if (liveIndex >= 0) {
+      merged[liveIndex] = {
+        ...merged[liveIndex],
+        workHistory: liveAssistantWorkHistory ?? merged[liveIndex].workHistory
+      };
+      return merged;
+    }
+  }
   if (
-    (liveAssistantText !== "" || hasLiveWorkHistory || hasLiveReasoning) &&
+    hasLiveWorkHistory &&
     !persisted.some((item) => (
       item.role === "assistant" &&
-      ((liveAssistantRunId !== "" && item.runId === liveAssistantRunId) || (liveAssistantText !== "" && item.text === liveAssistantText))
+      liveAssistantRunId !== "" &&
+      item.runId === liveAssistantRunId
     ))
   ) {
     merged.push({
       id: "live-assistant",
-      reasoning: liveReasoningText || undefined,
       role: "assistant",
       runId: liveAssistantRunId || undefined,
-      text: liveAssistantText,
+      text: "",
       time: new Date().toISOString(),
       workHistory: liveAssistantWorkHistory
     });
@@ -2915,7 +2989,6 @@ function buildRunWorkHistories(
   liveItems: TimelineItem[],
   activeRunId: string,
   isRunning: boolean,
-  runReasoning: Map<string, string>,
 ) {
   const eventsByRun = new Map<string, SessionEvent[]>();
   for (const event of events) {
@@ -2939,8 +3012,7 @@ function buildRunWorkHistories(
     const toolCallItems = buildToolCallItems(runId, runEvents);
     const eventItems = runEvents.flatMap(workHistoryItemFromEvent);
     const runIsRunning = isRunning && runId === activeRunId;
-    const reasoningItem = runIsRunning ? [] : workHistoryReasoningItem(runId, runReasoning.get(runId));
-    const items = uniqueTimelineItems([...reasoningItem, ...toolCallItems, ...eventItems, ...liveRunItems]);
+    const items = uniqueTimelineItems([...toolCallItems, ...eventItems, ...liveRunItems]);
     const durationLabel = workHistoryDuration(runEvents, runId, runIsRunning);
     histories.set(runId, {
       durationLabel,
@@ -2951,24 +3023,6 @@ function buildRunWorkHistories(
     });
   }
   return histories;
-}
-
-function workHistoryReasoningItem(runId: string, reasoning: string | undefined): TimelineItem[] {
-  if (reasoning === undefined || reasoning === "") return [];
-  return [{
-    content: reasoning,
-    id: `${runId}-reasoning`,
-    kind: "reasoning",
-    runId,
-    title: `Reasoning: ${reasoningTitle(reasoning)}`,
-    detail: "Reasoning",
-    tone: "neutral"
-  }];
-}
-
-function reasoningTitle(reasoning: string) {
-  const firstLine = reasoning.split("\n").find((line) => line !== "");
-  return _shortText(firstLine ?? reasoning, 140);
 }
 
 function uniqueTimelineItems(items: TimelineItem[]) {
@@ -3425,6 +3479,18 @@ function filePathFromText(value: string) {
   return cleaned;
 }
 
+function filePathMatchFromText(value: string) {
+  const match = value.match(/(?:^|[\s:])((?:\/|\.{1,2}\/)[^\s`"',;:!?）\])]+?\.(?:mdx?|txt|py|tsx?|jsx?|json|css|html|ya?ml|toml|z?sh|bash))/i);
+  if (match === null || match.index === undefined) return null;
+  const path = match[1];
+  const start = match.index + match[0].lastIndexOf(path);
+  return {
+    end: start + path.length,
+    path,
+    start
+  };
+}
+
 function monacoThemeName(choice: MonacoThemeChoice) {
   return MONACO_THEME_OPTIONS.find((option) => option.value === choice)?.theme ?? "aceai-light";
 }
@@ -3489,6 +3555,7 @@ function languageForPath(path: string) {
 function runtimeOf(snapshot: SnapshotPayload | null): RuntimePayload {
   return snapshot?.runtime ?? {
     queued_questions: [],
+    queued_turns: [],
     pending_approval: null,
     is_running_suspended: false,
     active_thread_accepts_user_turn: true,
@@ -3505,14 +3572,14 @@ function observabilityOf(snapshot: SnapshotPayload | null): ObservabilityPayload
 }
 
 function mergeSnapshotQueuedTurns(snapshot: SnapshotPayload, current: QueuedTurn[]): QueuedTurn[] {
-  return snapshotQueuedTurnsFromQuestions(runtimeOf(snapshot).queued_questions, current);
+  return snapshotQueuedTurnsFromPayloads(runtimeOf(snapshot).queued_turns);
 }
 
-function snapshotQueuedTurnsFromQuestions(questions: string[], current: QueuedTurn[]): QueuedTurn[] {
-  return questions.map((content, index) => ({
-    attachments: current[index]?.content === content ? current[index].attachments : [],
-    id: `queued-${index}-${content}`,
-    content
+function snapshotQueuedTurnsFromPayloads(turns: QueuedTurnPayload[]): QueuedTurn[] {
+  return turns.map((turn, index) => ({
+    attachments: turn.images,
+    id: `queued-${index}-${turn.content}`,
+    content: turn.content
   }));
 }
 
@@ -3534,24 +3601,43 @@ function imageAttachmentsMatch(left: ImageAttachmentPayload[], right: ImageAttac
 
 function eventApprovalRequest(payload: Record<string, unknown>): ToolApprovalRequest | null {
   const request = payload.request;
-  if (!isRecord(request)) return null;
-  const call = request.call;
+  if (isRecord(request)) {
+    const call = request.call;
+    if (!isRecord(call)) return null;
+    if (typeof call.call_id !== "string") return null;
+    if (typeof call.name !== "string") return null;
+    if (typeof call.arguments !== "string") return null;
+    if (typeof request.tool_name !== "string") return null;
+    if (typeof request.reason !== "string") return null;
+    if (typeof request.policy !== "string") return null;
+    return {
+      call: {
+        call_id: call.call_id,
+        name: call.name,
+        arguments: call.arguments
+      },
+      tool_name: request.tool_name,
+      reason: request.reason,
+      policy: request.policy
+    };
+  }
+  const call = payload.tool_call;
   if (!isRecord(call)) return null;
   if (typeof call.call_id !== "string") return null;
   if (typeof call.name !== "string") return null;
   if (typeof call.arguments !== "string") return null;
-  if (typeof request.tool_name !== "string") return null;
-  if (typeof request.reason !== "string") return null;
-  if (typeof request.policy !== "string") return null;
+  const toolName = stringField(payload, "tool_name");
+  const reason = stringField(payload, "content");
+  if (toolName === null || reason === null) return null;
   return {
     call: {
       call_id: call.call_id,
       name: call.name,
       arguments: call.arguments
     },
-    tool_name: request.tool_name,
-    reason: request.reason,
-    policy: request.policy
+    tool_name: toolName,
+    reason,
+    policy: ""
   };
 }
 

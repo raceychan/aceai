@@ -37,6 +37,8 @@ from aceai.agent.provider_catalog import (
 from aceai.agent.session import (
     EventLog,
     MAIN_THREAD_ID,
+    SessionQueuedImage,
+    SessionQueuedTurn,
     SessionEvent,
     SessionRecorder,
     SessionState,
@@ -46,6 +48,7 @@ from aceai.agent.session_service import (
     AgentSessionSnapshot,
     SessionService,
     UserImageAttachment,
+    agent_event_to_session_event,
 )
 from aceai.agent.memory.subagent_artifacts import SubagentArtifactStore
 from aceai.core.helpers.string import uuid_str
@@ -82,6 +85,12 @@ class AgentAppEvent(Struct, frozen=True, kw_only=True):
     thread_id: str
     agent_id: str
     event: AgentEvent | SessionEvent
+    raw_event: AgentEvent | None = None
+
+
+class QueuedTurn(Struct, frozen=True, kw_only=True):
+    content: str
+    images: tuple[UserImageAttachment, ...] = ()
 
 
 class AppRuntimeInfo(Struct, frozen=True, kw_only=True):
@@ -190,7 +199,7 @@ class AceAgentApp:
         self._background_subagent_jobs: dict[str, BackgroundSubagentJob] = {}
         self._steered_child_run_ids: set[str] = set()
         self._stale_child_runtime_tasks: set[asyncio.Task[None]] = set()
-        self._queued_questions: dict[str, list[str]] = {}
+        self._queued_turns: dict[str, list[QueuedTurn]] = {}
         self._app_event_subscribers: set[asyncio.Queue[AgentAppEvent | None]] = set()
         self._idea_store = idea_store or IdeaStore()
         self._approved_tool_names_by_thread: dict[str, set[str]] = {}
@@ -199,6 +208,7 @@ class AceAgentApp:
         if session_id is not None:
             if snapshot is None:
                 snapshot = self._session_service.snapshot(session_id)
+            self._queued_turns = _queued_turns_from_session_state(snapshot.state)
             self._approved_tool_names_by_thread[MAIN_THREAD_ID] = (
                 _approved_tool_names_from_event_log(snapshot.event_log)
             )
@@ -294,7 +304,11 @@ class AceAgentApp:
 
     @property
     def queued_questions(self) -> tuple[str, ...]:
-        return tuple(self._queued_questions_for_active_thread())
+        return tuple(turn.content for turn in self._queued_turns_for_active_thread())
+
+    @property
+    def queued_turns(self) -> tuple[QueuedTurn, ...]:
+        return tuple(self._queued_turns_for_active_thread())
 
     @property
     def active_thread_accepts_user_turn(self) -> bool:
@@ -316,7 +330,7 @@ class AceAgentApp:
         self._active_thread_id = MAIN_THREAD_ID
         self._thread_agents = {MAIN_THREAD_ID: self._agent}
         self._child_runtimes = {}
-        self._queued_questions = {}
+        self._queued_turns = _queued_turns_from_session_state(snapshot.state)
         self._approved_tool_names_by_thread = {
             MAIN_THREAD_ID: _approved_tool_names_from_event_log(snapshot.event_log)
         }
@@ -353,7 +367,7 @@ class AceAgentApp:
             self._llm_history = []
             self._active_run = None
             self._thread_runs = {}
-            self._queued_questions = {}
+            self._queued_turns = {}
             self._approved_tool_names_by_thread = {}
             self._last_context_event_id = None
             self._last_context_event_ids = {}
@@ -362,6 +376,7 @@ class AceAgentApp:
             session_id,
             self._active_thread_id,
         )
+        self._queued_turns = _queued_turns_from_session_state(snapshot.state)
         if self._active_thread_id == MAIN_THREAD_ID:
             self._llm_history = snapshot.history
         latest_context_event_id = _last_context_source_event_id(snapshot.event_log)
@@ -387,15 +402,21 @@ class AceAgentApp:
         if self._active_thread_id == thread_id and self._active_run is run:
             self._active_run = None
 
-    def enqueue_turn(self, question: str) -> int:
+    def enqueue_turn(
+        self,
+        question: str,
+        *,
+        images: tuple[UserImageAttachment, ...] = (),
+    ) -> int:
         if not self.active_thread_accepts_user_turn:
             raise RuntimeError(
                 "Delegated subagent thread is still running; switch to main or wait "
                 "for delegate_to_subagent to finish before sending a new message."
             )
-        questions = self._queued_questions_for_active_thread()
-        questions.append(question)
-        return len(questions)
+        turns = self._queued_turns_for_active_thread()
+        turns.append(QueuedTurn(content=question, images=images))
+        self.persist_session_state()
+        return len(turns)
 
     def steer_active_child_thread(self, question: str) -> bool:
         thread_id = self._active_thread_id
@@ -457,17 +478,23 @@ class AceAgentApp:
         )
         return True
 
-    def pop_queued_turn(self) -> str | None:
-        questions = self._queued_questions_for_active_thread()
-        if not questions:
+    def pop_queued_turn(self) -> QueuedTurn | None:
+        turns = self._queued_turns_for_active_thread()
+        if not turns:
             return None
-        return questions.pop(0)
+        turn = turns.pop(0)
+        self.persist_session_state()
+        return turn
 
-    def take_queued_turn(self, index: int) -> str:
-        return self._queued_questions_for_active_thread().pop(index)
+    def take_queued_turn(self, index: int) -> QueuedTurn:
+        turn = self._queued_turns_for_active_thread().pop(index)
+        self.persist_session_state()
+        return turn
 
-    def cancel_queued_turn(self, index: int) -> str:
-        return self._queued_questions_for_active_thread().pop(index)
+    def cancel_queued_turn(self, index: int) -> QueuedTurn:
+        turn = self._queued_turns_for_active_thread().pop(index)
+        self.persist_session_state()
+        return turn
 
     def switch_model(
         self,
@@ -513,6 +540,7 @@ class AceAgentApp:
             SessionState(
                 selected_provider=self._provider_name,
                 selected_model=self._selected_model,
+                queued_turns_by_thread=_session_state_queued_turns(self._queued_turns),
             ),
         )
 
@@ -565,11 +593,8 @@ class AceAgentApp:
             citations=citations,
             images=images,
         ):
-            if app_event.thread_id == thread_id and not isinstance(
-                app_event.event,
-                SessionEvent,
-            ):
-                yield app_event.event
+            if app_event.thread_id == thread_id and app_event.raw_event is not None:
+                yield app_event.raw_event
 
     async def start_turn_events(
         self,
@@ -622,6 +647,21 @@ class AceAgentApp:
         run_id: str | None = None,
         tool_call_id: str | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
+        async for app_event in self.approve_tool_events(
+            thread_id=thread_id,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        ):
+            if app_event.raw_event is not None:
+                yield app_event.raw_event
+
+    async def approve_tool_events(
+        self,
+        *,
+        thread_id: str | None = None,
+        run_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> AsyncGenerator[AgentAppEvent, None]:
         target_thread_id = thread_id or self._active_thread_id
         request = self.pending_approval_request(thread_id=target_thread_id)
         if request is None:
@@ -646,6 +686,23 @@ class AceAgentApp:
         run_id: str | None = None,
         tool_call_id: str | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
+        async for app_event in self.reject_tool_events(
+            reason,
+            thread_id=thread_id,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        ):
+            if app_event.raw_event is not None:
+                yield app_event.raw_event
+
+    async def reject_tool_events(
+        self,
+        reason: str,
+        *,
+        thread_id: str | None = None,
+        run_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> AsyncGenerator[AgentAppEvent, None]:
         target_thread_id = thread_id or self._active_thread_id
         request = self.pending_approval_request(thread_id=target_thread_id)
         if request is None:
@@ -669,9 +726,9 @@ class AceAgentApp:
         decision: ToolApprovalDecision,
         *,
         thread_id: str,
-    ) -> AsyncGenerator[AgentEvent, None]:
+    ) -> AsyncGenerator[AgentAppEvent, None]:
         run = self._current_run(thread_id=thread_id)
-        async for event in self._consume_run_stream(
+        async for event in self._consume_run_stream_events(
             run,
             self._agent_for_thread(thread_id).resume_approval(run, decision),
             thread_id=thread_id,
@@ -694,9 +751,8 @@ class AceAgentApp:
             agent_id=agent_id,
         ):
             if app_event.thread_id == thread_id:
-                if isinstance(app_event.event, SessionEvent):
-                    continue
-                yield app_event.event
+                if app_event.raw_event is not None:
+                    yield app_event.raw_event
 
     async def _consume_run_stream_events(
         self,
@@ -717,16 +773,20 @@ class AceAgentApp:
                         self._record_context_checkpoint(event, thread_id=thread_id)
                     event = self._archive_subagent_artifact(event)
                     persisted_event_id: str | None = None
+                    session_event: SessionEvent | None = None
                     if not isinstance(
                         event,
                         ContextCompactionFailedEvent
                         | ContextCompactionStartedEvent
                         | ContextCompressedEvent,
                     ):
-                        persisted_event_id = self._session_service.record_agent_event(
+                        session_event = agent_event_to_session_event(
                             event,
                             thread_id=thread_id,
                             agent_id=agent_id,
+                        )
+                        persisted_event_id = self._session_service.record_session_event(
+                            session_event
                         )
                     if persisted_event_id is not None and _agent_event_updates_context(
                         event
@@ -745,7 +805,8 @@ class AceAgentApp:
                     self._emit_app_event(
                         thread_id=thread_id,
                         agent_id=agent_id,
-                        event=event,
+                        event=session_event or event,
+                        raw_event=event,
                     )
             finally:
                 reset_delegated_child_run_recorder(recorder_token)
@@ -1505,18 +1566,20 @@ class AceAgentApp:
                 event=event,
             )
             return
-        persisted_event_id = self._session_service.record_agent_event(
+        session_event = agent_event_to_session_event(
             event,
             thread_id=thread_id,
             agent_id=agent_id,
         )
+        persisted_event_id = self._session_service.record_session_event(session_event)
         if persisted_event_id is not None and _agent_event_updates_context(event):
             self._child_context_event_ids[thread_id] = persisted_event_id
             self._last_context_event_ids[thread_id] = persisted_event_id
         self._emit_app_event(
             thread_id=thread_id,
             agent_id=agent_id,
-            event=event,
+            event=session_event,
+            raw_event=event,
         )
 
     def finish_child_thread(
@@ -1546,19 +1609,21 @@ class AceAgentApp:
         thread_id: str,
         agent_id: str,
         event: AgentEvent | SessionEvent,
+        raw_event: AgentEvent | None = None,
     ) -> None:
         app_event = AgentAppEvent(
             thread_id=thread_id,
             agent_id=agent_id,
             event=event,
+            raw_event=raw_event,
         )
         for queue in tuple(self._app_event_subscribers):
             queue.put_nowait(app_event)
 
-    def _queued_questions_for_active_thread(self) -> list[str]:
-        if self._active_thread_id not in self._queued_questions:
-            self._queued_questions[self._active_thread_id] = []
-        return self._queued_questions[self._active_thread_id]
+    def _queued_turns_for_active_thread(self) -> list[QueuedTurn]:
+        if self._active_thread_id not in self._queued_turns:
+            self._queued_turns[self._active_thread_id] = []
+        return self._queued_turns[self._active_thread_id]
 
     def _agent_for_thread(self, thread_id: str) -> Agent:
         if thread_id in self._thread_agents:
@@ -1783,6 +1848,48 @@ def _user_message_parts(
             )
         )
     return parts
+
+
+def _queued_turns_from_session_state(
+    state: SessionState,
+) -> dict[str, list[QueuedTurn]]:
+    return {
+        thread_id: [
+            QueuedTurn(
+                content=turn.content,
+                images=tuple(
+                    UserImageAttachment(
+                        mime_type=image.mime_type,
+                        data=image.data,
+                    )
+                    for image in turn.images
+                ),
+            )
+            for turn in turns
+        ]
+        for thread_id, turns in state.queued_turns_by_thread.items()
+    }
+
+
+def _session_state_queued_turns(
+    turns_by_thread: dict[str, list[QueuedTurn]],
+) -> dict[str, list[SessionQueuedTurn]]:
+    return {
+        thread_id: [
+            SessionQueuedTurn(
+                content=turn.content,
+                images=[
+                    SessionQueuedImage(
+                        mime_type=image.mime_type,
+                        data=image.data,
+                    )
+                    for image in turn.images
+                ],
+            )
+            for turn in turns
+        ]
+        for thread_id, turns in turns_by_thread.items()
+    }
 
 
 def _approved_tool_names_from_event_log(event_log: EventLog) -> set[str]:
