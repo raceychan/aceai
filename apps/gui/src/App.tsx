@@ -116,6 +116,7 @@ const SESSION_URL_PARAM = "session";
 const DEFAULT_INSPECTOR_WIDTH = 420;
 const MIN_INSPECTOR_WIDTH = 320;
 const MIN_CONVERSATION_WIDTH = 520;
+const WORKSPACE_REVEAL_SUPPRESSION_MS = 45_000;
 
 type QueuedTurn = {
   id: string;
@@ -149,6 +150,7 @@ type ArtifactItem = {
 type OpenFileItem = FilePayload;
 
 type WorkspaceMode = "chat" | "sessions" | "ideas" | "threads" | "events" | "artifacts" | "settings";
+type WorkspaceTab = "files" | "agents" | "activity" | "run";
 type MonacoThemeChoice = "aceai" | "light" | "dark";
 type InspectorGroupId = "run" | "context" | "work" | "signals";
 type ProjectGroupedItem = {
@@ -282,6 +284,8 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("files");
   const [openInspectorGroups, setOpenInspectorGroups] = useState(DEFAULT_INSPECTOR_GROUPS);
   const [settingsDraft, setSettingsDraft] = useState<GuiConfig | null>(null);
   const [settingsApiKey, setSettingsApiKey] = useState("");
@@ -299,6 +303,8 @@ export function App() {
   const statsRef = useRef<HTMLElement | null>(null);
   const eventsRef = useRef<HTMLElement | null>(null);
   const threadsRef = useRef<HTMLElement | null>(null);
+  const workspaceDismissedAtRef = useRef<number | null>(null);
+  const knownThreadIdsRef = useRef<Set<string>>(new Set());
   const activeReference = useMemo(() => activeReferencePrefix(input), [input]);
   const connected = connectionState === "connected";
   const sessionsQuery = useQuery({
@@ -444,6 +450,7 @@ export function App() {
   const showReferenceMenu = connected && activeReference !== null && referenceItems.length > 0;
   const isBlockedForApproval = pendingApproval !== null || runtime.is_running_suspended;
   const hasWorkspaceObject = fileLoading || openFile !== null || inspectedArtifact !== null;
+  const threadIdsKey = snapshot?.threads.map((thread) => thread.thread_id).join("|") ?? "";
   const composerStatus = isBlockedForApproval ? "approval" : isRunning ? "running" : connected ? "ready" : "offline";
   const usageTitle = observableUsage
     ? `Tokens: ${formatCompactNumber(observableUsage.total_tokens)} total, ${formatCompactNumber(observableUsage.input_tokens)} input, ${formatCompactNumber(observableUsage.output_tokens)} output, ${formatCompactNumber(observableUsage.cached_input_tokens)} cached, ${formatUsd(observableUsage.total_cost_usd)} cost`
@@ -455,6 +462,24 @@ export function App() {
     setQueuedTurns(remainingTurns);
     void startQueuedMessage(0, nextTurn);
   }, [connected, isRunning, isBlockedForApproval, queuedTurns]);
+
+  useEffect(() => {
+    if (!isBlockedForApproval) return;
+    revealWorkspace("activity", true);
+  }, [isBlockedForApproval]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      knownThreadIdsRef.current = new Set();
+      return;
+    }
+    const currentThreadIds = new Set(snapshot.threads.map((thread) => thread.thread_id));
+    const hasNewThread = snapshot.threads.some((thread) => !knownThreadIdsRef.current.has(thread.thread_id));
+    knownThreadIdsRef.current = currentThreadIds;
+    if (snapshot.threads.length > 1 && hasNewThread) {
+      revealWorkspace("agents", true);
+    }
+  }, [threadIdsKey, snapshot]);
 
   useEffect(() => {
     if (!stickToTranscriptEndRef.current) return;
@@ -553,6 +578,24 @@ export function App() {
       socketRef.current?.close();
     };
   }, []);
+
+  function revealWorkspace(tab: WorkspaceTab, urgent: boolean) {
+    const dismissedAt = workspaceDismissedAtRef.current;
+    if (!urgent && dismissedAt !== null && Date.now() - dismissedAt < WORKSPACE_REVEAL_SUPPRESSION_MS) return;
+    setWorkspaceTab(tab);
+    setWorkspaceOpen(true);
+  }
+
+  function openWorkspace(tab: WorkspaceTab) {
+    workspaceDismissedAtRef.current = null;
+    setWorkspaceTab(tab);
+    setWorkspaceOpen(true);
+  }
+
+  function closeWorkspace() {
+    workspaceDismissedAtRef.current = Date.now();
+    setWorkspaceOpen(false);
+  }
 
   function nextRef(prefix: string) {
     refCounter.current += 1;
@@ -1168,12 +1211,14 @@ export function App() {
     setInput((value) => replaceActiveReference(value, item.value));
     setSelectedReferenceIndex(0);
     if (item.kind === "file") {
+      revealWorkspace("files", true);
       void openProjectFile(filePathFromReference(item.value));
     }
     window.requestAnimationFrame(() => composerRef.current?.focus());
   }
 
   async function openProjectFile(path: string, options: { edit?: boolean } = {}) {
+    revealWorkspace("files", true);
     setFileLoading(true);
     setError(null);
     try {
@@ -1206,6 +1251,7 @@ export function App() {
   }
 
   function inspectArtifact(artifact: ArtifactItem) {
+    revealWorkspace("files", true);
     setSelectedArtifactId(artifact.id);
     setOpenFile(null);
     setFileDraft("");
@@ -1542,7 +1588,7 @@ export function App() {
         ) : null}
 
         <div
-          className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""}`}
+          className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""} ${workspaceOpen ? "workspace-open" : "workspace-closed"}`}
           style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
         >
           <section className="conversation-pane" aria-label="Transcript">
@@ -2055,7 +2101,7 @@ export function App() {
             </form> : null}
           </section>
 
-          {workspaceMode !== "settings" ? <div
+          {workspaceMode !== "settings" && workspaceOpen ? <div
             aria-label="Resize workspace"
             className="split-resizer"
             onMouseDown={startInspectorResize}
@@ -2064,256 +2110,307 @@ export function App() {
           /> : null}
 
           {workspaceMode !== "settings" ? <aside
-            className={`inspector ${hasWorkspaceObject ? "object-open" : ""}`}
-            aria-label="Run inspector"
+            className={`inspector ${workspaceOpen ? "open" : "collapsed"} ${workspaceTab === "files" && hasWorkspaceObject ? "object-open" : ""}`}
+            aria-label="Workspace"
           >
-            <section className="inspector-section object-inspector" aria-label="Workspace object">
-              <div className="section-title">
-                <FileText size={15} />
-                Workspace
+            {!workspaceOpen ? (
+              <div className="workspace-rail" aria-label="Open workspace">
+                <button type="button" onClick={() => openWorkspace("files")} title="Files" aria-label="Open files">
+                  <FileText size={18} />
+                </button>
+                <button type="button" onClick={() => openWorkspace("agents")} title="Agents" aria-label="Open agents">
+                  <GitBranch size={18} />
+                </button>
+                <button type="button" onClick={() => openWorkspace("activity")} title="Activity" aria-label="Open activity">
+                  <Sparkles size={18} />
+                </button>
+                <button type="button" onClick={() => openWorkspace("run")} title={usageTitle} aria-label="Open run details">
+                  <PanelRight size={18} />
+                </button>
               </div>
-              {fileLoading ? (
-                <div className="object-empty">Opening file...</div>
-              ) : openFile ? (
-                <article className="file-inspector">
-                  <div className="object-head" onDoubleClick={() => setFileEditMode(true)}>
-                    <div>
-                      <strong>{openFile.path}</strong>
-                      <span>{formatBytes(openFile.size)} / {formatShortDate(openFile.updated_at)} / {fileEditMode ? "Editing" : "Read only"}</span>
-                    </div>
-                    <code>{fileEditMode ? "editing" : "read only"}</code>
-                    <label className="theme-select" title="Editor theme">
-                      <span>Theme</span>
-                      <select value={monacoTheme} onChange={(event) => setMonacoTheme(event.target.value as MonacoThemeChoice)}>
-                        {MONACO_THEME_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      type="button"
-                      className="tiny-icon-button"
-                      onClick={() => {
-                        setOpenFile(null);
-                        setFileDraft("");
-                        setFileEditMode(false);
-                      }}
-                      title="Close file"
-                      aria-label="Close file"
-                    >
-                      <CircleStop size={13} />
-                    </button>
+            ) : (
+              <>
+                <div className="inspector-header">
+                  <div>
+                    <span>Workspace</span>
+                    <strong>{workspaceTabTitle(workspaceTab)}</strong>
                   </div>
-                  <div className={`file-editor-shell ${fileEditMode ? "editing" : "read-only"}`} onDoubleClick={() => setFileEditMode(true)}>
-                    <Editor
-                      className="file-editor"
-                      beforeMount={defineAceAIMonacoTheme}
-                      height="100%"
-                      key={`${openFile.path}:${inspectorWidth}`}
-                      language={languageForPath(openFile.path)}
-                      onChange={(value) => setFileDraft(value ?? "")}
-                      options={{
-                        automaticLayout: true,
-                        domReadOnly: !fileEditMode,
-                        fontFamily: "SFMono-Regular, Consolas, Liberation Mono, monospace",
-                        fontSize: 12,
-                        minimap: { enabled: true },
-                        readOnly: !fileEditMode,
-                        readOnlyMessage: { value: "Double-click to edit this file." },
-                        renderLineHighlight: "all",
-                        scrollBeyondLastLine: false,
-                        smoothScrolling: true,
-                        tabSize: 2,
-                        wordWrap: "on"
-                      }}
-                      theme={monacoThemeName(monacoTheme)}
-                      value={fileDraft}
-                    />
-                    {!fileEditMode ? <div className="file-readonly-hint">Double-click to edit</div> : null}
-                  </div>
-                  <div className="object-actions">
-                    <button type="button" onClick={() => void copyText(fileDraft, "File")}>
-                      <Copy size={13} />
-                      Copy
-                    </button>
-                    {fileEditMode ? (
-                      <>
-                        <button type="button" onClick={() => {
-                          setFileDraft(openFile.content);
-                          setFileEditMode(false);
-                        }}>
-                          Cancel
-                        </button>
-                        <button type="button" className="primary" onClick={() => void saveOpenFile()} disabled={fileDraft === openFile.content}>
-                          <Save size={13} />
-                          Save
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" onClick={() => setFileEditMode(true)}>
-                        <Edit3 size={13} />
-                        Edit
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ) : inspectedArtifact ? (
-                <article className="artifact-inspector">
-                  <div className="object-head">
-                    <div>
-                      <strong>{inspectedArtifact.title}</strong>
-                      <span>{inspectedArtifact.subtitle}</span>
-                    </div>
-                    <code>{inspectedArtifact.kind}</code>
-                  </div>
-                  <pre>{inspectedArtifact.content}</pre>
-                  <div className="object-actions">
-                    <button type="button" onClick={() => void copyText(inspectedArtifact.content, "Artifact")}>
-                      <Copy size={13} />
-                      Copy
-                    </button>
-                  </div>
-                </article>
-              ) : (
-                <div className="object-empty">Select a file reference or artifact to inspect it here.</div>
-              )}
-            </section>
-
-            {!hasWorkspaceObject ? (
-              <div className="work-history" aria-label="Work history">
-                <InspectorGroup
-                  icon={<PanelRight size={15} />}
-                  open={openInspectorGroups.run}
-                  onToggle={() => toggleInspectorGroup("run")}
-                  summary={pendingApproval ? "approval needed" : isRunning ? "active run" : latestRun ? "settled" : "waiting"}
-                  title="Run"
-                >
-                <section className="inspector-section" ref={statsRef}>
-                  <div className="run-card">
-                    <div>
-                      <span>State</span>
-                      <strong>{pendingApproval ? "approval" : isRunning ? "active" : latestRun ? "settled" : "waiting"}</strong>
-                    </div>
-                    <div>
-                      <span>Thread</span>
-                      <strong>{activeThread?.status ?? "main"}</strong>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="inspector-section">
-                  <div className="section-title">
-                    <Database size={15} />
-                    Usage
-                  </div>
-                  <div className="usage-grid">
-                    <Metric label="Tokens" valueText={formatCompactNumber(observableUsage?.total_tokens ?? 0)} />
-                    <Metric label="Input" valueText={formatCompactNumber(observableUsage?.input_tokens ?? 0)} />
-                    <Metric label="Output" valueText={formatCompactNumber(observableUsage?.output_tokens ?? 0)} />
-                    <Metric label="Cost" valueText={formatUsd(observableUsage?.total_cost_usd ?? 0)} />
-                  </div>
-                  <div className="usage-detail">
-                    <span>Context {formatCompactNumber(observableUsage?.context_tokens ?? 0)}</span>
-                    <span>Cached {formatCompactNumber(observableUsage?.cached_input_tokens ?? 0)}</span>
-                    <span>Cache {formatPercent(observableUsage?.cache_hit_rate)}</span>
-                  </div>
-                </section>
-                </InspectorGroup>
-
-            <InspectorGroup
-              icon={<GitBranch size={15} />}
-              open={openInspectorGroups.context}
-              onToggle={() => toggleInspectorGroup("context")}
-              summary={`${snapshot?.threads.length ?? 0} threads / ${ideas.length} ideas`}
-              title="Context"
-            >
-            <section className="inspector-section" ref={threadsRef}>
-              <div className="section-title">
-                <GitBranch size={15} />
-                Threads
-              </div>
-              {!snapshot ? (
-                <div className="subtle-empty">No active session.</div>
-              ) : (
-                <div className="thread-list">
-                  {snapshot.threads.map((thread) => (
-                    <button
-                      className={thread.thread_id === snapshot.active_thread_id ? "active" : ""}
-                      key={thread.thread_id}
-                      onClick={() => void switchThread(thread.thread_id)}
-                    >
-                      <div>
-                        <strong>{thread.title || thread.thread_id}</strong>
-                        <span>{thread.role} / {thread.status}</span>
-                      </div>
-                      <code>{shortThreadId(thread.thread_id)}</code>
-                    </button>
-                  ))}
+                  <button type="button" className="tiny-icon-button" onClick={closeWorkspace} title="Collapse workspace" aria-label="Collapse workspace">
+                    <PanelRight size={14} />
+                  </button>
                 </div>
-              )}
-            </section>
+                <div className="workspace-tabs" role="tablist" aria-label="Workspace views">
+                  <button type="button" className={workspaceTab === "files" ? "active" : ""} onClick={() => openWorkspace("files")}>
+                    <FileText size={14} />
+                    Files
+                  </button>
+                  <button type="button" className={workspaceTab === "agents" ? "active" : ""} onClick={() => openWorkspace("agents")}>
+                    <GitBranch size={14} />
+                    Agents
+                  </button>
+                  <button type="button" className={workspaceTab === "activity" ? "active" : ""} onClick={() => openWorkspace("activity")}>
+                    <Sparkles size={14} />
+                    Activity
+                  </button>
+                  <button type="button" className={workspaceTab === "run" ? "active" : ""} onClick={() => openWorkspace("run")}>
+                    <PanelRight size={14} />
+                    Run
+                  </button>
+                </div>
 
-                  <section className="inspector-section">
-                    <div className="section-title">
-                      <FileText size={15} />
-                      Ideas
-                    </div>
-                    {ideas.length === 0 ? (
-                      <div className="subtle-empty">No saved ideas.</div>
-                    ) : (
-                      <div className="idea-panel">
-                        <div className="idea-list">
-                          {ideaGroups.map((group) => (
-                            <section className="project-idea-group" key={group.project_id}>
-                              <ProjectGroupHeader count={group.items.length} label={group.project_name} />
-                              {group.items.map((idea) => (
-                                <button
-                                  className={idea.index === selectedIdea?.index ? "active" : ""}
-                                  key={idea.idea_id}
-                                  onClick={() => selectIdea(idea)}
-                                >
-                                  <span>{ideaTitle(idea.content)}</span>
-                                  <code>@idea:{idea.index}</code>
-                                </button>
+                {workspaceTab === "files" ? (
+                  <section className="inspector-section object-inspector" aria-label="Workspace object">
+                    {fileLoading ? (
+                      <div className="object-empty">Opening file...</div>
+                    ) : openFile ? (
+                      <article className="file-inspector">
+                        <div className="object-head" onDoubleClick={() => setFileEditMode(true)}>
+                          <div>
+                            <strong>{openFile.path}</strong>
+                            <span>{formatBytes(openFile.size)} / {formatShortDate(openFile.updated_at)} / {fileEditMode ? "Editing" : "Read only"}</span>
+                          </div>
+                          <code>{fileEditMode ? "editing" : "read only"}</code>
+                          <label className="theme-select" title="Editor theme">
+                            <span>Theme</span>
+                            <select value={monacoTheme} onChange={(event) => setMonacoTheme(event.target.value as MonacoThemeChoice)}>
+                              {MONACO_THEME_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
                               ))}
-                            </section>
-                          ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            className="tiny-icon-button"
+                            onClick={() => {
+                              setOpenFile(null);
+                              setFileDraft("");
+                              setFileEditMode(false);
+                            }}
+                            title="Close file"
+                            aria-label="Close file"
+                          >
+                            <CircleStop size={13} />
+                          </button>
                         </div>
-                  {selectedIdea ? (
-                    <div className="idea-editor">
-                      <textarea
-                        value={ideaDraft}
-                        onChange={(event) => setIdeaDraft(event.target.value)}
-                        aria-label="Idea content"
-                      />
-                      <div className="idea-actions">
-                        <button type="button" onClick={referenceSelectedIdea}>
-                          <Search size={13} />
-                          Reference
-                        </button>
-                        <button type="button" onClick={() => void updateSelectedIdea()}>
-                          <Save size={13} />
-                          Save
-                        </button>
-                        <button type="button" onClick={() => void deleteSelectedIdea()}>
-                          <Trash2 size={13} />
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </section>
-            </InspectorGroup>
+                        <div className={`file-editor-shell ${fileEditMode ? "editing" : "read-only"}`} onDoubleClick={() => setFileEditMode(true)}>
+                          <Editor
+                            className="file-editor"
+                            beforeMount={defineAceAIMonacoTheme}
+                            height="100%"
+                            key={`${openFile.path}:${inspectorWidth}`}
+                            language={languageForPath(openFile.path)}
+                            onChange={(value) => setFileDraft(value ?? "")}
+                            options={{
+                              automaticLayout: true,
+                              domReadOnly: !fileEditMode,
+                              fontFamily: "SFMono-Regular, Consolas, Liberation Mono, monospace",
+                              fontSize: 12,
+                              minimap: { enabled: true },
+                              readOnly: !fileEditMode,
+                              readOnlyMessage: { value: "Double-click to edit this file." },
+                              renderLineHighlight: "all",
+                              scrollBeyondLastLine: false,
+                              smoothScrolling: true,
+                              tabSize: 2,
+                              wordWrap: "on"
+                            }}
+                            theme={monacoThemeName(monacoTheme)}
+                            value={fileDraft}
+                          />
+                          {!fileEditMode ? <div className="file-readonly-hint">Double-click to edit</div> : null}
+                        </div>
+                        <div className="object-actions">
+                          <button type="button" onClick={() => void copyText(fileDraft, "File")}>
+                            <Copy size={13} />
+                            Copy
+                          </button>
+                          {fileEditMode ? (
+                            <>
+                              <button type="button" onClick={() => {
+                                setFileDraft(openFile.content);
+                                setFileEditMode(false);
+                              }}>
+                                Cancel
+                              </button>
+                              <button type="button" className="primary" onClick={() => void saveOpenFile()} disabled={fileDraft === openFile.content}>
+                                <Save size={13} />
+                                Save
+                              </button>
+                            </>
+                          ) : (
+                            <button type="button" onClick={() => setFileEditMode(true)}>
+                              <Edit3 size={13} />
+                              Edit
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ) : inspectedArtifact ? (
+                      <article className="artifact-inspector">
+                        <div className="object-head">
+                          <div>
+                            <strong>{inspectedArtifact.title}</strong>
+                            <span>{inspectedArtifact.subtitle}</span>
+                          </div>
+                          <code>{inspectedArtifact.kind}</code>
+                        </div>
+                        <pre>{inspectedArtifact.content}</pre>
+                        <div className="object-actions">
+                          <button type="button" onClick={() => void copyText(inspectedArtifact.content, "Artifact")}>
+                            <Copy size={13} />
+                            Copy
+                          </button>
+                        </div>
+                      </article>
+                    ) : (
+                      <div className="object-empty">Select a file reference or artifact to inspect it here.</div>
+                    )}
+                  </section>
+                ) : null}
 
-            <InspectorGroup
-              icon={<Sparkles size={15} />}
-              open={openInspectorGroups.work}
-              onToggle={() => toggleInspectorGroup("work")}
-              summary={`${timeline.length} steps / ${observableToolCalls.length} tools`}
-              title="Work"
-            >
+                {workspaceTab === "run" ? (
+                  <div className="work-history" aria-label="Run details">
+                    <InspectorGroup
+                      icon={<PanelRight size={15} />}
+                      open={openInspectorGroups.run}
+                      onToggle={() => toggleInspectorGroup("run")}
+                      summary={pendingApproval ? "approval needed" : isRunning ? "active run" : latestRun ? "settled" : "waiting"}
+                      title="Run"
+                    >
+                      <section className="inspector-section" ref={statsRef}>
+                        <div className="run-card">
+                          <div>
+                            <span>State</span>
+                            <strong>{pendingApproval ? "approval" : isRunning ? "active" : latestRun ? "settled" : "waiting"}</strong>
+                          </div>
+                          <div>
+                            <span>Thread</span>
+                            <strong>{activeThread?.status ?? "main"}</strong>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="inspector-section">
+                        <div className="section-title">
+                          <Database size={15} />
+                          Usage
+                        </div>
+                        <div className="usage-grid">
+                          <Metric label="Tokens" valueText={formatCompactNumber(observableUsage?.total_tokens ?? 0)} />
+                          <Metric label="Input" valueText={formatCompactNumber(observableUsage?.input_tokens ?? 0)} />
+                          <Metric label="Output" valueText={formatCompactNumber(observableUsage?.output_tokens ?? 0)} />
+                          <Metric label="Cost" valueText={formatUsd(observableUsage?.total_cost_usd ?? 0)} />
+                        </div>
+                        <div className="usage-detail">
+                          <span>Context {formatCompactNumber(observableUsage?.context_tokens ?? 0)}</span>
+                          <span>Cached {formatCompactNumber(observableUsage?.cached_input_tokens ?? 0)}</span>
+                          <span>Cache {formatPercent(observableUsage?.cache_hit_rate)}</span>
+                        </div>
+                      </section>
+                    </InspectorGroup>
+                  </div>
+                ) : null}
+
+                {workspaceTab === "agents" ? (
+                  <div className="work-history" aria-label="Agents and context">
+                    <InspectorGroup
+                      icon={<GitBranch size={15} />}
+                      open={openInspectorGroups.context}
+                      onToggle={() => toggleInspectorGroup("context")}
+                      summary={`${snapshot?.threads.length ?? 0} threads / ${ideas.length} ideas`}
+                      title="Agents"
+                    >
+                      <section className="inspector-section" ref={threadsRef}>
+                        <div className="section-title">
+                          <GitBranch size={15} />
+                          Threads
+                        </div>
+                        {!snapshot ? (
+                          <div className="subtle-empty">No active session.</div>
+                        ) : (
+                          <div className="thread-list">
+                            {snapshot.threads.map((thread) => (
+                              <button
+                                className={thread.thread_id === snapshot.active_thread_id ? "active" : ""}
+                                key={thread.thread_id}
+                                onClick={() => void switchThread(thread.thread_id)}
+                              >
+                                <div>
+                                  <strong>{thread.title || thread.thread_id}</strong>
+                                  <span>{thread.role} / {thread.status}</span>
+                                </div>
+                                <code>{shortThreadId(thread.thread_id)}</code>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+
+                      <section className="inspector-section">
+                        <div className="section-title">
+                          <FileText size={15} />
+                          Ideas
+                        </div>
+                        {ideas.length === 0 ? (
+                          <div className="subtle-empty">No saved ideas.</div>
+                        ) : (
+                          <div className="idea-panel">
+                            <div className="idea-list">
+                              {ideaGroups.map((group) => (
+                                <section className="project-idea-group" key={group.project_id}>
+                                  <ProjectGroupHeader count={group.items.length} label={group.project_name} />
+                                  {group.items.map((idea) => (
+                                    <button
+                                      className={idea.index === selectedIdea?.index ? "active" : ""}
+                                      key={idea.idea_id}
+                                      onClick={() => selectIdea(idea)}
+                                    >
+                                      <span>{ideaTitle(idea.content)}</span>
+                                      <code>@idea:{idea.index}</code>
+                                    </button>
+                                  ))}
+                                </section>
+                              ))}
+                            </div>
+                            {selectedIdea ? (
+                              <div className="idea-editor">
+                                <textarea
+                                  value={ideaDraft}
+                                  onChange={(event) => setIdeaDraft(event.target.value)}
+                                  aria-label="Idea content"
+                                />
+                                <div className="idea-actions">
+                                  <button type="button" onClick={referenceSelectedIdea}>
+                                    <Search size={13} />
+                                    Reference
+                                  </button>
+                                  <button type="button" onClick={() => void updateSelectedIdea()}>
+                                    <Save size={13} />
+                                    Save
+                                  </button>
+                                  <button type="button" onClick={() => void deleteSelectedIdea()}>
+                                    <Trash2 size={13} />
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </section>
+                    </InspectorGroup>
+                  </div>
+                ) : null}
+
+                {workspaceTab === "activity" ? (
+                  <div className="work-history" aria-label="Activity">
+                <InspectorGroup
+                  icon={<Sparkles size={15} />}
+                  open={openInspectorGroups.work}
+                  onToggle={() => toggleInspectorGroup("work")}
+                  summary={`${timeline.length} steps / ${observableToolCalls.length} tools`}
+                  title="Work"
+                >
             <section className="inspector-section" ref={timelineRef}>
               <div className="section-title">
                 <Sparkles size={15} />
@@ -2435,6 +2532,8 @@ export function App() {
             </InspectorGroup>
               </div>
             ) : null}
+              </>
+            )}
           </aside> : null}
         </div>
       </section>
@@ -2449,6 +2548,13 @@ function Metric({ label, value, valueText }: { label: string; value?: number; va
       <span>{label}</span>
     </div>
   );
+}
+
+function workspaceTabTitle(tab: WorkspaceTab) {
+  if (tab === "files") return "Files";
+  if (tab === "agents") return "Agents";
+  if (tab === "activity") return "Activity";
+  return "Run";
 }
 
 function ProjectGroupHeader({ count, label }: { count: number; label: string }) {

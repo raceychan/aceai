@@ -678,6 +678,10 @@ dd {
   grid-template-columns: minmax(0, 1fr) 6px var(--inspector-width, 420px);
 }
 
+.content-grid.workspace-closed {
+  grid-template-columns: minmax(0, 1fr) 56px;
+}
+
 .content-grid.settings-mode {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -2745,8 +2749,99 @@ dd {
   gap: 16px;
 }
 
+.inspector.collapsed {
+  padding: 12px 8px;
+  overflow: hidden;
+  align-items: center;
+  background: rgba(250, 251, 247, 0.92);
+}
+
 .inspector.object-open {
   padding: 14px;
+}
+
+.inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspector-header div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.inspector-header span {
+  color: #7a8580;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.inspector-header strong {
+  color: #20302c;
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.workspace-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  border: 1px solid #dce3dd;
+  border-radius: 8px;
+  background: #f2f6f3;
+  padding: 4px;
+}
+
+.workspace-tabs button {
+  min-width: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5d6964;
+  padding: 5px 6px;
+  font-size: 12px;
+  font-weight: 750;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.workspace-tabs button:hover,
+.workspace-tabs button.active {
+  background: #ffffff;
+  color: #20302c;
+  box-shadow: 0 1px 4px rgba(42, 54, 47, 0.08);
+}
+
+.workspace-rail {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.workspace-rail button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #d7e2dc;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #38534d;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 1px 4px rgba(42, 54, 47, 0.05);
+}
+
+.workspace-rail button:hover {
+  border-color: #aebfb7;
+  background: #f6faf7;
+  color: #1f6a73;
 }
 
 .inspector-section {
@@ -3490,6 +3585,10 @@ dd {
   }
 
   .content-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .content-grid.workspace-closed {
     grid-template-columns: 1fr;
   }
 
