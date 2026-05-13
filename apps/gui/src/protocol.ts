@@ -123,6 +123,7 @@ export type RuntimePayload = {
   queued_questions: string[];
   pending_approval: ToolApprovalRequest | null;
   is_running_suspended: boolean;
+  active_thread_accepts_user_turn: boolean;
   active_run_id: string | null;
   active_run_status: string | null;
   provider_name: string;

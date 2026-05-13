@@ -44,6 +44,8 @@ class FakeAgentApp:
         self._queued_questions: list[str] = []
         self._pending_approval: ToolApprovalRequest | None = None
         self._active_run = None
+        self.accepts_user_turn = True
+        self.steered_questions: list[str] = []
 
     @property
     def session_id(self) -> str | None:
@@ -56,6 +58,10 @@ class FakeAgentApp:
     @property
     def is_running_suspended(self) -> bool:
         return False
+
+    @property
+    def active_thread_accepts_user_turn(self) -> bool:
+        return self.accepts_user_turn
 
     @property
     def active_run(self):
@@ -128,6 +134,24 @@ class FakeAgentApp:
     def cancel_active_turn(self) -> None:
         self.cancelled = True
 
+    def enqueue_turn(self, question: str) -> int:
+        if not self.accepts_user_turn:
+            raise RuntimeError("Delegated subagent thread is still running")
+        self._queued_questions.append(question)
+        return len(self._queued_questions)
+
+    def take_queued_turn(self, index: int) -> str:
+        return self._queued_questions.pop(index)
+
+    def cancel_queued_turn(self, index: int) -> str:
+        return self._queued_questions.pop(index)
+
+    def steer_active_child_thread(self, question: str) -> bool:
+        if self.accepts_user_turn:
+            return False
+        self.steered_questions.append(question)
+        return True
+
 
 def _config() -> AgentAppConfig:
     return AgentAppConfig(
@@ -146,6 +170,26 @@ def _runtime(store: SessionStore) -> AceAIGuiRuntime:
         config=_config(),
         session_store=store,
         agent_app_factory=app_factory,
+    )
+
+
+def _runtime_with_app(store: SessionStore) -> tuple[AceAIGuiRuntime, dict[str, FakeAgentApp]]:
+    apps: dict[str, FakeAgentApp] = {}
+
+    def app_factory(session_id: str):
+        app = FakeAgentApp(store, session_id)
+        if app.session_id is None:
+            raise RuntimeError("fake app did not create a session")
+        apps[app.session_id] = app
+        return app
+
+    return (
+        AceAIGuiRuntime(
+            config=_config(),
+            session_store=store,
+            agent_app_factory=app_factory,
+        ),
+        apps,
     )
 
 
@@ -243,6 +287,132 @@ def test_gui_session_channel_sends_image_attachments(tmp_path) -> None:
     assert user_message.payload["images"] == [
         {"mime_type": "image/png", "data": "cG5n"}
     ]
+
+
+def test_gui_session_channel_queues_and_cancels_messages(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    runtime, apps = _runtime_with_app(store)
+    app = build_gui_app(runtime)
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+            fake_app = next(iter(apps.values()))
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "enqueue_message",
+                    {"content": "later"},
+                    "queue-1",
+                )
+            )
+            queued = _reply_payload(ws.receive_json())
+            assert queued["queued_questions"] == ["later"]
+            assert fake_app.queued_questions == ("later",)
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "cancel_queued_message",
+                    {"index": 0},
+                    "cancel-1",
+                )
+            )
+            cancelled = _reply_payload(ws.receive_json())
+            assert cancelled["queued_questions"] == []
+            assert fake_app.queued_questions == ()
+
+
+def test_gui_session_channel_steers_child_thread_without_run_task(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    runtime, apps = _runtime_with_app(store)
+    app = build_gui_app(runtime)
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+            fake_app = next(iter(apps.values()))
+            fake_app.accepts_user_turn = False
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "send_message",
+                    {"content": "redirect"},
+                    "send-1",
+                )
+            )
+            reply = _reply_payload(ws.receive_json())
+
+    assert reply["mode"] == "steered"
+    assert fake_app.steered_questions == ["redirect"]
+
+
+def test_gui_session_channel_rejects_unknown_message_fields(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    app = build_gui_app(_runtime(store))
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "send_message",
+                    {"content": "hi", "future_field": "must fail"},
+                    "send-1",
+                )
+            )
+            reply = ws.receive_json()
+
+    assert reply["event"] == "reply"
+    assert reply["payload"]["status"] == "error"
+    assert reply["payload"]["error"]["code"] == "invalid_payload"
+    assert store.list_sessions()[0].session_id
+    assert store.load_event_log(store.list_sessions()[0].session_id).events == []
+
+
+def test_gui_session_channel_rejects_unknown_image_fields(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    app = build_gui_app(_runtime(store))
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            ws.receive_json()
+
+            ws.send_bytes(
+                _encode(
+                    "session:new",
+                    "send_message",
+                    {
+                        "content": "look",
+                        "attachments": [
+                            {
+                                "mime_type": "image/png",
+                                "data": "cG5n",
+                                "filename": "old-client.png",
+                            }
+                        ],
+                    },
+                    "send-1",
+                )
+            )
+            reply = ws.receive_json()
+
+    assert reply["event"] == "reply"
+    assert reply["payload"]["status"] == "error"
+    assert reply["payload"]["error"]["code"] == "invalid_payload"
+    assert store.load_event_log(store.list_sessions()[0].session_id).events == []
 
 
 def test_gui_session_snapshot_filters_after_event_id(tmp_path) -> None:

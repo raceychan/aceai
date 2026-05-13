@@ -43,46 +43,55 @@ RUN_CANCELLED_EVENT = "run.cancelled"
 RUN_TASK_NAME = "active_run"
 
 
-class ImageAttachmentPayload(Struct, frozen=True, kw_only=True):
+class ImageAttachmentPayload(
+    Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
     mime_type: str
     data: str
 
 
-class SendMessageRequest(Struct, frozen=True, kw_only=True):
+class SendMessageRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     content: str
     attachments: list[ImageAttachmentPayload] = field(default_factory=list)
 
 
-class SnapshotRequest(Struct, frozen=True, kw_only=True):
+class QueuedMessageRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    index: int
+
+
+class SnapshotRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     after_event_id: str | None = None
 
 
-class SwitchThreadRequest(Struct, frozen=True, kw_only=True):
+class SwitchThreadRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     thread_id: str
 
 
-class ApprovalRequest(Struct, frozen=True, kw_only=True):
+class ApprovalRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     thread_id: str | None = None
     run_id: str | None = None
     tool_call_id: str | None = None
 
 
-class RejectToolRequest(Struct, frozen=True, kw_only=True):
+class RejectToolRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     reason: str
     thread_id: str | None = None
     run_id: str | None = None
     tool_call_id: str | None = None
 
 
-class IdeaCaptureRequest(Struct, frozen=True, kw_only=True):
+class IdeaCaptureRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     content: str
 
 
-class IdeaUpdateRequest(Struct, frozen=True, kw_only=True):
+class IdeaUpdateRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     content: str
 
 
-class FileSaveRequest(Struct, frozen=True, kw_only=True):
+class FileSaveRequest(Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     content: str
 
 
@@ -229,7 +238,13 @@ class GuiConfigPayload(Struct, frozen=True, kw_only=True):
     tools: list[ToolPermissionPayload]
 
 
-class GuiConfigUpdateRequest(Struct, frozen=True, kw_only=True, omit_defaults=True):
+class GuiConfigUpdateRequest(
+    Struct,
+    frozen=True,
+    kw_only=True,
+    omit_defaults=True,
+    forbid_unknown_fields=True,
+):
     provider: str
     model: str
     default_model: str
@@ -402,14 +417,110 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
             self,
             payload: SendMessageRequest,
         ) -> dict[str, Any]:
+            if not self.agent_app.active_thread_accepts_user_turn:
+                if payload.attachments:
+                    raise ValueError("Child thread steering does not support image input")
+                self.agent_app.steer_active_child_thread(payload.content)
+                return {
+                    "accepted": True,
+                    "mode": "steered",
+                    "session_id": self.session_id,
+                    "thread_id": self.agent_app.active_thread_id,
+                }
             self.start_task(
                 RUN_TASK_NAME,
                 self._stream_turn(payload.content, payload.attachments),
             )
             return {
                 "accepted": True,
+                "mode": "started",
                 "session_id": self.session_id,
                 "thread_id": self.agent_app.active_thread_id,
+            }
+
+        async def on_enqueue_message(
+            self,
+            payload: SendMessageRequest,
+        ) -> dict[str, Any]:
+            if payload.attachments:
+                raise ValueError("Queued image messages are not supported")
+            self.agent_app.enqueue_turn(payload.content)
+            return {
+                "accepted": True,
+                "session_id": self.session_id,
+                "thread_id": self.agent_app.active_thread_id,
+                "queued_questions": list(self.agent_app.queued_questions),
+            }
+
+        async def on_start_queued_message(
+            self,
+            payload: QueuedMessageRequest,
+        ) -> dict[str, Any]:
+            content = self.agent_app.take_queued_turn(payload.index)
+            self.start_task(RUN_TASK_NAME, self._stream_turn(content, []))
+            return {
+                "accepted": True,
+                "session_id": self.session_id,
+                "thread_id": self.agent_app.active_thread_id,
+                "queued_questions": list(self.agent_app.queued_questions),
+            }
+
+        async def on_steer_message(
+            self,
+            payload: SendMessageRequest,
+        ) -> dict[str, Any]:
+            if not self.agent_app.active_thread_accepts_user_turn:
+                if payload.attachments:
+                    raise ValueError("Child thread steering does not support image input")
+                self.agent_app.steer_active_child_thread(payload.content)
+                return {
+                    "accepted": True,
+                    "mode": "steered",
+                    "session_id": self.session_id,
+                    "thread_id": self.agent_app.active_thread_id,
+                }
+            if self.agent_app.is_running_suspended:
+                raise RuntimeError("Choose Approve or Reject before steering this run")
+            await self.cancel_task(RUN_TASK_NAME)
+            self.agent_app.cancel_active_turn()
+            self.start_task(
+                RUN_TASK_NAME,
+                self._stream_turn(payload.content, payload.attachments),
+            )
+            return {
+                "accepted": True,
+                "mode": "started",
+                "session_id": self.session_id,
+                "thread_id": self.agent_app.active_thread_id,
+            }
+
+        async def on_steer_queued_message(
+            self,
+            payload: QueuedMessageRequest,
+        ) -> dict[str, Any]:
+            if self.agent_app.is_running_suspended:
+                raise RuntimeError("Choose Approve or Reject before steering this run")
+            content = self.agent_app.take_queued_turn(payload.index)
+            await self.cancel_task(RUN_TASK_NAME)
+            self.agent_app.cancel_active_turn()
+            self.start_task(RUN_TASK_NAME, self._stream_turn(content, []))
+            return {
+                "accepted": True,
+                "session_id": self.session_id,
+                "thread_id": self.agent_app.active_thread_id,
+                "queued_questions": list(self.agent_app.queued_questions),
+            }
+
+        async def on_cancel_queued_message(
+            self,
+            payload: QueuedMessageRequest,
+        ) -> dict[str, Any]:
+            self.agent_app.cancel_queued_turn(payload.index)
+            return {
+                "cancelled": True,
+                "session_id": self.session_id,
+                "thread_id": self.agent_app.active_thread_id,
+                "queued_questions": list(self.agent_app.queued_questions),
             }
 
         async def on_approve_tool(self, payload: ApprovalRequest) -> dict[str, Any]:
