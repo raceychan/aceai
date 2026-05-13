@@ -1507,9 +1507,7 @@ export function App() {
                         <div>
                           <strong>{session.title}</strong>
                           <span>{formatShortDate(session.updated_at)}</span>
-                          <small>{session.thread_count} threads / {formatUsd(session.total_cost_usd)}</small>
                         </div>
-                        <code>{session.event_count}</code>
                       </button>
                       <button
                         aria-label={`Delete ${session.title} ${session.session_id}`}

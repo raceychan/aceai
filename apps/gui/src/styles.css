@@ -357,7 +357,7 @@ button:disabled {
 
 .session-row {
   min-width: 0;
-  min-height: 62px;
+  min-height: 54px;
   border: 1px solid #dce2dc;
   border-radius: 8px;
   background: #ffffff;
@@ -375,13 +375,13 @@ button:disabled {
 
 .session-open {
   min-width: 0;
-  min-height: 62px;
+  min-height: 54px;
   border: 0;
   border-radius: 0;
   background: transparent;
   padding: 9px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   justify-content: stretch;
   gap: 9px;
@@ -401,7 +401,7 @@ button:disabled {
 
 .session-open strong,
 .session-open span,
-.session-open small {
+.session-open span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -413,16 +413,9 @@ button:disabled {
 }
 
 .session-open span,
-.session-open small,
-.session-open code {
+.session-open span {
   color: #74807b;
   font-size: 11px;
-}
-
-.session-open code {
-  border-radius: 5px;
-  background: #edf2ef;
-  padding: 2px 6px;
 }
 
 .session-delete {
