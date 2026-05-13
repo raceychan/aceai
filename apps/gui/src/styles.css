@@ -2877,6 +2877,7 @@ dd {
 
 .inspector.object-open {
   padding: 14px;
+  overflow: hidden;
 }
 
 .inspector-header {
@@ -2996,8 +2997,8 @@ dd {
   flex: 1;
   border-bottom: 0;
   padding-bottom: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
 }
 
 .inspector.object-open.history-open .object-inspector {
@@ -3041,6 +3042,11 @@ dd {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 10px;
   padding: 10px;
+}
+
+.inspector.object-open .file-inspector,
+.inspector.object-open .artifact-inspector {
+  flex: 1;
 }
 
 .object-head {
