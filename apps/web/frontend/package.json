@@ -1,13 +1,13 @@
 {
-  "name": "@aceai/gui",
+  "name": "@aceai/web-frontend",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "schema": "uv --project ../.. run aceai-gui schema --out openapi.json",
-    "generate:api": "npm run schema && uv --project ../.. run openapi-ts-client openapi.json -o src/generated/api --clean",
+    "schema": "uv --project ../backend run --with-editable ../../.. python -m src.cli schema --out openapi.json",
+    "generate:api": "npm run schema && uv --project ../../.. run --group dev openapi-ts-client openapi.json -o src/generated/api --clean",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

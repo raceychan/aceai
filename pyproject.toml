@@ -26,14 +26,8 @@ tui = [
     "sqlalchemy>=2.0",
     "textual>=8.2.5",
 ]
-gui = [
-    "lihil[standard]>=0.2.40",
-    "sqlalchemy>=2.0",
-]
-
 [project.scripts]
 aceai = "aceai.agent.tui.cli:main"
-aceai-gui = "aceai.agent.gui.cli:main"
 "aceai.agent.tui.demo" = "aceai.agent.tui.demo:main"
 "aceai.agent.tui.trajectory_demo" = "aceai.agent.tui.demo:trajectory_main"
 
@@ -79,6 +73,7 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "--ignore=tests/e2e"
+pythonpath = ["apps/web/backend"]
 markers = [
     "debug: marks tests intended for focused debugging runs",
     "e2e: marks end-to-end tests that should be run explicitly",

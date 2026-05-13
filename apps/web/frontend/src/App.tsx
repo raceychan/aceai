@@ -874,7 +874,7 @@ export function App() {
     try {
       const response = await sendCommand<SnapshotPayload>("switch_thread", { thread_id: threadId });
       setSnapshot(response);
-      setEvents((current) => mergeSessionEventLogs(current, response.events));
+      setEvents((current) => mergeSessionEventLogs(current, response.events, response.active_thread_id));
       setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
@@ -935,6 +935,7 @@ export function App() {
   }
 
   function appendSessionEvent(event: SessionEvent) {
+    if (snapshot !== null && event.thread_id !== snapshot.active_thread_id) return;
     setEvents((current) => {
       if (current.some((item) => item.event_id === event.event_id)) {
         return current;
@@ -943,7 +944,7 @@ export function App() {
     });
   }
 
-  function mergeSessionEventLogs(current: SessionEvent[], snapshotEvents: SessionEvent[]) {
+  function mergeSessionEventLogs(current: SessionEvent[], snapshotEvents: SessionEvent[], activeThreadId: string) {
     const snapshotAssistantRuns = new Set(
       snapshotEvents
         .filter((event) => event.kind === "assistant_message" || event.kind === "assistant_tool_call")
@@ -956,6 +957,7 @@ export function App() {
     );
     const snapshotIds = new Set(snapshotEvents.map((event) => event.event_id));
     const liveEvents = current.filter((event) => {
+      if (event.thread_id !== activeThreadId) return false;
       if (snapshotIds.has(event.event_id)) return false;
       if (event.kind === "assistant_delta" && snapshotAssistantRuns.has(sessionRunKey(event))) return false;
       if (event.kind === "thinking_delta" && snapshotReasoningRuns.has(sessionRunKey(event))) return false;
@@ -975,7 +977,7 @@ export function App() {
       if (response.session.session_id !== "new") {
         writeSessionIdToUrl(response.session.session_id, { replace: true });
       }
-      setEvents((current) => mergeSessionEventLogs(current, response.events));
+      setEvents((current) => mergeSessionEventLogs(current, response.events, response.active_thread_id));
       setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
@@ -2089,10 +2091,11 @@ export function App() {
             </form> : null}
           </section>
 
-          {workspaceMode !== "settings" && hasActiveSession && workspaceOpen ? <div
+          {workspaceMode !== "settings" && hasActiveSession ? <div
             aria-label="Resize workspace"
-            className="split-resizer"
-            onMouseDown={startInspectorResize}
+            aria-hidden={!workspaceOpen}
+            className={`split-resizer ${workspaceOpen ? "active" : "collapsed"}`}
+            onMouseDown={workspaceOpen ? startInspectorResize : undefined}
             role="separator"
             title="Drag to resize workspace"
           /> : null}
@@ -3674,13 +3677,13 @@ function configUpdatePayload(config: GuiConfig, apiKey: string) {
 
 function apiFailureMessage(label: string, error: unknown) {
   if (error instanceof ResponseError && (error.response.status === 502 || error.response.status === 503)) {
-    return `${label} failed: AceAI GUI backend is unavailable. Restart aceai-gui.`;
+    return `${label} failed: AceAI web backend is unavailable. Restart make server.`;
   }
   if (error instanceof ResponseError) {
     return `${label} failed (${error.response.status}).`;
   }
   if (error instanceof FetchError) {
-    return `${label} failed: AceAI GUI backend is unavailable. Restart aceai-gui.`;
+    return `${label} failed: AceAI web backend is unavailable. Restart make server.`;
   }
   if (error instanceof Error) {
     return error.message;

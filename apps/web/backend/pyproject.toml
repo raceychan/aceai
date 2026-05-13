@@ -1,0 +1,20 @@
+[project]
+name = "aceai-web-backend"
+version = "0.0.0"
+description = "Backend server for the AceAI web app"
+requires-python = ">=3.12"
+dependencies = [
+    "aceai>=0.2.29",
+    "lihil[standard]>=0.2.40",
+    "sqlalchemy>=2.0",
+]
+
+[project.scripts]
+aceai-web = "src.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

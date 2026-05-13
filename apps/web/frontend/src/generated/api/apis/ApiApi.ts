@@ -18,6 +18,8 @@ import type {
   EmptySessionCleanupPayload,
   FileResponsePayload,
   FileSaveRequest,
+  GuiConfigPayload,
+  GuiConfigUpdateRequest,
   IdeaCaptureRequest,
   IdeaDeletePayload,
   IdeaResponsePayload,
@@ -34,6 +36,10 @@ import {
     FileResponsePayloadToJSON,
     FileSaveRequestFromJSON,
     FileSaveRequestToJSON,
+    GuiConfigPayloadFromJSON,
+    GuiConfigPayloadToJSON,
+    GuiConfigUpdateRequestFromJSON,
+    GuiConfigUpdateRequestToJSON,
     IdeaCaptureRequestFromJSON,
     IdeaCaptureRequestToJSON,
     IdeaDeletePayloadFromJSON,
@@ -76,6 +82,10 @@ export interface ReadFileApiFilesGetRequest {
 export interface SaveFileApiFilesPutRequest {
     path: string;
     fileSaveRequest: FileSaveRequest;
+}
+
+export interface UpdateConfigApiConfigPutRequest {
+    guiConfigUpdateRequest: GuiConfigUpdateRequest;
 }
 
 export interface UpdateIdeaApiIdeasIndexPutRequest {
@@ -341,6 +351,37 @@ export class ApiApi extends runtime.BaseAPI {
 
     /**
      * Missing Description
+     * Read Config
+     */
+    async readConfigApiConfigGetRaw(initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<runtime.ApiResponse<GuiConfigPayload>> {
+        const queryParameters: any = {};
+
+        const headerParameters: runtime.HTTPHeaders = {};
+
+
+        let urlPath = `/api/config`;
+
+        const response = await this.request({
+            path: urlPath,
+            method: 'GET',
+            headers: headerParameters,
+            query: queryParameters,
+        }, initOverrides);
+
+        return new runtime.JSONApiResponse(response, (jsonValue) => GuiConfigPayloadFromJSON(jsonValue));
+    }
+
+    /**
+     * Missing Description
+     * Read Config
+     */
+    async readConfigApiConfigGet(initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<GuiConfigPayload> {
+        const response = await this.readConfigApiConfigGetRaw(initOverrides);
+        return await response.value();
+    }
+
+    /**
+     * Missing Description
      * Read File
      */
     async readFileApiFilesGetRaw(requestParameters: ReadFileApiFilesGetRequest, initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<runtime.ApiResponse<FileResponsePayload>> {
@@ -430,6 +471,47 @@ export class ApiApi extends runtime.BaseAPI {
      */
     async saveFileApiFilesPut(requestParameters: SaveFileApiFilesPutRequest, initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<FileResponsePayload> {
         const response = await this.saveFileApiFilesPutRaw(requestParameters, initOverrides);
+        return await response.value();
+    }
+
+    /**
+     * Missing Description
+     * Update Config
+     */
+    async updateConfigApiConfigPutRaw(requestParameters: UpdateConfigApiConfigPutRequest, initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<runtime.ApiResponse<GuiConfigPayload>> {
+        if (requestParameters['guiConfigUpdateRequest'] == null) {
+            throw new runtime.RequiredError(
+                'guiConfigUpdateRequest',
+                'Required parameter "guiConfigUpdateRequest" was null or undefined when calling updateConfigApiConfigPut().'
+            );
+        }
+
+        const queryParameters: any = {};
+
+        const headerParameters: runtime.HTTPHeaders = {};
+
+        headerParameters['Content-Type'] = 'application/json';
+
+
+        let urlPath = `/api/config`;
+
+        const response = await this.request({
+            path: urlPath,
+            method: 'PUT',
+            headers: headerParameters,
+            query: queryParameters,
+            body: GuiConfigUpdateRequestToJSON(requestParameters['guiConfigUpdateRequest']),
+        }, initOverrides);
+
+        return new runtime.JSONApiResponse(response, (jsonValue) => GuiConfigPayloadFromJSON(jsonValue));
+    }
+
+    /**
+     * Missing Description
+     * Update Config
+     */
+    async updateConfigApiConfigPut(requestParameters: UpdateConfigApiConfigPutRequest, initOverrides?: RequestInit | runtime.InitOverrideFunction): Promise<GuiConfigPayload> {
+        const response = await this.updateConfigApiConfigPutRaw(requestParameters, initOverrides);
         return await response.value();
     }
 

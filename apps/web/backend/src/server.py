@@ -1,4 +1,4 @@
-"""Lihil-backed realtime adapter for AceAI GUI clients."""
+"""Lihil-backed realtime adapter for AceAI web clients."""
 
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -329,7 +329,7 @@ class GuiConfigUpdateRequest(
 
 
 class AceAIGuiRuntime:
-    """Factory and session-store boundary shared by GUI channels."""
+    """Factory and session-store boundary shared by web channels."""
 
     def __init__(
         self,
@@ -423,8 +423,7 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
     except ModuleNotFoundError as exc:
         if exc.name == "lihil":
             raise RuntimeError(
-                "AceAI GUI server requires the optional gui dependencies. "
-                "Install with `aceai[gui]`."
+                "AceAI web backend requires the backend dependencies."
             ) from None
         raise
 

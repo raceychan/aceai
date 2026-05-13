@@ -10,7 +10,7 @@ from lihil.vendors import TestClient
 
 from aceai.agent.app import AgentAppEvent, QueuedTurn
 from aceai.agent.config import AgentAppConfig
-from aceai.agent.gui.server import AceAIGuiRuntime, build_gui_app
+from src.server import AceAIGuiRuntime, build_gui_app
 from aceai.agent.memory.ideas import IdeaStore
 from aceai.agent.project import ProjectMetadata
 from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
@@ -735,6 +735,13 @@ def test_gui_snapshot_includes_observability_payload(tmp_path) -> None:
 def test_gui_session_channel_switches_thread(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
     metadata = store.create_session()
+    service = SessionService(store=store)
+    service.attach_session(metadata.session_id)
+    service.record_user_message(
+        "main prompt",
+        run_id="run-main",
+        thread_id=MAIN_THREAD_ID,
+    )
     child = store.create_thread(
         session_id=metadata.session_id,
         thread_id="thread-child",
@@ -744,6 +751,12 @@ def test_gui_session_channel_switches_thread(tmp_path) -> None:
         parent_thread_id=MAIN_THREAD_ID,
         parent_run_id="run-1",
         parent_tool_call_id="tool-1",
+    )
+    service.record_user_message(
+        "child prompt",
+        run_id="run-child",
+        thread_id=child.thread_id,
+        agent_id=child.agent_id,
     )
     app = build_gui_app(_runtime(store))
     client = TestClient(app)
@@ -766,6 +779,8 @@ def test_gui_session_channel_switches_thread(tmp_path) -> None:
 
     assert snapshot["active_thread_id"] == child.thread_id
     assert snapshot["threads"][1]["role"] == "subagent"
+    assert [event["thread_id"] for event in snapshot["events"]] == [child.thread_id]
+    assert snapshot["events"][0]["payload"]["content"] == "child prompt"
 
 
 def test_gui_sessions_api_deletes_saved_session(tmp_path) -> None:

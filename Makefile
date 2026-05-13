@@ -17,7 +17,7 @@ tui:
 HOST ?= 127.0.0.1
 PORT ?= 8765
 server:
-	uv run --extra gui aceai-gui --host $(HOST) --port $(PORT)
+	uv --project apps/web/backend run --with-editable . python -m src.cli --host $(HOST) --port $(PORT)
 
 
 VERSION ?=

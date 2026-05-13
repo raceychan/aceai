@@ -752,10 +752,11 @@ dd {
   overflow: hidden;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 6px var(--inspector-width, 420px);
+  transition: grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .content-grid.workspace-closed {
-  grid-template-columns: minmax(0, 1fr) 56px;
+  grid-template-columns: minmax(0, 1fr) 0 56px;
 }
 
 .content-grid.no-session-mode {
@@ -791,6 +792,20 @@ dd {
   background: #d9ded6;
   cursor: col-resize;
   position: relative;
+  opacity: 1;
+  transition:
+    min-width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease,
+    background-color 140ms ease;
+}
+
+.split-resizer.collapsed {
+  width: 0;
+  min-width: 0;
+  cursor: default;
+  opacity: 0;
+  overflow: hidden;
 }
 
 .split-resizer::after {
@@ -802,7 +817,7 @@ dd {
   right: -3px;
 }
 
-.split-resizer:hover,
+.split-resizer.active:hover,
 .resizing-inspector .split-resizer {
   background: #8bb8ad;
 }
@@ -2954,6 +2969,14 @@ dd {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  border-left: 1px solid rgba(217, 222, 214, 0.82);
+  box-shadow: -18px 0 36px rgba(34, 50, 45, 0);
+  transform: translateX(0);
+  transition:
+    background-color 180ms ease,
+    box-shadow 220ms ease,
+    padding 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .inspector.collapsed {
@@ -2961,11 +2984,35 @@ dd {
   overflow: hidden;
   align-items: center;
   background: rgba(250, 251, 247, 0.92);
+  border-left-color: transparent;
+  transform: translateX(4px);
+}
+
+.inspector.open {
+  box-shadow: -18px 0 36px rgba(34, 50, 45, 0.08);
+}
+
+.inspector.open .inspector-header,
+.inspector.open .workspace-tabs,
+.inspector.open .inspector-section {
+  animation: workbench-panel-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .inspector.object-open {
   padding: 14px;
   overflow: hidden;
+}
+
+@keyframes workbench-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .inspector-header {

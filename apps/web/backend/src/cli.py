@@ -1,4 +1,4 @@
-"""Console entry point for the optional AceAI GUI server."""
+"""Console entry point for the AceAI web backend."""
 
 import argparse
 import importlib
@@ -10,7 +10,7 @@ from .server import AceAIGuiRuntime, build_gui_app
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the AceAI GUI server.")
+    parser = argparse.ArgumentParser(description="Run the AceAI web backend.")
     parser.add_argument("command", nargs="?", choices=("serve", "schema"), default="serve")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -42,8 +42,7 @@ def _write_schema(path: Path | None) -> None:
     except ModuleNotFoundError as exc:
         if exc.name == "lihil":
             raise SystemExit(
-                "AceAI GUI schema generation requires the optional gui dependencies. "
-                "Install with `aceai[gui]`."
+                "AceAI web schema generation requires the web backend dependencies."
             ) from None
         raise
     app = build_gui_app(_schema_runtime())
@@ -67,8 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     except ModuleNotFoundError as exc:
         if exc.name == "uvicorn":
             raise SystemExit(
-                "AceAI GUI server requires the optional gui dependencies. "
-                "Install with `aceai[gui]`."
+                "AceAI web backend requires uvicorn from the backend dependencies."
             ) from None
         raise
     app = build_gui_app(_load_runtime())
