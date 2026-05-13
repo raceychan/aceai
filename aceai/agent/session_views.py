@@ -58,6 +58,7 @@ def agent_runtime_payload(app: AceAgentApp) -> dict[str, Any]:
             else None
         ),
         "is_running_suspended": app.is_running_suspended,
+        "active_thread_accepts_user_turn": app.active_thread_accepts_user_turn,
         "active_run_id": active_run.run_id if active_run is not None else None,
         "active_run_status": active_run.status if active_run is not None else None,
         "provider_name": app.provider_name,

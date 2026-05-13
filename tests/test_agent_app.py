@@ -70,6 +70,15 @@ class BlockingChildLLMService:
         raise AssertionError("Agent should not call complete() in streaming mode")
 
 
+class ExplodingLLMService:
+    async def stream(self, **request):
+        raise RuntimeError("stream exploded")
+        yield
+
+    async def complete(self, **request) -> LLMResponse:
+        raise AssertionError("Agent should not call complete() in streaming mode")
+
+
 class SteerableChildLLMService:
     def __init__(self, parent_call: LLMToolCall) -> None:
         self._parent_call = parent_call
@@ -246,6 +255,87 @@ async def test_agent_app_reuses_approved_tool_name_across_session_turns(tmp_path
         event for event in second_events if isinstance(event, ToolApprovalRequestedEvent)
     ]
     assert not [event for event in second_events if isinstance(event, RunSuspendedEvent)]
+
+
+@pytest.mark.anyio
+async def test_agent_app_clears_active_run_after_completed_turn(tmp_path) -> None:
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    events = [event async for event in app.start_turn("new question")]
+
+    assert [event for event in events if isinstance(event, RunCompletedEvent)]
+    assert app.active_run is None
+    assert app._thread_runs == {}
+
+
+@pytest.mark.anyio
+async def test_agent_app_clears_active_run_after_failed_turn(tmp_path) -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [
+                [
+                    LLMStreamEvent(
+                        event_type="response.error",
+                        error="provider exploded",
+                    )
+                ]
+            ]
+        ),
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    events = [event async for event in app.start_turn("new question")]
+
+    assert [event for event in events if isinstance(event, RunFailedEvent)]
+    assert app.active_run is None
+    assert app._thread_runs == {}
+
+
+@pytest.mark.anyio
+async def test_agent_app_clears_active_run_after_stream_exception(tmp_path) -> None:
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=ExplodingLLMService(),
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    with pytest.raises(RuntimeError, match="stream exploded"):
+        [event async for event in app.start_turn("new question")]
+
+    assert app.active_run is None
+    assert app._thread_runs == {}
 
 
 @pytest.mark.anyio

@@ -376,6 +376,17 @@ class AceAgentApp:
         self._active_run = None
         self._thread_runs.pop(self._active_thread_id, None)
 
+    def _clear_finished_run(
+        self,
+        run: AgentRunContext,
+        *,
+        thread_id: str,
+    ) -> None:
+        if self._thread_runs.get(thread_id) is run:
+            self._thread_runs.pop(thread_id, None)
+        if self._active_thread_id == thread_id and self._active_run is run:
+            self._active_run = None
+
     def enqueue_turn(self, question: str) -> int:
         if not self.active_thread_accepts_user_turn:
             raise RuntimeError(
@@ -729,6 +740,8 @@ class AceAgentApp:
                             event.final_answer,
                             thread_id=thread_id,
                         )
+                    if isinstance(event, RunCompletedEvent | RunFailedEvent):
+                        self._clear_finished_run(run, thread_id=thread_id)
                     self._emit_app_event(
                         thread_id=thread_id,
                         agent_id=agent_id,
@@ -737,6 +750,8 @@ class AceAgentApp:
             finally:
                 reset_delegated_child_run_recorder(recorder_token)
                 await stream.aclose()
+                if run.status != "suspended":
+                    self._clear_finished_run(run, thread_id=thread_id)
                 queue.put_nowait(None)
 
         producer = asyncio.create_task(produce_events())
@@ -1435,20 +1450,20 @@ class AceAgentApp:
         run_id: str,
         question: str,
     ) -> str:
-        event_id = self._session_service.record_session_event(
-            SessionEvent(
-                event_id=uuid_str(),
-                thread_id=thread_id,
-                agent_id=agent_id,
-                run_id=run_id,
-                step_id=None,
-                step_index=None,
-                kind="user_steer",
-                payload={"content": question},
-            )
+        event = SessionEvent(
+            event_id=uuid_str(),
+            thread_id=thread_id,
+            agent_id=agent_id,
+            run_id=run_id,
+            step_id=None,
+            step_index=None,
+            kind="user_steer",
+            payload={"content": question},
         )
+        event_id = self._session_service.record_session_event(event)
         if event_id is None:
             raise RuntimeError("user_steer did not persist a session event")
+        self._emit_app_event(thread_id=thread_id, agent_id=agent_id, event=event)
         return event_id
 
     def record_child_event(
