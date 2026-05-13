@@ -2818,15 +2818,31 @@ function buildTranscript(
       .filter((event) => event.kind === "assistant_message" || event.kind === "run_completed")
       .map((event) => event.run_id)
   );
-  const items = events.flatMap<TranscriptItem>((event) => {
+  const insertedDraftRuns = new Set<string>();
+  const items: TranscriptItem[] = [];
+  for (const event of events) {
     const content = typeof event.payload.content === "string" ? event.payload.content : "";
     const images = imagesFromPayload(event.payload);
-    if (!content && images.length === 0 && event.kind !== "run_failed") return [];
     if (event.kind === "user_message") {
-      return [{ id: event.event_id, images, role: "user", text: content, time: event.created_at }];
+      if (content || images.length > 0) {
+        items.push({ id: event.event_id, images, role: "user", text: content, time: event.created_at });
+      }
+      const draft = assistantDraftItem(
+        event.run_id,
+        deltaDrafts,
+        runWorkHistories,
+        runReasoning,
+        finalizedRuns,
+      );
+      if (draft !== null) {
+        items.push(draft);
+        insertedDraftRuns.add(event.run_id);
+      }
+      continue;
     }
     if (event.kind === "assistant_message" || event.kind === "run_completed") {
-      return [{
+      if (!content) continue;
+      items.push({
         id: event.event_id,
         reasoning: runReasoning.get(event.run_id),
         role: "assistant",
@@ -2834,40 +2850,48 @@ function buildTranscript(
         text: content,
         time: event.created_at,
         workHistory: runWorkHistories.get(event.run_id)
-      }];
+      });
+      continue;
     }
     if (event.kind === "run_failed" || event.kind === "error") {
-      return [{ id: event.event_id, role: "system", text: content || "Run failed", time: event.created_at }];
+      items.push({ id: event.event_id, role: "system", text: content || "Run failed", time: event.created_at });
     }
-    return [];
-  });
-  for (const [runId, draft] of deltaDrafts.entries()) {
-    if (finalizedRuns.has(runId)) continue;
-    items.push({
-      id: `${runId}-assistant-draft`,
-      reasoning: runReasoning.get(runId),
-      role: "assistant",
-      runId,
-      text: draft.text,
-      time: draft.time,
-      workHistory: runWorkHistories.get(runId)
-    });
   }
   for (const [runId, workHistory] of runWorkHistories.entries()) {
-    if (finalizedRuns.has(runId) || deltaDrafts.has(runId)) continue;
-    const reasoning = runReasoning.get(runId);
-    if (!workHistory.isRunning && (reasoning === undefined || reasoning === "")) continue;
-    items.push({
-      id: `${runId}-assistant-work-draft`,
-      reasoning,
-      role: "assistant",
+    if (insertedDraftRuns.has(runId)) continue;
+    const draft = assistantDraftItem(
       runId,
-      text: "",
-      time: new Date().toISOString(),
-      workHistory
-    });
+      deltaDrafts,
+      runWorkHistories,
+      runReasoning,
+      finalizedRuns,
+    );
+    if (draft !== null) items.push(draft);
   }
   return dedupeTranscript(items);
+}
+
+function assistantDraftItem(
+  runId: string,
+  deltaDrafts: Map<string, { text: string; time: string }>,
+  runWorkHistories: Map<string, RunWorkHistory>,
+  runReasoning: Map<string, string>,
+  finalizedRuns: Set<string>,
+): TranscriptItem | null {
+  if (runId === "" || finalizedRuns.has(runId)) return null;
+  const draft = deltaDrafts.get(runId);
+  const workHistory = runWorkHistories.get(runId);
+  const reasoning = runReasoning.get(runId);
+  if (draft === undefined && !workHistory?.isRunning && (reasoning === undefined || reasoning === "")) return null;
+  return {
+    id: `${runId}-assistant-draft`,
+    reasoning,
+    role: "assistant",
+    runId,
+    text: draft?.text ?? "",
+    time: draft?.time ?? new Date().toISOString(),
+    workHistory
+  };
 }
 
 function assistantDeltaDrafts(events: SessionEvent[]) {
