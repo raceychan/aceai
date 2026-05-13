@@ -2283,7 +2283,7 @@ export function App() {
               icon={<Sparkles size={15} />}
               open={openInspectorGroups.work}
               onToggle={() => toggleInspectorGroup("work")}
-              summary={`${timeline.length + observableTrajectory.length} steps / ${observableToolCalls.length} tools`}
+              summary={`${timeline.length} steps / ${observableToolCalls.length} tools`}
               title="Work"
             >
             <section className="inspector-section" ref={timelineRef}>
@@ -2301,15 +2301,6 @@ export function App() {
                       <div>
                         <strong>{item.title}</strong>
                         <small>{item.detail}</small>
-                      </div>
-                    </div>
-                  ))}
-                  {(observableTrajectory.length > 0 ? observableTrajectory.slice(-10).reverse() : []).map((item) => (
-                    <div className={`timeline-row ${trajectoryTone(item.kind)}`} key={item.event_id}>
-                      <span />
-                      <div>
-                        <strong>{item.kind}</strong>
-                        <small>{item.summary || formatTime(item.created_at)}</small>
                       </div>
                     </div>
                   ))}
