@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 from typing import Any
 
 from msgspec import Struct, field
@@ -279,6 +280,8 @@ class SkillItemPayload(Struct, frozen=True, kw_only=True):
 
 
 class GuiConfigPayload(Struct, frozen=True, kw_only=True):
+    project_name: str
+    git_branch: str
     provider: str
     model: str
     default_model: str
@@ -884,6 +887,8 @@ def _gui_config_payload(runtime: AceAIGuiRuntime) -> GuiConfigPayload:
     if "auto" not in reasoning_options:
         reasoning_options.insert(0, "auto")
     return GuiConfigPayload(
+        project_name=runtime.session_store.project.name,
+        git_branch=_git_branch_name(runtime.project_root),
         provider=config.provider,
         model=config.model,
         default_model=config.default_model,
@@ -905,6 +910,18 @@ def _gui_config_payload(runtime: AceAIGuiRuntime) -> GuiConfigPayload:
         skills=_skill_item_payloads(config),
         tools=_tool_permission_payloads(config),
     )
+
+
+def _git_branch_name(project_root: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(project_root), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.removesuffix("\n")
 
 
 def _skill_item_payloads(config: AgentAppConfig) -> list[SkillItemPayload]:

@@ -195,6 +195,8 @@ type SkillConfig = {
 };
 
 type GuiConfig = {
+  project_name: string;
+  git_branch: string;
   provider: string;
   model: string;
   default_model: string;
@@ -295,6 +297,7 @@ export function App() {
   const activeTopicRef = useRef("session:new");
   const refCounter = useRef(0);
   const pending = useRef(new Map<string, PendingRequest>());
+  const pendingLaunchTurnRef = useRef<{ content: string; attachments: ImageAttachmentPayload[] } | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const stickToTranscriptEndRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -449,13 +452,18 @@ export function App() {
   const activeThread = snapshot?.threads.find((thread) => thread.thread_id === snapshot.active_thread_id);
   const hasActiveSession = connected || snapshot !== null;
   const showLaunchScreen = !hasActiveSession && workspaceMode === "chat";
-  const launchProjectName = snapshot?.session.project_name ?? latestSession?.project_name ?? "current project";
+  const launchProjectName = snapshot?.session.project_name ?? settings?.project_name ?? latestSession?.project_name ?? "current project";
+  const launchGitBranch = settings?.git_branch ?? "";
+  const launchGitBranchLabel = settings ? launchGitBranch || "Branch unavailable" : "Loading branch";
+  const launchLocationLabel = launchGitBranch ? `${launchProjectName} / ${launchGitBranch}` : launchProjectName;
   const showCommandMenu = connected && commandMatches.length > 0 && input.startsWith("/");
   const showReferenceMenu = connected && activeReference !== null && referenceItems.length > 0;
   const isBlockedForApproval = pendingApproval !== null || runtime.is_running_suspended;
   const hasWorkspaceObject = fileLoading || openFile !== null || inspectedArtifact !== null;
   const threadIdsKey = snapshot?.threads.map((thread) => thread.thread_id).join("|") ?? "";
-  const composerStatus = isBlockedForApproval ? "approval" : isRunning ? "running" : connected ? "ready" : "offline";
+  const composerStatus = showLaunchScreen ? (connectionState === "connecting" ? "connecting" : "ready") : isBlockedForApproval ? "approval" : isRunning ? "running" : connected ? "ready" : "offline";
+  const composerEnabled = connected || showLaunchScreen;
+  const composerConnecting = showLaunchScreen && connectionState === "connecting";
   const usageTitle = observableUsage
     ? `Tokens: ${formatCompactNumber(observableUsage.total_tokens)} total, ${formatCompactNumber(observableUsage.input_tokens)} input, ${formatCompactNumber(observableUsage.output_tokens)} output, ${formatCompactNumber(observableUsage.cached_input_tokens)} cached, ${formatUsd(observableUsage.total_cost_usd)} cost`
     : "Token usage unavailable";
@@ -576,6 +584,13 @@ export function App() {
       setError(apiFailureMessage("Load settings", settingsQuery.error));
     }
   }, [settingsQuery.error]);
+
+  useEffect(() => {
+    if (!connected || joinRef === null || pendingLaunchTurnRef.current === null) return;
+    const turn = pendingLaunchTurnRef.current;
+    pendingLaunchTurnRef.current = null;
+    void startMessage(turn.content, turn.attachments);
+  }, [connected, joinRef]);
 
   useEffect(() => {
     return () => {
@@ -956,14 +971,19 @@ export function App() {
   async function submitMessage(event: FormEvent) {
     event.preventDefault();
     if (!input && composerImages.length === 0) return;
-    if (input.startsWith("/") && composerImages.length === 0) {
-      executeComposerCommand(input);
-      return;
-    }
     const content = input;
     const attachments = composerImages.map(({ mime_type, data }) => ({ mime_type, data }));
     setInput("");
     setComposerImages([]);
+    if (showLaunchScreen) {
+      pendingLaunchTurnRef.current = { content, attachments };
+      createSession();
+      return;
+    }
+    if (content.startsWith("/") && composerImages.length === 0) {
+      executeComposerCommand(content);
+      return;
+    }
     if (!runtime.active_thread_accepts_user_turn) {
       await steerMessage(content, attachments);
       return;
@@ -1517,7 +1537,7 @@ export function App() {
               <strong>{snapshot?.session.title || (hasActiveSession ? "New AceAI session" : "AceAI")}</strong>
               <span>
                 {hasActiveSession ? connectionLabel : "Web GUI"}
-                {snapshot ? ` / ${snapshot.session.project_name}` : !hasActiveSession ? ` / ${launchProjectName}` : ""}
+                {snapshot ? ` / ${snapshot.session.project_name}` : !hasActiveSession ? ` / ${launchLocationLabel}` : ""}
               </span>
             </div>
           </div>
@@ -1601,7 +1621,7 @@ export function App() {
           className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""} ${workspaceOpen ? "workspace-open" : "workspace-closed"} ${!hasActiveSession ? "no-session-mode" : ""}`}
           style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
         >
-          <section className="conversation-pane" aria-label="Transcript">
+          <section className={`conversation-pane ${showLaunchScreen ? "launch-pane" : ""}`} aria-label="Transcript">
             {workspaceMode !== "settings" && hasActiveSession ? <div className="pane-header">
               <div>
                 <span>Conversation</span>
@@ -1615,12 +1635,8 @@ export function App() {
 
             {showLaunchScreen ? (
               <LaunchScreen
-                latestSessionTitle={latestSession?.title}
-                onBrowseSessions={() => setWorkspaceMode("sessions")}
-                onNewChat={createSession}
-                onOpenLatest={openLatestSession}
+                gitBranchLabel={launchGitBranchLabel}
                 projectName={launchProjectName}
-                sessionCount={sessions.length}
               />
             ) : null}
 
@@ -2025,7 +2041,7 @@ export function App() {
               </section>
             ) : null}
 
-            {workspaceMode !== "settings" && hasActiveSession ? <form className="composer" onSubmit={submitMessage}>
+            {workspaceMode !== "settings" && (hasActiveSession || showLaunchScreen) ? <form className={`composer ${showLaunchScreen ? "launch-composer" : ""}`} onSubmit={submitMessage}>
               <div className="composer-card">
                 <div className="composer-input-area">
                 <textarea
@@ -2033,8 +2049,8 @@ export function App() {
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
-                  placeholder={connected ? composerPlaceholder(isRunning, isBlockedForApproval) : "Choose a session first"}
-                      disabled={!connected}
+                  placeholder={composerEnabled ? composerPlaceholder(isRunning, isBlockedForApproval) : "Choose a session first"}
+                      disabled={!composerEnabled || composerConnecting}
                   onPaste={(event) => void handleComposerPaste(event)}
                 />
                 {composerImages.length > 0 ? (
@@ -2113,7 +2129,7 @@ export function App() {
                     <button type="button" className="composer-icon-button" title="Voice input" aria-label="Voice input" disabled>
                       <Mic size={16} />
                     </button>
-                    <button type="submit" className="composer-send-button" disabled={!connected || (!input && composerImages.length === 0)} title="Send">
+                    <button type="submit" className="composer-send-button" disabled={!composerEnabled || composerConnecting || (!input && composerImages.length === 0)} title="Send">
                       <Send size={17} />
                     </button>
                   </div>
@@ -2572,50 +2588,33 @@ function Metric({ label, value, valueText }: { label: string; value?: number; va
 }
 
 function LaunchScreen({
-  latestSessionTitle,
-  onBrowseSessions,
-  onNewChat,
-  onOpenLatest,
-  projectName,
-  sessionCount
+  gitBranchLabel,
+  projectName
 }: {
-  latestSessionTitle?: string;
-  onBrowseSessions: () => void;
-  onNewChat: () => void;
-  onOpenLatest: () => void;
+  gitBranchLabel: string;
   projectName: string;
-  sessionCount: number;
 }) {
-  const hasSessions = sessionCount > 0;
   return (
     <div className="launch-screen">
-      <div className="launch-mark">
-        <Bot size={32} />
-      </div>
-      <div className="launch-copy">
-        <span>AceAI Web GUI</span>
-        <h1>Ready when you are.</h1>
-        <p>Project: {projectName}</p>
-      </div>
-      <div className="launch-actions">
-        <button type="button" className="primary" onClick={onNewChat}>
-          <Plus size={15} />
-          New Chat
-        </button>
-        <button type="button" onClick={onBrowseSessions}>
-          <Layers size={15} />
-          Sessions
-        </button>
-        <button type="button" onClick={onOpenLatest} disabled={!hasSessions}>
-          <Clock3 size={15} />
-          {latestSessionTitle ? `Resume ${latestSessionTitle}` : "Resume latest"}
-        </button>
-      </div>
-      <div className="launch-shortcuts" aria-label="Shortcuts">
-        <div><kbd>Enter</kbd><span>ask</span></div>
-        <div><kbd>S</kbd><span>sessions</span></div>
-        <div><kbd>/</kbd><span>commands</span></div>
-        <div><kbd>Esc</kbd><span>cancel</span></div>
+      <div className="launch-hero">
+        <div className="launch-mark">
+          <Bot size={30} />
+        </div>
+        <div className="launch-copy">
+          <span>AceAI Web GUI</span>
+          <h1>Ready when you are.</h1>
+          <p>Ask anything to start a new chat in this workspace.</p>
+        </div>
+        <dl className="launch-context" aria-label="Workspace context">
+          <div>
+            <dt>Project</dt>
+            <dd>{projectName}</dd>
+          </div>
+          <div>
+            <dt>Git branch</dt>
+            <dd>{gitBranchLabel}</dd>
+          </div>
+        </dl>
       </div>
     </div>
   );

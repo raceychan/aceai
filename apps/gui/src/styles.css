@@ -688,6 +688,8 @@ dd {
 
 .content-grid.no-session-mode {
   grid-template-columns: minmax(0, 1fr);
+  background: #fbfcf9;
+  min-height: calc(100vh - 64px);
 }
 
 .content-grid.settings-mode {
@@ -702,6 +704,13 @@ dd {
   background: #ffffff;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.conversation-pane.launch-pane {
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: #fbfcf9;
+  min-height: 0;
+  height: 100%;
 }
 
 .split-resizer {
@@ -1860,24 +1869,30 @@ dd {
 }
 
 .launch-screen {
-  min-height: 0;
+  min-height: 100%;
   height: 100%;
   display: grid;
-  place-content: center;
+  align-content: center;
   justify-items: center;
-  gap: 18px;
-  padding: 56px 24px;
-  background:
-    radial-gradient(circle at 50% 32%, rgba(120, 168, 159, 0.13), transparent 28%),
-    linear-gradient(180deg, #ffffff 0%, #fbfcf9 100%);
+  padding: 28px 28px 210px;
+  background: #fbfcf9;
   text-align: center;
 }
 
+.launch-hero {
+  width: min(640px, 100%);
+  min-height: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 16px;
+}
+
 .launch-mark {
-  width: 62px;
-  height: 62px;
+  width: 58px;
+  height: 58px;
   border: 1px solid #dce4dd;
-  border-radius: 18px;
+  border-radius: 16px;
   background: #ffffff;
   color: #1f6a73;
   display: grid;
@@ -1887,7 +1902,8 @@ dd {
 
 .launch-copy {
   display: grid;
-  gap: 6px;
+  justify-items: center;
+  gap: 7px;
 }
 
 .launch-copy span {
@@ -1901,73 +1917,51 @@ dd {
 .launch-copy h1 {
   margin: 0;
   color: #1f2f2b;
-  font-size: 28px;
+  font-size: 26px;
   line-height: 1.12;
 }
 
 .launch-copy p {
+  max-width: 430px;
   margin: 0;
   color: #6d7873;
   font-size: 14px;
+  line-height: 1.45;
 }
 
-.launch-actions {
-  width: min(620px, 100%);
-  display: flex;
-  justify-content: center;
+.launch-context {
+  width: min(520px, 100%);
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  flex-wrap: wrap;
 }
 
-.launch-actions button {
+.launch-context div {
   min-width: 0;
-  max-width: 260px;
-  min-height: 38px;
-  padding: 7px 12px;
+  border: 1px solid #dfe5df;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.launch-context dt {
+  margin: 0 0 3px;
+  color: #75827d;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.launch-context dd {
+  margin: 0;
+  color: #1f2f2b;
   font-size: 13px;
   font-weight: 800;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.launch-shortcuts {
-  width: min(560px, 100%);
-  border: 1px solid #dfe5df;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.84);
-  padding: 10px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.launch-shortcuts div {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  color: #687570;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.launch-shortcuts kbd {
-  min-width: 28px;
-  border: 1px solid #cfd9d3;
-  border-bottom-color: #b8c6bf;
-  border-radius: 6px;
-  background: #f6faf7;
-  color: #20302c;
-  padding: 3px 6px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
-  font-weight: 800;
 }
 
 .message {
@@ -3787,15 +3781,15 @@ dd {
   }
 
   .launch-screen {
-    padding: 36px 16px;
+    padding: 24px 16px 210px;
   }
 
   .launch-copy h1 {
     font-size: 23px;
   }
 
-  .launch-shortcuts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .launch-context {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .composer-card {
