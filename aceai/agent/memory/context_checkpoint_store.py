@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from msgspec import Struct
+from msgspec import Struct, to_builtins
 
 from aceai.core.context_manager import estimate_message_tokens
 from aceai.core.helpers.string import uuid_str
@@ -34,6 +34,62 @@ class ContextCheckpoint(Struct, frozen=True, kw_only=True):
     history: list[LLMMessage]
     units: list[dict[str, Any]]
     version: int = CONTEXT_CHECKPOINT_VERSION
+
+
+class CheckpointMessagePayload(Struct, frozen=True, kw_only=True):
+    message_type: Literal["message"] = "message"
+    role: str
+    content: list[dict[str, Any]]
+
+
+class CheckpointToolCallMessagePayload(Struct, frozen=True, kw_only=True):
+    message_type: Literal["tool_call"] = "tool_call"
+    role: str
+    content: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    reasoning_content: str
+
+
+class CheckpointToolUseMessagePayload(Struct, frozen=True, kw_only=True):
+    message_type: Literal["tool_use"] = "tool_use"
+    role: str
+    content: list[dict[str, Any]]
+    name: str
+    call_id: str
+
+
+ContextUnitType = Literal[
+    "prior_run_summary",
+    "current_run_summary",
+    "current_user_message",
+    "step",
+    "open_step",
+]
+
+
+class ContextMessageUnitPayload(Struct, frozen=True, kw_only=True):
+    type: ContextUnitType
+    message: dict[str, Any]
+
+
+class ContextStepUnitPayload(Struct, frozen=True, kw_only=True):
+    type: ContextUnitType
+    messages: list[dict[str, Any]]
+
+
+class ContextCheckpointPayload(Struct, frozen=True, kw_only=True):
+    version: int
+    checkpoint_id: str
+    session_id: str
+    thread_id: str
+    run_id: str
+    step_id: str
+    reason: ContextCheckpointReason
+    compression_count: int
+    included_event_id: str
+    message_count: int
+    estimated_tokens: int
+    units: list[dict[str, Any]]
 
 
 class ContextCheckpointStore:
@@ -106,28 +162,35 @@ class ContextCheckpointStore:
         return self.root / f"{session_id}.checkpoints.jsonl"
 
 
+def _payload_from_struct(payload: Struct) -> dict[str, Any]:
+    return cast(dict[str, Any], to_builtins(payload))
+
+
 def llm_message_to_payload(message: LLMMessage) -> dict[str, Any]:
     if isinstance(message, LLMToolCallMessage):
-        return {
-            "message_type": "tool_call",
-            "role": message.role,
-            "content": _message_content_to_payload(message.content),
-            "tool_calls": [call.asdict() for call in message.tool_calls],
-            "reasoning_content": message.reasoning_content,
-        }
+        return _payload_from_struct(
+            CheckpointToolCallMessagePayload(
+                role=message.role,
+                content=_message_content_to_payload(message.content),
+                tool_calls=[call.asdict() for call in message.tool_calls],
+                reasoning_content=message.reasoning_content,
+            )
+        )
     if isinstance(message, LLMToolUseMessage):
-        return {
-            "message_type": "tool_use",
-            "role": message.role,
-            "content": _message_content_to_payload(message.content),
-            "name": message.name,
-            "call_id": message.call_id,
-        }
-    return {
-        "message_type": "message",
-        "role": message.role,
-        "content": _message_content_to_payload(message.content),
-    }
+        return _payload_from_struct(
+            CheckpointToolUseMessagePayload(
+                role=message.role,
+                content=_message_content_to_payload(message.content),
+                name=message.name,
+                call_id=message.call_id,
+            )
+        )
+    return _payload_from_struct(
+        CheckpointMessagePayload(
+            role=message.role,
+            content=_message_content_to_payload(message.content),
+        )
+    )
 
 
 def llm_message_from_payload(payload: dict[str, Any]) -> LLMMessage:
@@ -164,17 +227,21 @@ def context_units_payload_from_messages(
             scope = _context_summary_scope(message)
             if scope == "prior_runs":
                 units.append(
-                    {
-                        "type": "prior_run_summary",
-                        "message": llm_message_to_payload(message),
-                    }
+                    _payload_from_struct(
+                        ContextMessageUnitPayload(
+                            type="prior_run_summary",
+                            message=llm_message_to_payload(message),
+                        )
+                    )
                 )
             elif scope == "current_run":
                 units.append(
-                    {
-                        "type": "current_run_summary",
-                        "message": llm_message_to_payload(message),
-                    }
+                    _payload_from_struct(
+                        ContextMessageUnitPayload(
+                            type="current_run_summary",
+                            message=llm_message_to_payload(message),
+                        )
+                    )
                 )
             else:
                 raise ValueError("checkpoint system message must be a context summary")
@@ -182,10 +249,12 @@ def context_units_payload_from_messages(
             continue
         if message.role == "user":
             units.append(
-                {
-                    "type": "current_user_message",
-                    "message": llm_message_to_payload(message),
-                }
+                _payload_from_struct(
+                    ContextMessageUnitPayload(
+                        type="current_user_message",
+                        message=llm_message_to_payload(message),
+                    )
+                )
             )
             index += 1
             continue
@@ -214,13 +283,15 @@ def context_units_payload_from_messages(
             step_messages.append(message)
             index += 1
         units.append(
-            {
-                "type": unit_type,
-                "messages": [
-                    llm_message_to_payload(step_message)
-                    for step_message in step_messages
-                ],
-            }
+            _payload_from_struct(
+                ContextStepUnitPayload(
+                    type=unit_type,
+                    messages=[
+                        llm_message_to_payload(step_message)
+                        for step_message in step_messages
+                    ],
+                )
+            )
         )
     return units
 
@@ -251,20 +322,22 @@ def messages_from_context_units_payload(
 
 
 def _checkpoint_to_payload(checkpoint: ContextCheckpoint) -> dict[str, Any]:
-    return {
-        "version": checkpoint.version,
-        "checkpoint_id": checkpoint.checkpoint_id,
-        "session_id": checkpoint.session_id,
-        "thread_id": checkpoint.thread_id,
-        "run_id": checkpoint.run_id,
-        "step_id": checkpoint.step_id,
-        "reason": checkpoint.reason,
-        "compression_count": checkpoint.compression_count,
-        "included_event_id": checkpoint.included_event_id,
-        "message_count": checkpoint.message_count,
-        "estimated_tokens": checkpoint.estimated_tokens,
-        "units": checkpoint.units,
-    }
+    return _payload_from_struct(
+        ContextCheckpointPayload(
+            version=checkpoint.version,
+            checkpoint_id=checkpoint.checkpoint_id,
+            session_id=checkpoint.session_id,
+            thread_id=checkpoint.thread_id,
+            run_id=checkpoint.run_id,
+            step_id=checkpoint.step_id,
+            reason=checkpoint.reason,
+            compression_count=checkpoint.compression_count,
+            included_event_id=checkpoint.included_event_id,
+            message_count=checkpoint.message_count,
+            estimated_tokens=checkpoint.estimated_tokens,
+            units=checkpoint.units,
+        )
+    )
 
 
 def _checkpoint_from_payload(payload: dict[str, Any]) -> ContextCheckpoint:
