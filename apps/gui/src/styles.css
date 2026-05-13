@@ -726,9 +726,9 @@ dd {
     linear-gradient(90deg, rgba(120, 168, 159, 0.12), transparent 44%),
     #f8faf7;
   padding: 9px 18px;
-  display: grid;
-  grid-template-columns: minmax(160px, 0.4fr) minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
 
@@ -3579,13 +3579,6 @@ dd {
     gap: 6px;
   }
 
-  .pane-header {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .context-strip {
-    display: none;
-  }
 
   .mobile-connect {
     display: inline-flex;

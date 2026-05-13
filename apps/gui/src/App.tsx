@@ -1551,26 +1551,6 @@ export function App() {
                 <span>Conversation</span>
                 <strong>{isRunning ? "Streaming" : connected ? "Ready" : "Offline"}</strong>
               </div>
-              <div className="context-strip" aria-label="Context">
-                <span>
-                  <SquareTerminal size={13} />
-                  {activeThread?.role ?? "agent"}
-                </span>
-                <span>
-                  <Braces size={13} />
-                  {latestRun ? "run bound" : "no run"}
-                </span>
-                <span>
-                  <FileText size={13} />
-                  {events.length}
-                </span>
-                {observableUsage?.total_cost_usd ? (
-                  <span>
-                    <Database size={13} />
-                    {formatUsd(observableUsage.total_cost_usd)}
-                  </span>
-                ) : null}
-              </div>
               <div className="run-chip">
                 {isRunning ? <Sparkles size={14} /> : <Clock3 size={14} />}
                 {isRunning ? "running" : latestRun ? "completed" : "idle"}
