@@ -441,11 +441,15 @@ export function App() {
   );
   const visibleSessions = useMemo(() => filterSessions(sessions, sessionQuery), [sessions, sessionQuery]);
   const visibleSessionGroups = useMemo(() => groupByProject(visibleSessions), [visibleSessions]);
+  const latestSession = sessions[0];
   const ideaGroups = useMemo(() => groupByProject(ideas), [ideas]);
   const emptySessionCount = useMemo(() => sessions.filter((session) => session.event_count === 0).length, [sessions]);
   const commandMatches = useMemo(() => matchingCommands(input), [input]);
   const connectionLabel = connectionState === "idle" ? "ready" : connectionState;
   const activeThread = snapshot?.threads.find((thread) => thread.thread_id === snapshot.active_thread_id);
+  const hasActiveSession = connected || snapshot !== null;
+  const showLaunchScreen = !hasActiveSession && workspaceMode === "chat";
+  const launchProjectName = snapshot?.session.project_name ?? latestSession?.project_name ?? "current project";
   const showCommandMenu = connected && commandMatches.length > 0 && input.startsWith("/");
   const showReferenceMenu = connected && activeReference !== null && referenceItems.length > 0;
   const isBlockedForApproval = pendingApproval !== null || runtime.is_running_suspended;
@@ -768,6 +772,12 @@ export function App() {
   function createSession() {
     clearSessionIdFromUrl({ replace: false });
     connectSession("new", { updateUrl: false });
+  }
+
+  function openLatestSession() {
+    if (latestSession === undefined) return;
+    connectSession(latestSession.session_id);
+    setWorkspaceMode("chat");
   }
 
   function resetActiveSession() {
@@ -1504,14 +1514,14 @@ export function App() {
           <div className="workspace-title">
             <StatusDot state={connectionState} />
             <div>
-              <strong>{snapshot?.session.title || "New AceAI session"}</strong>
+              <strong>{snapshot?.session.title || (hasActiveSession ? "New AceAI session" : "AceAI")}</strong>
               <span>
-                {connectionLabel}
-                {snapshot ? ` / ${snapshot.session.project_name}` : ""}
+                {hasActiveSession ? connectionLabel : "Web GUI"}
+                {snapshot ? ` / ${snapshot.session.project_name}` : !hasActiveSession ? ` / ${launchProjectName}` : ""}
               </span>
             </div>
           </div>
-          <div className="topbar-center" aria-label="Workspace mode">
+          {hasActiveSession ? <div className="topbar-center" aria-label="Workspace mode">
             <div className="mode-switch">
               <button
                 className={`mode-pill ${workspaceMode === "chat" ? "active" : ""}`}
@@ -1543,7 +1553,7 @@ export function App() {
               <span>{formatCompactNumber(observableUsage?.total_tokens ?? 0)} tokens</span>
               <span>{formatUsd(observableUsage?.total_cost_usd ?? 0)}</span>
             </div>
-          </div>
+          </div> : <div className="topbar-center topbar-center-empty" />}
           <div className="topbar-actions">
             {!connected ? (
               <button className="mobile-connect" onClick={createSession} title="Start a new AceAI session">
@@ -1588,11 +1598,11 @@ export function App() {
         ) : null}
 
         <div
-          className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""} ${workspaceOpen ? "workspace-open" : "workspace-closed"}`}
+          className={`content-grid ${workspaceMode === "settings" ? "settings-mode" : ""} ${workspaceOpen ? "workspace-open" : "workspace-closed"} ${!hasActiveSession ? "no-session-mode" : ""}`}
           style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}
         >
           <section className="conversation-pane" aria-label="Transcript">
-            {workspaceMode !== "settings" ? <div className="pane-header">
+            {workspaceMode !== "settings" && hasActiveSession ? <div className="pane-header">
               <div>
                 <span>Conversation</span>
                 <strong>{isRunning ? "Streaming" : connected ? "Ready" : "Offline"}</strong>
@@ -1603,7 +1613,18 @@ export function App() {
               </div>
             </div> : null}
 
-            {workspaceMode === "chat" ? <div className="transcript" onScroll={updateTranscriptStickiness} ref={transcriptScrollRef}>
+            {showLaunchScreen ? (
+              <LaunchScreen
+                latestSessionTitle={latestSession?.title}
+                onBrowseSessions={() => setWorkspaceMode("sessions")}
+                onNewChat={createSession}
+                onOpenLatest={openLatestSession}
+                projectName={launchProjectName}
+                sessionCount={sessions.length}
+              />
+            ) : null}
+
+            {workspaceMode === "chat" && !showLaunchScreen ? <div className="transcript" onScroll={updateTranscriptStickiness} ref={transcriptScrollRef}>
               {visibleTranscript.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">
@@ -2004,7 +2025,7 @@ export function App() {
               </section>
             ) : null}
 
-            {workspaceMode !== "settings" ? <form className="composer" onSubmit={submitMessage}>
+            {workspaceMode !== "settings" && hasActiveSession ? <form className="composer" onSubmit={submitMessage}>
               <div className="composer-card">
                 <div className="composer-input-area">
                 <textarea
@@ -2101,7 +2122,7 @@ export function App() {
             </form> : null}
           </section>
 
-          {workspaceMode !== "settings" && workspaceOpen ? <div
+          {workspaceMode !== "settings" && hasActiveSession && workspaceOpen ? <div
             aria-label="Resize workspace"
             className="split-resizer"
             onMouseDown={startInspectorResize}
@@ -2109,7 +2130,7 @@ export function App() {
             title="Drag to resize workspace"
           /> : null}
 
-          {workspaceMode !== "settings" ? <aside
+          {workspaceMode !== "settings" && hasActiveSession ? <aside
             className={`inspector ${workspaceOpen ? "open" : "collapsed"} ${workspaceTab === "files" && hasWorkspaceObject ? "object-open" : ""}`}
             aria-label="Workspace"
           >
@@ -2546,6 +2567,56 @@ function Metric({ label, value, valueText }: { label: string; value?: number; va
     <div className="metric">
       <strong>{valueText ?? value}</strong>
       <span>{label}</span>
+    </div>
+  );
+}
+
+function LaunchScreen({
+  latestSessionTitle,
+  onBrowseSessions,
+  onNewChat,
+  onOpenLatest,
+  projectName,
+  sessionCount
+}: {
+  latestSessionTitle?: string;
+  onBrowseSessions: () => void;
+  onNewChat: () => void;
+  onOpenLatest: () => void;
+  projectName: string;
+  sessionCount: number;
+}) {
+  const hasSessions = sessionCount > 0;
+  return (
+    <div className="launch-screen">
+      <div className="launch-mark">
+        <Bot size={32} />
+      </div>
+      <div className="launch-copy">
+        <span>AceAI Web GUI</span>
+        <h1>Ready when you are.</h1>
+        <p>Project: {projectName}</p>
+      </div>
+      <div className="launch-actions">
+        <button type="button" className="primary" onClick={onNewChat}>
+          <Plus size={15} />
+          New Chat
+        </button>
+        <button type="button" onClick={onBrowseSessions}>
+          <Layers size={15} />
+          Sessions
+        </button>
+        <button type="button" onClick={onOpenLatest} disabled={!hasSessions}>
+          <Clock3 size={15} />
+          {latestSessionTitle ? `Resume ${latestSessionTitle}` : "Resume latest"}
+        </button>
+      </div>
+      <div className="launch-shortcuts" aria-label="Shortcuts">
+        <div><kbd>Enter</kbd><span>ask</span></div>
+        <div><kbd>S</kbd><span>sessions</span></div>
+        <div><kbd>/</kbd><span>commands</span></div>
+        <div><kbd>Esc</kbd><span>cancel</span></div>
+      </div>
     </div>
   );
 }
