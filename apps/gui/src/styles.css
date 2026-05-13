@@ -535,13 +535,40 @@ dd {
   overflow-x: auto;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 8px;
   min-height: 38px;
+}
+
+.mode-switch,
+.topbar-usage {
   border: 1px solid #d8e1dc;
   border-radius: 10px;
   background: #ffffff;
-  padding: 3px;
   box-shadow: 0 1px 0 rgba(23, 53, 58, 0.03);
+}
+
+.mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+}
+
+.topbar-usage {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  color: #1c5861;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.topbar-usage span + span {
+  color: #65716c;
+  font-weight: 600;
 }
 
 .mode-pill {
@@ -1893,43 +1920,39 @@ dd {
   border-radius: 6px;
 }
 
-.transcript-history {
-  max-width: min(920px, 92%);
+.message-work-history {
   width: 100%;
-  align-self: center;
   display: grid;
-  gap: 10px;
-  margin: 2px 0;
-}
-
-.transcript-history-toggle {
-  width: 100%;
-  min-height: 44px;
-  border: 0;
-  border-bottom: 1px solid #dfe5df;
-  border-radius: 0;
-  background: transparent;
-  color: #626d68;
-  display: inline-flex;
-  justify-content: flex-start;
-  padding: 8px 2px;
-  font-size: 18px;
-  font-weight: 500;
-}
-
-.transcript-history-toggle:hover:not(:disabled) {
-  border-color: #d0d9d3;
-  background: transparent;
-  color: #26332f;
-}
-
-.transcript-history-body {
+  gap: 8px;
+  margin: 2px 0 10px;
   border: 1px solid #dfe5df;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
-  display: grid;
+  background: #f7faf8;
+  padding: 9px;
+}
+
+.message-work-history-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 10px;
+  color: #26332f;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  list-style-position: inside;
+}
+
+.message-work-history-title small {
+  color: #74807b;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.message-work-history:not([open]) {
+  padding-bottom: 8px;
 }
 
 .transcript-history-list {
@@ -1973,9 +1996,7 @@ dd {
 
 .transcript-history-row strong,
 .transcript-history-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .transcript-history-row strong {
@@ -2031,6 +2052,18 @@ dd {
   font-size: 14px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+.markdown a {
+  color: #176069;
+  text-decoration-color: rgba(23, 96, 105, 0.28);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.markdown a:hover {
+  color: #0f4c54;
+  text-decoration-color: rgba(15, 76, 84, 0.62);
 }
 
 .markdown > :first-child {
@@ -2093,6 +2126,55 @@ dd {
   border-color: #9fb9af;
   background: #eaf4f1;
   color: #195866;
+}
+
+.external-link-card {
+  max-width: min(100%, 640px);
+  min-height: 24px;
+  border: 1px solid #cfddd7;
+  border-radius: 5px;
+  background: #f7fbf8;
+  color: #176069;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  margin: 2px 0 1px;
+  padding: 2px 6px;
+  font-size: 13px;
+  line-height: 1.28;
+  vertical-align: middle;
+  text-decoration: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.external-link-card:hover {
+  border-color: #9fb9af;
+  background: #eef7f3;
+  color: #0f4c54;
+  text-decoration: none;
+}
+
+.external-link-card svg {
+  color: #6c7c76;
+}
+
+.external-link-host,
+.external-link-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-link-host {
+  color: #173b3f;
+  font-weight: 720;
+}
+
+.external-link-path {
+  color: #61746d;
+  font-size: 12px;
 }
 
 .markdown pre {
@@ -3407,12 +3489,24 @@ dd {
     overflow-x: auto;
   }
 
+  .mode-switch {
+    flex: 1 0 auto;
+  }
+
+  .topbar-usage {
+    flex: 0 0 auto;
+  }
+
   .topbar-actions {
     justify-content: flex-end;
   }
 
   .mode-pill {
     flex: 1 0 96px;
+  }
+
+  .topbar-usage span + span {
+    display: none;
   }
 
   .composer-toolbar {

@@ -11,6 +11,7 @@ import {
   Copy,
   Database,
   Edit3,
+  ExternalLink,
   FileText,
   GitBranch,
   Layers,
@@ -32,6 +33,7 @@ import {
   WifiOff
 } from "lucide-react";
 import Editor, { Monaco } from "@monaco-editor/react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import hljs from "highlight.js/lib/common";
 import "highlight.js/styles/github-dark.css";
 import { CSSProperties, ClipboardEvent, FormEvent, KeyboardEvent, MouseEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -65,10 +67,16 @@ import {
 
 type ConnectionState = "idle" | "connecting" | "connected" | "closed" | "error";
 
-type TranscriptItem =
-  | { id: string; images?: ImageAttachmentPayload[]; role: "user"; text: string; time: string }
-  | { id: string; images?: ImageAttachmentPayload[]; role: "assistant"; text: string; time: string }
-  | { id: string; images?: ImageAttachmentPayload[]; role: "system"; text: string; time: string };
+type TranscriptItem = {
+  id: string;
+  images?: ImageAttachmentPayload[];
+  reasoning?: string;
+  role: "user" | "assistant" | "system";
+  runId?: string;
+  text: string;
+  time: string;
+  workHistory?: RunWorkHistory;
+};
 
 type PendingRequest = {
   event: string;
@@ -77,10 +85,21 @@ type PendingRequest = {
 };
 
 type TimelineItem = {
+  content?: string;
   id: string;
+  kind?: string;
+  runId?: string;
   title: string;
   detail: string;
   tone: "neutral" | "good" | "bad" | "live";
+};
+
+type RunWorkHistory = {
+  durationLabel: string;
+  headline: string;
+  isRunning: boolean;
+  items: TimelineItem[];
+  runId: string;
 };
 
 type ComposerCommand = {
@@ -213,20 +232,25 @@ const MONACO_THEME_OPTIONS: { value: MonacoThemeChoice; label: string; theme: st
   { value: "light", label: "Light", theme: "vs" },
   { value: "dark", label: "Dark", theme: "vs-dark" }
 ];
+const GUI_QUERY_KEYS = {
+  sessions: ["sessions"],
+  ideas: ["ideas"],
+  settings: ["settings"],
+  references: (query: string) => ["references", query],
+  file: (path: string) => ["file", path]
+} as const;
 
 export function App() {
+  const queryClient = useQueryClient();
   const [serverUrl] = useState(() => localStorage.getItem("aceai.gui.ws") ?? defaultWebSocketUrl());
   const [joinRef, setJoinRef] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [input, setInput] = useState("");
   const [composerImages, setComposerImages] = useState<ComposerImageAttachment[]>([]);
-  const [sessions, setSessions] = useState<SessionListItem[]>([]);
-  const [ideas, setIdeas] = useState<IdeaItem[]>([]);
   const [selectedIdeaIndex, setSelectedIdeaIndex] = useState(1);
   const [ideaDraft, setIdeaDraft] = useState("");
   const [newIdeaDraft, setNewIdeaDraft] = useState("");
   const [sessionQuery, setSessionQuery] = useState("");
-  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<SnapshotPayload | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [activity, setActivity] = useState<SocketEnvelope[]>([]);
@@ -236,9 +260,10 @@ export function App() {
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([]);
   const [optimisticTurns, setOptimisticTurns] = useState<TranscriptItem[]>([]);
   const [liveAssistantText, setLiveAssistantText] = useState("");
+  const [liveReasoningText, setLiveReasoningText] = useState("");
+  const [liveRunId, setLiveRunId] = useState("");
   const [liveTimeline, setLiveTimeline] = useState<TimelineItem[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ToolApprovalRequest | null>(null);
-  const [referenceItems, setReferenceItems] = useState<ReferenceItem[]>([]);
   const [selectedReferenceIndex, setSelectedReferenceIndex] = useState(0);
   const [selectedDebugEventId, setSelectedDebugEventId] = useState<string | null>(null);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
@@ -249,35 +274,142 @@ export function App() {
   const [monacoTheme, setMonacoTheme] = useState<MonacoThemeChoice>("aceai");
   const [inspectorWidth, setInspectorWidth] = useState(() => storedInspectorWidth());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showTranscriptWorkHistory, setShowTranscriptWorkHistory] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [openInspectorGroups, setOpenInspectorGroups] = useState(DEFAULT_INSPECTOR_GROUPS);
-  const [settings, setSettings] = useState<GuiConfig | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<GuiConfig | null>(null);
   const [settingsApiKey, setSettingsApiKey] = useState("");
-  const [settingsSaving, setSettingsSaving] = useState(false);
   const apiBaseUrl = useMemo(() => apiBaseFromWebSocketUrl(serverUrl), [serverUrl]);
   const apiClient = useMemo(() => new ApiApi(new Configuration({ basePath: apiBasePath(apiBaseUrl) })), [apiBaseUrl]);
   const socketRef = useRef<WebSocket | null>(null);
   const activeTopicRef = useRef("session:new");
   const refCounter = useRef(0);
   const pending = useRef(new Map<string, PendingRequest>());
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToTranscriptEndRef = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionSearchRef = useRef<HTMLInputElement | null>(null);
   const timelineRef = useRef<HTMLElement | null>(null);
   const statsRef = useRef<HTMLElement | null>(null);
   const eventsRef = useRef<HTMLElement | null>(null);
   const threadsRef = useRef<HTMLElement | null>(null);
+  const activeReference = useMemo(() => activeReferencePrefix(input), [input]);
+  const connected = connectionState === "connected";
+  const sessionsQuery = useQuery({
+    queryKey: GUI_QUERY_KEYS.sessions,
+    queryFn: async () => {
+      const payload = await apiClient.listSessionsApiSessionsGet();
+      return payload.sessions.map(sessionListItemFromApi);
+    },
+    staleTime: 5000
+  });
+  const ideasQuery = useQuery({
+    queryKey: GUI_QUERY_KEYS.ideas,
+    queryFn: async () => {
+      const payload = await apiClient.listIdeasApiIdeasGet();
+      return payload.ideas.map(ideaItemFromApi);
+    },
+    staleTime: 10000
+  });
+  const settingsQuery = useQuery({
+    queryKey: GUI_QUERY_KEYS.settings,
+    queryFn: () => fetchJson<GuiConfig>(restApiUrl("/api/config")),
+    staleTime: 10000
+  });
+  const referencesQuery = useQuery({
+    queryKey: activeReference === null ? GUI_QUERY_KEYS.references("") : GUI_QUERY_KEYS.references(activeReference),
+    queryFn: async ({ signal }) => {
+      if (activeReference === null) return [];
+      const payload = await apiClient.listReferencesApiReferencesGet({ q: activeReference }, { signal });
+      return payload.items.map(referenceItemFromApi);
+    },
+    enabled: connected && activeReference !== null,
+    staleTime: 2000
+  });
+  const sessions = sessionsQuery.data ?? [];
+  const ideas = ideasQuery.data ?? [];
+  const referenceItems = referencesQuery.data ?? [];
+  const settings = settingsQuery.data ?? null;
+  const sessionsLoading = sessionsQuery.isLoading;
+  const deleteSessionMutation = useMutation({
+    mutationFn: (sessionId: string) => apiClient.deleteSessionApiSessionsSessionIdDelete({ session_id: sessionId }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.sessions });
+    }
+  });
+  const clearEmptySessionsMutation = useMutation({
+    mutationFn: () => apiClient.deleteEmptySessionsApiSessionCleanupEmptyDelete(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.sessions });
+    }
+  });
+  const captureIdeaMutation = useMutation({
+    mutationFn: (content: string) => apiClient.captureIdeaApiIdeasPost({ ideaCaptureRequest: { content } }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.ideas });
+    }
+  });
+  const updateIdeaMutation = useMutation({
+    mutationFn: (params: { index: number; content: string }) =>
+      apiClient.updateIdeaApiIdeasIndexPut({
+        index: params.index,
+        ideaUpdateRequest: { content: params.content }
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.ideas });
+    }
+  });
+  const deleteIdeaMutation = useMutation({
+    mutationFn: (index: number) => apiClient.deleteIdeaApiIdeasIndexDelete({ index }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.ideas });
+    }
+  });
+  const saveSettingsMutation = useMutation({
+    mutationFn: (payload: { config: GuiConfig; apiKey: string }) =>
+      fetchJson<GuiConfig>(restApiUrl("/api/config"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configUpdatePayload(payload.config, payload.apiKey))
+      }),
+    onSuccess: (payload) => {
+      queryClient.setQueryData(GUI_QUERY_KEYS.settings, payload);
+      setSettingsDraft(payload);
+      setSettingsApiKey("");
+      setNotice("Settings saved.");
+    }
+  });
+  const saveFileMutation = useMutation({
+    mutationFn: (payload: { path: string; content: string }) =>
+      apiClient.saveFileApiFilesPut({
+        path: payload.path,
+        fileSaveRequest: { content: payload.content }
+      }),
+    onSuccess: (payload) => {
+      const nextFile = filePayloadFromApi(payload.file);
+      queryClient.setQueryData(GUI_QUERY_KEYS.file(payload.file.path), nextFile);
+      setOpenFile(nextFile);
+      setFileDraft(payload.file.content);
+      setFileEditMode(false);
+      setNotice(`Saved ${payload.file.path}.`);
+    }
+  });
+  const settingsSaving = saveSettingsMutation.isPending;
 
-  const transcript = useMemo(() => buildTranscript(events), [events]);
+  const latestRun = useMemo(() => findLatestRun(events), [events]);
+  const activeWorkRun = liveRunId || liveTimeline.find((item) => item.runId)?.runId || latestRun;
+  const runReasoning = useMemo(() => buildRunReasoning(events), [events]);
+  const runWorkHistories = useMemo(
+    () => buildRunWorkHistories(events, liveTimeline, activeWorkRun, isRunning, runReasoning),
+    [events, liveTimeline, activeWorkRun, isRunning, runReasoning]
+  );
+  const transcript = useMemo(() => buildTranscript(events, runWorkHistories, runReasoning), [events, runWorkHistories, runReasoning]);
+  const liveAssistantWorkHistory = activeWorkRun ? runWorkHistories.get(activeWorkRun) : undefined;
   const visibleTranscript = useMemo(
-    () => mergeOptimisticTranscript(transcript, optimisticTurns, liveAssistantText),
-    [transcript, optimisticTurns, liveAssistantText]
+    () => mergeOptimisticTranscript(transcript, optimisticTurns, liveAssistantText, liveReasoningText, liveRunId, liveAssistantWorkHistory),
+    [transcript, optimisticTurns, liveAssistantText, liveReasoningText, liveRunId, liveAssistantWorkHistory]
   );
   const artifacts = useMemo(() => buildArtifacts(events), [events]);
-  const latestRun = useMemo(() => findLatestRun(events), [events]);
   const eventKinds = useMemo(() => summarizeEventKinds(events), [events]);
   const runtime = runtimeOf(snapshot);
   const observability = observabilityOf(snapshot);
@@ -294,33 +426,37 @@ export function App() {
     () => buildTimeline(events, activity, liveTimeline, observableTrajectory),
     [events, activity, liveTimeline, observableTrajectory]
   );
-  const workHistoryLabel = useMemo(() => workHistoryDuration(events, latestRun, isRunning), [events, latestRun, isRunning]);
   const visibleSessions = useMemo(() => filterSessions(sessions, sessionQuery), [sessions, sessionQuery]);
   const visibleSessionGroups = useMemo(() => groupByProject(visibleSessions), [visibleSessions]);
   const ideaGroups = useMemo(() => groupByProject(ideas), [ideas]);
   const emptySessionCount = useMemo(() => sessions.filter((session) => session.event_count === 0).length, [sessions]);
   const commandMatches = useMemo(() => matchingCommands(input), [input]);
-  const activeReference = useMemo(() => activeReferencePrefix(input), [input]);
-  const connected = connectionState === "connected";
   const connectionLabel = connectionState === "idle" ? "ready" : connectionState;
   const activeThread = snapshot?.threads.find((thread) => thread.thread_id === snapshot.active_thread_id);
   const showCommandMenu = connected && commandMatches.length > 0 && input.startsWith("/");
   const showReferenceMenu = connected && activeReference !== null && referenceItems.length > 0;
   const isBlockedForApproval = pendingApproval !== null || runtime.is_running_suspended;
   const hasWorkspaceObject = fileLoading || openFile !== null || inspectedArtifact !== null;
-  const hasTranscriptWorkHistory = timeline.length > 0 || observableToolCalls.length > 0 || observableEventKinds.length > 0;
   const composerStatus = isBlockedForApproval ? "approval" : isRunning ? "running" : connected ? "ready" : "offline";
+  const usageTitle = observableUsage
+    ? `Tokens: ${formatCompactNumber(observableUsage.total_tokens)} total, ${formatCompactNumber(observableUsage.input_tokens)} input, ${formatCompactNumber(observableUsage.output_tokens)} output, ${formatCompactNumber(observableUsage.cached_input_tokens)} cached, ${formatUsd(observableUsage.total_cost_usd)} cost`
+    : "Token usage unavailable";
 
   useEffect(() => {
     if (!connected || isRunning || isBlockedForApproval || queuedTurns.length === 0) return;
     const [nextTurn, ...remainingTurns] = queuedTurns;
     setQueuedTurns(remainingTurns);
-    void startMessage(nextTurn.content, nextTurn.attachments);
+    void startQueuedMessage(0, nextTurn);
   }, [connected, isRunning, isBlockedForApproval, queuedTurns]);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ block: "end" });
-  }, [visibleTranscript.length, activity.length]);
+    if (!stickToTranscriptEndRef.current) return;
+    const transcriptElement = transcriptScrollRef.current;
+    if (transcriptElement === null) return;
+    window.requestAnimationFrame(() => {
+      transcriptElement.scrollTop = transcriptElement.scrollHeight;
+    });
+  }, [visibleTranscript.length, liveAssistantText, liveReasoningText]);
 
   useEffect(() => {
     if (!connected || !isRunning) return;
@@ -329,9 +465,6 @@ export function App() {
   }, [connected, isRunning]);
 
   useEffect(() => {
-    void loadSessions();
-    void loadIdeas();
-    void loadSettings();
     const sessionId = sessionIdFromUrl();
     if (sessionId !== null) {
       connectSession(sessionId, { replaceUrl: true });
@@ -353,15 +486,38 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!connected || activeReference === null) {
-      setReferenceItems([]);
-      setSelectedReferenceIndex(0);
-      return;
+    setSelectedReferenceIndex(0);
+  }, [activeReference, referenceItems.length]);
+
+  useEffect(() => {
+    if (settings === null) return;
+    setSettingsDraft(settings);
+    setSettingsApiKey("");
+  }, [settings]);
+
+  useEffect(() => {
+    const nextIdea = ideas.find((idea) => idea.index === selectedIdeaIndex) ?? ideas[0];
+    setSelectedIdeaIndex(nextIdea?.index ?? 1);
+    setIdeaDraft(nextIdea?.content ?? "");
+  }, [ideas]);
+
+  useEffect(() => {
+    if (sessionsQuery.error) {
+      setError(apiFailureMessage("Load sessions", sessionsQuery.error));
     }
-    const controller = new AbortController();
-    void loadReferences(activeReference, controller.signal);
-    return () => controller.abort();
-  }, [connected, activeReference]);
+  }, [sessionsQuery.error]);
+
+  useEffect(() => {
+    if (ideasQuery.error) {
+      setError(apiFailureMessage("Load ideas", ideasQuery.error));
+    }
+  }, [ideasQuery.error]);
+
+  useEffect(() => {
+    if (settingsQuery.error) {
+      setError(apiFailureMessage("Load settings", settingsQuery.error));
+    }
+  }, [settingsQuery.error]);
 
   useEffect(() => {
     return () => {
@@ -396,50 +552,14 @@ export function App() {
     });
   }
 
-  async function loadSessions() {
-    setSessionsLoading(true);
-    try {
-      const payload = await apiClient.listSessionsApiSessionsGet();
-      setSessions(payload.sessions.map(sessionListItemFromApi));
-    } catch (err) {
-      setError(apiFailureMessage("Load sessions", err));
-    } finally {
-      setSessionsLoading(false);
-    }
+  async function refreshSessions() {
+    await queryClient.invalidateQueries({ queryKey: GUI_QUERY_KEYS.sessions });
   }
 
-  async function loadIdeas(preferredIndex = selectedIdeaIndex) {
-    try {
-      const payload = await apiClient.listIdeasApiIdeasGet();
-      const normalizedIdeas = payload.ideas.map(ideaItemFromApi);
-      setIdeas(normalizedIdeas);
-      const nextIdea = normalizedIdeas.find((idea) => idea.index === preferredIndex) ?? normalizedIdeas[0];
-      setSelectedIdeaIndex(nextIdea?.index ?? 1);
-      setIdeaDraft(nextIdea?.content ?? "");
-    } catch (err) {
-      setError(apiFailureMessage("Load ideas", err));
-    }
-  }
-
-  async function loadReferences(query: string, signal: AbortSignal) {
-    try {
-      const payload = await apiClient.listReferencesApiReferencesGet({ q: query }, { signal });
-      setReferenceItems(payload.items.map(referenceItemFromApi));
-      setSelectedReferenceIndex(0);
-    } catch (err) {
-      if (isAbortError(err)) return;
-      setReferenceItems([]);
-    }
-  }
-
-  async function loadSettings() {
-    try {
-      const payload = await fetchJson<GuiConfig>(restApiUrl("/api/config"));
-      setSettings(payload);
-      setSettingsDraft(payload);
-      setSettingsApiKey("");
-    } catch (err) {
-      setError(apiFailureMessage("Load settings", err));
+  async function refreshSettings() {
+    const result = await settingsQuery.refetch();
+    if (result.error) {
+      setError(apiFailureMessage("Load settings", result.error));
     }
   }
 
@@ -459,22 +579,11 @@ export function App() {
 
   async function saveSettings() {
     if (settingsDraft === null) return;
-    setSettingsSaving(true);
     setError(null);
     try {
-      const payload = await fetchJson<GuiConfig>(restApiUrl("/api/config"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(configUpdatePayload(settingsDraft, settingsApiKey))
-      });
-      setSettings(payload);
-      setSettingsDraft(payload);
-      setSettingsApiKey("");
-      setNotice("Settings saved.");
+      await saveSettingsMutation.mutateAsync({ config: settingsDraft, apiKey: settingsApiKey });
     } catch (err) {
       setError(apiFailureMessage("Save settings", err));
-    } finally {
-      setSettingsSaving(false);
     }
   }
 
@@ -503,6 +612,8 @@ export function App() {
     setQueuedTurns([]);
     setOptimisticTurns([]);
     setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
     setLiveTimeline([]);
     setPendingApproval(null);
     setSelectedDebugEventId(null);
@@ -530,6 +641,7 @@ export function App() {
           setJoinRef(ref);
           setConnectionState("connected");
           void refreshSnapshot();
+          void refreshSessions();
         },
         reject: (err) => {
           setError(err.message);
@@ -597,6 +709,8 @@ export function App() {
     setQueuedTurns([]);
     setOptimisticTurns([]);
     setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
     setLiveTimeline([]);
     setPendingApproval(null);
     setSelectedDebugEventId(null);
@@ -613,12 +727,11 @@ export function App() {
       return;
     }
     try {
-      await apiClient.deleteSessionApiSessionsSessionIdDelete({ session_id: session.session_id });
+      await deleteSessionMutation.mutateAsync(session.session_id);
       if (snapshot?.session.session_id === session.session_id) {
         clearSessionIdFromUrl({ replace: true });
         resetActiveSession();
       }
-      await loadSessions();
     } catch (err) {
       setError(apiFailureMessage("Delete session", err));
     }
@@ -630,13 +743,12 @@ export function App() {
       return;
     }
     try {
-      const payload = await apiClient.deleteEmptySessionsApiSessionCleanupEmptyDelete();
+      const payload = await clearEmptySessionsMutation.mutateAsync();
       if (snapshot && payload.sessionIds.includes(snapshot.session.session_id)) {
         clearSessionIdFromUrl({ replace: true });
         resetActiveSession();
       }
       setNotice(`Deleted ${payload.deleted} empty sessions.`);
-      await loadSessions();
     } catch (err) {
       setError(apiFailureMessage("Clean empty sessions", err));
     }
@@ -648,12 +760,15 @@ export function App() {
       const response = await sendCommand<SnapshotPayload>("switch_thread", { thread_id: threadId });
       setSnapshot(response);
       setEvents(response.events);
-      setQueuedTurns(snapshotQueuedTurns(response));
+      setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
       setIsRunning(snapshotIsRunning(responseRuntime));
       if (!snapshotIsRunning(responseRuntime)) {
         setLiveAssistantText("");
+        setLiveReasoningText("");
+        setLiveRunId("");
+        setLiveTimeline([]);
       }
       setSelectedDebugEventId(observabilityOf(response)?.debug_events[0]?.event_id ?? null);
     } catch (err) {
@@ -667,12 +782,21 @@ export function App() {
       if (payload.event.kind === "run_completed" || payload.event.kind === "run_failed") {
         setIsRunning(false);
         setPendingApproval(null);
+        setLiveAssistantText("");
+        setLiveReasoningText("");
+        setLiveRunId("");
+        setLiveTimeline([]);
       }
       return;
     }
+    setLiveRunId(payload.event.run_id);
     const eventType = payload.event.event_type;
     if (eventType === "agent.llm.output_text.delta") {
       appendLiveAssistantDelta(payload.event.payload);
+      return;
+    }
+    if (eventType === "agent.llm.reasoning") {
+      appendLiveReasoningDelta(payload.event.payload);
       return;
     }
     appendLiveTimelineEvent(payload);
@@ -689,7 +813,10 @@ export function App() {
     if (isTerminalAgentRunEvent(payload)) {
       setIsRunning(false);
       setPendingApproval(null);
-      window.setTimeout(() => void refreshSnapshot(), 250);
+      window.setTimeout(() => {
+        void refreshSnapshot();
+        void refreshSessions();
+      }, 250);
     }
   }
 
@@ -708,16 +835,17 @@ export function App() {
       setSnapshot(response);
       writeSessionIdToUrl(response.session.session_id, { replace: true });
       setEvents(response.events);
-      setQueuedTurns(snapshotQueuedTurns(response));
+      setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
       setPendingApproval(responseRuntime.pending_approval);
       setIsRunning(snapshotIsRunning(responseRuntime));
       if (!snapshotIsRunning(responseRuntime)) {
         setLiveAssistantText("");
+        setLiveReasoningText("");
+        setLiveRunId("");
         setLiveTimeline([]);
       }
       setSelectedDebugEventId(observabilityOf(response)?.debug_events[0]?.event_id ?? null);
-      void loadSessions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Snapshot failed");
     }
@@ -734,16 +862,31 @@ export function App() {
     const attachments = composerImages.map(({ mime_type, data }) => ({ mime_type, data }));
     setInput("");
     setComposerImages([]);
-    if (isRunning || isBlockedForApproval) {
-      enqueueComposerTurn(content, attachments);
+    if (!runtime.active_thread_accepts_user_turn) {
+      await steerMessage(content, attachments);
+      return;
+    }
+    if (isBlockedForApproval) {
+      setError("Choose Approve or Reject before sending another message.");
+      return;
+    }
+    if (isRunning) {
+      if (attachments.length > 0) {
+        setError("Queued image messages are not supported.");
+        return;
+      }
+      await enqueueComposerTurn(content, attachments);
       return;
     }
     await startMessage(content, attachments);
   }
 
   async function startMessage(content: string, attachments: ImageAttachmentPayload[] = []) {
+    stickToTranscriptEndRef.current = true;
     appendOptimisticUserMessage(content, attachments);
     setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
     setLiveTimeline([]);
     setIsRunning(true);
     try {
@@ -764,8 +907,17 @@ export function App() {
     }
   }
 
-  function enqueueComposerTurn(content: string, attachments: ImageAttachmentPayload[]) {
+  async function enqueueComposerTurn(content: string, attachments: ImageAttachmentPayload[]) {
+    stickToTranscriptEndRef.current = true;
+    appendOptimisticUserMessage(content, attachments);
     setQueuedTurns((turns) => [...turns, { id: nextRef("queued"), attachments, content }]);
+    try {
+      const response = await sendCommand<{ queued_questions: string[] }>("enqueue_message", { content, attachments });
+      setQueuedTurns((current) => snapshotQueuedTurnsFromQuestions(response.queued_questions, current));
+      await refreshSnapshot();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Queue failed");
+    }
   }
 
   function appendOptimisticUserMessage(content: string, attachments: ImageAttachmentPayload[]) {
@@ -781,17 +933,42 @@ export function App() {
     ]);
   }
 
+  function updateTranscriptStickiness() {
+    const transcriptElement = transcriptScrollRef.current;
+    if (transcriptElement === null) return;
+    const distanceFromEnd = transcriptElement.scrollHeight - transcriptElement.scrollTop - transcriptElement.clientHeight;
+    stickToTranscriptEndRef.current = distanceFromEnd < 96;
+  }
+
   function appendLiveAssistantDelta(payload: Record<string, unknown>) {
     const delta = payload.text_delta;
     if (typeof delta !== "string" || delta === "") return;
     setLiveAssistantText((current) => current + delta);
   }
 
+  function appendLiveReasoningDelta(payload: Record<string, unknown>) {
+    const delta = extractLiveReasoningText(payload);
+    if (delta === null || delta === "") return;
+    setLiveReasoningText((current) => current + delta);
+  }
+
   function appendLiveTimelineEvent(payload: AppEventPayload) {
     if (payload.kind !== "agent") return;
     const item = liveTimelineItem(payload);
     if (item === null) return;
-    setLiveTimeline((items) => [item, ...items.filter((existing) => existing.id !== item.id)].slice(0, 8));
+    setLiveTimeline((items) => {
+      const existing = items.find((current) => current.id === item.id);
+      if (existing && item.kind === "agent.llm.reasoning") {
+        const currentText = existing.content ?? existing.detail;
+        const delta = item.content ?? item.detail;
+        const content = `${currentText}${delta}`;
+        return [
+          { ...existing, content, detail: content },
+          ...items.filter((current) => current.id !== item.id)
+        ].slice(0, 8);
+      }
+      return [item, ...items.filter((existingItem) => existingItem.id !== item.id)].slice(0, 8);
+    });
   }
 
   async function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -806,8 +983,15 @@ export function App() {
     }
   }
 
-  function cancelQueuedTurn(index: number) {
+  async function cancelQueuedTurn(index: number) {
     setQueuedTurns((turns) => turns.filter((_, turnIndex) => turnIndex !== index));
+    try {
+      const response = await sendCommand<{ queued_questions: string[] }>("cancel_queued_message", { index });
+      setQueuedTurns(snapshotQueuedTurnsFromQuestions(response.queued_questions, []));
+      await refreshSnapshot();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cancel queued message failed");
+    }
   }
 
   async function steerQueuedTurn(index: number) {
@@ -815,9 +999,59 @@ export function App() {
     if (!queuedTurn) return;
     setQueuedTurns((turns) => turns.filter((_, turnIndex) => turnIndex !== index));
     if (isRunning) {
-      await cancelRun();
+      await startSteeredQueuedMessage(index, queuedTurn);
+      return;
     }
-    await startMessage(queuedTurn.content, queuedTurn.attachments);
+    await startQueuedMessage(index, queuedTurn);
+  }
+
+  async function startQueuedMessage(index: number, queuedTurn: QueuedTurn) {
+    stickToTranscriptEndRef.current = true;
+    setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
+    setLiveTimeline([]);
+    setIsRunning(true);
+    try {
+      await sendCommand("start_queued_message", { index });
+    } catch (err) {
+      setIsRunning(false);
+      setError(err instanceof Error ? err.message : "Start queued message failed");
+      setQueuedTurns((turns) => [queuedTurn, ...turns]);
+    }
+  }
+
+  async function startSteeredQueuedMessage(index: number, queuedTurn: QueuedTurn) {
+    stickToTranscriptEndRef.current = true;
+    setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
+    setLiveTimeline([]);
+    setIsRunning(true);
+    try {
+      await sendCommand("steer_queued_message", { index });
+    } catch (err) {
+      setIsRunning(false);
+      setError(err instanceof Error ? err.message : "Steer queued message failed");
+      setQueuedTurns((turns) => [queuedTurn, ...turns]);
+    }
+  }
+
+  async function steerMessage(content: string, attachments: ImageAttachmentPayload[] = []) {
+    stickToTranscriptEndRef.current = true;
+    appendOptimisticUserMessage(content, attachments);
+    setLiveAssistantText("");
+    setLiveReasoningText("");
+    setLiveRunId("");
+    setLiveTimeline([]);
+    setIsRunning(true);
+    try {
+      await sendCommand("steer_message", { content, attachments });
+      await refreshSnapshot();
+    } catch (err) {
+      setIsRunning(false);
+      setError(err instanceof Error ? err.message : "Steer failed");
+    }
   }
 
   async function approvePendingTool() {
@@ -893,7 +1127,6 @@ export function App() {
 
   function applyReference(item: ReferenceItem) {
     setInput((value) => replaceActiveReference(value, item.value));
-    setReferenceItems([]);
     setSelectedReferenceIndex(0);
     if (item.kind === "file") {
       void openProjectFile(filePathFromReference(item.value));
@@ -905,9 +1138,16 @@ export function App() {
     setFileLoading(true);
     setError(null);
     try {
-      const payload = await apiClient.readFileApiFilesGet({ path });
-      setOpenFile(filePayloadFromApi(payload.file));
-      setFileDraft(payload.file.content);
+      const payload = await queryClient.fetchQuery({
+        queryKey: GUI_QUERY_KEYS.file(path),
+        queryFn: async () => {
+          const response = await apiClient.readFileApiFilesGet({ path });
+          return filePayloadFromApi(response.file);
+        },
+        staleTime: 2000
+      });
+      setOpenFile(payload);
+      setFileDraft(payload.content);
       setFileEditMode(options.edit === true);
       setSelectedArtifactId(null);
     } catch (err) {
@@ -920,14 +1160,7 @@ export function App() {
   async function saveOpenFile() {
     if (openFile === null) return;
     try {
-      const payload = await apiClient.saveFileApiFilesPut({
-        path: openFile.path,
-        fileSaveRequest: { content: fileDraft }
-      });
-      setOpenFile(filePayloadFromApi(payload.file));
-      setFileDraft(payload.file.content);
-      setFileEditMode(false);
-      setNotice(`Saved ${payload.file.path}.`);
+      await saveFileMutation.mutateAsync({ path: openFile.path, content: fileDraft });
     } catch (err) {
       setError(apiFailureMessage("Save file", err));
     }
@@ -977,11 +1210,10 @@ export function App() {
 
   async function saveIdea(content: string) {
     try {
-      const payload = await apiClient.captureIdeaApiIdeasPost({ ideaCaptureRequest: { content } });
+      const payload = await captureIdeaMutation.mutateAsync(content);
       setNotice(`Saved idea ${payload.idea.index}.`);
       setSelectedIdeaIndex(payload.idea.index);
       setIdeaDraft(payload.idea.content);
-      await loadIdeas(payload.idea.index);
       return true;
     } catch (err) {
       setError(apiFailureMessage("Save idea", err));
@@ -1000,12 +1232,8 @@ export function App() {
   async function updateSelectedIdea() {
     if (!selectedIdea) return;
     try {
-      const payload = await apiClient.updateIdeaApiIdeasIndexPut({
-        index: selectedIdea.index,
-        ideaUpdateRequest: { content: ideaDraft }
-      });
+      const payload = await updateIdeaMutation.mutateAsync({ index: selectedIdea.index, content: ideaDraft });
       setNotice(`Updated idea ${payload.idea.index}.`);
-      await loadIdeas();
     } catch (err) {
       setError(apiFailureMessage("Update idea", err));
     }
@@ -1015,9 +1243,8 @@ export function App() {
     if (!selectedIdea) return;
     if (!window.confirm(`Delete idea ${selectedIdea.index}?`)) return;
     try {
-      const payload = await apiClient.deleteIdeaApiIdeasIndexDelete({ index: selectedIdea.index });
+      const payload = await deleteIdeaMutation.mutateAsync(selectedIdea.index);
       setNotice(`Deleted idea ${payload.idea.index}.`);
-      await loadIdeas();
     } catch (err) {
       setError(apiFailureMessage("Delete idea", err));
     }
@@ -1071,7 +1298,7 @@ export function App() {
     }
     if (commandName === "/config") {
       setWorkspaceMode("settings");
-      void loadSettings();
+      void refreshSettings();
       return;
     }
     if (commandName === "/idea") {
@@ -1088,7 +1315,7 @@ export function App() {
         return;
       }
       if (isRunning) {
-        void cancelRun().then(() => startMessage(commandArg));
+        void steerMessage(commandArg);
         return;
       }
       void startMessage(commandArg);
@@ -1196,35 +1423,41 @@ export function App() {
               <span>
                 {connectionLabel}
                 {snapshot ? ` / ${snapshot.session.project_name}` : ""}
-                {observableUsage?.total_tokens ? ` / ${formatCompactNumber(observableUsage.total_tokens)} tokens` : ""}
               </span>
             </div>
           </div>
           <div className="topbar-center" aria-label="Workspace mode">
-            <button
-              className={`mode-pill ${workspaceMode === "chat" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("chat")}
-              title="Show chat view"
-            >
-              <MessageSquare size={13} />
-              Chat
-            </button>
-            <button
-              className={`mode-pill ${workspaceMode === "events" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("events")}
-              title="Show events view"
-            >
-              <Activity size={13} />
-              Events
-            </button>
-            <button
-              className={`mode-pill ${workspaceMode === "artifacts" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("artifacts")}
-              title="Show artifacts view"
-            >
-              <Braces size={13} />
-              Artifacts
-            </button>
+            <div className="mode-switch">
+              <button
+                className={`mode-pill ${workspaceMode === "chat" ? "active" : ""}`}
+                onClick={() => setWorkspaceMode("chat")}
+                title="Show chat view"
+              >
+                <MessageSquare size={13} />
+                Chat
+              </button>
+              <button
+                className={`mode-pill ${workspaceMode === "events" ? "active" : ""}`}
+                onClick={() => setWorkspaceMode("events")}
+                title="Show events view"
+              >
+                <Activity size={13} />
+                Events
+              </button>
+              <button
+                className={`mode-pill ${workspaceMode === "artifacts" ? "active" : ""}`}
+                onClick={() => setWorkspaceMode("artifacts")}
+                title="Show artifacts view"
+              >
+                <Braces size={13} />
+                Artifacts
+              </button>
+            </div>
+            <div className="topbar-usage" title={usageTitle} aria-label={usageTitle}>
+              <Database size={13} />
+              <span>{formatCompactNumber(observableUsage?.total_tokens ?? 0)} tokens</span>
+              <span>{formatUsd(observableUsage?.total_cost_usd ?? 0)}</span>
+            </div>
           </div>
           <div className="topbar-actions">
             {!connected ? (
@@ -1245,7 +1478,7 @@ export function App() {
                 className={workspaceMode === "settings" ? "topbar-action-active" : ""}
                 onClick={() => {
                   setWorkspaceMode("settings");
-                  void loadSettings();
+                  void refreshSettings();
                 }}
                 title="Settings"
               >
@@ -1305,7 +1538,7 @@ export function App() {
               </div>
             </div> : null}
 
-            {workspaceMode === "chat" ? <div className="transcript">
+            {workspaceMode === "chat" ? <div className="transcript" onScroll={updateTranscriptStickiness} ref={transcriptScrollRef}>
               {visibleTranscript.length === 0 ? (
                 <div className="empty-state">
                   <div className="empty-icon">
@@ -1332,22 +1565,17 @@ export function App() {
                         </button>
                       </div>
                     </div>
+                    {item.role === "assistant" && item.workHistory ? (
+                      <MessageWorkHistory history={item.workHistory} />
+                    ) : null}
+                    {item.role === "assistant" && item.reasoning ? (
+                      <MessageReasoning text={item.reasoning} />
+                    ) : null}
                     <MarkdownText text={item.text} onOpenFile={(path) => void openProjectFile(path)} />
                     {item.images && item.images.length > 0 ? <MessageImages images={item.images} /> : null}
                   </article>
                 ))
               )}
-              {hasTranscriptWorkHistory ? (
-                <TranscriptWorkHistory
-                  durationLabel={workHistoryLabel}
-                  eventKinds={observableEventKinds}
-                  expanded={showTranscriptWorkHistory}
-                  items={timeline}
-                  onToggle={() => setShowTranscriptWorkHistory((visible) => !visible)}
-                  toolCalls={observableToolCalls}
-                />
-              ) : null}
-              <div ref={transcriptEndRef} />
             </div> : null}
 
             {workspaceMode === "sessions" ? (
@@ -1655,7 +1883,7 @@ export function App() {
                 draft={settingsDraft}
                 saving={settingsSaving}
                 onApiKeyChange={setSettingsApiKey}
-                onReload={() => void loadSettings()}
+                onReload={() => void refreshSettings()}
                 onSave={() => void saveSettings()}
                 onUpdate={updateSettingsDraft}
                 onUpdateTool={updateToolDraft}
@@ -1699,7 +1927,7 @@ export function App() {
                       <button type="button" onClick={() => void steerQueuedTurn(index)}>
                         Send now
                       </button>
-                      <button type="button" onClick={() => cancelQueuedTurn(index)}>
+                      <button type="button" onClick={() => void cancelQueuedTurn(index)}>
                         Cancel
                       </button>
                     </div>
@@ -2256,61 +2484,34 @@ function StatusDot({ state }: { state: ConnectionState }) {
   return <span className={`status-dot ${state}`} />;
 }
 
-function TranscriptWorkHistory({
-  durationLabel,
-  eventKinds,
-  expanded,
-  items,
-  onToggle,
-  toolCalls
-}: {
-  durationLabel: string;
-  eventKinds: { kind: string; count: number }[];
-  expanded: boolean;
-  items: TimelineItem[];
-  onToggle: () => void;
-  toolCalls: { name: string; calls: number; succeeded: number; failed: number; approval_requests: number }[];
-}) {
+function MessageWorkHistory({ history }: { history: RunWorkHistory }) {
+  const visibleItems = history.items.slice(0, 8);
+  if (visibleItems.length === 0) return null;
   return (
-    <section className={`transcript-history ${expanded ? "expanded" : ""}`} aria-label="Work history">
-      <button className="transcript-history-toggle" type="button" onClick={onToggle}>
-        <span>{durationLabel}</span>
-        {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-      </button>
-      {expanded ? (
-        <div className="transcript-history-body">
-          {items.length > 0 ? (
-            <div className="transcript-history-list">
-              {items.map((item) => (
-                <div className={`transcript-history-row ${item.tone}`} key={item.id}>
-                  <span />
-                  <div>
-                    <strong>{item.title}</strong>
-                    <small>{item.detail}</small>
-                  </div>
-                </div>
-              ))}
+    <details className="message-work-history" open={history.isRunning}>
+      <summary className="message-work-history-title">
+        <span>{history.headline}</span>
+        <small>{history.isRunning ? "live" : "details"}</small>
+      </summary>
+      <div className="transcript-history-list">
+        {visibleItems.map((item) => (
+          <div className={`transcript-history-row ${item.tone}`} key={item.id}>
+            <span />
+            <div>
+              <strong>{item.title}</strong>
             </div>
-          ) : null}
-          {toolCalls.length > 0 ? (
-            <div className="transcript-history-summary">
-              {toolCalls.slice(0, 6).map((tool) => (
-                <div key={tool.name}>
-                  <strong>{tool.name}</strong>
-                  <span>{tool.calls} calls / {tool.succeeded} ok / {tool.failed} failed</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {eventKinds.length > 0 ? (
-            <div className="transcript-history-kinds">
-              {eventKinds.slice(0, 8).map((item) => (
-                <span key={item.kind}>{item.kind} {item.count}</span>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function MessageReasoning({ text }: { text: string }) {
+  return (
+    <section className="message-reasoning" aria-label="Reasoning">
+      <strong>Reasoning</strong>
+      <MarkdownText text={text} compact />
     </section>
   );
 }
@@ -2357,7 +2558,24 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
                 </button>
               );
             }
-            return <a href={href} {...props}>{children}</a>;
+            const linkLabel = typeof href === "string" ? externalLinkLabel(href, children) : null;
+            if (linkLabel !== null) {
+              return (
+                <a
+                  className="external-link-card"
+                  href={href}
+                  rel="noreferrer"
+                  target="_blank"
+                  title={href}
+                  {...props}
+                >
+                  <ExternalLink size={11} aria-hidden="true" />
+                  <span className="external-link-host">{linkLabel.host}</span>
+                  {linkLabel.path !== "" ? <span className="external-link-path">{linkLabel.path}</span> : null}
+                </a>
+              );
+            }
+            return <a href={href} rel="noreferrer" target="_blank" {...props}>{children}</a>;
           }
         }}
         remarkPlugins={MARKDOWN_PLUGINS}
@@ -2366,6 +2584,28 @@ function MarkdownText({ text, compact = false, onOpenFile }: { text: string; com
       </ReactMarkdown>
     </div>
   );
+}
+
+function externalLinkLabel(href: string, children: ReactNode) {
+  const childText = singleTextChild(children);
+  if (childText !== href) return null;
+  const match = href.match(/^https?:\/\/([^/?#]+)([^?#]*)?/);
+  if (match === null) return null;
+  return {
+    host: match[1],
+    path: match[2] ?? ""
+  };
+}
+
+function singleTextChild(children: ReactNode) {
+  if (typeof children === "string") return children;
+  if (!Array.isArray(children)) return null;
+  let value = "";
+  for (const child of children) {
+    if (typeof child !== "string") return null;
+    value += child;
+  }
+  return value;
 }
 
 function MessageImages({ compact = false, images }: { compact?: boolean; images: ImageAttachmentPayload[] }) {
@@ -2552,7 +2792,11 @@ function _shortText(value: string, maxLength: number) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
+function buildTranscript(
+  events: SessionEvent[],
+  runWorkHistories: Map<string, RunWorkHistory>,
+  runReasoning: Map<string, string>,
+): TranscriptItem[] {
   const items = events.flatMap<TranscriptItem>((event) => {
     const content = typeof event.payload.content === "string" ? event.payload.content : "";
     const images = imagesFromPayload(event.payload);
@@ -2561,7 +2805,14 @@ function buildTranscript(events: SessionEvent[]): TranscriptItem[] {
       return [{ id: event.event_id, images, role: "user", text: content, time: event.created_at }];
     }
     if (event.kind === "assistant_message" || event.kind === "run_completed") {
-      return [{ id: event.event_id, role: "assistant", text: content, time: event.created_at }];
+      return [{
+        id: event.event_id,
+        role: "assistant",
+        runId: event.run_id,
+        text: content,
+        time: event.created_at,
+        workHistory: runWorkHistories.get(event.run_id)
+      }];
     }
     if (event.kind === "run_failed" || event.kind === "error") {
       return [{ id: event.event_id, role: "system", text: content || "Run failed", time: event.created_at }];
@@ -2587,23 +2838,33 @@ function mergeOptimisticTranscript(
   persisted: TranscriptItem[],
   optimistic: TranscriptItem[],
   liveAssistantText: string,
+  liveReasoningText: string,
+  liveRunId: string,
+  liveAssistantWorkHistory: RunWorkHistory | undefined,
 ) {
   const unmatched = optimistic.filter(
     (turn) =>
-      !persisted.some(
-        (item) => item.role === turn.role && item.text === turn.text,
-      ),
+      !persisted.some((item) => transcriptItemsMatch(item, turn)),
   );
   const merged = [...persisted, ...unmatched];
+  const hasLiveWorkHistory = liveAssistantWorkHistory !== undefined && liveAssistantWorkHistory.items.length > 0;
+  const hasLiveReasoning = liveReasoningText !== "";
+  const liveAssistantRunId = liveRunId || liveAssistantWorkHistory?.runId || "";
   if (
-    liveAssistantText !== "" &&
-    !persisted.some((item) => item.role === "assistant" && item.text === liveAssistantText)
+    (liveAssistantText !== "" || hasLiveWorkHistory || hasLiveReasoning) &&
+    !persisted.some((item) => (
+      item.role === "assistant" &&
+      ((liveAssistantRunId !== "" && item.runId === liveAssistantRunId) || (liveAssistantText !== "" && item.text === liveAssistantText))
+    ))
   ) {
     merged.push({
       id: "live-assistant",
+      reasoning: liveReasoningText || undefined,
       role: "assistant",
+      runId: liveAssistantRunId || undefined,
       text: liveAssistantText,
-      time: new Date().toISOString()
+      time: new Date().toISOString(),
+      workHistory: liveAssistantWorkHistory
     });
   }
   return merged;
@@ -2613,7 +2874,7 @@ function dedupeTranscript(items: TranscriptItem[]) {
   const deduped: TranscriptItem[] = [];
   for (const item of items) {
     const previous = deduped[deduped.length - 1];
-    if (previous && previous.role === item.role && previous.text === item.text) {
+    if (previous && transcriptItemsMatch(previous, item)) {
       continue;
     }
     deduped.push(item);
@@ -2636,6 +2897,313 @@ function summarizeEventKinds(events: SessionEvent[]) {
   return Array.from(counts.entries())
     .map(([kind, count]) => ({ kind, count }))
     .sort((left, right) => right.count - left.count);
+}
+
+function buildRunReasoning(events: SessionEvent[]) {
+  const reasoningByRun = new Map<string, string>();
+  for (const event of events) {
+    if (event.kind !== "thinking_delta" && event.kind !== "reasoning_summary") continue;
+    const content = stringPayload(event.payload, "content");
+    if (content === null || content === "") continue;
+    reasoningByRun.set(event.run_id, `${reasoningByRun.get(event.run_id) ?? ""}${content}`);
+  }
+  return reasoningByRun;
+}
+
+function buildRunWorkHistories(
+  events: SessionEvent[],
+  liveItems: TimelineItem[],
+  activeRunId: string,
+  isRunning: boolean,
+  runReasoning: Map<string, string>,
+) {
+  const eventsByRun = new Map<string, SessionEvent[]>();
+  for (const event of events) {
+    if (!event.run_id) continue;
+    const runEvents = eventsByRun.get(event.run_id) ?? [];
+    runEvents.push(event);
+    eventsByRun.set(event.run_id, runEvents);
+  }
+  for (const item of liveItems) {
+    if (!item.runId || eventsByRun.has(item.runId)) continue;
+    eventsByRun.set(item.runId, []);
+  }
+
+  const histories = new Map<string, RunWorkHistory>();
+  for (const [runId, runEvents] of eventsByRun.entries()) {
+    const liveRunItems = liveItems
+      .filter((item) => item.runId === runId)
+      .filter((item) => meaningfulLiveWorkHistoryKinds.has(item.kind ?? ""))
+      .slice()
+      .reverse();
+    const toolCallItems = buildToolCallItems(runId, runEvents);
+    const eventItems = runEvents.flatMap(workHistoryItemFromEvent);
+    const runIsRunning = isRunning && runId === activeRunId;
+    const reasoningItem = runIsRunning ? [] : workHistoryReasoningItem(runId, runReasoning.get(runId));
+    const items = uniqueTimelineItems([...reasoningItem, ...toolCallItems, ...eventItems, ...liveRunItems]);
+    const durationLabel = workHistoryDuration(runEvents, runId, runIsRunning);
+    histories.set(runId, {
+      durationLabel,
+      headline: durationLabel,
+      isRunning: runIsRunning,
+      items,
+      runId
+    });
+  }
+  return histories;
+}
+
+function workHistoryReasoningItem(runId: string, reasoning: string | undefined): TimelineItem[] {
+  if (reasoning === undefined || reasoning === "") return [];
+  return [{
+    content: reasoning,
+    id: `${runId}-reasoning`,
+    kind: "reasoning",
+    runId,
+    title: `Reasoning: ${reasoningTitle(reasoning)}`,
+    detail: "Reasoning",
+    tone: "neutral"
+  }];
+}
+
+function reasoningTitle(reasoning: string) {
+  const firstLine = reasoning.split("\n").find((line) => line !== "");
+  return _shortText(firstLine ?? reasoning, 140);
+}
+
+function uniqueTimelineItems(items: TimelineItem[]) {
+  const seen = new Set<string>();
+  const uniqueItems: TimelineItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    uniqueItems.push(item);
+  }
+  return uniqueItems;
+}
+
+function workHistoryItemFromEvent(event: SessionEvent): TimelineItem[] {
+  if (!workHistoryEventKinds.has(event.kind)) return [];
+  const content = workHistoryEventContent(event);
+  return [{
+    content: content ?? undefined,
+    id: event.event_id,
+    kind: event.kind,
+    runId: event.run_id,
+    title: workHistoryEventTitle(event),
+    detail: workHistoryEventDetail(event),
+    tone: trajectoryTone(event.kind)
+  }];
+}
+
+const workHistoryEventKinds = new Set([
+  "llm_retrying",
+  "tool_approval_requested",
+  "tool_approval_resolved",
+  "step_failed",
+  "run_suspended",
+  "run_failed",
+  "error"
+]);
+
+const meaningfulLiveWorkHistoryKinds = new Set([
+  "agent.llm.retrying",
+  "agent.tool.started",
+  "agent.tool.approval_requested",
+  "agent.run.suspended",
+  "agent.tool.completed",
+  "agent.tool.failed",
+  "agent.run.failed"
+]);
+
+function workHistoryEventTitle(event: SessionEvent) {
+  if (event.kind === "llm_retrying") return "Retrying model";
+  if (event.kind === "tool_approval_requested") return "Approval requested";
+  if (event.kind === "tool_approval_resolved") return "Approval resolved";
+  if (event.kind === "step_failed") return "Step failed";
+  if (event.kind === "run_suspended") return "Run suspended";
+  if (event.kind === "run_failed" || event.kind === "error") return "Run failed";
+  return event.kind;
+}
+
+function workHistoryEventDetail(event: SessionEvent) {
+  return workHistoryEventContent(event) ?? formatTime(event.created_at) ?? event.kind;
+}
+
+function workHistoryEventContent(event: SessionEvent) {
+  const content = event.payload.content;
+  if (typeof content === "string" && content !== "") return content;
+  const error = event.payload.error;
+  if (typeof error === "string" && error !== "") return error;
+  const finalAnswer = event.payload.final_answer;
+  if (typeof finalAnswer === "string" && finalAnswer !== "") return _shortText(finalAnswer, 120);
+  const toolName = event.payload.tool_name;
+  if (typeof toolName === "string" && toolName !== "") return toolName;
+  return null;
+}
+
+function workHistoryToolName(event: SessionEvent) {
+  const toolName = event.payload.tool_name;
+  if (typeof toolName === "string" && toolName !== "") return readableToolName(toolName);
+  return "Tool";
+}
+
+function buildToolCallItems(runId: string, events: SessionEvent[]) {
+  const toolEvents = events.filter((event) => (
+    event.kind === "tool_started" ||
+    event.kind === "tool_result" ||
+    event.kind === "tool_completed" ||
+    event.kind === "tool_failed"
+  ));
+  if (toolEvents.length === 0) return [];
+
+  const items = new Map<string, TimelineItem>();
+  for (const event of toolEvents) {
+    const callId = stringPayload(event.payload, "tool_call_id");
+    if (callId === null) continue;
+    const existing = items.get(callId);
+    const base = existing ?? toolCallItemFromEvent(runId, event, callId);
+    if (event.kind === "tool_failed" || toolResultHasError(event)) {
+      const summary = toolResultSummary(event, true);
+      items.set(callId, {
+        ...base,
+        detail: summary ?? "Failed",
+        tone: "bad"
+      });
+      continue;
+    }
+    if (event.kind === "tool_result" || event.kind === "tool_completed") {
+      const summary = toolResultSummary(event, false);
+      items.set(callId, {
+        ...base,
+        detail: summary ?? "Completed",
+        tone: "good"
+      });
+      continue;
+    }
+    items.set(callId, base);
+  }
+  return Array.from(items.values());
+}
+
+function toolCallItemFromEvent(runId: string, event: SessionEvent, callId: string): TimelineItem {
+  const toolName = stringPayload(event.payload, "tool_name") ?? "tool";
+  const title = toolCallTitle(toolName, toolArguments(event));
+  return {
+    content: title,
+    id: `${runId}-tool-${callId}`,
+    kind: "tool_call",
+    runId,
+    title,
+    detail: "Running",
+    tone: "live"
+  };
+}
+
+function toolArguments(event: SessionEvent) {
+  const toolArguments = stringPayload(event.payload, "tool_arguments");
+  const direct = jsonObjectFromString(toolArguments);
+  if (direct !== null) return direct;
+  const toolCall = event.payload.tool_call;
+  if (!isRecord(toolCall)) return null;
+  const argumentsValue = toolCall.arguments;
+  if (typeof argumentsValue !== "string") return null;
+  return jsonObjectFromString(argumentsValue);
+}
+
+function toolResultHasError(event: SessionEvent) {
+  const toolResult = event.payload.tool_result;
+  if (isRecord(toolResult) && typeof toolResult.error === "string" && toolResult.error !== "") return true;
+  const error = event.payload.error;
+  return typeof error === "string" && error !== "";
+}
+
+function toolCallTitle(toolName: string, args: Record<string, unknown> | null) {
+  const displayName = sentenceCase(readableToolName(toolName));
+  const summary = args === null ? null : summarizeRecord(args, 140);
+  return summary === null ? displayName : `${displayName}: ${summary}`;
+}
+
+const primarySummaryKeys = ["task", "command", "path", "query", "name", "file_path", "cwd", "pattern", "replacement"];
+const noisySummaryKeyFragments = ["job_id", "thread_id", "agent_id", "call_id", "session_id", "content", "output", "truncated_output", "metadata"];
+
+function summarizeRecord(record: Record<string, unknown>, maxLength: number) {
+  const parts: string[] = [];
+  for (const key of primarySummaryKeys) {
+    const value = record[key];
+    const summary = summarizeValue(value, Math.max(32, Math.floor(maxLength / 2)));
+    if (summary !== null) parts.push(key === "task" || key === "command" || key === "path" || key === "query" ? summary : `${key}: ${summary}`);
+  }
+  if (parts.length === 0) {
+    for (const [key, value] of Object.entries(record)) {
+      if (shouldHideSummaryKey(key)) continue;
+      const summary = summarizeValue(value, 48);
+      if (summary !== null) parts.push(`${key}: ${summary}`);
+      if (parts.length >= 3) break;
+    }
+  }
+  if (parts.length === 0) return null;
+  return _shortText(parts.join(" · "), maxLength);
+}
+
+function summarizeOutput(value: unknown) {
+  if (typeof value !== "string" || value === "") return null;
+  const parsed = jsonObjectFromString(value);
+  if (parsed !== null) return summarizeRecord(parsed, 160);
+  if (looksLikeRawJson(value)) return null;
+  return _shortText(value, 160);
+}
+
+function summarizeValue(value: unknown, maxLength: number): string | null {
+  if (typeof value === "string" && value !== "") {
+    if (looksLikeRawJson(value)) {
+      const parsed = jsonObjectFromString(value);
+      return parsed === null ? null : summarizeRecord(parsed, maxLength);
+    }
+    return _shortText(value, maxLength);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.length === 0 ? null : `${value.length} items`;
+  if (isRecord(value)) return summarizeRecord(value, maxLength);
+  return null;
+}
+
+function shouldHideSummaryKey(key: string) {
+  const normalized = key.toLowerCase();
+  return noisySummaryKeyFragments.some((fragment) => normalized.includes(fragment));
+}
+
+function looksLikeRawJson(value: string) {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function sentenceCase(value: string) {
+  if (value === "") return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function toolResultSummary(event: SessionEvent, failed: boolean) {
+  const error = event.payload.error;
+  if (typeof error === "string" && error !== "") return _shortText(error, 160);
+  const toolResult = event.payload.tool_result;
+  if (isRecord(toolResult)) {
+    const resultError = toolResult.error;
+    if (typeof resultError === "string" && resultError !== "") return _shortText(resultError, 160);
+    const truncatedOutput = toolResult.truncated_output;
+    const summarizedOutput = summarizeOutput(truncatedOutput);
+    if (summarizedOutput !== null) return summarizedOutput;
+    const output = toolResult.output;
+    const summarizedRawOutput = summarizeOutput(output);
+    if (summarizedRawOutput !== null) return summarizedRawOutput;
+  }
+  const output = event.payload.output;
+  const summarizedOutput = summarizeOutput(output);
+  if (summarizedOutput !== null) return summarizedOutput;
+  const content = event.payload.content;
+  const summarizedContent = summarizeOutput(content);
+  if (summarizedContent !== null) return summarizedContent;
+  return failed ? "Failed" : "Completed";
 }
 
 function filterSessions(sessions: SessionListItem[], query: string) {
@@ -2765,13 +3333,6 @@ function apiFailureMessage(label: string, error: unknown) {
     return error.message;
   }
   return `${label} failed.`;
-}
-
-function isAbortError(error: unknown) {
-  if (error instanceof DOMException && error.name === "AbortError") {
-    return true;
-  }
-  return error instanceof FetchError && error.cause instanceof DOMException && error.cause.name === "AbortError";
 }
 
 function sessionListItemFromApi(item: SessionListItemPayload): SessionListItem {
@@ -2930,6 +3491,7 @@ function runtimeOf(snapshot: SnapshotPayload | null): RuntimePayload {
     queued_questions: [],
     pending_approval: null,
     is_running_suspended: false,
+    active_thread_accepts_user_turn: true,
     active_run_id: null,
     active_run_status: null,
     provider_name: "openai",
@@ -2942,12 +3504,32 @@ function observabilityOf(snapshot: SnapshotPayload | null): ObservabilityPayload
   return snapshot?.observability ?? null;
 }
 
-function snapshotQueuedTurns(snapshot: SnapshotPayload): QueuedTurn[] {
-  return runtimeOf(snapshot).queued_questions.map((content, index) => ({
-    attachments: [],
-    id: `${snapshot.session.session_id}-queued-${index}`,
+function mergeSnapshotQueuedTurns(snapshot: SnapshotPayload, current: QueuedTurn[]): QueuedTurn[] {
+  return snapshotQueuedTurnsFromQuestions(runtimeOf(snapshot).queued_questions, current);
+}
+
+function snapshotQueuedTurnsFromQuestions(questions: string[], current: QueuedTurn[]): QueuedTurn[] {
+  return questions.map((content, index) => ({
+    attachments: current[index]?.content === content ? current[index].attachments : [],
+    id: `queued-${index}-${content}`,
     content
   }));
+}
+
+function transcriptItemsMatch(left: TranscriptItem, right: TranscriptItem) {
+  return (
+    left.role === right.role &&
+    left.text === right.text &&
+    imageAttachmentsMatch(left.images ?? [], right.images ?? [])
+  );
+}
+
+function imageAttachmentsMatch(left: ImageAttachmentPayload[], right: ImageAttachmentPayload[]) {
+  if (left.length !== right.length) return false;
+  return left.every(
+    (image, index) =>
+      image.mime_type === right[index].mime_type && image.data === right[index].data,
+  );
 }
 
 function eventApprovalRequest(payload: Record<string, unknown>): ToolApprovalRequest | null {
@@ -3034,17 +3616,24 @@ function liveTimelineItem(payload: Extract<AppEventPayload, { kind: "agent" }>):
   if (eventType === "agent.llm.started") {
     return liveTimelineRow(payload, "Thinking", "Model started", "live");
   }
+  if (eventType === "agent.llm.reasoning") {
+    const reasoning = extractLiveReasoningText(fields);
+    return liveTimelineRow(payload, "Reasoning", reasoning ?? "Reasoning", "live", reasoning ?? undefined);
+  }
   if (eventType === "agent.llm.retrying") {
     return liveTimelineRow(payload, "Retrying model", stringField(fields, "error") ?? "Waiting before retry", "live");
   }
   if (eventType === "agent.tool.started") {
-    return liveTimelineRow(payload, stringField(fields, "tool_name") ?? "Tool started", "Running", "live");
+    const toolName = stringField(fields, "tool_name") ?? "tool";
+    return liveTimelineRow(payload, toolCallTitle(toolName, liveToolArguments(fields)), "Running", "live");
   }
   if (eventType === "agent.tool.completed") {
-    return liveTimelineRow(payload, stringField(fields, "tool_name") ?? "Tool completed", "Completed", "good");
+    const toolName = stringField(fields, "tool_name") ?? "tool";
+    return liveTimelineRow(payload, toolCallTitle(toolName, liveToolArguments(fields)), liveToolResultSummary(fields) ?? "Completed", "good");
   }
   if (eventType === "agent.tool.failed") {
-    return liveTimelineRow(payload, stringField(fields, "tool_name") ?? "Tool failed", stringField(fields, "error") ?? "Failed", "bad");
+    const toolName = stringField(fields, "tool_name") ?? "tool";
+    return liveTimelineRow(payload, toolCallTitle(toolName, liveToolArguments(fields)), liveToolResultSummary(fields) ?? stringField(fields, "error") ?? "Failed", "bad");
   }
   if (eventType === "agent.tool.approval_requested" || eventType === "agent.run.suspended") {
     return liveTimelineRow(payload, "Approval required", stringField(fields, "tool_name") ?? "Review tool call", "live");
@@ -3066,13 +3655,61 @@ function liveTimelineRow(
   title: string,
   detail: string,
   tone: TimelineItem["tone"],
+  content?: string,
 ): TimelineItem {
+  const id = payload.event.event_type.startsWith("agent.tool.")
+    ? `${payload.event.run_id}-tool-${liveToolCallId(payload.event.payload) ?? payload.event.step_id}`
+    : `${payload.event.event_type}-${payload.event.run_id}-${payload.event.step_id}`;
   return {
-    id: `${payload.event.event_type}-${payload.event.run_id}-${payload.event.step_id}`,
+    id,
+    content,
+    kind: payload.event.event_type,
+    runId: payload.event.run_id,
     title,
     detail,
     tone,
   };
+}
+
+function extractLiveReasoningText(payload: Record<string, unknown>) {
+  const content = stringField(payload, "content");
+  if (content !== null) return content;
+  const segment = payload.segment;
+  if (!isRecord(segment)) return null;
+  const segmentContent = segment.content;
+  return typeof segmentContent === "string" && segmentContent !== "" ? segmentContent : null;
+}
+
+function liveToolArguments(payload: Record<string, unknown>) {
+  const toolCall = payload.tool_call;
+  if (!isRecord(toolCall)) return null;
+  const argumentsValue = toolCall.arguments;
+  if (typeof argumentsValue !== "string") return null;
+  return jsonObjectFromString(argumentsValue);
+}
+
+function liveToolCallId(payload: Record<string, unknown>) {
+  const toolCallId = stringField(payload, "tool_call_id");
+  if (toolCallId !== null) return toolCallId;
+  const toolCall = payload.tool_call;
+  if (!isRecord(toolCall)) return null;
+  const callId = toolCall.call_id;
+  return typeof callId === "string" && callId !== "" ? callId : null;
+}
+
+function liveToolResultSummary(payload: Record<string, unknown>) {
+  const toolResult = payload.tool_result;
+  if (!isRecord(toolResult)) {
+    const error = stringField(payload, "error");
+    return error === null ? null : _shortText(error, 160);
+  }
+  const error = toolResult.error;
+  if (typeof error === "string" && error !== "") return _shortText(error, 160);
+  const truncatedOutput = toolResult.truncated_output;
+  const summarizedTruncated = summarizeOutput(truncatedOutput);
+  if (summarizedTruncated !== null) return summarizedTruncated;
+  const output = toolResult.output;
+  return summarizeOutput(output);
 }
 
 function stringField(payload: Record<string, unknown>, key: string) {
