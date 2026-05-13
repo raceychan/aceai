@@ -1958,6 +1958,10 @@ dd {
 .transcript-history-list {
   display: grid;
   gap: 6px;
+  max-height: 252px;
+  overflow-y: auto;
+  padding-right: 3px;
+  overscroll-behavior: contain;
 }
 
 .transcript-history-row {
@@ -1974,6 +1978,31 @@ dd {
   border-radius: 999px;
   background: #97a19d;
   margin-top: 5px;
+}
+
+.message-retry-notices {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 12px;
+}
+
+.message-retry-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #f0c9c4;
+  border-radius: 8px;
+  background: #fff6f4;
+  color: #8a3c34;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.message-retry-notice svg {
+  margin-top: 1px;
+  color: #c96356;
 }
 
 .transcript-history-row.good > span {

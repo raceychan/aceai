@@ -284,6 +284,25 @@ def test_gui_session_channel_snapshot_and_message_stream(tmp_path) -> None:
             assert events[0]["payload"]["event"]["kind"] == "run_completed"
 
 
+def test_gui_new_session_snapshot_is_draft_until_first_message(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    app = build_gui_app(AceAIGuiRuntime(config=_config(), session_store=store))
+    client = TestClient(app)
+
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_bytes(_encode("session:new", "join", {}, "join-1"))
+            _reply_payload(ws.receive_json())
+
+            ws.send_bytes(_encode("session:new", "snapshot", {}, "snapshot-1"))
+            snapshot = _reply_payload(ws.receive_json())
+
+    assert snapshot["session"]["session_id"] == "new"
+    assert snapshot["session"]["title"] == "New AceAI session"
+    assert snapshot["events"] == []
+    assert store.list_sessions() == []
+
+
 def test_gui_session_channel_sends_image_attachments(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
     app = build_gui_app(_runtime(store))

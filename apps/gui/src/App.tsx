@@ -74,6 +74,7 @@ type TranscriptItem = {
   reasoning?: string;
   role: "user" | "assistant" | "system";
   runId?: string;
+  retries?: TimelineItem[];
   text: string;
   time: string;
   workHistory?: RunWorkHistory;
@@ -263,6 +264,7 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [durationTick, setDurationTick] = useState(0);
+  const [cancelArmed, setCancelArmed] = useState(false);
   const [queuedTurns, setQueuedTurns] = useState<QueuedTurn[]>([]);
   const [optimisticTurns, setOptimisticTurns] = useState<TranscriptItem[]>([]);
   const [liveRunId, setLiveRunId] = useState("");
@@ -403,11 +405,12 @@ export function App() {
   const latestRun = useMemo(() => findLatestRun(events), [events]);
   const activeWorkRun = liveRunId || liveTimeline.find((item) => item.runId)?.runId || latestRun;
   const runReasoning = useMemo(() => buildRunReasoning(events), [events]);
+  const runRetries = useMemo(() => buildRunRetries(events), [events]);
   const runWorkHistories = useMemo(
     () => buildRunWorkHistories(events, liveTimeline, activeWorkRun, isRunning),
     [events, liveTimeline, activeWorkRun, isRunning, durationTick]
   );
-  const transcript = useMemo(() => buildTranscript(events, runWorkHistories, runReasoning), [events, runWorkHistories, runReasoning]);
+  const transcript = useMemo(() => buildTranscript(events, runWorkHistories, runReasoning, runRetries), [events, runWorkHistories, runReasoning, runRetries]);
   const liveAssistantWorkHistory = activeWorkRun ? runWorkHistories.get(activeWorkRun) : undefined;
   const visibleTranscript = useMemo(
     () => mergeOptimisticTranscript(transcript, optimisticTurns, liveRunId, liveAssistantWorkHistory),
@@ -473,6 +476,22 @@ export function App() {
     const timer = window.setInterval(() => setDurationTick((tick) => tick + 1), 1000);
     return () => window.clearInterval(timer);
   }, [isRunning]);
+
+  useEffect(() => {
+    if (!cancelArmed) return;
+    const timer = window.setTimeout(() => setCancelArmed(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [cancelArmed]);
+
+  useEffect(() => {
+    function handleWindowKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape" || !isRunning) return;
+      event.preventDefault();
+      requestCancelRun();
+    }
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [cancelArmed, isRunning]);
 
   useEffect(() => {
     const sessionId = sessionIdFromUrl();
@@ -863,7 +882,9 @@ export function App() {
     try {
       const response = await sendCommand<SnapshotPayload>("snapshot", {});
       setSnapshot(response);
-      writeSessionIdToUrl(response.session.session_id, { replace: true });
+      if (response.session.session_id !== "new") {
+        writeSessionIdToUrl(response.session.session_id, { replace: true });
+      }
       setEvents((current) => mergeSessionEventLogs(current, response.events));
       setQueuedTurns((current) => mergeSnapshotQueuedTurns(response, current));
       const responseRuntime = runtimeOf(response);
@@ -912,7 +933,10 @@ export function App() {
     setLiveTimeline([]);
     setIsRunning(true);
     try {
-      await sendCommand("send_message", { content, attachments });
+      const response = await sendCommand<{ session_id?: string }>("send_message", { content, attachments });
+      if (response.session_id && response.session_id !== "new") {
+        writeSessionIdToUrl(response.session_id, { replace: true });
+      }
     } catch (err) {
       setIsRunning(false);
       setError(err instanceof Error ? err.message : "Send failed");
@@ -923,10 +947,22 @@ export function App() {
     try {
       await sendCommand("cancel", {});
       setIsRunning(false);
+      setCancelArmed(false);
       setPendingApproval(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Cancel failed");
     }
+  }
+
+  function requestCancelRun() {
+    if (!isRunning) return;
+    if (!cancelArmed) {
+      setCancelArmed(true);
+      setNotice("Press Esc again to cancel the current response.");
+      return;
+    }
+    setNotice(null);
+    void cancelRun();
   }
 
   async function enqueueComposerTurn(content: string, attachments: ImageAttachmentPayload[]) {
@@ -1073,6 +1109,15 @@ export function App() {
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      if (isRunning) {
+        event.preventDefault();
+        event.stopPropagation();
+        requestCancelRun();
+        return;
+      }
+      setCancelArmed(false);
+    }
     if (showReferenceMenu && event.key === "ArrowDown") {
       event.preventDefault();
       setSelectedReferenceIndex((index) => (index + 1) % referenceItems.length);
@@ -1464,7 +1509,7 @@ export function App() {
               <RefreshCw size={16} />
             </button>
             {connected && isRunning ? (
-              <button onClick={cancelRun} title="Cancel active run">
+              <button onClick={requestCancelRun} title={cancelArmed ? "Confirm cancel active run" : "Press twice to cancel active run"}>
                 <CircleStop size={16} />
               </button>
             ) : (
@@ -1561,6 +1606,9 @@ export function App() {
                     </div>
                     {item.role === "assistant" && item.workHistory ? (
                       <MessageWorkHistory history={item.workHistory} onOpenFile={(path) => void openProjectFile(path)} />
+                    ) : null}
+                    {item.role === "assistant" && item.retries && item.retries.length > 0 ? (
+                      <MessageRetryNotices items={item.retries} />
                     ) : null}
                     {item.role === "assistant" && item.reasoning ? (
                       <MessageReasoning text={item.reasoning} />
@@ -2007,7 +2055,7 @@ export function App() {
                   <div className="composer-tool-group composer-tool-group-right">
                     <span className={`composer-run-state ${composerStatus}`}>
                       <Clock3 size={15} />
-                      {composerStatus}
+                      {cancelArmed ? "esc again to cancel" : composerStatus}
                     </span>
                     <button type="button" className="composer-model-button" title="Selected model">
                       <Sparkles size={15} />
@@ -2470,16 +2518,22 @@ function StatusDot({ state }: { state: ConnectionState }) {
 }
 
 function MessageWorkHistory({ history, onOpenFile }: { history: RunWorkHistory; onOpenFile?: (path: string) => void }) {
-  const visibleItems = history.items.slice(0, 8);
-  if (visibleItems.length === 0) return null;
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!history.isRunning) return;
+    const list = listRef.current;
+    if (list === null) return;
+    list.scrollTop = list.scrollHeight;
+  }, [history.isRunning, history.items.length]);
+  if (history.items.length === 0) return null;
   return (
     <details className="message-work-history" open={history.isRunning}>
       <summary className="message-work-history-title">
         <span>{history.headline}</span>
         <small>{history.isRunning ? "live" : "details"}</small>
       </summary>
-      <div className="transcript-history-list">
-        {visibleItems.map((item) => (
+      <div className="transcript-history-list" ref={listRef}>
+        {history.items.map((item) => (
           <div className={`transcript-history-row ${item.tone}`} key={item.id}>
             <span />
             <div>
@@ -2491,6 +2545,19 @@ function MessageWorkHistory({ history, onOpenFile }: { history: RunWorkHistory; 
         ))}
       </div>
     </details>
+  );
+}
+
+function MessageRetryNotices({ items }: { items: TimelineItem[] }) {
+  return (
+    <div className="message-retry-notices" aria-label="Model retry notices">
+      {items.map((item) => (
+        <div className="message-retry-notice" key={item.id}>
+          <AlertTriangle size={14} />
+          <span>{item.detail}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -2802,6 +2869,7 @@ function buildTranscript(
   events: SessionEvent[],
   runWorkHistories: Map<string, RunWorkHistory>,
   runReasoning: Map<string, string>,
+  runRetries: Map<string, TimelineItem[]>,
 ): TranscriptItem[] {
   const deltaDrafts = assistantDeltaDrafts(events);
   const finalizedRuns = new Set(
@@ -2823,6 +2891,7 @@ function buildTranscript(
         deltaDrafts,
         runWorkHistories,
         runReasoning,
+        runRetries,
         finalizedRuns,
       );
       if (draft !== null) {
@@ -2836,6 +2905,7 @@ function buildTranscript(
       items.push({
         id: event.event_id,
         reasoning: runReasoning.get(event.run_id),
+        retries: runRetries.get(event.run_id),
         role: "assistant",
         runId: event.run_id,
         text: content,
@@ -2855,6 +2925,7 @@ function buildTranscript(
       deltaDrafts,
       runWorkHistories,
       runReasoning,
+      runRetries,
       finalizedRuns,
     );
     if (draft !== null) items.push(draft);
@@ -2867,16 +2938,19 @@ function assistantDraftItem(
   deltaDrafts: Map<string, { text: string; time: string }>,
   runWorkHistories: Map<string, RunWorkHistory>,
   runReasoning: Map<string, string>,
+  runRetries: Map<string, TimelineItem[]>,
   finalizedRuns: Set<string>,
 ): TranscriptItem | null {
   if (runId === "" || finalizedRuns.has(runId)) return null;
   const draft = deltaDrafts.get(runId);
   const workHistory = runWorkHistories.get(runId);
   const reasoning = runReasoning.get(runId);
-  if (draft === undefined && !workHistory?.isRunning && (reasoning === undefined || reasoning === "")) return null;
+  const retries = runRetries.get(runId);
+  if (draft === undefined && !workHistory?.isRunning && (reasoning === undefined || reasoning === "") && retries === undefined) return null;
   return {
     id: `${runId}-assistant-draft`,
     reasoning,
+    retries,
     role: "assistant",
     runId,
     text: draft?.text ?? "",
@@ -2995,6 +3069,26 @@ function buildRunReasoning(events: SessionEvent[]) {
   return reasoningByRun;
 }
 
+function buildRunRetries(events: SessionEvent[]) {
+  const retriesByRun = new Map<string, TimelineItem[]>();
+  for (const event of events) {
+    if (event.kind !== "llm_retrying" || event.run_id === "") continue;
+    const content = stringPayload(event.payload, "content") ?? "Retrying model request";
+    const retries = retriesByRun.get(event.run_id) ?? [];
+    retries.push({
+      content,
+      detail: content,
+      id: event.event_id,
+      kind: event.kind,
+      runId: event.run_id,
+      title: "Retrying model",
+      tone: "bad"
+    });
+    retriesByRun.set(event.run_id, retries);
+  }
+  return retriesByRun;
+}
+
 function buildRunWorkHistories(
   events: SessionEvent[],
   liveItems: TimelineItem[],
@@ -3062,7 +3156,6 @@ function workHistoryItemFromEvent(event: SessionEvent): TimelineItem[] {
 }
 
 const workHistoryEventKinds = new Set([
-  "llm_retrying",
   "tool_approval_requested",
   "tool_approval_resolved",
   "step_failed",
@@ -3072,7 +3165,6 @@ const workHistoryEventKinds = new Set([
 ]);
 
 const meaningfulLiveWorkHistoryKinds = new Set([
-  "agent.llm.retrying",
   "agent.tool.started",
   "agent.tool.approval_requested",
   "agent.run.suspended",
@@ -3716,9 +3808,6 @@ function liveTimelineItem(payload: Extract<AppEventPayload, { kind: "agent" }>):
   if (eventType === "agent.llm.reasoning") {
     const reasoning = extractLiveReasoningText(fields);
     return liveTimelineRow(payload, "Reasoning", reasoning ?? "Reasoning", "live", reasoning ?? undefined);
-  }
-  if (eventType === "agent.llm.retrying") {
-    return liveTimelineRow(payload, "Retrying model", stringField(fields, "error") ?? "Waiting before retry", "live");
   }
   if (eventType === "agent.tool.started") {
     const toolName = stringField(fields, "tool_name") ?? "tool";

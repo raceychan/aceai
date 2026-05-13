@@ -1,6 +1,7 @@
 """Lihil-backed realtime adapter for AceAI GUI clients."""
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +20,11 @@ from aceai.agent.provider_catalog import (
     reasoning_effort_options,
 )
 from aceai.agent.references import ReferenceCandidate, reference_candidates
-from aceai.agent.session import SessionEvent, SessionStore
+from aceai.agent.session import MAIN_THREAD_ID, SessionEvent, SessionStore
 from aceai.agent.session_service import UserImageAttachment
 from aceai.agent.session_views import (
     agent_snapshot_payload,
+    agent_runtime_payload,
     delete_empty_sessions as delete_empty_session_ids,
     events_after,
     idea_display_index,
@@ -105,6 +107,55 @@ def _user_image_attachments(
         )
         for attachment in attachments
     )
+
+
+def _draft_snapshot_payload(app: AceAgentApp) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "session": {
+            "session_id": NEW_SESSION_TOPIC_ID,
+            "project_id": app.session_service.store.project.project_id,
+            "project_name": app.session_service.store.project.name,
+            "created_at": now,
+            "updated_at": now,
+            "title": "New AceAI session",
+            "path": "",
+        },
+        "state": {},
+        "runtime": agent_runtime_payload(app),
+        "observability": {
+            "usage": {
+                "context_tokens": None,
+                "total_cost_usd": 0.0,
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+            "event_counts": [],
+            "tool_calls": [],
+            "trajectory": [],
+            "debug_events": [],
+        },
+        "active_thread_id": MAIN_THREAD_ID,
+        "threads": [
+            {
+                "session_id": NEW_SESSION_TOPIC_ID,
+                "thread_id": MAIN_THREAD_ID,
+                "agent_id": app.agent.agent_id,
+                "role": "main",
+                "title": "Main",
+                "status": "idle",
+                "parent_thread_id": None,
+                "parent_run_id": None,
+                "parent_tool_call_id": None,
+                "metadata": {},
+                "created_at": now,
+                "updated_at": now,
+            }
+        ],
+        "events": [],
+    }
 
 
 class ThreadMetadataPayload(Struct, frozen=True, kw_only=True):
@@ -345,9 +396,7 @@ class AceAIGuiRuntime:
             session_store=self._session_store,
             idea_store=self._idea_store,
         )
-        if session_id == NEW_SESSION_TOPIC_ID:
-            app.ensure_session()
-        else:
+        if session_id != NEW_SESSION_TOPIC_ID:
             app.switch_session(session_id)
         return app
 
@@ -407,12 +456,14 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
             session_id = params["session_id"]
             self._agent_app = runtime.create_agent_app(session_id)
             actual_session_id = self._agent_app.session_id
-            if actual_session_id is None:
+            if actual_session_id is None and session_id != NEW_SESSION_TOPIC_ID:
                 raise RuntimeError("AceAI session was not initialized")
-            self._session_id = actual_session_id
+            self._session_id = actual_session_id or NEW_SESSION_TOPIC_ID
             await super().on_join(session_id=session_id)
 
         async def on_snapshot(self, payload: SnapshotRequest) -> dict[str, Any]:
+            if self.agent_app.session_id is None:
+                return _draft_snapshot_payload(self.agent_app)
             return agent_snapshot_payload(
                 self.agent_app,
                 after_event_id=payload.after_event_id,
@@ -439,6 +490,13 @@ def build_gui_app(runtime: AceAIGuiRuntime) -> Any:
                     "session_id": self.session_id,
                     "thread_id": self.agent_app.active_thread_id,
                 }
+            if self.agent_app.session_id is None:
+                self._session_id = self.agent_app.ensure_session()
+                if payload.content:
+                    runtime.session_store.update_session_title(
+                        self._session_id,
+                        payload.content[:40],
+                    )
             self.start_task(
                 RUN_TASK_NAME,
                 self._stream_turn(
