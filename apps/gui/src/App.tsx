@@ -153,6 +153,13 @@ type WorkspaceMode = "chat" | "sessions" | "threads" | "events" | "artifacts" | 
 type WorkspaceTab = "files" | "agents" | "ideas" | "activity" | "run";
 type MonacoThemeChoice = "aceai" | "light" | "dark";
 type InspectorGroupId = "run" | "context" | "work" | "signals";
+type ConfirmDialogState = {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  tone: "danger";
+  onConfirm: () => void;
+};
 type ProjectGroupedItem = {
   project_id: string;
   project_name: string;
@@ -266,6 +273,7 @@ export function App() {
   const [activity, setActivity] = useState<SocketEnvelope[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [durationTick, setDurationTick] = useState(0);
   const [cancelArmed, setCancelArmed] = useState(false);
@@ -815,10 +823,17 @@ export function App() {
     activeTopicRef.current = "session:new";
   }
 
+  function requestDeleteSession(session: SessionListItem) {
+    setConfirmDialog({
+      title: "Delete session",
+      body: `"${session.title}" will be removed from this workspace.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+      onConfirm: () => void deleteSession(session)
+    });
+  }
+
   async function deleteSession(session: SessionListItem) {
-    if (!window.confirm(`Delete "${session.title}"?`)) {
-      return;
-    }
     try {
       await deleteSessionMutation.mutateAsync(session.session_id);
       if (snapshot?.session.session_id === session.session_id) {
@@ -830,11 +845,18 @@ export function App() {
     }
   }
 
-  async function clearEmptySessions() {
+  function requestClearEmptySessions() {
     if (emptySessionCount === 0) return;
-    if (!window.confirm(`Delete ${emptySessionCount} empty sessions?`)) {
-      return;
-    }
+    setConfirmDialog({
+      title: "Delete empty sessions",
+      body: `${emptySessionCount} empty sessions will be removed.`,
+      confirmLabel: "Delete empty",
+      tone: "danger",
+      onConfirm: () => void clearEmptySessions()
+    });
+  }
+
+  async function clearEmptySessions() {
     try {
       const payload = await clearEmptySessionsMutation.mutateAsync();
       if (snapshot && payload.sessionIds.includes(snapshot.session.session_id)) {
@@ -1356,9 +1378,18 @@ export function App() {
 
   async function deleteSelectedIdea() {
     if (!selectedIdea) return;
-    if (!window.confirm(`Delete idea ${selectedIdea.index}?`)) return;
+    setConfirmDialog({
+      title: "Delete idea",
+      body: `@idea:${selectedIdea.index} will be removed from saved ideas.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+      onConfirm: () => void confirmDeleteSelectedIdea(selectedIdea.index)
+    });
+  }
+
+  async function confirmDeleteSelectedIdea(index: number) {
     try {
-      const payload = await deleteIdeaMutation.mutateAsync(selectedIdea.index);
+      const payload = await deleteIdeaMutation.mutateAsync(index);
       setNotice(`Deleted idea ${payload.idea.index}.`);
     } catch (err) {
       setError(apiFailureMessage("Delete idea", err));
@@ -1476,7 +1507,7 @@ export function App() {
             <button
               className="session-cleanup-button"
               disabled={emptySessionCount === 0}
-              onClick={() => void clearEmptySessions()}
+              onClick={requestClearEmptySessions}
               title="Delete empty sessions"
             >
               <Trash2 size={12} />
@@ -1512,7 +1543,7 @@ export function App() {
                       <button
                         aria-label={`Delete ${session.title} ${session.session_id}`}
                         className="session-delete"
-                        onClick={() => void deleteSession(session)}
+                        onClick={() => requestDeleteSession(session)}
                         title="Delete session"
                       >
                         <Trash2 size={14} />
@@ -1696,7 +1727,7 @@ export function App() {
                   <button
                     type="button"
                     className="workspace-header-action"
-                    onClick={() => void clearEmptySessions()}
+                    onClick={requestClearEmptySessions}
                     disabled={emptySessionCount === 0}
                     title="Delete sessions with no events"
                   >
@@ -1744,7 +1775,7 @@ export function App() {
                             <button
                               aria-label={`Delete ${session.title} ${session.session_id}`}
                               className="session-workspace-delete"
-                              onClick={() => void deleteSession(session)}
+                              onClick={() => requestDeleteSession(session)}
                               title="Delete session"
                             >
                               <Trash2 size={14} />
@@ -2247,7 +2278,7 @@ export function App() {
                         </div>
                       </section>
 
-                      <section className="inspector-section">
+                      <section className="inspector-section ideas-saved-section">
                         <div className="section-title">
                           <Database size={15} />
                           Usage
@@ -2530,6 +2561,20 @@ export function App() {
           </aside> : null}
         </div>
       </section>
+      {confirmDialog ? (
+        <ConfirmDialog
+          body={confirmDialog.body}
+          confirmLabel={confirmDialog.confirmLabel}
+          onCancel={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            const action = confirmDialog.onConfirm;
+            setConfirmDialog(null);
+            action();
+          }}
+          title={confirmDialog.title}
+          tone={confirmDialog.tone}
+        />
+      ) : null}
     </main>
   );
 }
@@ -2572,6 +2617,44 @@ function LaunchScreen({
           </div>
         </dl>
       </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  body,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+  title,
+  tone
+}: {
+  body: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+  tone: "danger";
+}) {
+  return (
+    <div className="confirm-backdrop" role="presentation">
+      <section aria-modal="true" className="confirm-dialog" role="dialog" aria-labelledby="confirm-dialog-title">
+        <div className={`confirm-icon ${tone}`}>
+          <AlertTriangle size={19} />
+        </div>
+        <div className="confirm-copy">
+          <h2 id="confirm-dialog-title">{title}</h2>
+          <p>{body}</p>
+        </div>
+        <div className="confirm-actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="danger" onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

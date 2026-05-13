@@ -267,6 +267,85 @@ button:disabled {
   background: #124853;
 }
 
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(21, 29, 27, 0.36);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.confirm-dialog {
+  width: min(420px, 100%);
+  border: 1px solid #d8ded8;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(23, 34, 31, 0.24);
+  padding: 18px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+}
+
+.confirm-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+}
+
+.confirm-icon.danger {
+  background: #fff0ed;
+  color: #ad3428;
+}
+
+.confirm-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.confirm-copy h2 {
+  margin: 0;
+  color: #1f2f2b;
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.confirm-copy p {
+  margin: 0;
+  color: #697570;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.confirm-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-actions button {
+  min-width: 86px;
+  font-weight: 800;
+}
+
+.confirm-actions button.danger {
+  border-color: #ad3428;
+  background: #ad3428;
+  color: #ffffff;
+}
+
+.confirm-actions button.danger:hover:not(:disabled) {
+  border-color: #8f2b22;
+  background: #8f2b22;
+}
+
 .connect-button {
   width: 100%;
 }
@@ -1001,23 +1080,31 @@ dd {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
-  align-items: end;
+  align-items: stretch;
 }
 
 .idea-capture-panel textarea {
-  min-height: 62px;
-  max-height: 130px;
+  min-height: 48px;
+  max-height: 96px;
+  resize: vertical;
+}
+
+.idea-capture-panel button {
+  min-height: 48px;
+  align-self: stretch;
 }
 
 .idea-workspace {
   min-height: 0;
+  height: 100%;
   display: grid;
-  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1fr);
+  gap: 10px;
 }
 
 .idea-workspace-list {
-  max-height: 100%;
+  min-height: 0;
+  height: 100%;
   border: 1px solid #dce2dc;
   border-radius: 8px;
   background: #ffffff;
@@ -1076,12 +1163,14 @@ dd {
 
 .idea-workspace-detail {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   border: 1px solid #dce2dc;
   border-radius: 8px;
   background: #ffffff;
   padding: 12px;
   display: grid;
-  grid-template-rows: auto minmax(160px, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 10px;
 }
 
@@ -1115,8 +1204,8 @@ dd {
 }
 
 .idea-workspace-detail textarea {
-  min-height: 160px;
-  resize: vertical;
+  min-height: 0;
+  resize: none;
 }
 
 .idea-workspace-actions {
@@ -1130,6 +1219,18 @@ dd {
   padding: 5px 10px;
   font-size: 12px;
   font-weight: 750;
+}
+
+.ideas-view {
+  height: 100%;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.ideas-saved-section {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-workspace {
