@@ -149,8 +149,8 @@ type ArtifactItem = {
 
 type OpenFileItem = FilePayload;
 
-type WorkspaceMode = "chat" | "sessions" | "ideas" | "threads" | "events" | "artifacts" | "settings";
-type WorkspaceTab = "files" | "agents" | "activity" | "run";
+type WorkspaceMode = "chat" | "sessions" | "threads" | "events" | "artifacts" | "settings";
+type WorkspaceTab = "files" | "agents" | "ideas" | "activity" | "run";
 type MonacoThemeChoice = "aceai" | "light" | "dark";
 type InspectorGroupId = "run" | "context" | "work" | "signals";
 type ProjectGroupedItem = {
@@ -1418,7 +1418,7 @@ export function App() {
     }
     if (commandName === "/idea") {
       if (commandArg === "") {
-        setWorkspaceMode("ideas");
+        openWorkspace("ideas");
         return;
       }
       void saveIdea(commandArg);
@@ -1579,8 +1579,13 @@ export function App() {
                 New Chat
               </button>
             ) : null}
-            <button onClick={refreshSnapshot} disabled={!connected} title="Refresh session snapshot">
-              <RefreshCw size={16} />
+            <button
+              className={workspaceOpen && workspaceTab === "ideas" ? "topbar-action-active" : ""}
+              onClick={() => openWorkspace("ideas")}
+              disabled={!hasActiveSession}
+              title="Ideas"
+            >
+              <FileText size={16} />
             </button>
             {connected && isRunning ? (
               <button onClick={requestCancelRun} title={cancelArmed ? "Confirm cancel active run" : "Press twice to cancel active run"}>
@@ -1750,89 +1755,6 @@ export function App() {
                     </section>
                   ))}
                 </div>
-              </div>
-            ) : null}
-
-            {workspaceMode === "ideas" ? (
-              <div className="workspace-panel">
-                <div className="workspace-panel-header">
-                  <strong>Ideas</strong>
-                  <span>{ideas.length} saved notes</span>
-                </div>
-                <section className="idea-capture-panel" aria-label="Capture idea">
-                  <textarea
-                    value={newIdeaDraft}
-                    onChange={(event) => setNewIdeaDraft(event.target.value)}
-                    placeholder="Capture an idea for later context"
-                  />
-                  <button type="button" className="primary" onClick={() => void saveWorkspaceIdea()} disabled={!newIdeaDraft}>
-                    Save Idea
-                  </button>
-                </section>
-                {ideas.length === 0 ? (
-                  <div className="empty-state inline-empty">
-                    <strong>No saved ideas</strong>
-                    <span>Capture an idea here or use /idea with text.</span>
-                  </div>
-                ) : (
-                  <div className="idea-workspace">
-                    <div className="idea-workspace-list">
-                      {ideaGroups.map((group) => (
-                        <section className="project-idea-group" key={group.project_id}>
-                          <ProjectGroupHeader count={group.items.length} label={group.project_name} />
-                          {group.items.map((idea) => (
-                            <button
-                              className={idea.index === selectedIdea?.index ? "active" : ""}
-                              key={idea.idea_id}
-                              onClick={() => selectIdea(idea)}
-                            >
-                              <span>{ideaTitle(idea.content)}</span>
-                              <code>@idea:{idea.index}</code>
-                            </button>
-                          ))}
-                        </section>
-                      ))}
-                    </div>
-                    {selectedIdea ? (
-                      <article className="idea-workspace-detail">
-                        <div className="idea-detail-head">
-                          <div>
-                            <strong>@idea:{selectedIdea.index}</strong>
-                            <span>{selectedIdea.project_name} / {formatShortDate(selectedIdea.created_at)}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="tiny-icon-button"
-                            onClick={() => void copyText(selectedIdea.content, "Idea")}
-                            title="Copy idea"
-                            aria-label="Copy idea"
-                          >
-                            <Copy size={13} />
-                          </button>
-                        </div>
-                        <textarea
-                          value={ideaDraft}
-                          onChange={(event) => setIdeaDraft(event.target.value)}
-                          aria-label="Idea content"
-                        />
-                        <div className="idea-workspace-actions">
-                          <button type="button" onClick={referenceSelectedIdea}>
-                            <Search size={13} />
-                            Reference
-                          </button>
-                          <button type="button" onClick={() => void updateSelectedIdea()}>
-                            <Save size={13} />
-                            Save
-                          </button>
-                          <button type="button" onClick={() => void deleteSelectedIdea()}>
-                            <Trash2 size={13} />
-                            Delete
-                          </button>
-                        </div>
-                      </article>
-                    ) : null}
-                  </div>
-                )}
               </div>
             ) : null}
 
@@ -2347,12 +2269,12 @@ export function App() {
                 ) : null}
 
                 {workspaceTab === "agents" ? (
-                  <div className="work-history" aria-label="Agents and context">
+                  <div className="work-history" aria-label="Agents">
                     <InspectorGroup
                       icon={<GitBranch size={15} />}
                       open={openInspectorGroups.context}
                       onToggle={() => toggleInspectorGroup("context")}
-                      summary={`${snapshot?.threads.length ?? 0} threads / ${ideas.length} ideas`}
+                      summary={`${snapshot?.threads.length ?? 0} threads`}
                       title="Agents"
                     >
                       <section className="inspector-section" ref={threadsRef}>
@@ -2381,16 +2303,38 @@ export function App() {
                         )}
                       </section>
 
+                    </InspectorGroup>
+                  </div>
+                ) : null}
+
+                {workspaceTab === "ideas" ? (
+                  <div className="work-history ideas-view" aria-label="Ideas">
                       <section className="inspector-section">
                         <div className="section-title">
                           <FileText size={15} />
-                          Ideas
+                          Capture
+                        </div>
+                        <div className="idea-capture-panel" aria-label="Capture idea">
+                          <textarea
+                            value={newIdeaDraft}
+                            onChange={(event) => setNewIdeaDraft(event.target.value)}
+                            placeholder="Capture an idea for later context"
+                          />
+                          <button type="button" className="primary" onClick={() => void saveWorkspaceIdea()} disabled={!newIdeaDraft}>
+                            Save Idea
+                          </button>
+                        </div>
+                      </section>
+                      <section className="inspector-section">
+                        <div className="section-title">
+                          <FileText size={15} />
+                          Saved Ideas
                         </div>
                         {ideas.length === 0 ? (
                           <div className="subtle-empty">No saved ideas.</div>
                         ) : (
-                          <div className="idea-panel">
-                            <div className="idea-list">
+                          <div className="idea-workspace">
+                            <div className="idea-workspace-list">
                               {ideaGroups.map((group) => (
                                 <section className="project-idea-group" key={group.project_id}>
                                   <ProjectGroupHeader count={group.items.length} label={group.project_name} />
@@ -2408,13 +2352,28 @@ export function App() {
                               ))}
                             </div>
                             {selectedIdea ? (
-                              <div className="idea-editor">
+                              <article className="idea-workspace-detail">
+                                <div className="idea-detail-head">
+                                  <div>
+                                    <strong>@idea:{selectedIdea.index}</strong>
+                                    <span>{selectedIdea.project_name} / {formatShortDate(selectedIdea.created_at)}</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="tiny-icon-button"
+                                    onClick={() => void copyText(selectedIdea.content, "Idea")}
+                                    title="Copy idea"
+                                    aria-label="Copy idea"
+                                  >
+                                    <Copy size={13} />
+                                  </button>
+                                </div>
                                 <textarea
                                   value={ideaDraft}
                                   onChange={(event) => setIdeaDraft(event.target.value)}
                                   aria-label="Idea content"
                                 />
-                                <div className="idea-actions">
+                                <div className="idea-workspace-actions">
                                   <button type="button" onClick={referenceSelectedIdea}>
                                     <Search size={13} />
                                     Reference
@@ -2428,12 +2387,11 @@ export function App() {
                                     Delete
                                   </button>
                                 </div>
-                              </div>
+                              </article>
                             ) : null}
                           </div>
                         )}
                       </section>
-                    </InspectorGroup>
                   </div>
                 ) : null}
 
@@ -2621,6 +2579,7 @@ function LaunchScreen({
 function workspaceTabTitle(tab: WorkspaceTab) {
   if (tab === "files") return "Files";
   if (tab === "agents") return "Agents";
+  if (tab === "ideas") return "Ideas";
   if (tab === "activity") return "Activity";
   return "Run";
 }
