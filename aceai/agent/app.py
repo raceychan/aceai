@@ -623,7 +623,7 @@ class AceAgentApp:
         )
         self._thread_runs[thread_id] = self._active_run
         self._configure_run_for_thread(self._active_run, thread_id=thread_id)
-        self._last_context_event_id = self._session_service.record_user_message(
+        user_message_event = self._session_service.record_user_message_event(
             question,
             citations=citations,
             images=images,
@@ -631,7 +631,18 @@ class AceAgentApp:
             thread_id=thread_id,
             agent_id="" if thread_id == MAIN_THREAD_ID else agent.agent_id,
         )
+        self._last_context_event_id = user_message_event.event_id
         self._last_context_event_ids[thread_id] = self._last_context_event_id
+        self._emit_app_event(
+            thread_id=thread_id,
+            agent_id="" if thread_id == MAIN_THREAD_ID else agent.agent_id,
+            event=user_message_event,
+        )
+        yield AgentAppEvent(
+            thread_id=thread_id,
+            agent_id="" if thread_id == MAIN_THREAD_ID else agent.agent_id,
+            event=user_message_event,
+        )
         async for event in self._consume_run_stream_events(
             self._active_run,
             agent.execute(self._active_run),

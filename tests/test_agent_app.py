@@ -285,6 +285,37 @@ async def test_agent_app_clears_active_run_after_completed_turn(tmp_path) -> Non
 
 
 @pytest.mark.anyio
+async def test_agent_app_event_stream_starts_with_user_session_event(tmp_path) -> None:
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    app = AceAgentApp(
+        agent,
+        provider_name="openai",
+        selected_model="gpt-4o",
+        session_store=SessionStore(tmp_path / "sessions"),
+    )
+
+    events = [event async for event in app.start_turn_events("new question")]
+
+    assert isinstance(events[0].event, SessionEvent)
+    assert events[0].event.kind == "user_message"
+    assert events[0].event.payload["content"] == "new question"
+    assert events[0].event.created_at != ""
+    assert any(
+        isinstance(event.event, SessionEvent) and event.event.kind == "assistant_delta"
+        for event in events[1:]
+    )
+
+
+@pytest.mark.anyio
 async def test_agent_app_clears_active_run_after_failed_turn(tmp_path) -> None:
     agent = Agent(
         prompt="Prompt",

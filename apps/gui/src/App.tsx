@@ -845,18 +845,14 @@ export function App() {
         .filter((event) => event.kind === "reasoning_summary")
         .map(sessionRunKey)
     );
-    const mergedById = new Map<string, SessionEvent>();
-    for (const event of current) {
-      if (event.kind === "assistant_delta" && snapshotAssistantRuns.has(sessionRunKey(event))) continue;
-      if (event.kind === "thinking_delta" && snapshotReasoningRuns.has(sessionRunKey(event))) continue;
-      mergedById.set(event.event_id, event);
-    }
-    for (const event of snapshotEvents) {
-      mergedById.set(event.event_id, event);
-    }
-    return Array.from(mergedById.values()).sort((left, right) => (
-      left.created_at.localeCompare(right.created_at)
-    ));
+    const snapshotIds = new Set(snapshotEvents.map((event) => event.event_id));
+    const liveEvents = current.filter((event) => {
+      if (snapshotIds.has(event.event_id)) return false;
+      if (event.kind === "assistant_delta" && snapshotAssistantRuns.has(sessionRunKey(event))) return false;
+      if (event.kind === "thinking_delta" && snapshotReasoningRuns.has(sessionRunKey(event))) return false;
+      return true;
+    });
+    return [...snapshotEvents, ...liveEvents];
   }
 
   function sessionRunKey(event: SessionEvent) {

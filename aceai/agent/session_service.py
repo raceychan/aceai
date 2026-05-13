@@ -224,6 +224,29 @@ class SessionService:
         citations: tuple[TurnCitation, ...] = (),
         images: tuple[UserImageAttachment, ...] = (),
     ) -> str:
+        event = self.record_user_message_event(
+            content,
+            run_id=run_id,
+            thread_id=thread_id,
+            agent_id=agent_id,
+            citations=citations,
+            images=images,
+        )
+        return event.event_id
+
+    def record_user_message_event(
+        self,
+        content: str,
+        *,
+        run_id: str,
+        thread_id: str = MAIN_THREAD_ID,
+        agent_id: str = "",
+        citations: tuple[TurnCitation, ...] = (),
+        images: tuple[UserImageAttachment, ...] = (),
+    ) -> SessionEvent:
+        session_id = self.session_id
+        if session_id is None:
+            raise RuntimeError("AceAI session is not active")
         payload: dict[str, Any] = {"content": content}
         if citations:
             payload["citations"] = citation_payload(citations)
@@ -232,21 +255,20 @@ class SessionService:
                 {"mime_type": image.mime_type, "data": image.data}
                 for image in images
             ]
-        event_id = self.record_session_event(
-            SessionEvent(
-                event_id=uuid_str(),
-                thread_id=thread_id,
-                agent_id=agent_id,
-                run_id=run_id,
-                step_id=None,
-                step_index=None,
-                kind="user_message",
-                payload=payload,
-            )
-        )
+        event = SessionEvent(
+            event_id=uuid_str(),
+            thread_id=thread_id,
+            agent_id=agent_id,
+            run_id=run_id,
+            step_id=None,
+            step_index=None,
+            kind="user_message",
+            payload=payload,
+        ).with_session_defaults(session_id=session_id)
+        event_id = self.record_session_event(event)
         if event_id is None:
             raise RuntimeError("user_message did not persist a session event")
-        return event_id
+        return event
 
     def record_agent_event(
         self,
