@@ -32,6 +32,22 @@ path = "aceai/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["aceai"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/aceai",
+    "/docs",
+    "/examples",
+    "/scripts",
+    "/tests",
+    "/.github",
+    "/CHANGELOG.md",
+    "/Makefile",
+    "/README.md",
+    "/mkdocs.yml",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+
 [dependency-groups]
 dev = [
     "dotenv>=0.9.9",
@@ -48,7 +64,6 @@ dev = [
     "pandas>=2.3.3",
     "np>=1.0.2",
     "openpyxl>=3.1.5",
-    "openapi-ts-client>=1.4.0",
     "polars>=1.37.1",
     "matplotlib>=3.10.8",
     "fastexcel>=0.19.0",
@@ -56,34 +71,12 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.1",
     "rich>=14.2.0",
-    "textual>=8.2.5",
-    "sqlalchemy>=2.0",
     "ruff>=0.15.12",
-    "lihil[standard]==0.2.40",
 ]
 
 [tool.pytest.ini_options]
 addopts = """
 --ignore=tests/e2e
---ignore=tests/test_ace_agent.py
---ignore=tests/test_agent_app.py
---ignore=tests/test_agent_delegation.py
---ignore=tests/test_agent_patch_tools.py
---ignore=tests/test_agent_session.py
---ignore=tests/test_context_checkpoint.py
---ignore=tests/test_gui_server.py
---ignore=tests/test_ideas.py
---ignore=tests/test_project.py
---ignore=tests/test_provider_catalog.py
---ignore=tests/test_subagent_artifacts.py
---ignore=tests/test_tui_cli.py
---ignore=tests/test_tui_config.py
---ignore=tests/test_tui_events.py
---ignore=tests/test_tui_runner.py
---ignore=tests/test_tui_session_adapter.py
---ignore=tests/test_tui_state.py
---ignore=tests/test_tui_stream_rendering.py
---ignore=tests/test_tui_theme.py
 """
 markers = [
     "debug: marks tests intended for focused debugging runs",

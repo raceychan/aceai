@@ -24,6 +24,13 @@ lab/
 node_modules/
 *.tsbuildinfo
 apps/
+.coverage
+
+# Local Codex/Claude/plugin assets
+.claude/
+plugins/
+.agent/
+AGENTS.md
 
 # App-layer tests and docs are kept locally while the app moves out of this repo.
 docs/desktop.md
@@ -52,10 +59,6 @@ tests/test_tui_theme.py
 # Local AceAI user config and secrets
 .aceai/
 .agents/
-
-# Project release skill
-!.agent/skills/aceai-release/
-!.agent/skills/aceai-release/**
 
 # Local design specs, not included in public source for now
 spec/
