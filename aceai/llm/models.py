@@ -494,8 +494,22 @@ class LLMReasoningSegmentMeta(Record, kw_only=True):
     is_delta: bool = False
 
 
+class LLMHostedToolSegmentMeta(Record, kw_only=True):
+    """Metadata for provider-hosted tool activity."""
+
+    provider_name: str
+    tool_name: str
+    item_id: str
+    status: Literal["in_progress", "searching", "completed", "failed"] | None = None
+    output_index: int | None = None
+    sequence_number: int | None = None
+
+
 type LLMSegmentMeta = (
-    LLMToolCallSegmentMeta | LLMImageSegmentMeta | LLMReasoningSegmentMeta
+    LLMToolCallSegmentMeta
+    | LLMImageSegmentMeta
+    | LLMReasoningSegmentMeta
+    | LLMHostedToolSegmentMeta
 )
 
 
@@ -506,6 +520,7 @@ class LLMSegment(Record):
         "text",
         "reasoning",
         "tool_call",
+        "hosted_tool",
         "citation",
         "error",
         "image",
@@ -594,6 +609,7 @@ class LLMStreamEvent(Record):
         "response.completed",
         "response.error",
         "response.media",
+        "response.hosted_tool",
         "response.retrying",
     ]
     """Explicit event type mirroring the provider's semantic intent."""

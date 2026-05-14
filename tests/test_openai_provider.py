@@ -1,4 +1,6 @@
 import io
+import json
+import wave
 from base64 import b64encode
 from types import SimpleNamespace
 from typing import cast
@@ -25,6 +27,15 @@ from openai.types.responses.response_reasoning_summary_text_delta_event import (
     ResponseReasoningSummaryTextDeltaEvent,
 )
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+from openai.types.responses.response_web_search_call_completed_event import (
+    ResponseWebSearchCallCompletedEvent,
+)
+from openai.types.responses.response_web_search_call_in_progress_event import (
+    ResponseWebSearchCallInProgressEvent,
+)
+from openai.types.responses.response_web_search_call_searching_event import (
+    ResponseWebSearchCallSearchingEvent,
+)
 
 from aceai.llm.errors import (
     AceAIConfigurationError,
@@ -33,6 +44,7 @@ from aceai.llm.errors import (
 )
 from aceai.llm import LLMMessage
 from aceai.llm.models import (
+    LLMHostedToolSegmentMeta,
     LLMHostedToolSpec,
     LLMMessagePart,
     LLMResponse,
@@ -682,6 +694,58 @@ def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
     assert image_chunk.segments[0].type == "image"
 
 
+def test_map_stream_event_handles_hosted_web_search_progress(
+    openai_provider: OpenAI,
+) -> None:
+    in_progress_event = ResponseWebSearchCallInProgressEvent(
+        item_id="ws-1",
+        output_index=0,
+        sequence_number=1,
+        type="response.web_search_call.in_progress",
+    )
+    in_progress = openai_provider._map_stream_event(
+        in_progress_event,
+        model_name="gpt-5.5",
+    )
+    assert in_progress is not None
+    assert in_progress.event_type == "response.hosted_tool"
+    assert in_progress.segments[0].type == "hosted_tool"
+    assert in_progress.segments[0].content == "Preparing web search"
+    assert isinstance(in_progress.segments[0].meta, LLMHostedToolSegmentMeta)
+    assert in_progress.segments[0].meta.tool_name == "web_search"
+    assert in_progress.segments[0].meta.status == "in_progress"
+
+    searching_event = ResponseWebSearchCallSearchingEvent(
+        item_id="ws-1",
+        output_index=0,
+        sequence_number=2,
+        type="response.web_search_call.searching",
+    )
+    searching = openai_provider._map_stream_event(
+        searching_event,
+        model_name="gpt-5.5",
+    )
+    assert searching is not None
+    assert searching.segments[0].content == "Searching the web"
+    assert isinstance(searching.segments[0].meta, LLMHostedToolSegmentMeta)
+    assert searching.segments[0].meta.status == "searching"
+
+    completed_event = ResponseWebSearchCallCompletedEvent(
+        item_id="ws-1",
+        output_index=0,
+        sequence_number=3,
+        type="response.web_search_call.completed",
+    )
+    completed = openai_provider._map_stream_event(
+        completed_event,
+        model_name="gpt-5.5",
+    )
+    assert completed is not None
+    assert completed.segments[0].content == "Web search completed"
+    assert isinstance(completed.segments[0].meta, LLMHostedToolSegmentMeta)
+    assert completed.segments[0].meta.status == "completed"
+
+
 def test_map_stream_event_returns_none_for_completed_image_events(
     openai_provider: OpenAI,
 ) -> None:
@@ -771,6 +835,72 @@ async def test_codex_complete_uses_stream() -> None:
     response = await provider.complete({})
 
     assert response.text == "done"
+
+
+@pytest.mark.anyio
+async def test_codex_stt_uses_realtime_transcription() -> None:
+    class FakeWebsocket:
+        def __init__(self):
+            self.sent: list[dict] = []
+            self.events = [
+                json.dumps({"type": "session.updated", "session": {"id": "sess"}}),
+                json.dumps(
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "transcript": "hello codex",
+                    }
+                ),
+            ]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(json.loads(payload))
+
+        async def recv(self) -> str:
+            return self.events.pop(0)
+
+    fake_websocket = FakeWebsocket()
+    connect_calls: list[dict] = []
+
+    def fake_connect(url: str, **kwargs):
+        connect_calls.append({"url": url, **kwargs})
+        return fake_websocket
+
+    provider = OpenAICodex(
+        api_key="codex-token",
+        default_meta={"model": "gpt-5.5"},
+        websocket_connect=fake_connect,
+    )
+
+    text = await provider.stt(
+        "voice.wav",
+        io.BytesIO(_wav_bytes(b"1234")),
+        model="gpt-4o-mini-transcribe",
+    )
+
+    assert text == "hello codex"
+    assert connect_calls[0]["additional_headers"]["Authorization"] == "Bearer codex-token"
+    assert fake_websocket.sent[0]["session"]["type"] == "transcription"
+    assert fake_websocket.sent[0]["session"]["audio"]["input"]["transcription"] == {
+        "model": "gpt-4o-mini-transcribe"
+    }
+    assert fake_websocket.sent[1]["type"] == "input_audio_buffer.append"
+    assert fake_websocket.sent[2] == {"type": "input_audio_buffer.commit"}
+
+
+def _wav_bytes(pcm: bytes) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24_000)
+        wav.writeframes(pcm)
+    return output.getvalue()
 
 
 @pytest.mark.anyio

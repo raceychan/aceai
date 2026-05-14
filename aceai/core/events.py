@@ -16,6 +16,7 @@ AgentEventType = Literal[
     "agent.llm.started",
     "agent.llm.output_text.delta",
     "agent.llm.tool_call.delta",
+    "agent.llm.hosted_tool",
     "agent.llm.media",
     "agent.llm.reasoning",
     "agent.llm.retrying",
@@ -69,6 +70,11 @@ class LLMToolCallDeltaEvent(AgentLifecycleEvent):
     EVENT_TYPE = "agent.llm.tool_call.delta"
     tool_call_delta: LLMToolCallDelta
     text_delta: str
+
+
+class LLMHostedToolEvent(AgentLifecycleEvent):
+    EVENT_TYPE = "agent.llm.hosted_tool"
+    segment: LLMSegment
 
 
 class LLMMediaEvent(AgentLifecycleEvent):
@@ -182,6 +188,7 @@ type AgentEvent = (
     LLMStartedEvent
     | LLMOutputDeltaEvent
     | LLMToolCallDeltaEvent
+    | LLMHostedToolEvent
     | LLMMediaEvent
     | LLMReasoningEvent
     | LLMRetryingEvent
@@ -237,6 +244,14 @@ class AgentEventBuilder:
             step_id=self.step_id,
             tool_call_delta=tool_call_delta,
             text_delta=tool_call_delta.arguments_delta,
+        )
+
+    def llm_hosted_tool(self, *, segment: LLMSegment) -> LLMHostedToolEvent:
+        return LLMHostedToolEvent(
+            run_id=self.run_id,
+            step_index=self.step_index,
+            step_id=self.step_id,
+            segment=segment,
         )
 
     def llm_media(self, *, segments: list[LLMSegment]) -> LLMMediaEvent:

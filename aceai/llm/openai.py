@@ -39,6 +39,15 @@ from openai.types.responses.response_reasoning_summary_text_delta_event import (
 from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+from openai.types.responses.response_web_search_call_completed_event import (
+    ResponseWebSearchCallCompletedEvent,
+)
+from openai.types.responses.response_web_search_call_in_progress_event import (
+    ResponseWebSearchCallInProgressEvent,
+)
+from openai.types.responses.response_web_search_call_searching_event import (
+    ResponseWebSearchCallSearchingEvent,
+)
 
 from aceai.llm.errors import (
     AceAIConfigurationError,
@@ -50,6 +59,7 @@ from aceai.llm.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
+    LLMHostedToolSegmentMeta,
     LLMHostedToolSpec,
     LLMImageSegmentMeta,
     LLMInput,
@@ -732,6 +742,48 @@ class OpenAI(LLMProviderBase):
                     )
                 ]
                 event_type = "response.reasoning.delta"
+            case ResponseWebSearchCallInProgressEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="in_progress",
+                    )
+                ]
+                event_type = "response.hosted_tool"
+            case ResponseWebSearchCallSearchingEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="searching",
+                    )
+                ]
+                event_type = "response.hosted_tool"
+            case ResponseWebSearchCallCompletedEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="completed",
+                    )
+                ]
+                event_type = "response.hosted_tool"
             case ResponseImageGenCallPartialImageEvent(partial_image_b64=partial_b64):
                 media = self._media_from_base64(partial_b64)
                 segments = [
@@ -766,6 +818,27 @@ class OpenAI(LLMProviderBase):
             error=error_value,
             segments=segments,
             provider_meta=provider_meta,
+        )
+
+    def _hosted_tool_segment(
+        self,
+        *,
+        item_id: str,
+        output_index: int,
+        sequence_number: int,
+        status: Literal["in_progress", "searching", "completed", "failed"],
+    ) -> LLMSegment:
+        return LLMSegment(
+            type="hosted_tool",
+            content=_hosted_tool_content(status),
+            meta=LLMHostedToolSegmentMeta(
+                provider_name=self._provider_name,
+                tool_name="web_search",
+                item_id=item_id,
+                status=status,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ),
         )
 
     def _apply_default_meta(self, payload: OpenAIPayload) -> OpenAIPayload:
@@ -884,3 +957,19 @@ def _cached_input_tokens(usage: Any) -> int | None:
     if type(cached_tokens) is not int:
         raise TypeError("OpenAI cached input token usage must be int")
     return cached_tokens
+
+
+def _hosted_tool_content(
+    status: Literal["in_progress", "searching", "completed", "failed"],
+) -> str:
+    match status:
+        case "in_progress":
+            return "Preparing web search"
+        case "searching":
+            return "Searching the web"
+        case "completed":
+            return "Web search completed"
+        case "failed":
+            return "Web search failed"
+        case _:
+            raise ValueError("Unsupported hosted tool status")

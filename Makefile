@@ -1,4 +1,4 @@
-.PHONY: test debug cov demo server
+.PHONY: test debug cov demo
 test:
 	uv run pytest -v tests/
 
@@ -10,15 +10,6 @@ cov:
 
 demo:
 	uv run python examples/logistics_agent_demo.py
-
-tui:
-	uv --project apps/agent run python -m agent_core.tui.cli
-
-HOST ?= 127.0.0.1
-PORT ?= 8765
-server:
-	uv --project apps/web/backend run python -m src.cli --host $(HOST) --port $(PORT)
-
 
 VERSION ?=
 DEFAULT_BASE_BRANCH := $(strip $(shell git remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p'))

@@ -13,6 +13,7 @@ from aceai.core.events import (
     ContextCompactionStartedEvent,
     ContextCompressedEvent,
     LLMMediaEvent,
+    LLMHostedToolEvent,
     LLMOutputDeltaEvent,
     LLMReasoningEvent,
     LLMRetryingEvent,
@@ -1488,6 +1489,51 @@ async def test_agent_emits_streaming_reasoning_before_text() -> None:
         0
     ].segment is reasoning_segment
     assert len([event for event in events if isinstance(event, LLMReasoningEvent)]) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_emits_hosted_tool_activity_before_text() -> None:
+    hosted_tool_segment = LLMSegment(
+        type="hosted_tool",
+        content="Searching the web",
+    )
+    stream = [
+        LLMStreamEvent(
+            event_type="response.hosted_tool",
+            segments=[hosted_tool_segment],
+        ),
+        LLMStreamEvent(
+            event_type="response.output_text.delta",
+            text_delta="answer",
+        ),
+        LLMStreamEvent(
+            event_type="response.completed",
+            response=LLMResponse(text="answer"),
+        ),
+    ]
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([stream]),
+        executor=StubExecutor(),
+    )
+
+    events = await collect_events(agent, "Question")
+
+    hosted_tool_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, LLMHostedToolEvent)
+    )
+    text_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, LLMOutputDeltaEvent)
+    )
+    assert hosted_tool_index < text_index
+    assert [event for event in events if isinstance(event, LLMHostedToolEvent)][
+        0
+    ].segment is hosted_tool_segment
 
 
 @pytest.mark.anyio

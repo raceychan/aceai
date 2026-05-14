@@ -15,7 +15,12 @@ from aceai.llm.errors import (
     LLMProviderError,
 )
 from aceai.llm.interface import Unset, is_set
-from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMToolCallDelta, LLMToolSpec
+from aceai.llm.models import (
+    LLMMessage,
+    LLMRequestMeta,
+    LLMToolCallDelta,
+    LLMToolSpec,
+)
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
 
 from .context_manager import ContextManager
@@ -346,6 +351,13 @@ async def _call_llm(
                             yield event_builder.llm_tool_call_delta(
                                 tool_call_delta=tool_call_delta,
                             )
+                    case "response.hosted_tool":
+                        for segment in stream_event.segments:
+                            if segment.type != "hosted_tool":
+                                raise TypeError(
+                                    "Hosted tool stream events must contain hosted_tool segments"
+                                )
+                            yield event_builder.llm_hosted_tool(segment=segment)
                     case "response.error":
                         if isinstance(stream_event.error, str):
                             raise LLMProviderError(stream_event.error)

@@ -9,11 +9,6 @@ from aceai.llm.anthropic import (
     ANTHROPIC_OAUTH_PROVIDER_NAME,
     Anthropic,
 )
-from agent_core.provider_auth import (
-    api_key_placeholder,
-    default_api_key_for_provider,
-    resolve_provider_api_key,
-)
 from aceai.llm.errors import AceAIConfigurationError
 from aceai.llm.models import (
     LLMHostedToolSpec,
@@ -259,18 +254,6 @@ def test_anthropic_oauth_uses_bearer_header() -> None:
         "content-type": "application/json",
         "authorization": "Bearer oauth-token",
     }
-
-
-def test_anthropic_oauth_resolves_env_fallback(monkeypatch) -> None:
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "fallback-token")
-
-    assert default_api_key_for_provider("anthropic-oauth") == "fallback-token"
-    assert resolve_provider_api_key("anthropic-oauth", "") == "fallback-token"
-    assert (
-        api_key_placeholder("anthropic-oauth")
-        == "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN"
-    )
 
 
 def test_anthropic_formats_tool_sub_turn() -> None:
