@@ -4,7 +4,14 @@ import base64
 import io
 import json
 import wave
+from importlib.util import find_spec
 from typing import Any, AsyncGenerator, BinaryIO, Callable
+
+if find_spec("openai") is None or find_spec("websockets") is None:
+    raise RuntimeError(
+        "OpenAI Codex provider requires the codex extra. "
+        "Install with `pip install 'aceai[codex]'`."
+    )
 
 from openai import AsyncOpenAI
 from websockets.asyncio.client import connect

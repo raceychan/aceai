@@ -11,18 +11,10 @@ from typing import (
     Unpack,
 )
 
-import httpx
 from msgspec import DecodeError, ValidationError
 from msgspec.json import decode
 from msgspec.json import encode as json_encode
 from msgspec.json import schema as get_schema
-from openai import (
-    APIConnectionError,
-    APIError,
-    APIStatusError,
-    APITimeoutError,
-    RateLimitError,
-)
 
 from aceai.llm.errors import (
     AceAIConfigurationError,
@@ -45,12 +37,7 @@ LLM_RETRY_EXHAUSTED_MESSAGE = "LLM request failed after retries. Please try agai
 LLM_CONTEXT_WINDOW_EXCEEDED_MESSAGE = "LLM request exceeds the model context window."
 RetryableProviderErrors = (
     TimeoutError,
-    httpx.TransportError,
-    APIError,
-    APIConnectionError,
-    APITimeoutError,
-    RateLimitError,
-    APIStatusError,
+    LLMProviderError,
 )
 
 T = TypeVar("T")
@@ -392,6 +379,8 @@ class LLMService:
 
 
 def _provider_error_message(err: BaseException) -> str:
+    if isinstance(err, LLMProviderError):
+        return str(err)
     return f"{type(err).__name__}: {err}"
 
 
@@ -406,40 +395,17 @@ async def _next_stream_event(
 def _is_retryable_provider_error(err: BaseException) -> bool:
     if _is_context_window_error(err):
         return False
-    if isinstance(err, APIStatusError):
-        return err.status_code == 429 or 500 <= err.status_code
+    if isinstance(err, LLMProviderError):
+        if err.status_code is not None:
+            return err.status_code == 429 or 500 <= err.status_code
+        return err.retryable
     return True
 
 
 def _is_context_window_error(err: BaseException) -> bool:
-    if not isinstance(err, APIError):
-        return False
-    if err.code == "context_length_exceeded":
+    if isinstance(err, LLMProviderError) and err.context_window:
         return True
-    if err.type == "context_length_exceeded":
-        return True
-    if err.message == LLM_CONTEXT_WINDOW_EXCEEDED_MESSAGE:
-        return True
-    if "Your input exceeds the context window of this model" in err.message:
-        return True
-    if "context_length_exceeded" in err.message:
-        return True
-    if not isinstance(err.body, dict):
-        return False
-    if "code" in err.body and err.body["code"] == "context_length_exceeded":
-        return True
-    if "type" in err.body and err.body["type"] == "context_length_exceeded":
-        return True
-    if "error" not in err.body:
-        return False
-    error = err.body["error"]
-    if not isinstance(error, dict):
-        return False
-    if "code" in error and error["code"] == "context_length_exceeded":
-        return True
-    if "type" in error and error["type"] == "context_length_exceeded":
-        return True
-    return False
+    return _is_context_window_error_text(str(err))
 
 
 def _stream_event_is_context_window_error(event: LLMStreamEvent) -> bool:

@@ -25,6 +25,19 @@ class AceAIImplementationError(AceAIError):
 class LLMProviderError(AceAIError):
     """Wrapper for LLM provider errors bubbled up through AceAI."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        context_window: bool = False,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.context_window = context_window
+        self.status_code = status_code
+
 
 class LLMContextWindowExceededError(LLMProviderError):
     """Raised when a provider rejects a request for exceeding context limits."""

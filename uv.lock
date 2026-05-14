@@ -10,20 +10,35 @@ resolution-markers = [
 name = "aceai"
 source = { editable = "." }
 dependencies = [
-    { name = "httpx" },
     { name = "ididi" },
     { name = "msgspec" },
-    { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "pyyaml" },
     { name = "typing-extensions" },
-    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
+anthropic = [
+    { name = "httpx" },
+]
+codex = [
+    { name = "openai" },
+    { name = "websockets" },
+]
+deepseek = [
+    { name = "openai" },
+]
+openai = [
+    { name = "openai" },
+]
 otel = [
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+]
+providers = [
+    { name = "httpx" },
+    { name = "openai" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -32,6 +47,7 @@ dev = [
     { name = "fastexcel" },
     { name = "gitpython" },
     { name = "hatch" },
+    { name = "httpx" },
     { name = "jupyterlab" },
     { name = "langfuse" },
     { name = "loguru" },
@@ -39,6 +55,7 @@ dev = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "np" },
+    { name = "openai" },
     { name = "openpyxl" },
     { name = "packaging" },
     { name = "pandas" },
@@ -50,22 +67,28 @@ dev = [
     { name = "rich" },
     { name = "ruff" },
     { name = "twine" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx", marker = "extra == 'anthropic'", specifier = ">=0.28.1" },
+    { name = "httpx", marker = "extra == 'providers'", specifier = ">=0.28.1" },
     { name = "ididi", specifier = ">=1.8.4" },
     { name = "msgspec", specifier = ">=0.20.0" },
-    { name = "openai", specifier = ">=2.9.0" },
+    { name = "openai", marker = "extra == 'codex'", specifier = ">=2.9.0" },
+    { name = "openai", marker = "extra == 'deepseek'", specifier = ">=2.9.0" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=2.9.0" },
+    { name = "openai", marker = "extra == 'providers'", specifier = ">=2.9.0" },
     { name = "opentelemetry-api", specifier = ">=1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.39.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "typing-extensions", specifier = ">=4.15.0" },
-    { name = "websockets", specifier = ">=16.0" },
+    { name = "websockets", marker = "extra == 'codex'", specifier = ">=16.0" },
+    { name = "websockets", marker = "extra == 'providers'", specifier = ">=16.0" },
 ]
-provides-extras = ["otel"]
+provides-extras = ["anthropic", "codex", "deepseek", "openai", "otel", "providers"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -73,6 +96,7 @@ dev = [
     { name = "fastexcel", specifier = ">=0.19.0" },
     { name = "gitpython", specifier = ">=3.1.44" },
     { name = "hatch", specifier = ">=1.16.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jupyterlab", specifier = ">=4.5.0" },
     { name = "langfuse", specifier = ">=3.11.2,<4" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -80,6 +104,7 @@ dev = [
     { name = "mkdocs", specifier = ">=1.6.1" },
     { name = "mkdocs-material", specifier = ">=9.7.1" },
     { name = "np", specifier = ">=1.0.2" },
+    { name = "openai", specifier = ">=2.9.0" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pandas", specifier = ">=2.3.3" },
@@ -91,6 +116,7 @@ dev = [
     { name = "rich", specifier = ">=14.2.0" },
     { name = "ruff", specifier = ">=0.15.12" },
     { name = "twine", specifier = ">=5.0.0" },
+    { name = "websockets", specifier = ">=16.0" },
 ]
 
 [[package]]

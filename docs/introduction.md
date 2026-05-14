@@ -4,12 +4,21 @@ AceAI is designed for engineers who want explicit control, strict schemas, and o
 
 ## Requirements
 - Python 3.12+
-- `openai` SDK only if you use the OpenAI provider
+- Provider SDKs only for the adapters you use
 
 ## Install
 
 ```bash
 uv add aceai
+```
+
+For built-in providers, install the matching extra:
+
+```bash
+uv add "aceai[openai]"
+uv add "aceai[anthropic]"
+uv add "aceai[deepseek]"
+uv add "aceai[codex]"
 ```
 
 ## Core concepts
@@ -20,6 +29,8 @@ A workflow is an LLM app where you own the control flow. You decide each step an
 In AceAI, you usually call `LLMService` directly for workflows:
 - `complete(...)` for plain text
 - `complete_json(schema=...)` for strict structured output
+
+The example below uses the OpenAI adapter and requires `aceai[openai]`.
 
 ```python
 from msgspec import Struct

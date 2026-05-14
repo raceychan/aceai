@@ -13,6 +13,15 @@ skills, and OTLP-friendly tracing.
 uv add aceai
 ```
 
+Provider SDKs are optional. Install only the adapters you use:
+
+```bash
+uv add "aceai[openai]"
+uv add "aceai[anthropic]"
+uv add "aceai[deepseek]"
+uv add "aceai[codex]"
+```
+
 ## Architecture layers
 
 ![AceAI architecture](docs/aceai-architecture.png)
@@ -52,6 +61,7 @@ bounded.
 ## Quick start
 
 Define tools with strict annotations, wire a provider, executor, and agent.
+This example uses the OpenAI adapter, so install `aceai[openai]` first.
 
 ```python
 import json

@@ -1,9 +1,7 @@
 import asyncio
 
 import pytest
-import httpx
 from msgspec import DecodeError, Struct
-from openai import APIError, OpenAIError
 from types import SimpleNamespace
 
 from aceai.llm.errors import (
@@ -90,7 +88,7 @@ class ErroringProvider(LLMProviderBase):
         self._default_stream_model = "gpt-4o-mini"
 
     async def complete(self, request: LLMInput) -> LLMResponse:
-        raise OpenAIError("boom")
+        raise LLMProviderError("boom")
 
     def stream(self, request: LLMInput):
         raise AceAIRuntimeError("unused stream")
@@ -118,7 +116,7 @@ class FlakyCompleteProvider(RecordingProvider):
         self.complete_requests.append(request)
         if self.failures_remaining > 0:
             self.failures_remaining -= 1
-            raise httpx.ConnectError("connection dropped")
+            raise LLMProviderError("ConnectError: connection dropped")
         return self._responses.pop(0)
 
 
@@ -133,8 +131,9 @@ class FlakyStreamProvider(RecordingProvider):
         async def iterator():
             if self.failures_remaining > 0:
                 self.failures_remaining -= 1
-                raise httpx.RemoteProtocolError(
-                    "peer closed connection without sending complete message body"
+                raise LLMProviderError(
+                    "RemoteProtocolError: peer closed connection without sending "
+                    "complete message body"
                 )
             yield LLMStreamEvent(
                 event_type="response.completed",
@@ -155,23 +154,9 @@ class FlakyAPIErrorStreamProvider(RecordingProvider):
         async def iterator():
             if self.failures_remaining > 0:
                 self.failures_remaining -= 1
-                raise APIError(
-                    "Our servers are currently overloaded. Please try again later.",
-                    request=httpx.Request(
-                        "POST",
-                        "https://api.openai.com/v1/responses",
-                    ),
-                    body={
-                        "type": "error",
-                        "error": {
-                            "type": "service_unavailable_error",
-                            "code": "server_is_overloaded",
-                            "message": (
-                                "Our servers are currently overloaded. "
-                                "Please try again later."
-                            ),
-                        },
-                    },
+                raise LLMProviderError(
+                    "APIError: Our servers are currently overloaded. "
+                    "Please try again later."
                 )
             yield LLMStreamEvent(
                 event_type="response.completed",
@@ -184,19 +169,10 @@ class FlakyAPIErrorStreamProvider(RecordingProvider):
 class ContextWindowCompleteProvider(RecordingProvider):
     async def complete(self, request: LLMInput) -> LLMResponse:
         self.complete_requests.append(request)
-        raise APIError(
-            "Your input exceeds the context window of this model. "
+        raise LLMProviderError(
+            "APIError: Your input exceeds the context window of this model. "
             "Please adjust your input and try again.",
-            request=httpx.Request(
-                "POST",
-                "https://api.openai.com/v1/responses",
-            ),
-            body={
-                "error": {
-                    "code": "context_length_exceeded",
-                    "message": "Your input exceeds the context window of this model.",
-                },
-            },
+            context_window=True,
         )
 
 
@@ -205,19 +181,10 @@ class ContextWindowStreamProvider(RecordingProvider):
         self.stream_requests.append(request)
 
         async def iterator():
-            raise APIError(
-                "Your input exceeds the context window of this model. "
+            raise LLMProviderError(
+                "APIError: Your input exceeds the context window of this model. "
                 "Please adjust your input and try again.",
-                request=httpx.Request(
-                    "POST",
-                    "https://api.openai.com/v1/responses",
-                ),
-                body={
-                    "error": {
-                        "code": "context_length_exceeded",
-                        "message": "Your input exceeds the context window of this model.",
-                    },
-                },
+                context_window=True,
             )
             yield LLMStreamEvent(event_type="response.completed")
 
@@ -309,7 +276,7 @@ class AlwaysFailingStreamProvider(RecordingProvider):
         self.stream_requests.append(request)
 
         async def iterator():
-            raise httpx.RemoteProtocolError("connection still down")
+            raise LLMProviderError("RemoteProtocolError: connection still down")
             yield LLMStreamEvent(event_type="response.completed")
 
         return iterator()

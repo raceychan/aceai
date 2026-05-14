@@ -1,7 +1,7 @@
 # FAQ
 
 ## Do I need the OpenAI SDK?
-Only if you use the OpenAI provider. If you do, install `openai` and pass an `AsyncOpenAI` client to `OpenAI`.
+Only if you use the OpenAI provider. Install `aceai[openai]` and pass an `AsyncOpenAI` client to `OpenAI`.
 
 ## Why does tool registration fail?
 Every tool parameter must use `typing.Annotated` with `spec(...)`. Missing annotations fail fast so mistakes are obvious.
