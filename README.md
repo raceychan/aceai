@@ -2,118 +2,25 @@
 
 ![AceAI hero](docs/aceai-hero.png)
 
-An engineering-first agent framework and terminal agent app for serious coding
-work: strict tool contracts, durable multi-agent sessions, provider-aware
-runtime controls, and OTLP-friendly tracing.
+An engineering-first Python framework for building tool-using LLM agents:
+strict tool contracts, provider-aware runtime controls, streaming events,
+skills, and OTLP-friendly tracing.
 
 ## Requirements & install
 - Python 3.12+.
-
-Use AceAI as a framework:
 
 ```bash
 uv add aceai
 ```
 
-This installs the core framework APIs without the terminal UI dependencies.
-
-Use AceAI as a ready-made terminal app:
-
-```bash
-uv tool install "aceai[tui]"
-```
-
-This installs the TUI dependencies as a uv tool and exposes the `aceai`
-command, giving you the full local terminal agent rather than only the framework
-APIs. To run it once without installing the command:
-
-```bash
-uvx --from "aceai[tui]" aceai
-```
-
-If an older tool install starts with a missing dependency error after a source
-checkout or upgrade, refresh the tool environment:
-
-```bash
-uv tool install --force --refresh-package aceai "aceai[tui]"
-```
-
-## Terminal UI
-
-![AceAI terminal UI home screen](docs/homescreen_capture.png)
-
-After installing the tool, set `OPENAI_API_KEY`, then launch the TUI directly:
-
-```bash
-aceai
-```
-
-Set `ACEAI_MODEL` or pass `--model` to choose the default OpenAI model.
-If no API key is available, the TUI asks for provider settings and lets you
-choose whether to persist them to `.aceai/config.yml`. On startup AceAI reads
-project config first, then falls back to `~/.aceai/config.yaml`.
-The TUI surfaces streaming work history, skill loading, tool calls, approval
-gates, subagent progress, cited file and idea context, queued follow-up turns,
-session resume/export, token/cost status, and per-tool permissions: `always`
-runs without approval, `ask` uses the approval flow, and disabled tools are
-hidden from the model. User turns render as a full-width prompt bar with
-breathing room around the message, and queued turn controls stay aligned at the
-right edge so steering and cancel actions are easy to scan even when messages
-contain wide characters.
-Provider, model, reasoning level, context compression, API timeout, streaming
-startup timeout, streaming idle timeout, skills, and tool policies are all
-configurable from the app and persisted in AceAI config. The provider catalog
-tracks OpenAI, Codex subscription auth, DeepSeek, Anthropic API keys, and
-Anthropic OAuth, including model context windows, reasoning controls, and
-pricing metadata where available.
-
-### Skills and tool permissions
-
-![AceAI configuration tools view](docs/config_capture.png)
-
-The configuration screen keeps agent skills and local tools visible in one
-place. Skills show their source, description, and filesystem path, while tool
-groups can be enabled, capped, or switched to approval-free execution.
-Tool configuration is part of the app boundary: filesystem, shell, search,
-browser, memory, artifact, and hosted tools are loaded explicitly so the model
-only sees the capabilities the app chooses to expose.
-
-### Multi-agent work
-
-![AceAI multi-agent coordination view](docs/multiagent_capture.png)
-
-AceAI can delegate independent checks to child agents, track their status, keep
-their evidence separate, and merge compact completed handoffs back into the main
-conversation. Use `delegate_to_subagent` when the parent needs an answer before
-continuing, or start non-blocking jobs with `spawn_subagent`, `check_subagent`,
-`wait_subagent`, `cancel_subagent`, and `collect_subagent_results` when the main
-agent can keep working.
-
-Child threads keep their own histories, artifacts, and statuses instead of
-disappearing into one giant tool result. Background subagents can notify the
-parent through the agent inbox when work completes, fails, or is canceled; those
-inbox items are persisted, rendered in the TUI, and delivered into the next safe
-model step as bounded context.
-
-### Trajectory view
-
-![AceAI trajectory event view](docs/trajectory_capture.png)
-
-The trajectory view is a chronological audit trail of the run: turns, steps,
-LLM deltas, tool calls, tool results, approvals, failures, and final answers.
-It is useful when you need to debug exactly how a response was produced. For
-large tool or subagent outputs, AceAI keeps compact model-facing handoffs while
-preserving fuller audit artifacts for inspection, replay, and export.
-
 ## Architecture layers
 
 ![AceAI architecture](docs/aceai-architecture.png)
 
-AceAI has three layers. Start from the lowest layer that gives you what you
+AceAI has two framework layers. Start from the lowest layer that gives you what you
 need:
 
 ```text
-agent_core  app layer      run AceAI as a ready-made app
 aceai.core   agent layer    build your own tool-using agents
 aceai.llm    LLM layer      call LLM providers directly
 ```
@@ -131,16 +38,10 @@ If you want to build your own agent with tools, use the core APIs:
 from aceai import Agent, Executor, spec, tool
 ```
 
-If you just want to use AceAI as an app, do not import anything; run the CLI:
-
-```bash
-aceai
-```
-
 Long conversations use semantic context compaction at run and step boundaries,
 so AceAI can summarize completed work without splitting provider tool-call
-history. Transcript and export history remain complete; only the model-facing
-context is bounded.
+history. The event stream remains complete; only the model-facing context is
+bounded.
 
 ## Why another framework?
 - Precise tool calls: force `typing.Annotated` + structured schemas; no broad “magic” unions.
@@ -351,15 +252,11 @@ When `skill_path="auto"`, AceAI scans:
 
 - `~/.aceai/skills`
 - `.agents/skills` under the current working directory
-- built-in AceAI app skills, when the app passes them to `Executor`
 
 When `skill_path` is a path, AceAI scans:
 
 - `~/.aceai/skills`
 - the provided path
-- built-in AceAI app skills, when the app passes them to `Executor`
-
-The AceAI app ships with a built-in `$skill-creator` skill vendored from Anthropic's public Agent Skills repository. It is loaded by default for `build_ace_agent(...)`; use `skill_path="disable"` to turn off all skills, including built-ins.
 
 For every loaded skill, AceAI injects a compact `<available_skills>` block into the system prompt and registers two skill tools on `Executor`:
 
