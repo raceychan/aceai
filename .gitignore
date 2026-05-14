@@ -3,6 +3,7 @@ __pycache__/
 *.py[oc]
 build/
 dist/
+site/
 wheels/
 *.egg-info
 
@@ -21,14 +22,44 @@ lab/
 
 # Local caches
 .cache/
+node_modules/
+*.tsbuildinfo
+apps/
+.coverage
+
+# Local Codex/Claude/plugin assets
+.claude/
+plugins/
+.agent/
+AGENTS.md
+
+# App-layer tests and docs are kept locally while the app moves out of this repo.
+docs/desktop.md
+docs/tui.md
+tests/e2e/test_delegation_live_e2e.py
+tests/test_ace_agent.py
+tests/test_agent_app.py
+tests/test_agent_delegation.py
+tests/test_agent_patch_tools.py
+tests/test_agent_session.py
+tests/test_context_checkpoint.py
+tests/test_gui_server.py
+tests/test_ideas.py
+tests/test_project.py
+tests/test_provider_catalog.py
+tests/test_subagent_artifacts.py
+tests/test_tui_cli.py
+tests/test_tui_config.py
+tests/test_tui_events.py
+tests/test_tui_runner.py
+tests/test_tui_session_adapter.py
+tests/test_tui_state.py
+tests/test_tui_stream_rendering.py
+tests/test_tui_theme.py
 
 # Local AceAI user config and secrets
 .aceai/
 .agents/
-
-# Project release skill
-!.agent/skills/aceai-release/
-!.agent/skills/aceai-release/**
 
 # Local design specs, not included in public source for now
 spec/

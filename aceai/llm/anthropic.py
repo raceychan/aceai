@@ -3,12 +3,23 @@
 import base64
 import json
 import time
+from importlib.util import find_spec
 from typing import Any, AsyncGenerator, BinaryIO, Literal, TypedDict
+
+if find_spec("httpx") is None:
+    raise RuntimeError(
+        "Anthropic provider requires the anthropic extra. "
+        "Install with `pip install 'aceai[anthropic]'`."
+    )
 
 import httpx
 from msgspec import Struct, convert, to_builtins
 
-from aceai.llm.errors import AceAIConfigurationError, AceAIValidationError
+from aceai.llm.errors import (
+    AceAIConfigurationError,
+    AceAIValidationError,
+    LLMProviderError,
+)
 from aceai.llm.interface import UNSET, StrDict, Unset, is_set
 from aceai.llm.models import (
     LLMHostedToolSpec,
@@ -533,12 +544,17 @@ class Anthropic(LLMProviderBase):
         payload = self.request_to_payload(request)
         kwargs = self._build_messages_request(payload)
         start = time.perf_counter()
-        response = await self._client.post(
-            self._api_url,
-            headers=self._headers(),
-            json=kwargs,
-        )
-        response.raise_for_status()
+        try:
+            response = await self._client.post(
+                self._api_url,
+                headers=self._headers(),
+                json=kwargs,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as err:
+            raise _provider_error_from_httpx(err) from err
+        except httpx.TransportError as err:
+            raise LLMProviderError(f"{type(err).__name__}: {err}") from err
         latency_ms = (time.perf_counter() - start) * 1000.0
         return self._response_from_payload(response.json(), latency_ms=latency_ms)
 
@@ -555,69 +571,76 @@ class Anthropic(LLMProviderBase):
         tool_block_ids: dict[int, str] = {}
         tool_names: dict[int, str] = {}
         tool_arguments: dict[int, str] = {}
-        async with self._client.stream(
-            "POST",
-            self._api_url,
-            headers=self._headers(),
-            json=kwargs,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                event = json.loads(line[6:])
-                event_type = event["type"]
-                if event_type == "message_start":
-                    message = event["message"]
-                    response_id = message["id"]
-                    model = message["model"]
-                    usage = message["usage"] if "usage" in message else usage
-                elif event_type == "content_block_start":
-                    index = event["index"]
-                    block = event["content_block"]
-                    if block["type"] == "tool_use":
-                        tool_block_ids[index] = block["id"]
-                        tool_names[index] = block["name"]
-                        tool_arguments[index] = ""
-                elif event_type == "content_block_delta":
-                    index = event["index"]
-                    delta = event["delta"]
-                    delta_type = delta["type"]
-                    if delta_type == "text_delta":
-                        text += delta["text"]
-                        yield LLMStreamEvent(
-                            event_type="response.output_text.delta",
-                            text_delta=delta["text"],
-                            segments=[LLMSegment(type="text", content=delta["text"])],
-                            provider_meta=[self._provider_meta_entry(model=model)],
+        try:
+            async with self._client.stream(
+                "POST",
+                self._api_url,
+                headers=self._headers(),
+                json=kwargs,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[6:])
+                    event_type = event["type"]
+                    if event_type == "message_start":
+                        message = event["message"]
+                        response_id = message["id"]
+                        model = message["model"]
+                        usage = message["usage"] if "usage" in message else usage
+                    elif event_type == "content_block_start":
+                        index = event["index"]
+                        block = event["content_block"]
+                        if block["type"] == "tool_use":
+                            tool_block_ids[index] = block["id"]
+                            tool_names[index] = block["name"]
+                            tool_arguments[index] = ""
+                    elif event_type == "content_block_delta":
+                        index = event["index"]
+                        delta = event["delta"]
+                        delta_type = delta["type"]
+                        if delta_type == "text_delta":
+                            text += delta["text"]
+                            yield LLMStreamEvent(
+                                event_type="response.output_text.delta",
+                                text_delta=delta["text"],
+                                segments=[LLMSegment(type="text", content=delta["text"])],
+                                provider_meta=[self._provider_meta_entry(model=model)],
+                            )
+                        elif delta_type == "input_json_delta":
+                            partial_json = delta["partial_json"]
+                            tool_arguments[index] += partial_json
+                            call_id = tool_block_ids[index]
+                            yield LLMStreamEvent(
+                                event_type="response.function_call_arguments.delta",
+                                tool_call_delta=LLMToolCallDelta(
+                                    id=call_id,
+                                    arguments_delta=partial_json,
+                                ),
+                                segments=[
+                                    LLMSegment(
+                                        type="tool_call",
+                                        content=partial_json,
+                                        meta=LLMToolCallSegmentMeta(
+                                            call_id=call_id,
+                                            tool_name=tool_names[index],
+                                            is_delta=True,
+                                        ),
+                                    )
+                                ],
+                                provider_meta=[self._provider_meta_entry(model=model)],
+                            )
+                    elif event_type == "message_delta":
+                        delta = event["delta"]
+                        stop_reason = (
+                            delta["stop_reason"] if "stop_reason" in delta else None
                         )
-                    elif delta_type == "input_json_delta":
-                        partial_json = delta["partial_json"]
-                        tool_arguments[index] += partial_json
-                        call_id = tool_block_ids[index]
-                        yield LLMStreamEvent(
-                            event_type="response.function_call_arguments.delta",
-                            tool_call_delta=LLMToolCallDelta(
-                                id=call_id,
-                                arguments_delta=partial_json,
-                            ),
-                            segments=[
-                                LLMSegment(
-                                    type="tool_call",
-                                    content=partial_json,
-                                    meta=LLMToolCallSegmentMeta(
-                                        call_id=call_id,
-                                        tool_name=tool_names[index],
-                                        is_delta=True,
-                                    ),
-                                )
-                            ],
-                            provider_meta=[self._provider_meta_entry(model=model)],
-                        )
-                elif event_type == "message_delta":
-                    delta = event["delta"]
-                    stop_reason = delta["stop_reason"] if "stop_reason" in delta else None
-                    usage = event["usage"] if "usage" in event else usage
+                        usage = event["usage"] if "usage" in event else usage
+        except httpx.HTTPStatusError as err:
+            raise _provider_error_from_httpx(err) from err
+        except httpx.TransportError as err:
+            raise LLMProviderError(f"{type(err).__name__}: {err}") from err
 
         latency_ms = (time.perf_counter() - start) * 1000.0
         tool_calls = [
@@ -662,3 +685,19 @@ class Anthropic(LLMProviderBase):
             segments=segments,
             provider_meta=final_response.provider_meta,
         )
+
+
+def _provider_error_from_httpx(err: httpx.HTTPStatusError) -> LLMProviderError:
+    status_code = err.response.status_code
+    message = f"{type(err).__name__}: {err}"
+    text = err.response.text
+    context_window = "context_length_exceeded" in text or (
+        "context window" in text.lower()
+    )
+    retryable = status_code == 429 or 500 <= status_code
+    return LLMProviderError(
+        message,
+        retryable=retryable,
+        context_window=context_window,
+        status_code=status_code,
+    )

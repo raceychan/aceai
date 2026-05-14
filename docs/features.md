@@ -68,7 +68,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 provider = TracerProvider()
 trace.set_tracer_provider(provider)
-tracer = trace.get_tracer("aceai-app")
+tracer = trace.get_tracer("agent-core")
 ```
 
 ## Provider adapters

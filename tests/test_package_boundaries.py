@@ -6,7 +6,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "aceai"
 
 
 def test_llm_layer_does_not_import_framework_or_product_layers() -> None:
-    forbidden = ("aceai.core", "aceai.agent")
+    forbidden = ("aceai.core", "agent_core")
 
     violations = _find_forbidden_imports(PACKAGE_ROOT / "llm", forbidden)
 
@@ -20,16 +20,7 @@ def test_framework_layer_does_not_import_product_layer() -> None:
 
     violations: list[str] = []
     for path in framework_paths:
-        violations.extend(_find_forbidden_imports(path, ("aceai.agent",)))
-
-    assert violations == []
-
-
-def test_session_storage_does_not_import_tui_presentation_layer() -> None:
-    violations = _find_forbidden_imports(
-        PACKAGE_ROOT / "agent" / "session.py",
-        ("aceai.agent.tui",),
-    )
+        violations.extend(_find_forbidden_imports(path, ("agent_core",)))
 
     assert violations == []
 

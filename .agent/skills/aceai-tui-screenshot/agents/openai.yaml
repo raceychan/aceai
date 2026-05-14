@@ -1,6 +1,0 @@
-interface:
-  display_name: "AceAI TUI Screenshot"
-  short_description: "Drive AceAI TUI and capture Ghostty"
-  default_prompt: "Use $aceai-tui-screenshot to show the AceAI screen I need and return a screenshot."
-policy:
-  allow_implicit_invocation: true

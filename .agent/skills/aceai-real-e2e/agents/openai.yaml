@@ -1,6 +1,0 @@
-interface:
-  display_name: "AceAI Real E2E"
-  short_description: "Run real AceAI provider/runtime queries"
-  default_prompt: "Use $aceai-real-e2e to validate this AceAI change with a real provider query."
-policy:
-  allow_implicit_invocation: true

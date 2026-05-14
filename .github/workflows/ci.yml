@@ -34,19 +34,7 @@ jobs:
       - name: Build package
         run: uv build
       - name: Smoke test wheel install
-        run: |
-          wheel=$(ls -t dist/*.whl | head -n1)
-          uv venv --python ${{ env.PYTHON_VERSION }} .wheel-smoke
-          uv pip install --python .wheel-smoke/bin/python "$wheel"
-          .wheel-smoke/bin/aceai --help
-          if .wheel-smoke/bin/aceai > smoke.out 2> smoke.err; then
-            echo "aceai unexpectedly launched without the tui extra"
-            exit 1
-          fi
-          grep -F "pip install --upgrade 'aceai[tui]'" smoke.err
-          uv venv --python ${{ env.PYTHON_VERSION }} .wheel-smoke-tui
-          uv pip install --python .wheel-smoke-tui/bin/python "aceai[tui] @ file://$PWD/$wheel"
-          .wheel-smoke-tui/bin/aceai --help
+        run: uv run --group dev pytest tests/test_distribution_smoke.py -q
 
   publish:
     needs: test

@@ -11,10 +11,10 @@ from opentelemetry.trace import SpanKind
 if find_spec("openai") is None:
     raise RuntimeError(
         "openai provider requires the `openai` package. "
-        "Install with `uv add openai` or `pip install openai`."
+        "Install with `pip install 'aceai[openai]'`."
     )
 
-from openai import AsyncOpenAI
+from openai import APIError, APIStatusError, AsyncOpenAI
 from openai.types.responses import FunctionToolParam
 from openai.types.responses.response import Response
 from openai.types.responses.response_error_event import ResponseErrorEvent
@@ -39,17 +39,28 @@ from openai.types.responses.response_reasoning_summary_text_delta_event import (
 from openai.types.responses.response_stream_event import ResponseStreamEvent
 from openai.types.responses.response_text_config_param import ResponseTextConfigParam
 from openai.types.responses.response_text_delta_event import ResponseTextDeltaEvent
+from openai.types.responses.response_web_search_call_completed_event import (
+    ResponseWebSearchCallCompletedEvent,
+)
+from openai.types.responses.response_web_search_call_in_progress_event import (
+    ResponseWebSearchCallInProgressEvent,
+)
+from openai.types.responses.response_web_search_call_searching_event import (
+    ResponseWebSearchCallSearchingEvent,
+)
 
 from aceai.llm.errors import (
     AceAIConfigurationError,
     AceAIRuntimeError,
     AceAIValidationError,
+    LLMProviderError,
 )
 from aceai.llm.interface import UNSET, StrDict, Unset, is_set
 from aceai.llm.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
+    LLMHostedToolSegmentMeta,
     LLMHostedToolSpec,
     LLMImageSegmentMeta,
     LLMInput,
@@ -732,6 +743,48 @@ class OpenAI(LLMProviderBase):
                     )
                 ]
                 event_type = "response.reasoning.delta"
+            case ResponseWebSearchCallInProgressEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="in_progress",
+                    )
+                ]
+                event_type = "response.hosted_tool"
+            case ResponseWebSearchCallSearchingEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="searching",
+                    )
+                ]
+                event_type = "response.hosted_tool"
+            case ResponseWebSearchCallCompletedEvent(
+                item_id=item_id,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ):
+                segments = [
+                    self._hosted_tool_segment(
+                        item_id=item_id,
+                        output_index=output_index,
+                        sequence_number=sequence_number,
+                        status="completed",
+                    )
+                ]
+                event_type = "response.hosted_tool"
             case ResponseImageGenCallPartialImageEvent(partial_image_b64=partial_b64):
                 media = self._media_from_base64(partial_b64)
                 segments = [
@@ -766,6 +819,27 @@ class OpenAI(LLMProviderBase):
             error=error_value,
             segments=segments,
             provider_meta=provider_meta,
+        )
+
+    def _hosted_tool_segment(
+        self,
+        *,
+        item_id: str,
+        output_index: int,
+        sequence_number: int,
+        status: Literal["in_progress", "searching", "completed", "failed"],
+    ) -> LLMSegment:
+        return LLMSegment(
+            type="hosted_tool",
+            content=_hosted_tool_content(status),
+            meta=LLMHostedToolSegmentMeta(
+                provider_name=self._provider_name,
+                tool_name="web_search",
+                item_id=item_id,
+                status=status,
+                output_index=output_index,
+                sequence_number=sequence_number,
+            ),
         )
 
     def _apply_default_meta(self, payload: OpenAIPayload) -> OpenAIPayload:
@@ -808,7 +882,10 @@ class OpenAI(LLMProviderBase):
             attributes=attributes,
         )
         try:
-            response: Response = await self._client.responses.create(**params)
+            try:
+                response: Response = await self._client.responses.create(**params)
+            except APIError as err:
+                raise _provider_error_from_openai(err) from err
             latency_ms = (time.perf_counter() - start) * 1000.0
             return self._to_llm_response(response, latency_ms=latency_ms)
         finally:
@@ -834,44 +911,72 @@ class OpenAI(LLMProviderBase):
             context=trace_ctx,
             attributes=attributes,
         )
-        stream_manager = self._client.responses.stream(**kwargs)
         streamed_tool_calls: list[LLMToolCall] = []
         try:
-            async with stream_manager as stream:
-                async for event in stream:
-                    if isinstance(event, ResponseOutputItemDoneEvent) and isinstance(
-                        event.item,
-                        ResponseFunctionToolCall,
-                    ):
-                        streamed_tool_calls.append(
-                            self._tool_call_from_response_item(event.item)
-                        )
-                    mapped = self._map_stream_event(event, model_name=kwargs["model"])
-                    if mapped is None:
-                        continue
-                    yield mapped
+            try:
+                stream_manager = self._client.responses.stream(**kwargs)
+                async with stream_manager as stream:
+                    async for event in stream:
+                        if isinstance(event, ResponseOutputItemDoneEvent) and isinstance(
+                            event.item,
+                            ResponseFunctionToolCall,
+                        ):
+                            streamed_tool_calls.append(
+                                self._tool_call_from_response_item(event.item)
+                            )
+                        mapped = self._map_stream_event(event, model_name=kwargs["model"])
+                        if mapped is None:
+                            continue
+                        yield mapped
 
-                parsed = await stream.get_final_response()
-                latency_ms = (time.perf_counter() - start) * 1000.0
-                final_llm_response = self._to_llm_response(
-                    parsed, latency_ms=latency_ms
-                )
-                final_llm_response = self._patch_response_tool_calls(
-                    final_llm_response,
-                    streamed_tool_calls,
-                )
-                yield LLMStreamEvent(
-                    event_type="response.completed",
-                    response=final_llm_response,
-                    segments=final_llm_response.segments,
-                    provider_meta=final_llm_response.provider_meta,
-                )
+                    parsed = await stream.get_final_response()
+                    latency_ms = (time.perf_counter() - start) * 1000.0
+                    final_llm_response = self._to_llm_response(
+                        parsed, latency_ms=latency_ms
+                    )
+                    final_llm_response = self._patch_response_tool_calls(
+                        final_llm_response,
+                        streamed_tool_calls,
+                    )
+                    yield LLMStreamEvent(
+                        event_type="response.completed",
+                        response=final_llm_response,
+                        segments=final_llm_response.segments,
+                        provider_meta=final_llm_response.provider_meta,
+                    )
+            except APIError as err:
+                raise _provider_error_from_openai(err) from err
         finally:
             span.end()
 
     def _media_from_base64(self, payload: str) -> LLMGeneratedMedia:
         data = base64.b64decode(payload)
         return LLMGeneratedMedia(type="image", mime_type="image/png", data=data)
+
+
+def _provider_error_from_openai(err: APIError) -> LLMProviderError:
+    message = f"{type(err).__name__}: {err}"
+    body = err.body if isinstance(err.body, dict) else {}
+    error = body["error"] if isinstance(body.get("error"), dict) else body
+    code = error.get("code") if isinstance(error, dict) else None
+    error_type = error.get("type") if isinstance(error, dict) else None
+    text = str(err)
+    context_window = (
+        code == "context_length_exceeded"
+        or error_type == "context_length_exceeded"
+        or "context_length_exceeded" in text
+        or "Your input exceeds the context window of this model" in text
+    )
+    status_code = err.status_code if isinstance(err, APIStatusError) else None
+    retryable = True
+    if status_code is not None:
+        retryable = status_code == 429 or 500 <= status_code
+    return LLMProviderError(
+        message,
+        retryable=retryable,
+        context_window=context_window,
+        status_code=status_code,
+    )
 
 
 def _cached_input_tokens(usage: Any) -> int | None:
@@ -884,3 +989,19 @@ def _cached_input_tokens(usage: Any) -> int | None:
     if type(cached_tokens) is not int:
         raise TypeError("OpenAI cached input token usage must be int")
     return cached_tokens
+
+
+def _hosted_tool_content(
+    status: Literal["in_progress", "searching", "completed", "failed"],
+) -> str:
+    match status:
+        case "in_progress":
+            return "Preparing web search"
+        case "searching":
+            return "Searching the web"
+        case "completed":
+            return "Web search completed"
+        case "failed":
+            return "Web search failed"
+        case _:
+            raise ValueError("Unsupported hosted tool status")

@@ -1,7 +1,14 @@
 """DeepSeek provider using the OpenAI-compatible Chat Completions API."""
 
 import time
+from importlib.util import find_spec
 from typing import Any, AsyncGenerator
+
+if find_spec("openai") is None:
+    raise RuntimeError(
+        "DeepSeek provider requires the deepseek extra. "
+        "Install with `pip install 'aceai[deepseek]'`."
+    )
 
 from openai import AsyncOpenAI
 

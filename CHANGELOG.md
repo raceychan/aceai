@@ -1,5 +1,22 @@
 # Changelog
 
+## AceAI v0.2.30
+
+### Improvements
+
+- `packaging`: Keep provider SDKs out of the base install by moving OpenAI, DeepSeek, Anthropic, and Codex runtime dependencies behind provider extras.
+- `ci`: Add distribution smoke tests that install the built wheel into clean virtual environments and verify base imports work without optional provider SDKs.
+- `docs`: Document provider extras and framework-only installation expectations after the app layer split.
+
+### Fixes
+
+- `llm`: Avoid importing optional provider modules from `aceai.llm` so base package imports do not require OpenAI, httpx, or websocket dependencies.
+- `providers`: Normalize provider SDK transport and status failures into AceAI-owned provider errors before retry and context-window handling.
+
+### Breaking Changes
+
+- Provider classes must now be imported from their provider modules with the matching extra installed, for example `aceai[openai]`, `aceai[deepseek]`, `aceai[anthropic]`, or `aceai[codex]`.
+
 ## AceAI v0.2.29
 
 ### Improvements

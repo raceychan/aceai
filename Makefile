@@ -11,10 +11,6 @@ cov:
 demo:
 	uv run python examples/logistics_agent_demo.py
 
-tui:
-	uv run aceai
-
-
 VERSION ?=
 DEFAULT_BASE_BRANCH := $(strip $(shell git remote show origin 2>/dev/null | sed -n '/HEAD branch/s/.*: //p'))
 BASE_BRANCH ?= $(if $(DEFAULT_BASE_BRANCH),$(DEFAULT_BASE_BRANCH),main)

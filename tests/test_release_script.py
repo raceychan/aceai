@@ -33,7 +33,7 @@ def test_read_current_version_requires_version_assignment(tmp_path: Path) -> Non
 
 def test_read_latest_remote_tag_version_reads_from_origin(tmp_path: Path) -> None:
     origin_path = tmp_path / "origin.git"
-    origin_repo = Repo.init(origin_path, bare=True)
+    Repo.init(origin_path, bare=True)
 
     work_path = tmp_path / "work"
     repo = Repo.init(work_path)

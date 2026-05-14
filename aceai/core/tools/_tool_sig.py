@@ -192,7 +192,7 @@ class ToolSignature:
                 field_tuple += (param.default,)
             fields.append(field_tuple)
 
-        typed_struct = defstruct(f"ToolParams", fields)
+        typed_struct = defstruct("ToolParams", fields)
         return typed_struct
 
     @classmethod

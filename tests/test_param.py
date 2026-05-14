@@ -84,7 +84,7 @@ def test_tool_param_from_param() -> None:
     assert tool_param_x.name == "x"
     assert tool_param_x.alias == "x"
     assert tool_param_x.required is True
-    assert tool_param_x.type_ == int
+    assert tool_param_x.type_ is int
     assert (
         tool_param_x.annotation
         == Annotated[int, spec(description="The first number to add")]
@@ -97,7 +97,7 @@ def test_tool_param_from_param() -> None:
     assert tool_param_y.name == "y"
     assert tool_param_y.alias == "y"
     assert tool_param_y.required is True
-    assert tool_param_y.type_ == int
+    assert tool_param_y.type_ is int
     assert (
         tool_param_y.annotation
         == Annotated[int, spec(description="The second number to add")]
@@ -117,7 +117,7 @@ def test_tool_from_func() -> None:
     assert len(add_tool.signature.params) == 2
     assert "x" in add_tool.signature.params
     assert "y" in add_tool.signature.params
-    assert add_tool.signature.return_type == int
+    assert add_tool.signature.return_type is int
 
 
 def test_get_param_meta_raises_for_missing_annotation() -> None:
