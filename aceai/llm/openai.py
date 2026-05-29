@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 from importlib.util import find_spec
 import time
@@ -17,6 +19,7 @@ if find_spec("openai") is None:
 from openai import APIError, APIStatusError, AsyncOpenAI
 from openai.types.responses import FunctionToolParam
 from openai.types.responses.response import Response
+from openai.types.responses.response_completed_event import ResponseCompletedEvent
 from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
@@ -351,7 +354,11 @@ class OpenAIPayload(Struct, kw_only=True):
                 case "audio":
                     raise ValueError("OpenAI Responses does not support audio input")
                 case "file":
-                    raise ValueError("OpenAI Responses does not support file input")
+                    if role != "user":
+                        raise ValueError(
+                            "OpenAI file parts are only supported for user input"
+                        )
+                    payload.append(self._format_file_part(part))
                 case _:
                     raise ValueError(f"Unsupported message part: {part['type']}")
         return payload
@@ -369,6 +376,27 @@ class OpenAIPayload(Struct, kw_only=True):
             "type": "input_image",
             "image_url": image_url,
             "detail": "auto",
+        }
+
+    def _format_file_part(self, part: LLMMessagePart) -> dict[str, Any]:
+        if "url" in part:
+            return {"type": "input_file", "file_url": part["url"]}
+        metadata = part.get("metadata", {})
+        file_id = metadata.get("file_id") if isinstance(metadata, dict) else None
+        if isinstance(file_id, str) and file_id:
+            return {"type": "input_file", "file_id": file_id}
+        binary = part.get("binary")
+        if not isinstance(binary, bytes):
+            raise ValueError("File parts must include `url`, `binary`, or metadata.file_id")
+        mime = part.get("mime_type", "application/octet-stream")
+        filename = metadata.get("filename") if isinstance(metadata, dict) else None
+        if not isinstance(filename, str) or filename == "":
+            filename = "attachment"
+        b64 = base64.b64encode(binary).decode("ascii")
+        return {
+            "type": "input_file",
+            "filename": filename,
+            "file_data": f"data:{mime};base64,{b64}",
         }
 
     def _build_text_config(
@@ -435,7 +463,7 @@ class OpenAI(LLMProviderBase):
 
     @property
     def modality(self) -> LLMProviderModality:
-        return LLMProviderModality(image_in=True, image_out=True)
+        return LLMProviderModality(image_in=True, image_out=True, file_in=True)
 
     async def stt(
         self,
@@ -488,7 +516,7 @@ class OpenAI(LLMProviderBase):
         self, response: Response
     ) -> list[ResponseReasoningItem]:
         items: list[ResponseReasoningItem] = []
-        for output_item in response.output:
+        for output_item in response.output or []:
             if isinstance(output_item, ResponseReasoningItem):
                 items.append(output_item)
         return items
@@ -498,7 +526,7 @@ class OpenAI(LLMProviderBase):
     ) -> list[LLMSegment]:
         segments: list[LLMSegment] = []
         for item in reasoning_items:
-            for idx, summary in enumerate(item.summary):
+            for idx, summary in enumerate(item.summary or []):
                 segments.append(
                     LLMSegment(
                         type="reasoning",
@@ -511,20 +539,19 @@ class OpenAI(LLMProviderBase):
                         ),
                     )
                 )
-            if item.content is not None:
-                for idx, content in enumerate(item.content):
-                    segments.append(
-                        LLMSegment(
-                            type="reasoning",
-                            content=content.text,
-                            meta=LLMReasoningSegmentMeta(
-                                item_id=item.id,
-                                status=item.status,
-                                kind="content",
-                                index=idx,
-                            ),
-                        )
+            for idx, content in enumerate(item.content or []):
+                segments.append(
+                    LLMSegment(
+                        type="reasoning",
+                        content=content.text,
+                        meta=LLMReasoningSegmentMeta(
+                            item_id=item.id,
+                            status=item.status,
+                            kind="content",
+                            index=idx,
+                        ),
                     )
+                )
         return segments
 
     def _build_segments_from_response(
@@ -536,8 +563,9 @@ class OpenAI(LLMProviderBase):
     ) -> list[LLMSegment]:
         segments: list[LLMSegment] = []
         reasoning_items = reasoning_items or []
-        if response.output_text:
-            segments.append(LLMSegment(type="text", content=response.output_text))
+        text = self._response_output_text(response)
+        if text:
+            segments.append(LLMSegment(type="text", content=text))
         segments.extend(self._build_image_segments(response))
         segments.extend(self._build_reasoning_segments(reasoning_items))
         for call in tool_calls:
@@ -555,7 +583,7 @@ class OpenAI(LLMProviderBase):
 
     def _build_image_segments(self, response: Response) -> list[LLMSegment]:
         segments: list[LLMSegment] = []
-        for idx, item in enumerate(response.output or []):
+        for idx, item in enumerate(self._response_output_items(response)):
             if isinstance(item, ImageGenerationCall):
                 media = self._image_call_to_media(item)
                 segments.append(
@@ -580,10 +608,18 @@ class OpenAI(LLMProviderBase):
 
     def _extract_tool_calls(self, response: Response) -> list[LLMToolCall]:
         calls: list[LLMToolCall] = []
-        for item in response.output:
+        for item in self._response_output_items(response):
             if isinstance(item, ResponseFunctionToolCall):
                 calls.append(self._tool_call_from_response_item(item))
         return calls
+
+    def _response_output_items(self, response: Response) -> list[Any]:
+        return list(response.output or [])
+
+    def _response_output_text(self, response: Response) -> str:
+        if response.output is None:
+            return ""
+        return response.output_text or ""
 
     def _tool_call_from_response_item(
         self,
@@ -680,7 +716,7 @@ class OpenAI(LLMProviderBase):
         return LLMResponse(
             id=response.id,
             model=str(response.model),
-            text=response.output_text or "",
+            text=self._response_output_text(response),
             tool_calls=tool_calls,
             usage=usage_block,
             segments=segments,
@@ -914,9 +950,12 @@ class OpenAI(LLMProviderBase):
         streamed_tool_calls: list[LLMToolCall] = []
         try:
             try:
-                stream_manager = self._client.responses.stream(**kwargs)
-                async with stream_manager as stream:
+                stream = await self._client.responses.create(**kwargs, stream=True)
+                final_response: Response | None = None
+                async with stream:
                     async for event in stream:
+                        if isinstance(event, ResponseCompletedEvent):
+                            final_response = event.response
                         if isinstance(event, ResponseOutputItemDoneEvent) and isinstance(
                             event.item,
                             ResponseFunctionToolCall,
@@ -929,10 +968,13 @@ class OpenAI(LLMProviderBase):
                             continue
                         yield mapped
 
-                    parsed = await stream.get_final_response()
+                    if final_response is None:
+                        raise AceAIRuntimeError(
+                            "OpenAI stream did not include response.completed"
+                        )
                     latency_ms = (time.perf_counter() - start) * 1000.0
                     final_llm_response = self._to_llm_response(
-                        parsed, latency_ms=latency_ms
+                        final_response, latency_ms=latency_ms
                     )
                     final_llm_response = self._patch_response_tool_calls(
                         final_llm_response,

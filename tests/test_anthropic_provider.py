@@ -13,6 +13,7 @@ from aceai.llm.errors import AceAIConfigurationError
 from aceai.llm.models import (
     LLMHostedToolSpec,
     LLMMessage,
+    LLMMessagePart,
     LLMResponseFormat,
     LLMToolCall,
     LLMToolCallMessage,
@@ -239,6 +240,93 @@ def test_anthropic_prompt_cache_marks_history_when_no_system_or_tools() -> None:
         },
         {"role": "user", "content": [{"type": "text", "text": "latest"}]},
     ]
+
+
+def test_anthropic_modality_reports_file_support() -> None:
+    provider = Anthropic(
+        api_key="test-key",
+        default_meta={"model": "claude-sonnet-4-20250514"},
+    )
+
+    assert provider.modality.image_in is True
+    assert provider.modality.file_in is True
+
+
+def test_anthropic_formats_pdf_document_input() -> None:
+    provider = Anthropic(
+        api_key="test-key",
+        default_meta={"model": "claude-sonnet-4-20250514"},
+    )
+
+    payload = provider._build_messages_request(
+        provider.request_to_payload(
+            {
+                "messages": [
+                    LLMMessage.build(
+                        role="user",
+                        content=[
+                            LLMMessagePart(type="text", data="read this"),
+                            LLMMessagePart(
+                                type="file",
+                                binary=b"%PDF-1.7\n",
+                                mime_type="application/pdf",
+                            ),
+                        ],
+                    )
+                ]
+            }
+        )
+    )
+
+    content = payload["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "read this"}
+    assert content[1]["type"] == "document"
+    assert content[1]["source"]["type"] == "base64"
+    assert content[1]["source"]["media_type"] == "application/pdf"
+
+
+def test_anthropic_formats_document_url_and_provider_file_id() -> None:
+    provider = Anthropic(
+        api_key="test-key",
+        default_meta={"model": "claude-sonnet-4-20250514"},
+    )
+
+    assert provider._format_document_part(
+        LLMMessagePart(
+            type="file",
+            mime_type="application/pdf",
+            url="https://example.com/brief.pdf",
+        )
+    ) == {
+        "type": "document",
+        "source": {"type": "url", "url": "https://example.com/brief.pdf"},
+    }
+    assert provider._format_document_part(
+        LLMMessagePart(
+            type="file",
+            mime_type="application/pdf",
+            metadata={"file_id": "file-123"},
+        )
+    ) == {
+        "type": "document",
+        "source": {"type": "file", "file_id": "file-123"},
+    }
+
+
+def test_anthropic_rejects_non_pdf_file_input() -> None:
+    provider = Anthropic(
+        api_key="test-key",
+        default_meta={"model": "claude-sonnet-4-20250514"},
+    )
+
+    with pytest.raises(ValueError, match="application/pdf"):
+        provider._format_document_part(
+            LLMMessagePart(
+                type="file",
+                binary=b"plain text",
+                mime_type="text/plain",
+            )
+        )
 
 
 def test_anthropic_oauth_uses_bearer_header() -> None:
