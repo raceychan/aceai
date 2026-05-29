@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from openai.types.responses.response import Response
+from openai.types.responses.response_completed_event import ResponseCompletedEvent
 from openai.types.responses.response_error_event import ResponseErrorEvent
 from openai.types.responses.response_function_call_arguments_delta_event import (
     ResponseFunctionCallArgumentsDeltaEvent,
@@ -121,6 +123,8 @@ def fake_openai_client():
 
         async def create(self, **kwargs):
             self.create_calls.append(kwargs)
+            if kwargs.get("stream") is True:
+                return FakeStreamManager(self.stream_events, self.final_stream_response)
             return self.response_payload
 
         def stream(self, **kwargs):
@@ -246,6 +250,7 @@ def test_modality_reports_image_support(openai_provider: OpenAI) -> None:
     modality = openai_provider.modality
     assert modality.image_in is True
     assert modality.image_out is True
+    assert modality.file_in is True
 
 
 @pytest.mark.anyio
@@ -420,6 +425,53 @@ def test_format_messages_supports_image_parts(openai_provider: OpenAI) -> None:
     assert formatted[0]["content"][1]["image_url"] == "https://example.com/image.png"
 
 
+def test_format_messages_supports_file_parts(openai_provider: OpenAI) -> None:
+    parts = [
+        LLMMessagePart(type="text", data="read this"),
+        LLMMessagePart(
+            type="file",
+            binary=b"%PDF-1.7\n",
+            mime_type="application/pdf",
+            metadata={"filename": "brief.pdf"},
+        ),
+    ]
+    messages = [LLMMessage.build("user", parts)]
+
+    payload = OpenAIPayload(messages=messages)
+    formatted = payload._format_messages_for_responses(messages)
+
+    assert formatted[0]["content"][0] == {"type": "input_text", "text": "read this"}
+    file_part = formatted[0]["content"][1]
+    assert file_part["type"] == "input_file"
+    assert file_part["filename"] == "brief.pdf"
+    assert str(file_part["file_data"]).startswith("data:application/pdf;base64,")
+
+
+def test_format_file_part_supports_url_and_provider_file_id(
+    openai_provider: OpenAI,
+) -> None:
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
+
+    assert payload._format_file_part(
+        LLMMessagePart(type="file", url="https://example.com/brief.pdf")
+    ) == {"type": "input_file", "file_url": "https://example.com/brief.pdf"}
+    assert payload._format_file_part(
+        LLMMessagePart(type="file", metadata={"file_id": "file-123"})
+    ) == {"type": "input_file", "file_id": "file-123"}
+
+
+def test_format_file_part_rejects_assistant_file_input(
+    openai_provider: OpenAI,
+) -> None:
+    payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
+
+    with pytest.raises(ValueError, match="user input"):
+        payload._format_content_parts(
+            [LLMMessagePart(type="file", binary=b"blob")],
+            role="assistant",
+        )
+
+
 def test_coerce_text_content_rejects_non_text_parts(openai_provider: OpenAI) -> None:
     part = LLMMessagePart(type="image", data="")
     payload = OpenAIPayload(messages=[LLMMessage.build("system", "s")])
@@ -431,7 +483,6 @@ def test_coerce_text_content_rejects_non_text_parts(openai_provider: OpenAI) -> 
     "part",
     [
         LLMMessagePart(type="audio", binary=b"wav"),
-        LLMMessagePart(type="file", binary=b"blob"),
         cast(LLMMessagePart, AttrMessagePart(type="binary", data="x")),
     ],
 )
@@ -569,6 +620,36 @@ def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> 
         seg for seg in llm_response.segments if seg.type == "reasoning"
     ]
     assert reasoning_segments and reasoning_segments[0].content == "Chain summary"
+
+
+def test_to_llm_response_allows_missing_output_lists(openai_provider: OpenAI) -> None:
+    response = NamespaceWithDump(
+        id="resp-missing-output",
+        model="gpt-5.4",
+        output_text="",
+        output=None,
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
+
+    llm_response = openai_provider._to_llm_response(response)
+
+    assert llm_response.tool_calls == []
+    assert llm_response.segments == []
+
+
+def test_reasoning_segments_allow_missing_summary_and_content(
+    openai_provider: OpenAI,
+) -> None:
+    reasoning_item = ResponseReasoningItem(
+        id="rs-empty",
+        summary=[],
+        type="reasoning",
+        status="completed",
+    ).model_copy(update={"summary": None, "content": None})
+
+    assert openai_provider._build_reasoning_segments([reasoning_item]) == []
 
 
 def test_extract_tool_calls_falls_back_to_item_id(
@@ -903,6 +984,30 @@ def _wav_bytes(pcm: bytes) -> bytes:
     return output.getvalue()
 
 
+def _completed_response_event(response: Response, sequence_number: int = 2):
+    return ResponseCompletedEvent(
+        response=response,
+        sequence_number=sequence_number,
+        type="response.completed",
+    )
+
+
+def _response_with_output(output):
+    return Response.model_construct(
+        id="fake-stream-response",
+        created_at=0,
+        model="fake-stream-model",
+        object="response",
+        output=output,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
+
+
 @pytest.mark.anyio
 async def test_stream_yields_completed_event(
     fake_openai_client, openai_provider: OpenAI
@@ -916,8 +1021,11 @@ async def test_stream_yields_completed_event(
         sequence_number=1,
         type="response.output_text.delta",
     )
-    fake_openai_client.responses.stream_events = [text_event]
-    fake_openai_client.responses.final_stream_response.output_text = "final"
+    final_response = _response_with_output([])
+    fake_openai_client.responses.stream_events = [
+        text_event,
+        _completed_response_event(final_response),
+    ]
     request = {"messages": _messages_with_attr_parts([LLMMessage.build("system", "s")])}
 
     events: list[LLMStreamEvent] = []
@@ -925,7 +1033,28 @@ async def test_stream_yields_completed_event(
         events.append(evt)
 
     assert events[-1].event_type == "response.completed"
-    assert fake_openai_client.responses.stream_calls[0]["model"] == "gpt-4o"
+    assert fake_openai_client.responses.create_calls[0]["model"] == "gpt-4o"
+    assert fake_openai_client.responses.create_calls[0]["stream"] is True
+
+
+@pytest.mark.anyio
+async def test_stream_completed_event_accepts_null_output(
+    fake_openai_client, openai_provider: OpenAI
+) -> None:
+    final_response = _response_with_output(None)
+    fake_openai_client.responses.stream_events = [
+        _completed_response_event(final_response),
+    ]
+    request = {"messages": _messages_with_attr_parts([LLMMessage.build("system", "s")])}
+
+    events: list[LLMStreamEvent] = []
+    async for evt in openai_provider.stream(request):
+        events.append(evt)
+
+    completed = events[-1]
+    assert completed.event_type == "response.completed"
+    assert completed.response is not None
+    assert completed.response.text == ""
 
 
 @pytest.mark.anyio
@@ -947,9 +1076,9 @@ async def test_stream_uses_streamed_tool_call_when_final_output_is_empty(
             output_index=0,
             sequence_number=1,
             type="response.output_item.done",
-        )
+        ),
+        _completed_response_event(_response_with_output(None), sequence_number=2),
     ]
-    fake_openai_client.responses.final_stream_response.output = []
     request = {"messages": _messages_with_attr_parts([LLMMessage.build("system", "s")])}
 
     events: list[LLMStreamEvent] = []

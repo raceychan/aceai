@@ -1,5 +1,21 @@
 # Changelog
 
+## AceAI v0.2.31
+
+### Features
+
+- `openai`: Support file inputs for OpenAI Responses user messages through URLs, provider file IDs, or inline binary payloads.
+- `anthropic`: Support PDF document inputs for Anthropic messages through URLs, provider file IDs, or inline base64 payloads.
+
+### Fixes
+
+- `openai`: Use streamed Responses creation and the `response.completed` event as the final response source so streaming works with the current OpenAI SDK contract.
+- `openai`: Tolerate missing Responses `output`, reasoning summary, and reasoning content lists when converting provider responses into AceAI segments.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.30
 
 ### Improvements

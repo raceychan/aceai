@@ -187,7 +187,7 @@ class Anthropic(LLMProviderBase):
 
     @property
     def modality(self) -> LLMProviderModality:
-        return LLMProviderModality(image_in=True)
+        return LLMProviderModality(image_in=True, file_in=True)
 
     async def stt(
         self,
@@ -406,7 +406,7 @@ class Anthropic(LLMProviderBase):
                 case "audio":
                     raise ValueError("Anthropic provider does not support audio input")
                 case "file":
-                    raise ValueError("Anthropic provider does not support file input")
+                    payload.append(self._format_document_part(part))
                 case _:
                     raise ValueError(f"Unsupported message part: {part['type']}")
         return payload
@@ -431,6 +431,36 @@ class Anthropic(LLMProviderBase):
                 },
             }
         raise ValueError("Image parts must include `url` or `binary`")
+
+    def _format_document_part(self, part: LLMMessagePart) -> dict[str, Any]:
+        mime = part.get("mime_type", "application/octet-stream")
+        if mime != "application/pdf":
+            raise ValueError("Anthropic document input currently supports application/pdf")
+        if "url" in part:
+            return {
+                "type": "document",
+                "source": {"type": "url", "url": part["url"]},
+            }
+        metadata = part.get("metadata", {})
+        file_id = metadata.get("file_id") if isinstance(metadata, dict) else None
+        if isinstance(file_id, str) and file_id:
+            return {
+                "type": "document",
+                "source": {"type": "file", "file_id": file_id},
+            }
+        binary = part.get("binary")
+        if not isinstance(binary, bytes):
+            raise ValueError(
+                "Anthropic document parts must include `url`, `binary`, or metadata.file_id"
+            )
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": base64.b64encode(binary).decode("ascii"),
+            },
+        }
 
     def _format_tool_call_message(self, call: LLMToolCall) -> dict[str, Any]:
         return {
