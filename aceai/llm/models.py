@@ -503,6 +503,7 @@ class LLMHostedToolSegmentMeta(Record, kw_only=True):
     status: Literal["in_progress", "searching", "completed", "failed"] | None = None
     output_index: int | None = None
     sequence_number: int | None = None
+    action: Unset[StrDict] = UNSET
 
 
 type LLMSegmentMeta = (

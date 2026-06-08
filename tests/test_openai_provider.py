@@ -13,6 +13,11 @@ from openai.types.responses.response_function_call_arguments_delta_event import 
     ResponseFunctionCallArgumentsDeltaEvent,
 )
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_function_web_search import (
+    ActionSearch,
+    ActionSearchSource,
+    ResponseFunctionWebSearch,
+)
 from openai.types.responses.response_image_gen_call_completed_event import (
     ResponseImageGenCallCompletedEvent,
 )
@@ -56,7 +61,12 @@ from aceai.llm.models import (
     LLMToolCallMessage,
     LLMToolUseMessage,
 )
-from aceai.llm.openai import OpenAI, OpenAIPayload
+from aceai.llm.openai import (
+    WEB_SEARCH_SOURCES_INCLUDE,
+    OpenAI,
+    OpenAIPayload,
+    OpenAIResponseParser,
+)
 from aceai.llm.openai_codex import OpenAICodex
 from aceai.core.tools import tool
 from aceai.core.tools._tool_sig import Annotated, spec
@@ -222,9 +232,8 @@ def test_build_base_response_kwargs_maps_provider_hosted_tool() -> None:
     params = payload.build_response_kwargs()
 
     assert payload.tool_names == ["openai:web_search"]
-    assert params["tools"] == [
-        {"type": "web_search", "search_context_size": "medium"}
-    ]
+    assert params["tools"] == [{"type": "web_search", "search_context_size": "medium"}]
+    assert params["include"] == [WEB_SEARCH_SOURCES_INCLUDE]
 
 
 def test_build_base_response_kwargs_rejects_other_provider_hosted_tool() -> None:
@@ -294,7 +303,9 @@ def test_build_base_response_kwargs_accepts_reasoning_for_supported_model(
 ) -> None:
     payload = OpenAIPayload.from_input(
         {
-            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "start")]
+            ),
             "metadata": {
                 "model": "gpt-5.4",
                 "reasoning": {"summary": "auto"},
@@ -312,7 +323,9 @@ def test_build_base_response_kwargs_defaults_reasoning_for_supported_model(
 ) -> None:
     payload = OpenAIPayload.from_input(
         {
-            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "start")]
+            ),
             "metadata": {"model": "gpt-5.4"},
         }
     )
@@ -327,7 +340,9 @@ def test_build_base_response_kwargs_skips_temperature_for_gpt5(
 ) -> None:
     payload = OpenAIPayload.from_input(
         {
-            "messages": _messages_with_attr_parts([LLMMessage.build("system", "start")]),
+            "messages": _messages_with_attr_parts(
+                [LLMMessage.build("system", "start")]
+            ),
             "temperature": 0.2,
             "metadata": {"model": "gpt-5.4-mini"},
         }
@@ -583,6 +598,38 @@ def test_extract_tool_calls_and_to_llm_response(openai_provider: OpenAI) -> None
     assert image_segment.media.data is not None
 
 
+def test_to_llm_response_preserves_hosted_web_search_action(
+    openai_provider: OpenAI,
+) -> None:
+    web_search_item = ResponseFunctionWebSearch(
+        id="ws-1",
+        type="web_search_call",
+        status="completed",
+        action=ActionSearch(
+            type="search",
+            query="latest Iran situation",
+            queries=["latest Iran situation"],
+        ),
+    )
+    response = NamespaceWithDump(
+        id="resp-web-search",
+        model="gpt-5.5",
+        output_text="done",
+        output=[web_search_item],
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
+
+    llm_response = openai_provider._to_llm_response(response)
+
+    segment = next(seg for seg in llm_response.segments if seg.type == "hosted_tool")
+    assert isinstance(segment.meta, LLMHostedToolSegmentMeta)
+    assert segment.meta.action["queries"] == ["latest Iran situation"]
+    payload = json.loads(segment.content)
+    assert payload["action"]["query"] == "latest Iran situation"
+
+
 def test_to_llm_response_includes_reasoning_summary(openai_provider: OpenAI) -> None:
     reasoning_item = ResponseReasoningItem(
         id="rs_1",
@@ -648,8 +695,17 @@ def test_reasoning_segments_allow_missing_summary_and_content(
         type="reasoning",
         status="completed",
     ).model_copy(update={"summary": None, "content": None})
+    response = NamespaceWithDump(
+        id="resp-empty-reasoning",
+        model="o4-mini",
+        output_text="",
+        output=[reasoning_item],
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
 
-    assert openai_provider._build_reasoning_segments([reasoning_item]) == []
+    assert openai_provider._to_llm_response(response).segments == []
 
 
 def test_extract_tool_calls_falls_back_to_item_id(
@@ -695,7 +751,47 @@ def test_extract_tool_calls_requires_identifier(openai_provider: OpenAI) -> None
     )
 
     with pytest.raises(AceAIRuntimeError, match="call identifier"):
-        openai_provider._extract_tool_calls(response)
+        openai_provider._to_llm_response(response)
+
+
+def test_to_llm_response_rejects_unsupported_output_item(
+    openai_provider: OpenAI,
+) -> None:
+    response = NamespaceWithDump(
+        id="resp-unsupported-output",
+        model="gpt-4o",
+        output_text="",
+        output=[object()],
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
+
+    with pytest.raises(
+        AceAIRuntimeError, match="Unsupported OpenAI response output item"
+    ):
+        openai_provider._to_llm_response(response)
+
+
+def test_response_parser_can_skip_unsupported_output_items() -> None:
+    response = NamespaceWithDump(
+        id="resp-unsupported-output",
+        model="gpt-4o",
+        output_text="done",
+        output=[object()],
+        usage=None,
+        status="completed",
+        reasoning=None,
+    )
+
+    parsed = OpenAIResponseParser(
+        response=response,
+        provider_name="openai",
+        raise_on_unsupported_output_item=False,
+    ).parse()
+
+    assert parsed.text == "done"
+    assert [segment.type for segment in parsed.segments] == ["text"]
 
 
 def test_map_stream_event_handles_known_types(openai_provider: OpenAI) -> None:
@@ -825,6 +921,42 @@ def test_map_stream_event_handles_hosted_web_search_progress(
     assert completed.segments[0].content == "Web search completed"
     assert isinstance(completed.segments[0].meta, LLMHostedToolSegmentMeta)
     assert completed.segments[0].meta.status == "completed"
+
+
+def test_map_stream_event_preserves_hosted_web_search_action(
+    openai_provider: OpenAI,
+) -> None:
+    item = ResponseFunctionWebSearch(
+        id="ws-1",
+        type="web_search_call",
+        status="completed",
+        action=ActionSearch(
+            type="search",
+            query="latest Iran situation",
+            queries=["latest Iran situation"],
+            sources=[ActionSearchSource(type="url", url="https://example.com/iran")],
+        ),
+    )
+    event = ResponseOutputItemDoneEvent(
+        item=item,
+        output_index=0,
+        sequence_number=4,
+        type="response.output_item.done",
+    )
+
+    mapped = openai_provider._map_stream_event(event, model_name="gpt-5.5")
+
+    assert mapped is not None
+    assert mapped.event_type == "response.hosted_tool"
+    segment = mapped.segments[0]
+    assert segment.type == "hosted_tool"
+    assert isinstance(segment.meta, LLMHostedToolSegmentMeta)
+    assert segment.meta.item_id == "ws-1"
+    assert segment.meta.action["queries"] == ["latest Iran situation"]
+    payload = json.loads(segment.content)
+    assert payload["action"]["type"] == "search"
+    assert payload["action"]["queries"] == ["latest Iran situation"]
+    assert payload["action"]["sources"][0]["url"] == "https://example.com/iran"
 
 
 def test_map_stream_event_returns_none_for_completed_image_events(
@@ -965,7 +1097,9 @@ async def test_codex_stt_uses_realtime_transcription() -> None:
     )
 
     assert text == "hello codex"
-    assert connect_calls[0]["additional_headers"]["Authorization"] == "Bearer codex-token"
+    assert (
+        connect_calls[0]["additional_headers"]["Authorization"] == "Bearer codex-token"
+    )
     assert fake_websocket.sent[0]["session"]["type"] == "transcription"
     assert fake_websocket.sent[0]["session"]["audio"]["input"]["transcription"] == {
         "model": "gpt-4o-mini-transcribe"
