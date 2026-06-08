@@ -1,4 +1,6 @@
 from .models import LLMMessagePart as LLMMessagePart
+from .models import LLMHostedToolAction as LLMHostedToolAction
+from .models import LLMHostedToolSource as LLMHostedToolSource
 from .models import LLMHostedToolSpec as LLMHostedToolSpec
 from .models import LLMInput as LLMInput
 from .models import LLMResponse as LLMResponse

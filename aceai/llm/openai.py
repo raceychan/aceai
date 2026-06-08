@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 from functools import singledispatchmethod
 import json
@@ -71,6 +69,7 @@ from aceai.llm.tracing import get_trace_ctx
 
 from .models import (
     LLMGeneratedMedia,
+    LLMHostedToolAction,
     LLMHostedToolSegmentMeta,
     LLMHostedToolSpec,
     LLMImageSegmentMeta,
@@ -637,10 +636,10 @@ class OpenAIResponseParser:
         output_index: int | None = None,
         sequence_number: int | None = None,
     ) -> LLMSegment:
-        action = item.action.to_dict()
+        action = LLMHostedToolAction.from_payload(item.action.to_dict())
         return LLMSegment(
             type="hosted_tool",
-            content=json.dumps({"action": action}, separators=(",", ":")),
+            content=json.dumps({"action": action.asdict()}, separators=(",", ":")),
             meta=LLMHostedToolSegmentMeta(
                 provider_name=provider_name,
                 tool_name="web_search",

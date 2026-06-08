@@ -1,5 +1,19 @@
 # Changelog
 
+## AceAI v0.2.32
+
+### Features
+
+- `llm`: Add typed hosted-tool action and source models, including primary query and source URL helpers for provider-hosted tool activity.
+
+### Fixes
+
+- `openai`: Normalize Responses web search actions into typed hosted-tool metadata while preserving the serialized action payload for existing segment consumers.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.31
 
 ### Features

@@ -50,7 +50,9 @@ from aceai.llm.errors import (
     AceAIValidationError,
 )
 from aceai.llm import LLMMessage
+from aceai.llm.interface import is_set
 from aceai.llm.models import (
+    LLMHostedToolAction,
     LLMHostedToolSegmentMeta,
     LLMHostedToolSpec,
     LLMMessagePart,
@@ -625,7 +627,10 @@ def test_to_llm_response_preserves_hosted_web_search_action(
 
     segment = next(seg for seg in llm_response.segments if seg.type == "hosted_tool")
     assert isinstance(segment.meta, LLMHostedToolSegmentMeta)
-    assert segment.meta.action["queries"] == ["latest Iran situation"]
+    assert is_set(segment.meta.action)
+    assert isinstance(segment.meta.action, LLMHostedToolAction)
+    assert segment.meta.action.queries == ["latest Iran situation"]
+    assert segment.meta.action.first_query == "latest Iran situation"
     payload = json.loads(segment.content)
     assert payload["action"]["query"] == "latest Iran situation"
 
@@ -952,7 +957,11 @@ def test_map_stream_event_preserves_hosted_web_search_action(
     assert segment.type == "hosted_tool"
     assert isinstance(segment.meta, LLMHostedToolSegmentMeta)
     assert segment.meta.item_id == "ws-1"
-    assert segment.meta.action["queries"] == ["latest Iran situation"]
+    assert is_set(segment.meta.action)
+    assert isinstance(segment.meta.action, LLMHostedToolAction)
+    assert segment.meta.action.queries == ["latest Iran situation"]
+    assert segment.meta.action.first_query == "latest Iran situation"
+    assert segment.meta.action.first_source_url == "https://example.com/iran"
     payload = json.loads(segment.content)
     assert payload["action"]["type"] == "search"
     assert payload["action"]["queries"] == ["latest Iran situation"]
