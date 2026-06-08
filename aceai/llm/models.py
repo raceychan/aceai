@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, BinaryIO, Literal, TypedDict
 
-from msgspec import UNSET, field
+from msgspec import UNSET, convert, field
 from msgspec.structs import asdict
 from typing_extensions import Required, Self
 
@@ -121,6 +121,73 @@ class LLMHostedToolSpec(Record, kw_only=True):
 
 
 type LLMToolSpec = IToolSpec | LLMHostedToolSpec
+
+
+class LLMHostedToolSource(Record, kw_only=True):
+    """Provider-neutral source returned by a provider-hosted tool action."""
+
+    url: str
+    """Source URL reported by the provider."""
+
+    title: Unset[str] = UNSET
+    """Optional source title reported by the provider."""
+
+    type: Literal["url"] = "url"
+    """Source kind. Currently only URL sources are normalized."""
+
+
+class LLMHostedToolAction(Record, kw_only=True):
+    """Provider-neutral description of provider-hosted tool activity."""
+
+    type: Literal["search", "open_page", "find_in_page"]
+    """Semantic action performed by the hosted tool."""
+
+    query: Unset[str] = UNSET
+    """Single query string for search-like actions."""
+
+    queries: Unset[list[str]] = UNSET
+    """Provider-reported query list for search-like actions."""
+
+    domains: Unset[list[str]] = UNSET
+    """Optional domain restrictions used for the action."""
+
+    sources: Unset[list[LLMHostedToolSource]] = UNSET
+    """Sources returned by the action."""
+
+    url: Unset[str] = UNSET
+    """URL used by page-opening actions."""
+
+    pattern: Unset[str] = UNSET
+    """Find pattern used by page-search actions."""
+
+    @classmethod
+    def from_payload(cls, payload: StrDict) -> Self:
+        """Decode a provider action payload into the normalized hosted-tool shape."""
+
+        return convert(payload, type=cls)
+
+    @property
+    def first_query(self) -> str | None:
+        """Return the primary query for display or indexing."""
+
+        if self.query is not UNSET and self.query != "":
+            return self.query
+        if self.queries is not UNSET:
+            for query in self.queries:
+                if query != "":
+                    return query
+        return None
+
+    @property
+    def first_source_url(self) -> str | None:
+        """Return the first source URL, when one is available."""
+
+        if self.sources is UNSET:
+            return None
+        for source in self.sources:
+            if source.url != "":
+                return source.url
+        return None
 
 
 class LLMMessage(Struct, kw_only=True):
@@ -503,6 +570,15 @@ class LLMHostedToolSegmentMeta(Record, kw_only=True):
     status: Literal["in_progress", "searching", "completed", "failed"] | None = None
     output_index: int | None = None
     sequence_number: int | None = None
+    action: Unset[LLMHostedToolAction] = UNSET
+
+    def __post_init__(self) -> None:
+        if self.action is not UNSET and isinstance(self.action, dict):
+            object.__setattr__(
+                self,
+                "action",
+                LLMHostedToolAction.from_payload(self.action),
+            )
 
 
 type LLMSegmentMeta = (
