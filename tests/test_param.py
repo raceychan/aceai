@@ -120,6 +120,28 @@ def test_tool_from_func() -> None:
     assert add_tool.signature.return_type is int
 
 
+def test_function_tool_schema_requires_nested_object_properties() -> None:
+    class Nested(Record):
+        enabled: bool = True
+        mode: str = "auto"
+
+    class Payload(Record):
+        nested: Nested
+
+    @tool
+    def save(
+        payload: Annotated[
+            Payload,
+            spec(description="Payload with nested defaults."),
+        ],
+    ) -> None:
+        return None
+
+    nested_schema = save.tool_schema["parameters"]["properties"]["payload"]["properties"]["nested"]
+
+    assert set(nested_schema["required"]) == {"enabled", "mode"}
+
+
 def test_get_param_meta_raises_for_missing_annotation() -> None:
     def bare(x):
         return x

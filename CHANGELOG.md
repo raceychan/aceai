@@ -1,5 +1,15 @@
 # Changelog
 
+## AceAI v0.2.33
+
+### Fixes
+
+- `tools`: Generate strict function schemas with required keys for nested object properties so OpenAI/Codex accepts tool parameters backed by structs with defaulted fields.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.32
 
 ### Features

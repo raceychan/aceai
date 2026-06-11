@@ -22,9 +22,20 @@ class FunctionToolSpec:
         self.description = description
 
     def generate_schema(self) -> dict[str, Any]:
+        def require_all_object_properties(schema: object) -> None:
+            if isinstance(schema, dict):
+                properties = schema.get("properties")
+                if isinstance(properties, dict):
+                    schema["required"] = list(properties.keys())
+                for value in schema.values():
+                    require_all_object_properties(value)
+                return
+            if isinstance(schema, list):
+                for item in schema:
+                    require_all_object_properties(item)
+
         parameters = self.signature.generate_params_schema()
-        properties = parameters["properties"]
-        parameters["required"] = list(properties.keys())
+        require_all_object_properties(parameters)
         return {
             "name": self.name,
             "description": self.description,
