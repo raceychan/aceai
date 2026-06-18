@@ -1,5 +1,17 @@
 # Changelog
 
+## AceAI v0.2.34
+
+### Features
+
+- `core`: Add a typed lifecycle hook registry with decorator-based registration for model request preparation, model request commit, model error, tool execution, and tool completion boundaries.
+- `core`: Add prepared model request previews so applications can inspect the exact model-facing prompt/messages/tools/metadata without mutating live run context.
+- `core`: Add named prompt blocks for structured system context assembly.
+
+### Breaking Changes
+
+- `core`: Remove the legacy `before_llm_hooks` path. Applications that need to extend model requests must register typed lifecycle hooks through `HookRegistry`.
+
 ## AceAI v0.2.33
 
 ### Fixes

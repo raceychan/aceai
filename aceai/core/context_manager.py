@@ -217,6 +217,16 @@ class ContextManager:
         sys_msg = self.system_message
         self._context = [sys_msg] + messages
 
+    def copy(self) -> "ContextManager":
+        copied = ContextManager(
+            self.instruction_blocks,
+            compression_policy=self._compression_policy,
+        )
+        copied._context = list(self._context)
+        copied._system_message = self._system_message
+        copied._compression_count = self._compression_count
+        return copied
+
     async def prepare_for_llm(
         self,
         *,
