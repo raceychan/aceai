@@ -1,10 +1,27 @@
 import asyncio
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from aceai.core.agent import Agent
+from aceai.core.context_manager import PromptBlock
 from aceai.llm.errors import AceAIRuntimeError, LLMContextWindowExceededError
 from aceai.core.executor import ToolExecutionError
+from aceai.core.hooks import (
+    HookContext,
+    HookEffect,
+    HookRegistrationError,
+    HookRegistry,
+    ModelError,
+    ModelRequestDraft,
+    ModelRequestPatch,
+    PreparedModelRequest,
+    ToolExecutionOutcome,
+    ToolExecutionPatch,
+    ToolExecutionRequest,
+)
+from aceai.core.run_loop import AgentRunContext
 from aceai.core.run_state import ToolRunState
 from aceai.core.skills import SkillRegistry
 from aceai.core.events import (
@@ -60,8 +77,8 @@ class StubExecutor:
         self._hosted_tools = hosted_tools if hosted_tools is not None else []
 
     @property
-    def prompt_instructions(self) -> str:
-        return ""
+    def prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        return ()
 
     @property
     def skill_registry(self) -> SkillRegistry:
@@ -319,6 +336,402 @@ def make_stream(
 
 async def collect_events(agent: Agent, question: str) -> list[AgentEvent]:
     return [event async for event in agent.run(question)]
+
+
+def _text(message: LLMMessage) -> str:
+    return "\n".join(
+        str(part.get("data", ""))
+        for part in message.content
+        if part.get("type") == "text"
+    )
+
+
+def test_hook_registry_decorator_preserves_function_and_orders_hooks() -> None:
+    hooks = HookRegistry[dict[str, str]]()
+
+    @hooks.before_model_request(name="second", order=20)
+    async def second(
+        ctx: HookContext[dict[str, str]],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch | None:
+        return None
+
+    @hooks.before_model_request(name="first", order=10)
+    async def first(
+        ctx: HookContext[dict[str, str]],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch | None:
+        return None
+
+    plan = hooks.build_plan()
+
+    assert [spec.name for spec in plan.before_model_request] == ["first", "second"]
+    assert plan.before_model_request[0].fn is first
+    assert plan.before_model_request[1].fn is second
+
+
+def test_hook_registry_rejects_duplicate_names() -> None:
+    hooks = HookRegistry[object]()
+
+    @hooks.before_model_request(name="duplicate")
+    async def first(ctx: HookContext[object], draft: ModelRequestDraft):
+        return None
+
+    @hooks.before_model_request(name="duplicate")
+    async def second(ctx: HookContext[object], draft: ModelRequestDraft):
+        return None
+
+    with pytest.raises(HookRegistrationError, match="duplicate hook name"):
+        hooks.build_plan()
+
+
+def test_hook_registry_rejects_sync_functions() -> None:
+    hooks = HookRegistry[object]()
+
+    def sync_hook(ctx: HookContext[object], draft: ModelRequestDraft):
+        return None
+
+    with pytest.raises(HookRegistrationError, match="must be an async callable"):
+        hooks.before_model_request(name="sync")(cast(Any, sync_hook))
+
+
+def test_agent_run_context_does_not_expose_legacy_before_llm_hooks() -> None:
+    assert "before_llm_hooks" not in AgentRunContext.__struct_fields__
+
+
+def test_core_runtime_source_does_not_use_legacy_before_llm_hooks() -> None:
+    core_dir = Path(__file__).parents[1] / "aceai" / "core"
+    offenders = [
+        path
+        for path in core_dir.glob("*.py")
+        if "before_llm_hooks" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+@pytest.mark.anyio
+async def test_prepare_model_request_preview_runs_hooks_without_mutating_context() -> None:
+    hooks = HookRegistry[str]()
+
+    @hooks.before_model_request(name="preview-context")
+    async def preview_context(
+        ctx: HookContext[str],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch:
+        assert ctx.mode == "preview"
+        assert ctx.data == "digpaw"
+        return ModelRequestPatch(
+            append_messages=(
+                LLMMessage.build(role="assistant", content="preview-only context"),
+            ),
+        )
+
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+    run = agent.create_run("Question?", hook_context="digpaw")
+    live_context_length = len(run.context.context)
+
+    prepared = await agent.prepare_model_request(run)
+
+    assert _text(prepared.messages[-1]) == "preview-only context"
+    assert len(run.context.context) == live_context_length
+    assert _text(run.context.context[-1]) == "Question?"
+
+
+@pytest.mark.anyio
+async def test_before_model_request_hook_adds_execute_message_sent_to_model() -> None:
+    hooks = HookRegistry[str]()
+    calls: list[str] = []
+
+    @hooks.before_model_request(name="execute-context")
+    async def execute_context(
+        ctx: HookContext[str],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch:
+        calls.append(ctx.mode)
+        return ModelRequestPatch(
+            append_messages=(
+                LLMMessage.build(role="assistant", content=f"context for {ctx.data}"),
+            ),
+        )
+
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+
+    events = [
+        event
+        async for event in agent.run("Question?", hook_context="thread-1")
+    ]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert calls == ["execute"]
+    messages = llm_service.calls[0]["messages"]
+    assert _text(messages[-1]) == "context for thread-1"
+
+
+@pytest.mark.anyio
+async def test_model_request_committed_hook_runs_only_for_real_request() -> None:
+    hooks = HookRegistry[str]()
+    before_modes: list[str] = []
+    committed_requests: list[PreparedModelRequest] = []
+    provider_calls_when_committed: list[int] = []
+
+    @hooks.before_model_request(name="prepare-effect")
+    async def prepare_effect(
+        ctx: HookContext[str],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch:
+        before_modes.append(ctx.mode)
+        return ModelRequestPatch(
+            effects=(
+                HookEffect(
+                    kind="test.effect",
+                    payload={"marker": ctx.data or ""},
+                ),
+            ),
+        )
+
+    @hooks.on_model_request_committed(name="commit-effect")
+    async def commit_effect(
+        ctx: HookContext[str],
+        request: PreparedModelRequest,
+    ) -> None:
+        assert ctx.mode == "execute"
+        provider_calls_when_committed.append(len(llm_service.calls))
+        committed_requests.append(request)
+
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+    run = agent.create_run("Question?", hook_context="thread-1")
+
+    preview = await agent.prepare_model_request(run)
+
+    assert before_modes == ["preview"]
+    assert committed_requests == []
+    assert preview.patches[0].effects[0].kind == "test.effect"
+
+    events = [event async for event in agent.execute(run)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert before_modes == ["preview", "execute"]
+    assert provider_calls_when_committed == [1]
+    assert len(committed_requests) == 1
+    committed = committed_requests[0]
+    assert committed.patches[0].effects[0].payload["marker"] == "thread-1"
+
+
+@pytest.mark.anyio
+async def test_before_model_request_hook_does_not_repeat_on_context_window_retry() -> None:
+    hooks = HookRegistry[object]()
+    calls = 0
+
+    @hooks.before_model_request(name="retry-context")
+    async def retry_context(
+        ctx: HookContext[object],
+        draft: ModelRequestDraft,
+    ) -> ModelRequestPatch:
+        nonlocal calls
+        calls += 1
+        return ModelRequestPatch(
+            append_messages=(LLMMessage.build(role="assistant", content="hook once"),),
+        )
+
+    llm_service = ContextWindowThenRecoveringLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(10)
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert calls == 1
+    assert len(llm_service.stream_calls) == 2
+    final_messages = llm_service.stream_calls[-1]["messages"]
+    assert sum(_text(message) == "hook once" for message in final_messages) == 1
+
+
+@pytest.mark.anyio
+async def test_before_tool_execute_hook_can_seed_approved_tools() -> None:
+    hooks = HookRegistry[object]()
+    seen_requests: list[tuple[str, bool]] = []
+
+    @hooks.before_tool_execute(name="preapprove-write")
+    async def preapprove_write(
+        ctx: HookContext[object],
+        request: ToolExecutionRequest,
+    ) -> ToolExecutionPatch:
+        seen_requests.append((request.tool_name, request.approval_required))
+        return ToolExecutionPatch(approved_tool_names=frozenset({request.tool_name}))
+
+    call = LLMToolCall(name="write_file", arguments='{"path":"x"}', call_id="write-1")
+    llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="use write", tool_calls=[call]),
+                )
+            ],
+            make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+        ]
+    )
+    executor = StubExecutor(
+        {"write_file": '{"ok":true}'},
+        approval_required={"write_file"},
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=executor,
+        hook_registry=hooks,
+        max_steps=2,
+    )
+
+    events = await collect_events(agent, "Write it")
+
+    assert seen_requests == [("write_file", True)]
+    assert executor.calls == [call]
+    assert not [event for event in events if isinstance(event, RunSuspendedEvent)]
+    assert isinstance(events[-1], RunCompletedEvent)
+
+
+@pytest.mark.anyio
+async def test_after_tool_execute_hook_receives_tool_result() -> None:
+    hooks = HookRegistry[object]()
+    outcomes: list[tuple[str, str | None, str]] = []
+
+    @hooks.after_tool_execute(name="record-tool-result")
+    async def record_tool_result(
+        ctx: HookContext[object],
+        outcome: ToolExecutionOutcome,
+    ) -> None:
+        outcomes.append(
+            (
+                outcome.tool_name,
+                outcome.result.error,
+                outcome.result.truncated_output,
+            )
+        )
+
+    call = LLMToolCall(name="lookup", arguments="{}", call_id="lookup-1")
+    llm_service = StubLLMService(
+        [
+            [
+                LLMStreamEvent(
+                    event_type="response.completed",
+                    response=LLMResponse(text="use lookup", tool_calls=[call]),
+                )
+            ],
+            make_stream(response=LLMResponse(text="done"), deltas=["done"]),
+        ]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor({"lookup": '{"value":42}'}),
+        hook_registry=hooks,
+        max_steps=2,
+    )
+
+    events = await collect_events(agent, "Look up")
+
+    assert outcomes == [("lookup", None, '{"value":42}')]
+    assert isinstance(events[-1], RunCompletedEvent)
+
+
+@pytest.mark.anyio
+async def test_after_model_response_hook_receives_completed_response() -> None:
+    hooks = HookRegistry[object]()
+    responses: list[str] = []
+
+    @hooks.after_model_response(name="record-response")
+    async def record_response(
+        ctx: HookContext[object],
+        response: LLMResponse,
+    ) -> None:
+        responses.append(response.text)
+
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+        ),
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+
+    events = await collect_events(agent, "Question?")
+
+    assert responses == ["done"]
+    assert isinstance(events[-1], RunCompletedEvent)
+
+
+@pytest.mark.anyio
+async def test_model_error_hook_receives_provider_error() -> None:
+    hooks = HookRegistry[object]()
+    errors: list[tuple[str, bool, bool]] = []
+
+    @hooks.on_model_error(name="record-model-error")
+    async def record_model_error(
+        ctx: HookContext[object],
+        error: ModelError,
+    ) -> None:
+        errors.append(
+            (
+                str(error.error),
+                error.request is not None,
+                error.request_committed,
+            )
+        )
+
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService(
+            [[LLMStreamEvent(event_type="response.error", error="provider down")]]
+        ),
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+
+    events = await collect_events(agent, "Question?")
+
+    assert errors == [("provider down", True, True)]
+    assert isinstance(events[-1], RunFailedEvent)
 
 
 @pytest.mark.anyio

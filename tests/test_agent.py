@@ -4,6 +4,7 @@ from ididi import Graph
 import pytest
 
 from aceai.core.agent import Agent
+from aceai.core.context_manager import PromptBlock
 from aceai.core.executor import DummyExecutor, Executor
 from aceai.core.run_state import ToolRunState
 from aceai.llm.errors import AceAIConfigurationError
@@ -55,9 +56,15 @@ def test_agent_base_add_instruction_updates_system_message(
         default_model="gpt-4",
         llm_service=None,  # type: ignore[arg-type]
     )
-    agent.add_instruction(" + More")
-    agent.add_instruction(" + More")
-    assert agent.system_message.content[0]["data"] == "Initial + More"
+    block = PromptBlock(
+        slot="extra_instructions",
+        source="test",
+        content="More",
+        detail="test instruction",
+    )
+    agent.add_instruction(block)
+    agent.add_instruction(block)
+    assert agent.system_message.content[0]["data"] == "Initial\n\nMore"
 
 
 def test_agent_base_add_instruction_rejects_empty_string(
@@ -70,7 +77,36 @@ def test_agent_base_add_instruction_rejects_empty_string(
         llm_service=None,  # type: ignore[arg-type]
     )
     with pytest.raises(ValueError, match="Empty Instruction"):
-        agent.add_instruction("")
+        agent.add_instruction(
+            PromptBlock(slot="empty", source="test", content="", detail="")
+        )
+
+
+def test_agent_preserves_prompt_blocks_in_system_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    agent = Agent(
+        prompt="Base",
+        prompt_blocks=(
+            PromptBlock(
+                slot="available_agents",
+                source="agent_registry",
+                content="<available_agents />",
+                detail="0 agents",
+            ),
+        ),
+        default_model="gpt-4",
+        llm_service=None,  # type: ignore[arg-type]
+    )
+
+    assert [block.slot for block in agent.system_prompt_blocks] == [
+        "agent_instructions",
+        "available_agents",
+    ]
+    assert agent.system_message.content[0]["data"] == (
+        "Base\n\n<available_agents />"
+    )
 
 
 def test_agent_rejects_explicit_none_executor(

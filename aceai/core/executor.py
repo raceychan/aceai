@@ -12,10 +12,18 @@ from aceai.llm.interface import UNSET, Unset, is_present, is_set
 from aceai.llm.models import LLMHostedToolSpec, LLMToolCall
 from aceai.llm.tracing import get_trace_ctx
 from aceai.core.models import ToolExecutionOutput
+from aceai.core.context_manager import PromptBlock
 from aceai.core.output_truncation import truncate_output
 from aceai.core.tools import IToolSpec, Tool
 from aceai.core.run_state import ToolInvocation, ToolRunState
 from aceai.core.skills import SkillLoader, SkillRegistry, format_skills_for_prompt
+
+
+def _skill_block_detail(skill_names: tuple[str, ...]) -> str:
+    if not skill_names:
+        return "0 skills"
+    names = ", ".join(skill_names)
+    return f"{len(skill_names)} skill(s): {names}"
 
 
 class ToolExecutionError(AceAIError):
@@ -24,8 +32,8 @@ class ToolExecutionError(AceAIError):
 
 class IExecutor:
     @property
-    def prompt_instructions(self) -> str:
-        "instructions that describe executor-provided capabilities"
+    def prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        "model-visible instructions that describe executor-provided capabilities"
         raise NotImplementedError
 
     @property
@@ -64,8 +72,8 @@ class DummyExecutor(IExecutor):
         self._hosted_tools: list[LLMHostedToolSpec] = []
 
     @property
-    def prompt_instructions(self) -> str:
-        return ""
+    def prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        return ()
 
     @property
     def skill_registry(self) -> SkillRegistry:
@@ -122,8 +130,19 @@ class Executor(IExecutor):
             self.register_tools(*self._skill_registry.as_tools())
 
     @property
-    def prompt_instructions(self) -> str:
-        return format_skills_for_prompt(self._skill_registry)
+    def prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        prompt = format_skills_for_prompt(self._skill_registry)
+        if prompt == "":
+            return ()
+        skill_names = tuple(skill.name for skill in self._skill_registry.get_skills())
+        return (
+            PromptBlock(
+                slot="available_skills",
+                source="skill_registry",
+                content=prompt,
+                detail=_skill_block_detail(skill_names),
+            ),
+        )
 
     @property
     def skill_registry(self) -> SkillRegistry:

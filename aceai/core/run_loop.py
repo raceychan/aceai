@@ -1,6 +1,6 @@
 import asyncio
 from itertools import count
-from typing import AsyncGenerator, Awaitable, Callable
+from typing import Any, AsyncGenerator
 from uuid import uuid4
 
 from msgspec import Struct, field
@@ -15,12 +15,7 @@ from aceai.llm.errors import (
     LLMProviderError,
 )
 from aceai.llm.interface import Unset, is_set
-from aceai.llm.models import (
-    LLMMessage,
-    LLMRequestMeta,
-    LLMToolCallDelta,
-    LLMToolSpec,
-)
+from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMToolCallDelta
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
 
 from .context_manager import ContextManager
@@ -37,6 +32,27 @@ from .events import (
 )
 from .executor import IExecutor
 from .executor import ToolExecutionError
+from .hooks import (
+    HookContext,
+    HookPlan,
+    ModelError,
+    PreparedModelRequest,
+    ToolExecutionOutcome,
+    ToolExecutionRequest,
+)
+from .hook_execution import (
+    call_after_model_response_hook,
+    call_after_tool_execute_hook,
+    call_before_tool_execute_hook,
+    call_model_error_hook,
+)
+from .model_request import (
+    ModelRequestState,
+    assemble_model_request,
+    prepare_model_request,
+    prepared_model_request,
+    run_model_request_committed_hooks,
+)
 from .models import (
     AgentStep,
     ToolApprovalDecision,
@@ -61,9 +77,8 @@ class AgentRunContext(Struct, kw_only=True):
     request_meta: LLMRequestMeta
     steps: list[AgentStep] = field(default_factory=list[AgentStep])
     run_state: AgentRunState = field(default_factory=AgentRunState)
-    before_llm_hooks: list[
-        Callable[[str, int], Awaitable[list[LLMMessage]]]
-    ] = field(default_factory=list)
+    hook_plan: HookPlan[Any] = field(default_factory=HookPlan.empty)
+    hook_context: Any | None = None
 
     @property
     def status(self) -> AgentRunStatus:
@@ -153,6 +168,7 @@ async def execute_agent_run(
                 ):
                     yield event
                 return
+            # Preserve the failed-step event for already-started runs, then re-raise.
             except Exception as exc:
                 run_context.run_state.status = "failed"
                 if not run_context.steps:
@@ -221,6 +237,11 @@ async def resume_agent_approval(
         decision=decision,
     )
     if decision.approved:
+        await _run_before_tool_execute_hooks(
+            run_context=run_context,
+            event_builder=event_builder,
+            invocation=pending.invocation,
+        )
         run_context.run_state.tools.approved_tool_names.add(
             pending.invocation.tool.name
         )
@@ -281,17 +302,25 @@ async def _call_llm(
     run_context: AgentRunContext,
     event_builder: AgentEventBuilder,
 ):
-    tools: list[LLMToolSpec] = []
-    tools.extend(executor.select_tools())
-    tools.extend(executor.hosted_tools)
+    request_state = _model_request_state(
+        run_context=run_context,
+        step_id=event_builder.step_id,
+        step_index=event_builder.step_index,
+    )
+    assembly = await assemble_model_request(
+        executor=executor,
+        context=run_context.context,
+        state=request_state,
+        mode="execute",
+    )
 
     compressed_after_context_window_error = False
+    committed_request = False
     while True:
-        await _run_before_llm_hooks(run_context, event_builder)
         compression_count_before_prepare = run_context.context.compression_count
         preflight_compaction_started = False
         if run_context.context.needs_compression(
-            tools=tools
+            tools=list(assembly.tools)
         ) and run_context.context.has_compressible_context():
             preflight_compaction_started = True
             yield event_builder.context_compaction_started(
@@ -301,7 +330,7 @@ async def _call_llm(
         try:
             messages = await run_context.context.prepare_for_llm(
                 llm_service=llm_service,
-                tools=tools,
+                tools=list(assembly.tools),
             )
         except LLMProviderError as exc:
             if preflight_compaction_started:
@@ -310,6 +339,13 @@ async def _call_llm(
                     compression_count=compression_count_before_prepare + 1,
                     error=str(exc),
                 )
+            await _run_model_error_hooks(
+                run_context=run_context,
+                ctx=assembly.hook_context,
+                error=exc,
+                request=None,
+                request_committed=committed_request,
+            )
             raise
         if run_context.context.compression_count > compression_count_before_prepare:
             yield event_builder.context_compressed(
@@ -318,21 +354,34 @@ async def _call_llm(
                 history=list(run_context.context.context[1:]),
             )
 
-        if tools:
+        prepared_request = prepared_model_request(
+            assembly=assembly,
+            messages=messages,
+            state=request_state,
+        )
+
+        if prepared_request.tools:
             stream = llm_service.stream(
-                messages=messages,
-                tools=tools,
-                metadata=run_context.request_meta,
+                messages=list(prepared_request.messages),
+                tools=list(prepared_request.tools),
+                metadata=prepared_request.metadata,
             )
         else:
             stream = llm_service.stream(
-                messages=messages,
-                metadata=run_context.request_meta,
+                messages=list(prepared_request.messages),
+                metadata=prepared_request.metadata,
             )
 
         try:
             reasoning_streamed = False
             async for stream_event in stream:
+                if not committed_request:
+                    await run_model_request_committed_hooks(
+                        plan=run_context.hook_plan,
+                        ctx=assembly.hook_context,
+                        request=prepared_request,
+                    )
+                    committed_request = True
                 match stream_event.event_type:
                     case "response.output_text.delta":
                         chunk = stream_event.text_delta
@@ -382,6 +431,11 @@ async def _call_llm(
                         for segment in response.segments:
                             if segment.type == "reasoning" and not reasoning_streamed:
                                 yield event_builder.llm_reasoning(segment=segment)
+                        await _run_after_model_response_hooks(
+                            run_context=run_context,
+                            ctx=assembly.hook_context,
+                            response=response,
+                        )
                         yield AgentStep(
                             step_id=event_builder.step_id,
                             llm_response=response,
@@ -391,8 +445,15 @@ async def _call_llm(
                         raise AceAIRuntimeError(
                             f"Unsupported LLM stream event: {stream_event.event_type}"
                         )
-        except LLMContextWindowExceededError:
+        except LLMContextWindowExceededError as exc:
             if compressed_after_context_window_error:
+                await _run_model_error_hooks(
+                    run_context=run_context,
+                    ctx=assembly.hook_context,
+                    error=exc,
+                    request=prepared_request,
+                    request_committed=committed_request,
+                )
                 raise
             compression_started = False
             if run_context.context.has_compressible_context(
@@ -415,9 +476,16 @@ async def _call_llm(
                         compression_count=run_context.context.compression_count + 1,
                         error=str(exc),
                     )
+                await _run_model_error_hooks(
+                    run_context=run_context,
+                    ctx=assembly.hook_context,
+                    error=exc,
+                    request=prepared_request,
+                    request_committed=committed_request,
+                )
                 raise
             if not compressed:
-                raise LLMProviderError(
+                exc = LLMProviderError(
                     "Context compaction could not reduce this context-window retry "
                     "because there are no completed prior runs or completed "
                     "current-run steps available to summarize. The oversized "
@@ -425,23 +493,148 @@ async def _call_llm(
                     "message, open tool exchange, system instructions, tool "
                     "schemas, or attached context."
                 )
+                await _run_model_error_hooks(
+                    run_context=run_context,
+                    ctx=assembly.hook_context,
+                    error=exc,
+                    request=prepared_request,
+                    request_committed=committed_request,
+                )
+                raise exc
             yield event_builder.context_compressed(
                 reason="context_window_retry",
                 compression_count=run_context.context.compression_count,
                 history=list(run_context.context.context[1:]),
             )
             compressed_after_context_window_error = True
+        except LLMProviderError as exc:
+            await _run_model_error_hooks(
+                run_context=run_context,
+                ctx=assembly.hook_context,
+                error=exc,
+                request=prepared_request,
+                request_committed=committed_request,
+            )
+            raise
         finally:
             await stream.aclose()
 
 
-async def _run_before_llm_hooks(
+async def prepare_agent_model_request(
+    *,
+    llm_service: ILLMService,
+    executor: IExecutor,
+    run_context: AgentRunContext,
+    step_id: str | None = None,
+    step_index: int | None = None,
+) -> PreparedModelRequest:
+    step_id = step_id or str(uuid4())
+    step_index = len(run_context.steps) if step_index is None else step_index
+    request_state = _model_request_state(
+        run_context=run_context,
+        step_id=step_id,
+        step_index=step_index,
+    )
+    return await prepare_model_request(
+        llm_service=llm_service,
+        executor=executor,
+        context=run_context.context.copy(),
+        state=request_state,
+        mode="preview",
+    )
+
+
+def _model_request_state(
+    *,
+    run_context: AgentRunContext,
+    step_id: str,
+    step_index: int,
+) -> ModelRequestState:
+    return ModelRequestState(
+        agent_id=run_context.agent_id,
+        run_id=run_context.run_id,
+        step_id=step_id,
+        step_index=step_index,
+        request_meta=run_context.request_meta,
+        hook_plan=run_context.hook_plan,
+        hook_context=run_context.hook_context,
+    )
+
+
+def _hook_context(
+    *,
     run_context: AgentRunContext,
     event_builder: AgentEventBuilder,
+) -> HookContext[Any]:
+    return HookContext(
+        mode="execute",
+        run_id=run_context.run_id,
+        step_id=event_builder.step_id,
+        step_index=event_builder.step_index,
+        agent_id=run_context.agent_id,
+        data=run_context.hook_context,
+    )
+
+
+async def _run_before_tool_execute_hooks(
+    *,
+    run_context: AgentRunContext,
+    event_builder: AgentEventBuilder,
+    invocation: ToolInvocation,
 ) -> None:
-    for hook in run_context.before_llm_hooks:
-        messages = await hook(event_builder.step_id, event_builder.step_index)
-        run_context.context.context.extend(messages)
+    ctx = _hook_context(run_context=run_context, event_builder=event_builder)
+    for spec in run_context.hook_plan.before_tool_execute:
+        request = ToolExecutionRequest(
+            call=invocation.call,
+            tool_name=invocation.tool.name,
+            approval_required=invocation.approval_required,
+            approved_tool_names=frozenset(
+                run_context.run_state.tools.approved_tool_names
+            ),
+        )
+        patch = await call_before_tool_execute_hook(spec, ctx, request)
+        if patch.approved_tool_names is not None:
+            run_context.run_state.tools.approved_tool_names = set(
+                patch.approved_tool_names
+            )
+
+
+async def _run_after_tool_execute_hooks(
+    *,
+    run_context: AgentRunContext,
+    event_builder: AgentEventBuilder,
+    outcome: ToolExecutionOutcome,
+) -> None:
+    ctx = _hook_context(run_context=run_context, event_builder=event_builder)
+    for spec in run_context.hook_plan.after_tool_execute:
+        await call_after_tool_execute_hook(spec, ctx, outcome)
+
+
+async def _run_after_model_response_hooks(
+    *,
+    run_context: AgentRunContext,
+    ctx: HookContext[Any],
+    response: LLMResponse,
+) -> None:
+    for spec in run_context.hook_plan.after_model_response:
+        await call_after_model_response_hook(spec, ctx, response)
+
+
+async def _run_model_error_hooks(
+    *,
+    run_context: AgentRunContext,
+    ctx: HookContext[Any],
+    error: BaseException,
+    request: PreparedModelRequest | None,
+    request_committed: bool,
+) -> None:
+    model_error = ModelError(
+        error=error,
+        request=request,
+        request_committed=request_committed,
+    )
+    for spec in run_context.hook_plan.on_model_error:
+        await call_model_error_hook(spec, ctx, model_error)
 
 
 async def _make_toolcalls(
@@ -463,6 +656,11 @@ async def _make_toolcalls(
         while index < len(tool_calls):
             call = tool_calls[index]
             invocation = executor.resolve_invocation(call)
+            await _run_before_tool_execute_hooks(
+                run_context=run_context,
+                event_builder=event_builder,
+                invocation=invocation,
+            )
             if (
                 invocation.approval_required
                 and invocation.tool.name
@@ -487,6 +685,11 @@ async def _make_toolcalls(
 
         call = tool_calls[index]
         invocation = executor.resolve_invocation(call)
+        await _run_before_tool_execute_hooks(
+            run_context=run_context,
+            event_builder=event_builder,
+            invocation=invocation,
+        )
         yield event_builder.tool_started(tool_call=call)
         request = ToolApprovalRequest(
             call=call,
@@ -584,6 +787,15 @@ async def _execute_invocation_event(
             error=error_msg,
         )
         current_step.tool_results.append(tool_result)
+        await _run_after_tool_execute_hooks(
+            run_context=run_context,
+            event_builder=event_builder,
+            outcome=ToolExecutionOutcome(
+                call=call,
+                tool_name=call.name,
+                result=tool_result,
+            ),
+        )
         return event_builder.tool_failed(
             tool_call=call,
             tool_result=tool_result,
@@ -601,6 +813,15 @@ async def _execute_invocation_event(
         truncated_output=truncate_output(tool_output.truncated_output),
     )
     current_step.tool_results.append(tool_result)
+    await _run_after_tool_execute_hooks(
+        run_context=run_context,
+        event_builder=event_builder,
+        outcome=ToolExecutionOutcome(
+            call=call,
+            tool_name=call.name,
+            result=tool_result,
+        ),
+    )
     return event_builder.tool_completed(
         tool_call=call,
         tool_result=tool_result,
