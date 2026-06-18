@@ -1,4 +1,6 @@
 from .agent import Agent as Agent
+from .context_manager import ContextCompressionPolicy as ContextCompressionPolicy
+from .context_manager import PromptBlock as PromptBlock
 from .executor import DummyExecutor as DummyExecutor
 from .executor import Executor as Executor
 from .executor import IExecutor as IExecutor

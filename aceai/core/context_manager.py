@@ -35,6 +35,10 @@ DEFAULT_CONTEXT_WINDOW_TOKENS = 128000
 DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 4096
 
 
+def _render_prompt_blocks(blocks: list["PromptBlock"]) -> str:
+    return "\n\n".join(block.content.strip() for block in blocks if block.content.strip())
+
+
 class ContextCompressionPolicy:
     threshold: CompressThreshold
     context_window_tokens: int
@@ -121,6 +125,13 @@ class CurrentRunSummary(Struct, kw_only=True):
     content: str
 
 
+class PromptBlock(Struct, frozen=True, kw_only=True):
+    slot: str
+    source: str
+    content: str
+    detail: str = ""
+
+
 class StepUnit(Struct, kw_only=True):
     messages: list[LLMMessage] = field(default_factory=list[LLMMessage])
 
@@ -159,33 +170,40 @@ class ContextManager:
 
     def __init__(
         self,
-        prompt: str,
+        prompt_blocks: tuple[PromptBlock, ...],
         *,
         compression_policy: ContextCompressionPolicy | None = None,
     ):
-        self._instructions: list[str] = [prompt]
-        self._seen_instructions: set[str] = {prompt}
+        self._instruction_blocks: list[PromptBlock] = list(prompt_blocks)
+        self._seen_instruction_blocks: set[tuple[str, str, str]] = {
+            (block.slot, block.source, block.content) for block in prompt_blocks
+        }
         self._system_message: LLMMessage | None = None
         self._compression_policy = compression_policy or ContextCompressionPolicy()
         self._compression_count = 0
 
-    def add_instruction(self, instruction: str) -> None:
-        if instruction not in self._seen_instructions:
-            self._instructions.append(instruction)
-            self._seen_instructions.add(instruction)
+    def add_instruction(self, block: PromptBlock) -> None:
+        key = (block.slot, block.source, block.content)
+        if key not in self._seen_instruction_blocks:
+            self._instruction_blocks.append(block)
+            self._seen_instruction_blocks.add(key)
             self._system_message = None
 
     @property
     def system_message(self) -> LLMMessage:
         if self._system_message:
             return self._system_message
-        content = "".join(c for c in self._instructions if c)
+        content = self.instructions_text
         self._system_message = LLMMessage.build(role="system", content=content)
         return self._system_message
 
     @property
     def instructions_text(self) -> str:
-        return "".join(c for c in self._instructions if c)
+        return _render_prompt_blocks(self._instruction_blocks)
+
+    @property
+    def instruction_blocks(self) -> tuple[PromptBlock, ...]:
+        return tuple(self._instruction_blocks)
 
     @property
     def context(self) -> list[LLMMessage]:
@@ -196,9 +214,7 @@ class ContextManager:
         return self._compression_count
 
     def init_context(self, messages: list[LLMMessage]) -> None:
-        sys_msg = LLMMessage.build(
-            role="system", content="".join(c for c in self._instructions if c)
-        )
+        sys_msg = self.system_message
         self._context = [sys_msg] + messages
 
     async def prepare_for_llm(

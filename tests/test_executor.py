@@ -166,7 +166,7 @@ def test_dummy_executor_rejects_tool_invocation() -> None:
         executor.resolve_invocation(call)
 
 
-def test_executor_loads_skill_registry_and_prompt_instructions(
+def test_executor_loads_skill_registry_and_prompt_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
@@ -179,9 +179,14 @@ def test_executor_loads_skill_registry_and_prompt_instructions(
     executor = Executor(Graph(), [], skill_path="auto")
 
     assert set(executor.skill_registry.skills) == {"release", "review"}
-    assert "<available_skills>" in executor.prompt_instructions
-    assert "<name>release</name>" in executor.prompt_instructions
-    assert "<name>review</name>" in executor.prompt_instructions
+    assert len(executor.prompt_blocks) == 1
+    block = executor.prompt_blocks[0]
+    assert block.slot == "available_skills"
+    assert block.source == "skill_registry"
+    assert block.detail == "2 skill(s): release, review"
+    assert "<available_skills>" in block.content
+    assert "<name>release</name>" in block.content
+    assert "<name>review</name>" in block.content
     assert "skills_list" in executor.tools
     assert "skill_view" in executor.tools
 
@@ -210,7 +215,8 @@ def test_executor_loads_extra_skill_paths_after_user_paths(
         "review",
         "skill-creator",
     }
-    assert "<name>skill-creator</name>" in executor.prompt_instructions
+    assert len(executor.prompt_blocks) == 1
+    assert "<name>skill-creator</name>" in executor.prompt_blocks[0].content
 
 
 def test_executor_extra_skill_paths_do_not_override_user_skills(
@@ -275,8 +281,9 @@ def test_executor_filters_enabled_skills(
     )
 
     assert set(executor.skill_registry.skills) == {"review"}
-    assert "<name>review</name>" in executor.prompt_instructions
-    assert "<name>release</name>" not in executor.prompt_instructions
+    assert len(executor.prompt_blocks) == 1
+    assert "<name>review</name>" in executor.prompt_blocks[0].content
+    assert "<name>release</name>" not in executor.prompt_blocks[0].content
 
 
 @pytest.fixture

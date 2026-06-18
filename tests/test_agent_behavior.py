@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from aceai.core.agent import Agent
+from aceai.core.context_manager import PromptBlock
 from aceai.llm.errors import AceAIRuntimeError, LLMContextWindowExceededError
 from aceai.core.executor import ToolExecutionError
 from aceai.core.run_state import ToolRunState
@@ -60,8 +61,8 @@ class StubExecutor:
         self._hosted_tools = hosted_tools if hosted_tools is not None else []
 
     @property
-    def prompt_instructions(self) -> str:
-        return ""
+    def prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        return ()
 
     @property
     def skill_registry(self) -> SkillRegistry:

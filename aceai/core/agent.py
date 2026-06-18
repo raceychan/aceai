@@ -14,7 +14,12 @@ from ..llm.models import (
     LLMRequestMeta,
     SupportedValueType,
 )
-from .context_manager import CompressThreshold, ContextCompressionPolicy, ContextManager
+from .context_manager import (
+    CompressThreshold,
+    ContextCompressionPolicy,
+    ContextManager,
+    PromptBlock,
+)
 from .events import AgentEvent, RunCompletedEvent
 from .executor import DummyExecutor, IExecutor
 from .models import ToolApprovalDecision
@@ -33,6 +38,7 @@ class Agent:
         self,
         prompt: str = "",
         *,
+        prompt_blocks: tuple[PromptBlock, ...] = (),
         default_model: str,
         llm_service: ILLMService,
         max_steps: Unset[int] = UNSET,
@@ -52,7 +58,11 @@ class Agent:
             raise TypeError("executor must be IExecutor")
         self._executor = executor
         self._ctx_mgr: ContextManager = ContextManager(
-            prompt + executor.prompt_instructions
+            _agent_prompt_blocks(
+                prompt=prompt,
+                extra_blocks=prompt_blocks,
+                executor_blocks=executor.prompt_blocks,
+            )
         )
         self._compression_policy = ContextCompressionPolicy(
             compress_threshold,
@@ -97,11 +107,15 @@ class Agent:
     def system_message(self) -> LLMMessage:
         return self._ctx_mgr.system_message
 
-    def add_instruction(self, instruction: str) -> None:
+    @property
+    def system_prompt_blocks(self) -> tuple[PromptBlock, ...]:
+        return self._ctx_mgr.instruction_blocks
+
+    def add_instruction(self, block: PromptBlock) -> None:
         """Add an instruction into the agent's context manager."""
-        if instruction == "":
+        if block.content == "":
             raise ValueError("Empty Instruction")
-        self._ctx_mgr.add_instruction(instruction)
+        self._ctx_mgr.add_instruction(block)
 
     def create_run(
         self,
@@ -110,7 +124,7 @@ class Agent:
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AgentRunContext:
         context = ContextManager(
-            self._ctx_mgr.instructions_text,
+            self._ctx_mgr.instruction_blocks,
             compression_policy=self._compression_policy,
         )
         context.init_context([LLMMessage.build(role="user", content=question)])
@@ -130,7 +144,7 @@ class Agent:
         **request_meta: Unpack[LLMRequestMeta],
     ) -> AgentRunContext:
         context = ContextManager(
-            self._ctx_mgr.instructions_text,
+            self._ctx_mgr.instruction_blocks,
             compression_policy=self._compression_policy,
         )
         context.init_context(
@@ -254,10 +268,31 @@ def _question_preview(content: SupportedValueType) -> str:
     image_count = 0
     for part in parts:
         if part["type"] == "text":
-            previews.append(part["data"])
+            previews.append(str(part.get("data", "")))
         elif part["type"] == "image":
             image_count += 1
     if image_count > 0:
         suffix = "" if image_count == 1 else "s"
         previews.append(f"[{image_count} image{suffix}]")
     return "\n".join(previews)
+
+
+def _agent_prompt_blocks(
+    *,
+    prompt: str,
+    extra_blocks: tuple[PromptBlock, ...],
+    executor_blocks: tuple[PromptBlock, ...],
+) -> tuple[PromptBlock, ...]:
+    blocks: list[PromptBlock] = []
+    if prompt:
+        blocks.append(
+            PromptBlock(
+                slot="agent_instructions",
+                source="agent.prompt",
+                content=prompt,
+                detail="base agent instructions",
+            )
+        )
+    blocks.extend(extra_blocks)
+    blocks.extend(executor_blocks)
+    return tuple(blocks)
