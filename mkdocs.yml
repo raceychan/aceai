@@ -56,6 +56,7 @@ nav:
   - AceAI: index.md
   - Introduction: introduction.md
   - Features: features.md
+  - Lifecycle Hooks: lifecycle_hook_registry.md
   - Tutorial: tutorial.md
   - Performance: performance.md
   - FAQ: FAQ.md

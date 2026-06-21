@@ -217,11 +217,25 @@ class BeforeModelRequestHook(Protocol[TContext]):
         ctx: HookContext[TContext],
         draft: ModelRequestDraft,
     ) -> ModelRequestPatch | None: ...
+
+
+class BeforeModelCallHook(Protocol[TContext]):
+    async def __call__(
+        self,
+        ctx: HookContext[TContext],
+        request: PreparedModelRequest,
+    ) -> ModelRequestPatch | None: ...
 ```
+
+Use `before_model_request` when a hook needs the base draft before context
+preparation. Use `before_model_call` when a hook must inspect the final prepared
+request after context preparation and compression, immediately before the
+provider call.
 
 Implemented protocols:
 
 - `BeforeModelRequestHook`
+- `BeforeModelCallHook`
 - `ModelRequestCommittedHook`
 - `AfterModelResponseHook`
 - `ModelErrorHook`
@@ -230,8 +244,9 @@ Implemented protocols:
 
 Run-level start/end hooks are intentionally not part of the current system. The
 first stable surface focuses on boundaries where downstream code needs to affect
-or observe model-visible behavior: model request assembly, model request commit,
-tool invocation, completed model response, and model-call failure.
+or observe model-visible behavior: model request assembly, final model request
+inspection, model request commit, tool invocation, completed model response, and
+model-call failure.
 
 ## Code Ownership
 
@@ -409,6 +424,8 @@ run before_model_request hooks
 apply patches to a temporary request assembly
 prepare/compress context
 freeze PreparedModelRequest
+run before_model_call hooks
+apply final request patches
 call provider
 when provider stream yields its first event, commit request effects
 on completed response, run after_model_response hooks
@@ -420,9 +437,12 @@ The important distinction is:
 - `request_id`: one logical model request for a step;
 - `attempt_id`: one provider attempt or context-window retry attempt.
 
-`before_model_request` runs once per `request_id` by default. Context-window
-retry may create a new `attempt_id`, but it must not re-run request hooks and
-duplicate injected messages.
+`before_model_request` runs once per `request_id` by default and builds the
+logical model request. `before_model_call` runs for each prepared provider
+attempt, after compression has produced the final message list. Context-window
+retry may create a new `attempt_id`; it must not duplicate logical request
+additions from `before_model_request`, but it may rerun `before_model_call`
+against the newly prepared final request.
 
 Tool hooks run per resolved tool invocation:
 
@@ -452,9 +472,9 @@ AceAI exposes a preview API:
 prepared = await agent.prepare_model_request(run)
 ```
 
-Preview runs the same `before_model_request` hooks with
-`HookContext.mode == "preview"` and returns a `PreparedModelRequest`, but it
-does not commit hook effects or alter the live run context.
+Preview runs the same model request hooks with `HookContext.mode == "preview"`
+and returns a `PreparedModelRequest`, but it does not commit hook effects or
+alter the live run context.
 
 The public API intentionally exposes only preview mode. Execute mode is an
 internal run-loop boundary because executing request hooks may mutate the live
@@ -539,6 +559,8 @@ Current HookRegistry integration:
 - `ContextBuilder.model_request_hooks()` creates a run-level `HookRegistry`.
 - Its `before_model_request` hook calls `build_before_llm()` and returns inbox
   messages, trace slots, and opaque delivery effects.
+- Its `before_model_call` hook may add final, transient model-request hints after
+  AceAI prepares the provider-facing request.
 - Its `on_model_request_committed` hook records delivered inbox items and records
   the `before_llm` trace only after AceAI has committed to a real provider
   request.
@@ -616,8 +638,8 @@ preview, patching, trace, and durable side effects at the correct boundary.
 - `AgentRunContext` already carries mutable run state, request metadata, and
   context manager, so it can carry a frozen hook plan without provider changes.
 - `aceai.core.model_request` is the correct model request assembly boundary; it
-  owns tool selection, hook execution, patch merging, preview preparation, and
-  prepared request construction.
+  owns tool selection, hook execution, patch merging, preview preparation,
+  prepared request construction, and final request patching.
 - `_call_llm()` is the correct provider-attempt boundary; it owns context
   compression, provider stream consumption, and retry behavior.
 - The previous placement of legacy `before_llm_hooks` execution inside the retry
@@ -688,3 +710,12 @@ preview, patching, trace, and durable side effects at the correct boundary.
   error observation.
 - Explicit non-goal: retry decisions, provider switching, and stream
   transformation are not part of this hook system.
+
+### Phase 5: Final Model Request Hooks
+
+- Done: add `before_model_call` to `HookRegistry`, `HookPlan`, and model request
+  finalization.
+- Done: run final model-call hooks after context preparation and before provider
+  streaming.
+- Done: preserve preview semantics by applying final request hooks in preview
+  mode without committing effects.

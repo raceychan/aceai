@@ -71,5 +71,52 @@ trace.set_tracer_provider(provider)
 tracer = trace.get_tracer("agent-core")
 ```
 
+## Lifecycle hooks
+AceAI exposes typed lifecycle hooks through `HookRegistry`. Hooks are explicit async decision points: they can patch model requests, supply tool execution state, observe responses, or record model errors without mutating private run-loop state.
+
+Model request hooks are split into two phases:
+
+- `before_model_request` runs while AceAI assembles the logical request from the current context and tools.
+- `before_model_call` runs after context preparation and compression, when the final `PreparedModelRequest` is about to be sent to the provider.
+
+```python
+from dataclasses import dataclass
+
+from aceai import Agent
+from aceai.core import HookContext, HookRegistry, ModelRequestPatch, PreparedModelRequest
+from aceai.llm import LLMMessage
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    tenant_id: str
+
+
+hooks = HookRegistry[RuntimeContext]()
+
+
+@hooks.before_model_call(name="tenant.context_guard", order=20)
+async def add_final_hint(
+    ctx: HookContext[RuntimeContext],
+    request: PreparedModelRequest,
+) -> ModelRequestPatch | None:
+    if ctx.data is None or request.step_index != 0:
+        return None
+    return ModelRequestPatch(
+        append_messages=(
+            LLMMessage.build(
+                role="system",
+                content=f"Use tenant policy for {ctx.data.tenant_id}.",
+            ),
+        ),
+    )
+
+
+agent = Agent(..., hook_registry=hooks)
+run = agent.create_run("Summarize the account.", hook_context=RuntimeContext("acme"))
+```
+
+Use `Agent.prepare_model_request(run)` to preview the same hook path without committing hook effects.
+
 ## Provider adapters
 Tool schema generation is separated from tool parsing. Implement `IToolSpec.generate_schema()` to adapt to providers that want different tool envelopes or field names.

@@ -1,5 +1,19 @@
 # Changelog
 
+## AceAI v0.2.35
+
+### Features
+
+- `core`: Add `before_model_call` lifecycle hooks so applications can inspect and patch the final prepared request after context preparation and before the provider call.
+
+### Improvements
+
+- `docs`: Document the lifecycle hook system in the public feature guide and expose the detailed hook registry notes in the documentation navigation.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.34
 
 ### Features
