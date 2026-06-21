@@ -19,6 +19,7 @@ TContext = TypeVar("TContext")
 HookMode = Literal["preview", "execute"]
 HookPoint = Literal[
     "before_model_request",
+    "before_model_call",
     "on_model_request_committed",
     "before_tool_execute",
     "after_tool_execute",
@@ -142,6 +143,14 @@ class BeforeModelRequestHook(Protocol[TContext]):
     ) -> ModelRequestPatch | None: ...
 
 
+class BeforeModelCallHook(Protocol[TContext]):
+    async def __call__(
+        self,
+        ctx: HookContext[TContext],
+        request: PreparedModelRequest,
+    ) -> ModelRequestPatch | None: ...
+
+
 class ModelRequestCommittedHook(Protocol[TContext]):
     async def __call__(
         self,
@@ -188,6 +197,15 @@ class BeforeModelRequestHookSpec(Generic[TContext]):
     order: int
     registration_index: int
     fn: BeforeModelRequestHook[TContext]
+    timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class BeforeModelCallHookSpec(Generic[TContext]):
+    name: str
+    order: int
+    registration_index: int
+    fn: BeforeModelCallHook[TContext]
     timeout_seconds: float | None = None
 
 
@@ -239,6 +257,7 @@ class ModelErrorHookSpec(Generic[TContext]):
 @dataclass(frozen=True)
 class HookPlan(Generic[TContext]):
     before_model_request: tuple[BeforeModelRequestHookSpec[TContext], ...] = ()
+    before_model_call: tuple[BeforeModelCallHookSpec[TContext], ...] = ()
     on_model_request_committed: tuple[
         ModelRequestCommittedHookSpec[TContext], ...
     ] = ()
@@ -251,6 +270,7 @@ class HookPlan(Generic[TContext]):
     def is_empty(self) -> bool:
         return (
             not self.before_model_request
+            and not self.before_model_call
             and not self.on_model_request_committed
             and not self.before_tool_execute
             and not self.after_tool_execute
@@ -267,6 +287,10 @@ class HookPlan(Generic[TContext]):
             before_model_request=(
                 *self.before_model_request,
                 *other.before_model_request,
+            ),
+            before_model_call=(
+                *self.before_model_call,
+                *other.before_model_call,
             ),
             on_model_request_committed=(
                 *self.on_model_request_committed,
@@ -294,6 +318,7 @@ class HookPlan(Generic[TContext]):
 class HookRegistry(Generic[TContext]):
     def __init__(self) -> None:
         self._before_model_request: list[BeforeModelRequestHookSpec[TContext]] = []
+        self._before_model_call: list[BeforeModelCallHookSpec[TContext]] = []
         self._on_model_request_committed: list[
             ModelRequestCommittedHookSpec[TContext]
         ] = []
@@ -362,6 +387,75 @@ class HookRegistry(Generic[TContext]):
         _validate_timeout(timeout_seconds)
         self._before_model_request.append(
             BeforeModelRequestHookSpec(
+                name=name or _hook_name(fn),
+                order=order,
+                registration_index=self._next_registration_index,
+                fn=fn,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+        self._next_registration_index += 1
+        return fn
+
+    @overload
+    def before_model_call(
+        self,
+        fn: BeforeModelCallHook[TContext],
+        /,
+    ) -> BeforeModelCallHook[TContext]: ...
+
+    @overload
+    def before_model_call(
+        self,
+        fn: None = None,
+        /,
+        *,
+        name: str | None = None,
+        order: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> "BeforeModelCallDecorator[TContext]": ...
+
+    def before_model_call(
+        self,
+        fn: BeforeModelCallHook[TContext] | None = None,
+        /,
+        *,
+        name: str | None = None,
+        order: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> BeforeModelCallHook[TContext] | "BeforeModelCallDecorator[TContext]":
+        if fn is not None:
+            return self.add_before_model_call(
+                fn,
+                name=name,
+                order=order,
+                timeout_seconds=timeout_seconds,
+            )
+
+        def register(
+            hook_fn: BeforeModelCallHook[TContext],
+        ) -> BeforeModelCallHook[TContext]:
+            return self.add_before_model_call(
+                hook_fn,
+                name=name,
+                order=order,
+                timeout_seconds=timeout_seconds,
+            )
+
+        return register
+
+    def add_before_model_call(
+        self,
+        fn: BeforeModelCallHook[TContext],
+        *,
+        name: str | None = None,
+        order: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> BeforeModelCallHook[TContext]:
+        _validate_hook_function(fn)
+        _validate_timeout(timeout_seconds)
+        self._before_model_call.append(
+            BeforeModelCallHookSpec(
                 name=name or _hook_name(fn),
                 order=order,
                 registration_index=self._next_registration_index,
@@ -723,6 +817,7 @@ class HookRegistry(Generic[TContext]):
     def build_plan(self) -> HookPlan[TContext]:
         return build_hook_plan(
             before_model_request=tuple(self._before_model_request),
+            before_model_call=tuple(self._before_model_call),
             on_model_request_committed=tuple(self._on_model_request_committed),
             before_tool_execute=tuple(self._before_tool_execute),
             after_tool_execute=tuple(self._after_tool_execute),
@@ -736,6 +831,13 @@ class BeforeModelRequestDecorator(Protocol[TContext]):
         self,
         hook_fn: BeforeModelRequestHook[TContext],
     ) -> BeforeModelRequestHook[TContext]: ...
+
+
+class BeforeModelCallDecorator(Protocol[TContext]):
+    def __call__(
+        self,
+        hook_fn: BeforeModelCallHook[TContext],
+    ) -> BeforeModelCallHook[TContext]: ...
 
 
 class ModelRequestCommittedDecorator(Protocol[TContext]):
@@ -776,6 +878,7 @@ class ModelErrorDecorator(Protocol[TContext]):
 def build_hook_plan(
     *,
     before_model_request: tuple[BeforeModelRequestHookSpec[TContext], ...],
+    before_model_call: tuple[BeforeModelCallHookSpec[TContext], ...],
     on_model_request_committed: tuple[
         ModelRequestCommittedHookSpec[TContext], ...
     ],
@@ -786,6 +889,7 @@ def build_hook_plan(
 ) -> HookPlan[TContext]:
     duplicates = _duplicated_hook_names(
         before_model_request=before_model_request,
+        before_model_call=before_model_call,
         on_model_request_committed=on_model_request_committed,
         before_tool_execute=before_tool_execute,
         after_tool_execute=after_tool_execute,
@@ -799,6 +903,12 @@ def build_hook_plan(
         before_model_request=tuple(
             sorted(
                 before_model_request,
+                key=lambda spec: (spec.order, spec.registration_index),
+            )
+        ),
+        before_model_call=tuple(
+            sorted(
+                before_model_call,
                 key=lambda spec: (spec.order, spec.registration_index),
             )
         ),
@@ -838,6 +948,7 @@ def build_hook_plan(
 def _duplicated_hook_names(
     *,
     before_model_request: tuple[BeforeModelRequestHookSpec[TContext], ...],
+    before_model_call: tuple[BeforeModelCallHookSpec[TContext], ...],
     on_model_request_committed: tuple[
         ModelRequestCommittedHookSpec[TContext], ...
     ],
@@ -850,6 +961,7 @@ def _duplicated_hook_names(
     duplicates: set[str] = set()
     for spec in (
         *before_model_request,
+        *before_model_call,
         *on_model_request_committed,
         *before_tool_execute,
         *after_tool_execute,

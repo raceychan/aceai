@@ -22,6 +22,7 @@ from .hooks import (
     PreparedModelRequest,
 )
 from .hook_execution import (
+    call_before_model_call_hook,
     call_before_model_request_hook,
     call_model_request_committed_hook,
 )
@@ -65,10 +66,15 @@ async def prepare_model_request(
         llm_service=llm_service,
         tools=list(assembly.tools),
     )
-    return prepared_model_request(
+    request = prepared_model_request(
         assembly=assembly,
         messages=messages,
         state=state,
+    )
+    return await finalize_model_request(
+        plan=state.hook_plan,
+        ctx=assembly.hook_context,
+        request=request,
     )
 
 
@@ -148,6 +154,34 @@ async def collect_before_model_request_patches(
     return tuple(patches)
 
 
+async def collect_before_model_call_patches(
+    *,
+    plan: HookPlan[Any],
+    ctx: HookContext[Any],
+    request: PreparedModelRequest,
+) -> tuple[tuple[ModelRequestPatch, AppliedHookPatch], ...]:
+    patches: list[tuple[ModelRequestPatch, AppliedHookPatch]] = []
+    for spec in plan.before_model_call:
+        patch = await call_before_model_call_hook(spec, ctx, request)
+        patches.append(
+            (
+                patch,
+                AppliedHookPatch(
+                    hook_name=spec.name,
+                    point="before_model_call",
+                    prepended_message_count=len(patch.prepend_messages),
+                    appended_message_count=len(patch.append_messages),
+                    metadata_keys=tuple(patch.metadata),
+                    tool_allowlist=patch.tool_allowlist,
+                    tool_denylist=patch.tool_denylist,
+                    trace=patch.trace,
+                    effects=patch.effects,
+                ),
+            )
+        )
+    return tuple(patches)
+
+
 @dataclass(frozen=True)
 class ModelRequestPatchMerge:
     prepended_messages: list[LLMMessage]
@@ -206,6 +240,43 @@ def prepared_model_request(
         tools=assembly.tools,
         metadata=assembly.metadata,
         patches=assembly.patches,
+    )
+
+
+async def finalize_model_request(
+    *,
+    plan: HookPlan[Any],
+    ctx: HookContext[Any],
+    request: PreparedModelRequest,
+) -> PreparedModelRequest:
+    patches = await collect_before_model_call_patches(
+        plan=plan,
+        ctx=ctx,
+        request=request,
+    )
+    merge = merge_model_request_patches(patches)
+    if not merge.applied_patches:
+        return request
+    messages = list(request.messages)
+    if merge.prepended_messages:
+        messages[1:1] = merge.prepended_messages
+    if merge.appended_messages:
+        messages.extend(merge.appended_messages)
+    tools = filter_model_request_tools(
+        list(request.tools),
+        allowlist=merge.tool_allowlist,
+        denylist=merge.tool_denylist,
+    )
+    return PreparedModelRequest(
+        request_id=request.request_id,
+        attempt_id=request.attempt_id,
+        run_id=request.run_id,
+        step_id=request.step_id,
+        step_index=request.step_index,
+        messages=tuple(messages),
+        tools=tuple(tools),
+        metadata=cast(LLMRequestMeta, {**request.metadata, **merge.metadata}),
+        patches=(*request.patches, *merge.applied_patches),
     )
 
 

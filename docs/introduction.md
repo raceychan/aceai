@@ -76,3 +76,8 @@ To build an agent you wire three pieces:
 
 ### Hybrid
 A common production shape is hybrid: do deterministic steps in a workflow, then delegate open-ended reasoning and tool use to `Agent`. Subclassing `Agent` is a clean way to add product-specific behavior while keeping the core loop intact.
+
+### Lifecycle hooks
+Lifecycle hooks let applications extend the agent loop at typed boundaries without taking over the run loop. Register async functions with `HookRegistry` to patch model requests, inspect the final provider-bound request, refresh tool execution state, observe completed model responses, or record model errors.
+
+Use hooks when product-specific runtime context must enter a request late, but should still remain ordered, typed, previewable, and separated from durable transcript events.

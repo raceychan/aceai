@@ -483,6 +483,128 @@ async def test_before_model_request_hook_adds_execute_message_sent_to_model() ->
 
 
 @pytest.mark.anyio
+async def test_before_model_call_hook_appends_transient_final_message() -> None:
+    hooks = HookRegistry[str]()
+    seen_requests: list[tuple[str, ...]] = []
+    committed_requests: list[PreparedModelRequest] = []
+
+    @hooks.before_model_call(name="final-context")
+    async def final_context(
+        ctx: HookContext[str],
+        request: PreparedModelRequest,
+    ) -> ModelRequestPatch:
+        assert ctx.mode == "execute"
+        assert ctx.data == "thread-1"
+        seen_requests.append(tuple(_text(message) for message in request.messages))
+        return ModelRequestPatch(
+            append_messages=(
+                LLMMessage.build(role="system", content="final transient context"),
+            ),
+            effects=(HookEffect(kind="test.final_context", payload={"ok": True}),),
+        )
+
+    @hooks.on_model_request_committed(name="commit-final-context")
+    async def commit_final_context(
+        ctx: HookContext[str],
+        request: PreparedModelRequest,
+    ) -> None:
+        assert ctx.mode == "execute"
+        committed_requests.append(request)
+
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+    run = agent.create_run("Question?", hook_context="thread-1")
+
+    events = [event async for event in agent.execute(run)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    assert seen_requests[0][-1] == "Question?"
+    messages = llm_service.calls[0]["messages"]
+    assert _text(messages[-1]) == "final transient context"
+    assert all(_text(message) != "final transient context" for message in run.context.context)
+    assert len(committed_requests) == 1
+    committed = committed_requests[0]
+    assert _text(committed.messages[-1]) == "final transient context"
+    assert committed.patches[-1].point == "before_model_call"
+    assert committed.patches[-1].effects[0].kind == "test.final_context"
+
+
+@pytest.mark.anyio
+async def test_prepare_model_request_preview_runs_before_model_call_without_mutating_context() -> None:
+    hooks = HookRegistry[str]()
+
+    @hooks.before_model_call(name="preview-final-context")
+    async def preview_final_context(
+        ctx: HookContext[str],
+        request: PreparedModelRequest,
+    ) -> ModelRequestPatch:
+        assert ctx.mode == "preview"
+        assert _text(request.messages[-1]) == "Question?"
+        return ModelRequestPatch(
+            append_messages=(
+                LLMMessage.build(role="system", content="preview final context"),
+            ),
+        )
+
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=StubLLMService([]),
+        executor=StubExecutor(),
+        hook_registry=hooks,
+    )
+    run = agent.create_run("Question?", hook_context="thread-1")
+
+    prepared = await agent.prepare_model_request(run)
+
+    assert _text(prepared.messages[-1]) == "preview final context"
+    assert _text(run.context.context[-1]) == "Question?"
+
+
+@pytest.mark.anyio
+async def test_before_model_call_hook_sees_compressed_request_messages() -> None:
+    hooks = HookRegistry[object]()
+    seen: list[str] = []
+
+    @hooks.before_model_call(name="after-compression")
+    async def after_compression(
+        ctx: HookContext[object],
+        request: PreparedModelRequest,
+    ) -> None:
+        seen.append("\n".join(_text(message) for message in request.messages))
+
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=CompressingLLMService([]),
+        executor=StubExecutor(),
+        hook_registry=hooks,
+        max_steps=1,
+        compress_threshold=1,
+    )
+    history = [
+        LLMMessage.build(role="user", content=f"history message {index}")
+        for index in range(10)
+    ]
+    run = agent.create_resume_run("new question", history)
+
+    await agent.prepare_model_request(run)
+
+    assert len(seen) == 1
+    assert '<aceai_context_summary scope="prior_runs">' in seen[0]
+    assert "Earlier discussion summary." in seen[0]
+    assert "history message 0" not in seen[0]
+
+
+@pytest.mark.anyio
 async def test_model_request_committed_hook_runs_only_for_real_request() -> None:
     hooks = HookRegistry[str]()
     before_modes: list[str] = []

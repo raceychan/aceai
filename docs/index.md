@@ -5,6 +5,7 @@ AceAI is an engineering-first agent framework: tools-first, explicit signatures,
 ## Highlights
 - Tools-first, strict schemas built from `typing.Annotated` + `spec`.
 - Explicit providers and dependencies, no hidden planners or retries.
+- Typed lifecycle hooks for model request assembly, final request inspection, tool execution, responses, and model errors.
 - OpenTelemetry spans for agent steps, tool calls, and LLM calls.
 - Clear separation: workflow (you control) vs agent loop (model controls).
 
@@ -57,4 +58,5 @@ asyncio.run(main())
 ## Where to go next
 - Read `docs/introduction.md` for concepts and setup.
 - Follow `docs/tutorial.md` for a full agent build.
-- Dive into `docs/features.md` for schema, DI, and tracing details.
+- Dive into `docs/features.md` for schema, DI, hooks, and tracing details.
+- Read `docs/lifecycle_hook_registry.md` for the full hook registry contract.

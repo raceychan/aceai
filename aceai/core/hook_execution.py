@@ -8,6 +8,7 @@ from .hooks import (
     AfterModelResponseHookSpec,
     AfterToolExecuteHookSpec,
     BeforeModelRequestHookSpec,
+    BeforeModelCallHookSpec,
     BeforeToolExecuteHookSpec,
     HookContext,
     HookExecutionError,
@@ -44,6 +45,27 @@ async def call_before_model_request_hook(
         raise HookExecutionError(
             f"hook {spec.name!r} returned {type(result).__name__}; "
             "before_model_request hooks must return ModelRequestPatch or None"
+        )
+    return result
+
+
+async def call_before_model_call_hook(
+    spec: BeforeModelCallHookSpec[TContext],
+    ctx: HookContext[TContext],
+    request: PreparedModelRequest,
+) -> ModelRequestPatch:
+    result = await _await_hook(
+        hook_name=spec.name,
+        hook_point="before_model_call",
+        timeout_seconds=spec.timeout_seconds,
+        call=spec.fn(ctx, request),
+    )
+    if result is None:
+        return ModelRequestPatch()
+    if not isinstance(result, ModelRequestPatch):
+        raise HookExecutionError(
+            f"hook {spec.name!r} returned {type(result).__name__}; "
+            "before_model_call hooks must return ModelRequestPatch or None"
         )
     return result
 
