@@ -15,7 +15,7 @@ from aceai.llm.errors import (
     LLMProviderError,
 )
 from aceai.llm.interface import Unset, is_set
-from aceai.llm.models import LLMMessage, LLMRequestMeta, LLMToolCallDelta
+from aceai.llm.models import LLMRequestMeta, LLMToolCallDelta
 from aceai.llm.tracing import get_trace_ctx, set_trace_ctx
 
 from .context_manager import ContextManager
@@ -51,6 +51,7 @@ from .model_request import (
     assemble_model_request,
     prepare_model_request,
     prepared_model_request,
+    finalize_model_request,
     run_model_request_committed_hooks,
 )
 from .models import (
@@ -354,10 +355,14 @@ async def _call_llm(
                 history=list(run_context.context.context[1:]),
             )
 
-        prepared_request = prepared_model_request(
-            assembly=assembly,
-            messages=messages,
-            state=request_state,
+        prepared_request = await finalize_model_request(
+            plan=run_context.hook_plan,
+            ctx=assembly.hook_context,
+            request=prepared_model_request(
+                assembly=assembly,
+                messages=messages,
+                state=request_state,
+            ),
         )
 
         if prepared_request.tools:
