@@ -1006,6 +1006,45 @@ def test_map_stream_event_preserves_hosted_web_search_api_source(
     assert payload["action"]["sources"][0]["type"] == "api"
 
 
+def test_map_stream_event_preserves_hosted_web_search_api_source_without_url(
+    openai_provider: OpenAI,
+) -> None:
+    item = ResponseFunctionWebSearch(
+        id="ws-1",
+        type="web_search_call",
+        status="completed",
+        action=ActionSearch(
+            type="search",
+            query="market snapshot",
+            sources=[
+                ActionSearchSource.model_construct(
+                    type="api",
+                )
+            ],
+        ),
+    )
+    event = ResponseOutputItemDoneEvent(
+        item=item,
+        output_index=0,
+        sequence_number=4,
+        type="response.output_item.done",
+    )
+
+    mapped = openai_provider._map_stream_event(event, model_name="gpt-5.5")
+
+    assert mapped is not None
+    segment = mapped.segments[0]
+    assert isinstance(segment.meta, LLMHostedToolSegmentMeta)
+    assert is_set(segment.meta.action)
+    assert isinstance(segment.meta.action, LLMHostedToolAction)
+    assert is_set(segment.meta.action.sources)
+    assert segment.meta.action.sources[0].type == "api"
+    assert not is_set(segment.meta.action.sources[0].url)
+    assert segment.meta.action.first_source_url is None
+    payload = json.loads(segment.content)
+    assert payload["action"]["sources"][0] == {"type": "api"}
+
+
 def test_map_stream_event_returns_none_for_completed_image_events(
     openai_provider: OpenAI,
 ) -> None:

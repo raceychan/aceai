@@ -129,8 +129,8 @@ type LLMHostedToolSourceType = Literal["url", "api"]
 class LLMHostedToolSource(Record, kw_only=True):
     """Provider-neutral source returned by a provider-hosted tool action."""
 
-    url: str
-    """Source URL reported by the provider."""
+    url: Unset[str] = UNSET
+    """Source URL reported by the provider, when this source has one."""
 
     title: Unset[str] = UNSET
     """Optional source title reported by the provider."""
@@ -188,7 +188,7 @@ class LLMHostedToolAction(Record, kw_only=True):
         if self.sources is UNSET:
             return None
         for source in self.sources:
-            if source.url != "":
+            if source.url is not UNSET and source.url != "":
                 return source.url
         return None
 
