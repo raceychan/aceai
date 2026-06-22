@@ -123,6 +123,9 @@ class LLMHostedToolSpec(Record, kw_only=True):
 type LLMToolSpec = IToolSpec | LLMHostedToolSpec
 
 
+type LLMHostedToolSourceType = Literal["url", "api"]
+
+
 class LLMHostedToolSource(Record, kw_only=True):
     """Provider-neutral source returned by a provider-hosted tool action."""
 
@@ -132,8 +135,8 @@ class LLMHostedToolSource(Record, kw_only=True):
     title: Unset[str] = UNSET
     """Optional source title reported by the provider."""
 
-    type: Literal["url"] = "url"
-    """Source kind. Currently only URL sources are normalized."""
+    type: LLMHostedToolSourceType = "url"
+    """Source kind reported by the provider."""
 
 
 class LLMHostedToolAction(Record, kw_only=True):

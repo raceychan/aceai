@@ -1,5 +1,15 @@
 # Changelog
 
+## AceAI v0.2.36
+
+### Fixes
+
+- `openai`: Accept hosted web search sources reported as `api` so provider search activity does not fail when OpenAI returns non-URL source kinds.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.35
 
 ### Features
