@@ -1,5 +1,15 @@
 # Changelog
 
+## AceAI v0.2.38
+
+### Fixes
+
+- `openai`: Accept any hosted web search source kind, while keeping source URLs optional, so provider-owned feed records do not fail stream parsing when OpenAI reports a non-URL source type.
+
+### Breaking Changes
+
+- None.
+
 ## AceAI v0.2.37
 
 ### Fixes
