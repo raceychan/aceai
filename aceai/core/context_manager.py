@@ -1,5 +1,6 @@
 import json
 import re
+from html import escape
 from typing import Annotated, Literal, cast
 
 from msgspec import Meta, Struct, field
@@ -31,6 +32,8 @@ ContextSummaryScope = Literal["prior_runs", "current_run"]
 
 CONTEXT_SUMMARY_OPEN = "<aceai_context_summary"
 CONTEXT_SUMMARY_CLOSE = "</aceai_context_summary>"
+CONTEXT_HINT_OPEN = "<aceai_context_hint"
+CONTEXT_HINT_CLOSE = "</aceai_context_hint>"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 128000
 DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS = 4096
 
@@ -130,6 +133,27 @@ class PromptBlock(Struct, frozen=True, kw_only=True):
     source: str
     content: str
     detail: str = ""
+
+
+def ephemeral_context_hint_message(*, source: str, content: str) -> LLMMessage:
+    if source.strip() == "":
+        raise ValueError("ephemeral context hint source must be non-empty")
+    hint = content.strip()
+    if hint == "":
+        raise ValueError("ephemeral context hint content must be non-empty")
+    return LLMMessage.build(
+        role="system",
+        content=(
+            f'<aceai_context_hint persistence="ephemeral" '
+            f'source="{escape(source, quote=True)}">\n'
+            f"{hint}\n"
+            f"{CONTEXT_HINT_CLOSE}"
+        ),
+    )
+
+
+def is_ephemeral_context_hint_message(message: LLMMessage) -> bool:
+    return message.role == "system" and _is_ephemeral_context_hint(message)
 
 
 class StepUnit(Struct, kw_only=True):
@@ -352,6 +376,12 @@ def parse_context_units(messages: list[LLMMessage]) -> StructuredContext:
     while index < len(messages):
         message = messages[index]
         if message.role == "system":
+            if _is_ephemeral_context_hint(message):
+                if current_run is not None:
+                    runs.append(current_run)
+                    current_run = None
+                index += 1
+                continue
             scope = _summary_scope(message)
             if scope is None:
                 if current_run is not None:
@@ -789,6 +819,14 @@ def _summary_scope(message: LLMMessage) -> ContextSummaryScope | None:
     if text.startswith('<aceai_context_summary scope="current_run">'):
         return "current_run"
     return None
+
+
+def _is_ephemeral_context_hint(message: LLMMessage) -> bool:
+    text = _single_text_content(message)
+    return (
+        text.startswith('<aceai_context_hint persistence="ephemeral" ')
+        and text.rstrip().endswith(CONTEXT_HINT_CLOSE)
+    )
 
 
 def _summary_content(message: LLMMessage) -> str:

@@ -6,6 +6,7 @@ import pytest
 
 from aceai.core.agent import Agent
 from aceai.core.context_manager import PromptBlock
+from aceai.core.context_manager import ephemeral_context_hint_message
 from aceai.llm.errors import AceAIRuntimeError, LLMContextWindowExceededError
 from aceai.core.executor import ToolExecutionError
 from aceai.core.hooks import (
@@ -894,6 +895,84 @@ async def test_agent_compresses_resume_history_before_llm_call() -> None:
     assert "history message 0" not in "\n".join(
         message.content[0]["data"] for message in messages
     )
+
+
+@pytest.mark.anyio
+async def test_agent_allows_ephemeral_system_hint_between_runs() -> None:
+    llm_service = StubLLMService(
+        [make_stream(response=LLMResponse(text="done"), deltas=["done"])]
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+    )
+    hint = ephemeral_context_hint_message(
+        source="test.handoff_hint",
+        content="Consider handing off if this is a clean topic shift.",
+    )
+    history = [
+        LLMMessage.build(role="user", content="previous question"),
+        LLMMessage.build(role="assistant", content="previous answer"),
+        hint,
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    messages = llm_service.calls[0]["messages"]
+    assert messages[-2].role == "system"
+    assert '<aceai_context_hint persistence="ephemeral"' in messages[-2].content[0][
+        "data"
+    ]
+    assert messages[-1].content[0]["data"] == "new question"
+
+
+@pytest.mark.anyio
+async def test_agent_compression_drops_ephemeral_system_hint() -> None:
+    llm_service = CompressingLLMService(
+        make_stream(response=LLMResponse(text="done"), deltas=["done"])
+    )
+    agent = Agent(
+        prompt="Prompt",
+        default_model="gpt-4o",
+        llm_service=llm_service,
+        executor=StubExecutor(),
+        max_steps=1,
+        compress_threshold=1,
+    )
+    hint = ephemeral_context_hint_message(
+        source="test.handoff_hint",
+        content="Consider handing off if this is a clean topic shift.",
+    )
+    history = [
+        LLMMessage.build(role="user", content="previous question"),
+        LLMMessage.build(role="assistant", content="previous answer"),
+        hint,
+        LLMMessage.build(role="user", content="older question"),
+        LLMMessage.build(role="assistant", content="older answer"),
+    ]
+
+    events = [event async for event in agent.resume("new question", history)]
+
+    assert isinstance(events[-1], RunCompletedEvent)
+    stream_text = "\n".join(
+        part["data"]
+        for message in llm_service.stream_calls[0]["messages"]
+        for part in message.content
+        if part["type"] == "text"
+    )
+    summary_text = "\n".join(
+        part["data"]
+        for call in llm_service.complete_calls
+        for message in call["messages"]
+        for part in message.content
+        if part["type"] == "text"
+    )
+    assert '<aceai_context_hint persistence="ephemeral"' not in stream_text
+    assert '<aceai_context_hint persistence="ephemeral"' not in summary_text
 
 
 @pytest.mark.anyio
